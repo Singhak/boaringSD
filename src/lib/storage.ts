@@ -1,38 +1,52 @@
-import { UserStats } from "@/types";
+// Browser persistence for player progress. localStorage is the source of truth.
+//
+// NOTE: /api/progress is a best-effort mirror to a single demo user. It is not
+// authenticated and does not merge progress, so there is no cross-device sync.
+// Do not advertise account-backed progress until auth and server semantics exist.
 
-const STORAGE_KEY = "sd_quest_user_stats_v1";
+import type { BuilderScenario, PatternId, PatternRunResult, RunProgress, SystemDesignPattern, UserStats } from "@/types";
+import {
+  DEFAULT_STATS,
+  ProgressionOutcome,
+  completeActivity,
+  migrateStats,
+  recordBuilderResult,
+  recordFixApplied,
+  recordPatternRun,
+  recordReview,
+  recordRunStarted,
+  recordTransferMiss,
+} from "@/lib/progression";
 
-const DEFAULT_STATS: UserStats = {
-  level: 1,
-  currentXp: 0,
-  nextLevelXp: 150,
-  streakDays: 1,
-  completedLessons: [],
-  completedChallenges: [],
-  completedGuided: [],
-  completedInterviews: [],
-  completedMissions: [],
-  completedChapters: [],
-  systemsSaved: 0,
-  incidentsSolved: 0,
-  isLoggedIn: false,
-  userEmail: null,
-  userName: null,
-  totalScore: 0,
-  soundEnabled: true,
-  unlockedBadges: [],
-};
+const STORAGE_KEY = "sd_quest_user_stats_v1"; // key kept for backward compatibility; shape is versioned inside
+const RUNS_KEY = "sd_quest_run_progress_v1";
+const DESIGNS_KEY = "sd_quest_builder_designs_v1";
+export const STATS_EVENT = "sd_quest_stats_updated";
+
+type Result = { stats: UserStats; leveledUp: boolean };
+
+export function readRawStats(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return localStorage.getItem(STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
 
 export function getUserStats(): UserStats {
-  if (typeof window === "undefined") {
-    return DEFAULT_STATS;
-  }
+  if (typeof window === "undefined") return { ...DEFAULT_STATS };
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return DEFAULT_STATS;
-    return { ...DEFAULT_STATS, ...JSON.parse(raw) };
+    if (!raw) return { ...DEFAULT_STATS };
+    const parsed = JSON.parse(raw);
+    const migrated = migrateStats(parsed, new Date());
+    if (parsed?.schemaVersion !== migrated.schemaVersion) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
+    }
+    return migrated;
   } catch {
-    return DEFAULT_STATS;
+    return { ...DEFAULT_STATS };
   }
 }
 
@@ -40,258 +54,213 @@ export function saveUserStats(stats: UserStats): void {
   if (typeof window === "undefined") return;
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(stats));
-    window.dispatchEvent(new Event("sd_quest_stats_updated"));
-    
-    // Asynchronously sync with DB API
+    window.dispatchEvent(new Event(STATS_EVENT));
+
+    // Best-effort mirror; see note at top of file.
     fetch("/api/progress", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(stats),
     }).catch(() => {
-      // Quiet fallback if offline or in development
+      // Offline or no database: local progress is already saved.
     });
   } catch (err) {
     console.error("Failed to save user stats:", err);
   }
 }
 
-export function addXp(amount: number): { stats: UserStats; leveledUp: boolean } {
-  const current = getUserStats();
-  const newXp = current.currentXp + amount;
-  const newLevel = Math.floor(newXp / 150) + 1;
-  const nextLevelXp = newLevel * 150;
-  const leveledUp = newLevel > current.level;
-
-  const updated: UserStats = {
-    ...current,
-    currentXp: newXp,
-    level: newLevel,
-    nextLevelXp: nextLevelXp,
-    totalScore: current.totalScore + amount,
-  };
-
-  saveUserStats(updated);
-  return { stats: updated, leveledUp };
+function commit(outcome: ProgressionOutcome): ProgressionOutcome {
+  saveUserStats(outcome.stats);
+  return outcome;
 }
 
-export function completeLesson(lessonId: string, xpReward: number): { stats: UserStats; leveledUp: boolean } {
-  const current = getUserStats();
-  const alreadyCompleted = current.completedLessons.includes(lessonId);
-  const updatedLessons = alreadyCompleted
-    ? current.completedLessons
-    : [...current.completedLessons, lessonId];
-
-  // Award XP if not previously completed
-  const xpToAdd = alreadyCompleted ? Math.floor(xpReward * 0.2) : xpReward;
-  const newXp = current.currentXp + xpToAdd;
-  const newLevel = Math.floor(newXp / 150) + 1;
-  const nextLevelXp = newLevel * 150;
-  const leveledUp = newLevel > current.level;
-
-  const newBadges = [...current.unlockedBadges];
-  if (lessonId === "load-balancer" && !newBadges.includes("first_node")) {
-    newBadges.push("first_node");
-  }
-  if (lessonId === "cache" && !newBadges.includes("cache_master")) {
-    newBadges.push("cache_master");
-  }
-  if (lessonId === "database-scaling" && !newBadges.includes("db_architect")) {
-    newBadges.push("db_architect");
-  }
-  if (newXp >= 500 && !newBadges.includes("grandmaster")) {
-    newBadges.push("grandmaster");
-  }
-
-  const updated: UserStats = {
-    ...current,
-    completedLessons: updatedLessons,
-    currentXp: newXp,
-    level: newLevel,
-    nextLevelXp,
-    unlockedBadges: newBadges,
-    totalScore: current.totalScore + xpToAdd,
-  };
-
-  saveUserStats(updated);
-  return { stats: updated, leveledUp };
+function update(fn: (stats: UserStats) => UserStats): UserStats {
+  const next = fn(getUserStats());
+  saveUserStats(next);
+  return next;
 }
 
-export function completeChallenge(challengeId: string, rewardXp: number): { stats: UserStats; leveledUp: boolean } {
-  const current = getUserStats();
-  const alreadyCompleted = current.completedChallenges.includes(challengeId);
-  const updatedChallenges = alreadyCompleted
-    ? current.completedChallenges
-    : [...current.completedChallenges, challengeId];
+// ---------------------------------------------------------------------------
+// Activity completions (all idempotent: first clear once, replay once per day)
+// ---------------------------------------------------------------------------
 
-  const xpToAdd = alreadyCompleted ? 20 : rewardXp;
-  const newXp = current.currentXp + xpToAdd;
-  const newLevel = Math.floor(newXp / 150) + 1;
-  const nextLevelXp = newLevel * 150;
-  const leveledUp = newLevel > current.level;
+const LESSON_BADGES: Record<string, string> = {
+  "load-balancer": "first_node",
+  cache: "cache_master",
+  "database-scaling": "db_architect",
+};
 
-  const newBadges = [...current.unlockedBadges];
-  if (!newBadges.includes("challenge_hero")) {
-    newBadges.push("challenge_hero");
+export function completeLesson(lessonId: string, xpReward: number): Result {
+  const now = new Date();
+  const badges = LESSON_BADGES[lessonId] ? [LESSON_BADGES[lessonId]] : [];
+  const out = completeActivity(
+    getUserStats(),
+    { collection: "completedLessons", id: lessonId, firstXp: xpReward, replayXp: Math.floor(xpReward * 0.2), badges },
+    now
+  );
+  if (out.stats.currentXp >= 500 && !out.stats.unlockedBadges.includes("grandmaster")) {
+    out.stats = { ...out.stats, unlockedBadges: [...out.stats.unlockedBadges, "grandmaster"] };
   }
-
-  const updated: UserStats = {
-    ...current,
-    completedChallenges: updatedChallenges,
-    currentXp: newXp,
-    level: newLevel,
-    nextLevelXp,
-    unlockedBadges: newBadges,
-    totalScore: current.totalScore + xpToAdd,
-  };
-
-  saveUserStats(updated);
-  return { stats: updated, leveledUp };
+  return commit(out);
 }
 
-export function completeGuided(scenarioId: string, rewardXp: number): { stats: UserStats; leveledUp: boolean } {
-  const current = getUserStats();
-  const completedGuided = current.completedGuided || [];
-  const alreadyCompleted = completedGuided.includes(scenarioId);
-  const updatedGuided = alreadyCompleted
-    ? completedGuided
-    : [...completedGuided, scenarioId];
+export function completeChallenge(challengeId: string, rewardXp: number): Result {
+  return commit(
+    completeActivity(
+      getUserStats(),
+      { collection: "completedChallenges", id: challengeId, firstXp: rewardXp, replayXp: 20, badges: ["challenge_hero"] },
+      new Date()
+    )
+  );
+}
 
-  const xpToAdd = alreadyCompleted ? 25 : rewardXp;
-  const newXp = current.currentXp + xpToAdd;
-  const newLevel = Math.floor(newXp / 150) + 1;
-  const nextLevelXp = newLevel * 150;
-  const leveledUp = newLevel > current.level;
+export function completeGuided(scenarioId: string, rewardXp: number): Result {
+  return commit(
+    completeActivity(
+      getUserStats(),
+      { collection: "completedGuided", id: scenarioId, firstXp: rewardXp, replayXp: 25, badges: ["system_thinker"] },
+      new Date()
+    )
+  );
+}
 
-  const newBadges = [...current.unlockedBadges];
-  if (!newBadges.includes("system_thinker")) {
-    newBadges.push("system_thinker");
+export function completeInterview(interviewId: string, rewardXp: number): Result {
+  return commit(
+    completeActivity(
+      getUserStats(),
+      { collection: "completedInterviews", id: interviewId, firstXp: rewardXp, replayXp: 30, badges: ["interview_ace"] },
+      new Date()
+    )
+  );
+}
+
+export function recordMissionComplete(missionId: string, xpReward: number): ProgressionOutcome {
+  return commit(
+    completeActivity(
+      getUserStats(),
+      {
+        collection: "completedMissions",
+        id: missionId,
+        firstXp: xpReward,
+        replayXp: 15,
+        badges: ["pushpa_first_responder"],
+        onFirstClear: (s) => ({
+          ...s,
+          systemsSaved: (s.systemsSaved || 0) + 1,
+          incidentsSolved: (s.incidentsSolved || 0) + 1,
+        }),
+      },
+      new Date()
+    )
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Pattern runs, builder bosses, reviews
+// ---------------------------------------------------------------------------
+
+export function markRunStarted(patternId: PatternId): UserStats {
+  return update((s) => recordRunStarted(s, patternId, new Date()));
+}
+
+export function markFixApplied(patternId: PatternId): UserStats {
+  return update((s) => recordFixApplied(s, patternId, new Date()));
+}
+
+export function markTransferMiss(patternId: PatternId): UserStats {
+  return update((s) => recordTransferMiss(s, patternId));
+}
+
+export function completePatternRun(pattern: SystemDesignPattern, result: PatternRunResult): ProgressionOutcome {
+  return commit(recordPatternRun(getUserStats(), pattern, result, new Date()));
+}
+
+export function submitBuilderResult(
+  scenario: BuilderScenario,
+  rewardXp: number,
+  passed: boolean,
+  failureReasons: string[]
+): ProgressionOutcome {
+  return commit(recordBuilderResult(getUserStats(), scenario, rewardXp, passed, failureReasons, new Date()));
+}
+
+export function submitReview(pattern: SystemDesignPattern, passed: boolean) {
+  const out = recordReview(getUserStats(), pattern, passed, new Date());
+  if (!out.early) saveUserStats(out.stats);
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Resumable run state (kept out of UserStats so it is not mirrored to the API)
+// ---------------------------------------------------------------------------
+
+function readJson<T>(key: string, fallback: T): T {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
   }
-
-  const updated: UserStats = {
-    ...current,
-    completedGuided: updatedGuided,
-    currentXp: newXp,
-    level: newLevel,
-    nextLevelXp,
-    unlockedBadges: newBadges,
-    totalScore: current.totalScore + xpToAdd,
-  };
-
-  saveUserStats(updated);
-  return { stats: updated, leveledUp };
 }
 
-export function completeInterview(interviewId: string, rewardXp: number): { stats: UserStats; leveledUp: boolean } {
-  const current = getUserStats();
-  const completedInterviews = current.completedInterviews || [];
-  const alreadyCompleted = completedInterviews.includes(interviewId);
-  const updatedInterviews = alreadyCompleted
-    ? completedInterviews
-    : [...completedInterviews, interviewId];
-
-  const xpToAdd = alreadyCompleted ? 30 : rewardXp;
-  const newXp = current.currentXp + xpToAdd;
-  const newLevel = Math.floor(newXp / 150) + 1;
-  const nextLevelXp = newLevel * 150;
-  const leveledUp = newLevel > current.level;
-
-  const newBadges = [...current.unlockedBadges];
-  if (!newBadges.includes("interview_ace")) {
-    newBadges.push("interview_ace");
+function writeJson(key: string, value: unknown): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Storage full or blocked: the run continues in memory.
   }
-
-  const updated: UserStats = {
-    ...current,
-    completedInterviews: updatedInterviews,
-    currentXp: newXp,
-    level: newLevel,
-    nextLevelXp,
-    unlockedBadges: newBadges,
-    totalScore: current.totalScore + xpToAdd,
-  };
-
-  saveUserStats(updated);
-  return { stats: updated, leveledUp };
 }
 
-export function recordMissionComplete(missionId: string, xpReward: number): { stats: UserStats; leveledUp: boolean } {
-  const current = getUserStats();
-  const missions = current.completedMissions || [];
-  const alreadyDone = missions.includes(missionId);
-  const updatedMissions = alreadyDone ? missions : [...missions, missionId];
-  const xpToAdd = alreadyDone ? 15 : xpReward;
-  const newXp = current.currentXp + xpToAdd;
-  const newLevel = Math.floor(newXp / 150) + 1;
-  const nextLevelXp = newLevel * 150;
-  const leveledUp = newLevel > current.level;
-
-  const newBadges = [...current.unlockedBadges];
-  if (!newBadges.includes("pushpa_first_responder")) {
-    newBadges.push("pushpa_first_responder");
-  }
-
-  const updated: UserStats = {
-    ...current,
-    completedMissions: updatedMissions,
-    currentXp: newXp,
-    level: newLevel,
-    nextLevelXp,
-    systemsSaved: (current.systemsSaved || 0) + (alreadyDone ? 0 : 1),
-    incidentsSolved: (current.incidentsSolved || 0) + (alreadyDone ? 0 : 1),
-    unlockedBadges: newBadges,
-    totalScore: current.totalScore + xpToAdd,
-  };
-
-  saveUserStats(updated);
-  return { stats: updated, leveledUp };
+export function getAllRunProgress(): Record<string, RunProgress> {
+  return readJson<Record<string, RunProgress>>(RUNS_KEY, {});
 }
 
-export function recordChapterComplete(chapterId: string, xpReward: number): { stats: UserStats; leveledUp: boolean } {
-  const current = getUserStats();
-  const chapters = current.completedChapters || [];
-  const alreadyDone = chapters.includes(chapterId);
-  const updatedChapters = alreadyDone ? chapters : [...chapters, chapterId];
-  const xpToAdd = alreadyDone ? 20 : xpReward;
-  const newXp = current.currentXp + xpToAdd;
-  const newLevel = Math.floor(newXp / 150) + 1;
-  const nextLevelXp = newLevel * 150;
-  const leveledUp = newLevel > current.level;
-
-  const updated: UserStats = {
-    ...current,
-    completedChapters: updatedChapters,
-    currentXp: newXp,
-    level: newLevel,
-    nextLevelXp,
-    totalScore: current.totalScore + xpToAdd,
-  };
-
-  saveUserStats(updated);
-  return { stats: updated, leveledUp };
+export function getRunProgress(chapterId: string): RunProgress | undefined {
+  return getAllRunProgress()[chapterId];
 }
+
+export function saveRunProgress(progress: RunProgress): void {
+  writeJson(RUNS_KEY, { ...getAllRunProgress(), [progress.chapterId]: progress });
+}
+
+export function clearRunProgress(chapterId: string): void {
+  const all = getAllRunProgress();
+  delete all[chapterId];
+  writeJson(RUNS_KEY, all);
+}
+
+export interface SavedDesign {
+  nodes: { id: string; label: string; type: string; x: number; y: number }[];
+  edges: { source: string; target: string }[];
+}
+
+interface ScenarioDesigns {
+  draft?: SavedDesign;
+  passed?: SavedDesign;
+}
+
+export function getScenarioDesigns(scenarioId: string): ScenarioDesigns {
+  return readJson<Record<string, ScenarioDesigns>>(DESIGNS_KEY, {})[scenarioId] ?? {};
+}
+
+export function saveScenarioDesign(scenarioId: string, kind: keyof ScenarioDesigns, design: SavedDesign | undefined): void {
+  const all = readJson<Record<string, ScenarioDesigns>>(DESIGNS_KEY, {});
+  all[scenarioId] = { ...(all[scenarioId] ?? {}), [kind]: design };
+  writeJson(DESIGNS_KEY, all);
+}
+
+// ---------------------------------------------------------------------------
+// Account (mock) and feature unlocks
+// ---------------------------------------------------------------------------
 
 export function loginUser(email: string, name: string): UserStats {
-  const current = getUserStats();
-  const updated: UserStats = {
-    ...current,
-    isLoggedIn: true,
-    userEmail: email,
-    userName: name,
-  };
-  saveUserStats(updated);
-  return updated;
+  return update((s) => ({ ...s, isLoggedIn: true, userEmail: email, userName: name }));
 }
 
 export function logoutUser(): UserStats {
-  const current = getUserStats();
-  const updated: UserStats = {
-    ...current,
-    isLoggedIn: false,
-    userEmail: null,
-    userName: null,
-  };
-  saveUserStats(updated);
-  return updated;
+  return update((s) => ({ ...s, isLoggedIn: false, userEmail: null, userName: null }));
 }
 
 export function getFeatureUnlockStatus(stats: UserStats) {
@@ -307,4 +276,3 @@ export function getFeatureUnlockStatus(stats: UserStats) {
     challengeLab: { unlocked: level >= 3 || chapters.length >= 2, minLevel: 3, label: "Challenge Lab" },
   };
 }
-

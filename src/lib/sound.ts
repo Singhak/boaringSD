@@ -1,9 +1,21 @@
 // Audio synthesis using Web Audio API for lightweight, zero-dependency sound feedback
 
+import { readRawStats } from "@/lib/storage";
+
 let audioCtx: AudioContext | null = null;
 
+/** Honour the saved "sound off" setting for every effect, wherever it's played from. */
+function isMuted(): boolean {
+  try {
+    const raw = readRawStats();
+    return raw ? JSON.parse(raw)?.soundEnabled === false : false;
+  } catch {
+    return false;
+  }
+}
+
 function getAudioContext(): AudioContext | null {
-  if (typeof window === "undefined") return null;
+  if (typeof window === "undefined" || isMuted()) return null;
   if (!audioCtx) {
     const AudioContextClass =
       window.AudioContext ||
