@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useState, useCallback } from "react";
+import React, { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import {
   ReactFlow,
   Controls,
@@ -14,597 +15,955 @@ import {
   OnEdgesChange,
   OnConnect,
 } from "@xyflow/react";
+import {
+  AlertTriangle,
+  ArrowRight,
+  CheckCircle2,
+  Database,
+  Flame,
+  Globe,
+  HardDrive,
+  HelpCircle,
+  Layers,
+  ListFilter,
+  Play,
+  Plus,
+  RotateCcw,
+  Server,
+  Swords,
+  Trash2,
+  Users,
+  X,
+  Zap,
+} from "lucide-react";
 import Navbar from "@/components/Navbar";
 import { ArchNode } from "@/components/builder/CustomNodes";
-import {
-  Users,
-  Server,
-  Layers,
-  Zap,
-  Database,
-  HardDrive,
-  Globe,
-  Play,
-  RotateCcw,
-  Sparkles,
-  AlertTriangle,
-  CheckCircle2,
-  Trash2,
-  Plus,
-  Flame,
-  X,
-} from "lucide-react";
-import { playBlipSound, playSuccessSound, playErrorSound } from "@/lib/sound";
-import { evaluateArchitectureScore } from "@/lib/builderScore";
 import { RemovableEdge } from "@/components/builder/RemovableEdge";
+import QuestionCard from "@/components/run/QuestionCard";
+import PostMortemCard from "@/components/run/PostMortemCard";
+import { playBlipSound, playErrorSound, playSuccessSound } from "@/lib/sound";
+import {
+  ScenarioEvaluation,
+  applySimulation,
+  evaluateArchitectureScore,
+  evaluateScenario,
+  sandboxWorkload,
+  simulateTopology,
+} from "@/lib/builderScore";
+import { getAllBuilderScenarios, getBuilderScenarioById } from "@/data/builderScenarios";
+import { getAllPatterns, getPatternById } from "@/data/patterns";
+import {
+  SavedDesign,
+  getScenarioDesigns,
+  saveScenarioDesign,
+  submitBuilderResult,
+} from "@/lib/storage";
+import { ProgressionOutcome, getEvidence, isPatternCleared } from "@/lib/progression";
+import { useUserStats } from "@/lib/useUserStats";
+import type { ArchitectureNodeType, BuilderScenario, UserStats } from "@/types";
 
-const nodeTypes = {
-  customNode: ArchNode,
-};
+const nodeTypes = { customNode: ArchNode };
+const edgeTypes = { removableEdge: RemovableEdge };
 
-const edgeTypes = {
-  removableEdge: RemovableEdge,
-};
-
-const rawInitialNodes: Node[] = [
-  {
-    id: "clients-1",
-    type: "customNode",
-    position: { x: 50, y: 150 },
-    data: { label: "10,000 Users", type: "client", status: "healthy", cpu: 15 },
-  },
-  {
-    id: "lb-1",
-    type: "customNode",
-    position: { x: 260, y: 150 },
-    data: { label: "Nginx LB", type: "load_balancer", status: "healthy", cpu: 32 },
-  },
-  {
-    id: "server-1",
-    type: "customNode",
-    position: { x: 480, y: 80 },
-    data: { label: "API Server 1", type: "server", status: "healthy", cpu: 45 },
-  },
-  {
-    id: "server-2",
-    type: "customNode",
-    position: { x: 480, y: 220 },
-    data: { label: "API Server 2", type: "server", status: "healthy", cpu: 40 },
-  },
-  {
-    id: "cache-1",
-    type: "customNode",
-    position: { x: 700, y: 80 },
-    data: { label: "Redis Cluster", type: "cache", status: "healthy", cpu: 20 },
-  },
-  {
-    id: "db-1",
-    type: "customNode",
-    position: { x: 700, y: 220 },
-    data: { label: "Postgres Master", type: "database", status: "healthy", cpu: 38 },
-  },
+const PALETTE: { type: ArchitectureNodeType; label: string; name: string; icon: React.ElementType; tone: string }[] = [
+  { type: "client", label: "Users", name: "Users", icon: Users, tone: "cyan" },
+  { type: "load_balancer", label: "Load Balancer", name: "Load Balancer", icon: Layers, tone: "emerald" },
+  { type: "server", label: "Web/API Server", name: "API Server", icon: Server, tone: "blue" },
+  { type: "cache", label: "In-Memory Cache", name: "Redis Cache", icon: Zap, tone: "amber" },
+  { type: "database", label: "SQL Database", name: "Postgres Primary", icon: Database, tone: "purple" },
+  { type: "replica", label: "Read Replica", name: "Read Replica", icon: HardDrive, tone: "teal" },
+  { type: "cdn", label: "Edge CDN", name: "Edge CDN", icon: Globe, tone: "sky" },
+  { type: "queue", label: "Message Queue", name: "Message Queue", icon: ListFilter, tone: "indigo" },
 ];
 
-const rawInitialEdges: Edge[] = [
-  { id: "e1-2", source: "clients-1", target: "lb-1", type: "removableEdge", animated: true },
-  { id: "e2-3", source: "lb-1", target: "server-1", type: "removableEdge", animated: true },
-  { id: "e2-4", source: "lb-1", target: "server-2", type: "removableEdge", animated: true },
-  { id: "e3-5", source: "server-1", target: "cache-1", type: "removableEdge", animated: true },
-  { id: "e4-5", source: "server-2", target: "cache-1", type: "removableEdge", animated: true },
-  { id: "e3-6", source: "server-1", target: "db-1", type: "removableEdge", animated: true },
-  { id: "e4-6", source: "server-2", target: "db-1", type: "removableEdge", animated: true },
-];
+const TONES: Record<string, string> = {
+  cyan: "text-cyan-300",
+  emerald: "text-emerald-300",
+  blue: "text-sky-300",
+  amber: "text-amber-300",
+  purple: "text-violet-300",
+  teal: "text-teal-300",
+  sky: "text-sky-300",
+  indigo: "text-indigo-300",
+};
 
-export default function BuilderPage() {
-  const [trafficRps, setTrafficRps] = useState<number>(10000);
-  const [isSimulating, setIsSimulating] = useState<boolean>(false);
-  const [selectedElement, setSelectedElement] = useState<{
-    type: "node" | "edge";
-    id: string;
-    label?: string;
-  } | null>(null);
+const SANDBOX_START: SavedDesign = {
+  nodes: [
+    { id: "clients-1", label: "10,000 Users", type: "client", x: 50, y: 150 },
+    { id: "lb-1", label: "Nginx LB", type: "load_balancer", x: 260, y: 150 },
+    { id: "server-1", label: "API Server 1", type: "server", x: 480, y: 80 },
+    { id: "server-2", label: "API Server 2", type: "server", x: 480, y: 220 },
+    { id: "cache-1", label: "Redis Cluster", type: "cache", x: 700, y: 80 },
+    { id: "db-1", label: "Postgres Master", type: "database", x: 700, y: 220 },
+  ],
+  edges: [
+    { source: "clients-1", target: "lb-1" },
+    { source: "lb-1", target: "server-1" },
+    { source: "lb-1", target: "server-2" },
+    { source: "server-1", target: "cache-1" },
+    { source: "server-2", target: "cache-1" },
+    { source: "server-1", target: "db-1" },
+    { source: "server-2", target: "db-1" },
+  ],
+};
+
+function scenarioStart(scenario: BuilderScenario): SavedDesign {
+  return {
+    nodes: scenario.startingNodes.map((n) => ({ ...n })),
+    edges: scenario.startingEdges.map((e) => ({ ...e })),
+  };
+}
+
+/** First grid slot inside (then just below) the current layout that doesn't overlap a node. */
+function findFreeSpot(nodes: Node[]): { x: number; y: number } {
+  const W = 190;
+  const H = 95;
+  if (nodes.length === 0) return { x: 0, y: 0 };
+  const taken = (x: number, y: number) =>
+    nodes.some((n) => Math.abs(n.position.x - x) < W && Math.abs(n.position.y - y) < H);
+  const xs = nodes.map((n) => n.position.x);
+  const ys = nodes.map((n) => n.position.y);
+  const [minX, maxX, minY, maxY] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+  for (let y = minY; y <= maxY + 2 * H; y += 55) {
+    for (let x = minX; x <= Math.max(maxX, minX + 3 * W); x += 110) {
+      if (!taken(x, y)) return { x, y };
+    }
+  }
+  return { x: minX, y: maxY + H + 20 };
+}
+
+function designToNodes(design: SavedDesign): Node[] {
+  return design.nodes.map((n) => ({
+    id: n.id,
+    type: "customNode",
+    position: { x: n.x, y: n.y },
+    data: { label: n.label, type: n.type, status: "idle" },
+  }));
+}
+
+function designToEdges(design: SavedDesign): Edge[] {
+  return design.edges.map((e) => ({
+    id: `e-${e.source}-${e.target}`,
+    source: e.source,
+    target: e.target,
+    type: "removableEdge",
+    animated: true,
+  }));
+}
+
+type SearchParams = Promise<{ [key: string]: string | string[] | undefined }>;
+
+export default function BuilderPage({ searchParams }: { searchParams: SearchParams }) {
+  const sp = use(searchParams);
+  const scenarioId = typeof sp.scenario === "string" ? sp.scenario : undefined;
+  const scenario = scenarioId ? getBuilderScenarioById(scenarioId) : undefined;
+  const stats = useUserStats();
+
+  return (
+    <div className="min-h-screen text-slate-100 flex flex-col">
+      <Navbar />
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 flex flex-col gap-5">
+        {scenarioId && !scenario && (
+          <p role="status" className="text-[13px] text-amber-200 px-4 py-2.5 rounded-xl bg-amber-300/[0.06] border border-amber-300/25">
+            That scenario does not exist. You are in the free sandbox.
+          </p>
+        )}
+        {scenario ? (
+          stats === null ? (
+            <p role="status" className="text-sm text-slate-400 py-16 text-center">
+              Loading your saved design…
+            </p>
+          ) : !isScenarioUnlocked(scenario, stats) ? (
+            <LockedBoss scenario={scenario} />
+          ) : (
+            <Workspace key={scenario.id} scenario={scenario} stats={stats} />
+          )
+        ) : (
+          <Workspace key="sandbox" stats={stats} />
+        )}
+      </main>
+    </div>
+  );
+}
+
+function isScenarioUnlocked(scenario: BuilderScenario, stats: UserStats): boolean {
+  const pattern = getPatternById(scenario.patternId);
+  return pattern ? isPatternCleared(stats, pattern) : true;
+}
+
+function LockedBoss({ scenario }: { scenario: BuilderScenario }) {
+  const pattern = getPatternById(scenario.patternId);
+  return (
+    <section className="surface p-10 text-center space-y-4 max-w-xl mx-auto">
+      <span className="w-11 h-11 rounded-xl surface-2 grid place-items-center mx-auto"><Swords className="w-5 h-5 text-slate-400" /></span>
+      <h1 className="text-2xl display">{scenario.title} is locked</h1>
+      <p className="text-sm text-slate-400 max-w-lg mx-auto">
+        This boss tests {pattern?.title ?? "a pattern"} under pressure. Clear the Level {pattern?.levelNumber} run first, then come
+        back to build it yourself.
+      </p>
+      {pattern && (
+        <Link
+          href={`/campaign/${pattern.chapterId}`}
+          className="btn btn-primary"
+        >
+          Go to Level {pattern.levelNumber} <ArrowRight className="w-4 h-4" />
+        </Link>
+      )}
+      <p>
+        <Link href="/builder" className="btn btn-ghost text-xs">
+          Open the free sandbox instead
+        </Link>
+      </p>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Workspace
+// ---------------------------------------------------------------------------
+
+interface InitialDesign {
+  design: SavedDesign;
+  source: "draft" | "inherited" | "default";
+}
+
+function loadInitialDesign(scenario: BuilderScenario): InitialDesign {
+  const own = getScenarioDesigns(scenario.id);
+  if (own.draft) return { design: own.draft, source: "draft" };
+  if (scenario.inheritsFrom) {
+    const prev = getScenarioDesigns(scenario.inheritsFrom).passed;
+    if (prev) return { design: prev, source: "inherited" };
+  }
+  return { design: scenarioStart(scenario), source: "default" };
+}
+
+function Workspace({ scenario, stats }: { scenario?: BuilderScenario; stats: UserStats | null }) {
+  const isBoss = scenario !== undefined;
+  const pattern = scenario ? getPatternById(scenario.patternId) : undefined;
+  const [initial] = useState<InitialDesign>(() =>
+    scenario ? loadInitialDesign(scenario) : { design: SANDBOX_START, source: "default" }
+  );
+
+  const [selected, setSelected] = useState<{ type: "node" | "edge"; id: string; label?: string } | null>(null);
+  const [trafficRps, setTrafficRps] = useState<number>(scenario?.trafficRps ?? 10000);
+  const [designVersion, setDesignVersion] = useState(0); // topology changes (invalidate a stress test)
+  const [layoutVersion, setLayoutVersion] = useState(0); // node moves (only saved to the draft)
+  const [tested, setTested] = useState<{ version: number; evaluation: ScenarioEvaluation } | null>(null);
+  const [stressing, setStressing] = useState(false);
+  const [hintsShown, setHintsShown] = useState(0);
+  const [explainPassed, setExplainPassed] = useState(false);
+  const [outcome, setOutcome] = useState<ProgressionOutcome | null>(null);
+  const counter = useRef(0);
+
+  // The starting design is shown with its real load so the failure is visible before any change.
+  const [baseline] = useState<ScenarioEvaluation | null>(() =>
+    scenario ? evaluateScenario(designToNodes(initial.design), initial.design.edges, scenario) : null
+  );
+
+  const [nodes, setNodes] = useState<Node[]>(() => {
+    const start = designToNodes(initial.design);
+    if (baseline) return applySimulation(start, baseline.simulation);
+    return applySimulation(start, simulateTopology(start, sandboxWorkload(10000)));
+  });
+  const [edges, setEdges] = useState<Edge[]>(() => designToEdges(initial.design));
 
   const removeNode = useCallback((nodeId: string) => {
     playBlipSound();
     setNodes((nds) => nds.filter((n) => n.id !== nodeId));
     setEdges((eds) => eds.filter((e) => e.source !== nodeId && e.target !== nodeId));
-    setSelectedElement((prev) => (prev?.id === nodeId ? null : prev));
+    setSelected((prev) => (prev?.id === nodeId ? null : prev));
+    setDesignVersion((v) => v + 1);
   }, []);
 
   const removeEdge = useCallback((edgeId: string) => {
     playBlipSound();
     setEdges((eds) => eds.filter((e) => e.id !== edgeId));
-    setSelectedElement((prev) => (prev?.id === edgeId ? null : prev));
+    setSelected((prev) => (prev?.id === edgeId ? null : prev));
+    setDesignVersion((v) => v + 1);
   }, []);
 
-  const [nodes, setNodes] = useState<Node[]>(() =>
-    rawInitialNodes.map((n) => ({
-      ...n,
-      data: {
-        ...n.data,
-        onRemove: () => removeNode(n.id),
-      },
-    }))
+  // Remove handlers are attached at render time instead of being stored in state.
+  const displayNodes = useMemo(
+    () => nodes.map((n) => ({ ...n, data: { ...n.data, onRemove: outcome ? undefined : () => removeNode(n.id) } })),
+    [nodes, removeNode, outcome]
+  );
+  const displayEdges = useMemo(
+    () => edges.map((e) => ({ ...e, data: { ...e.data, onRemove: (id: string) => removeEdge(id) } })),
+    [edges, removeEdge]
   );
 
-  const [edges, setEdges] = useState<Edge[]>(() =>
-    rawInitialEdges.map((e) => ({
-      ...e,
-      type: "removableEdge",
-      data: { onRemove: (id: string) => removeEdge(id) },
-    }))
+  const currentDesign = useCallback(
+    (): SavedDesign => ({
+      nodes: nodes.map((n) => ({
+        id: n.id,
+        label: String((n.data as { label?: string }).label ?? n.id),
+        type: String((n.data as { type?: string }).type ?? "server"),
+        x: Math.round(n.position.x),
+        y: Math.round(n.position.y),
+      })),
+      edges: edges.map((e) => ({ source: e.source, target: e.target })),
+    }),
+    [nodes, edges]
   );
 
-  const onNodesChange: OnNodesChange = useCallback(
-    (changes) => setNodes((nds) => applyNodeChanges(changes, nds)),
-    []
-  );
+  // Resume anywhere: keep a draft of the boss design (not after it has been passed).
+  useEffect(() => {
+    if (!scenario || outcome || designVersion + layoutVersion === 0) return;
+    const t = setTimeout(() => saveScenarioDesign(scenario.id, "draft", currentDesign()), 400);
+    return () => clearTimeout(t);
+  }, [scenario, outcome, designVersion, layoutVersion, currentDesign]);
 
-  const onEdgesChange: OnEdgesChange = useCallback(
-    (changes) => setEdges((eds) => applyEdgeChanges(changes, eds)),
-    []
-  );
-
-  const onConnect: OnConnect = useCallback(
-    (params) => {
-      playBlipSound();
-      setEdges((eds) =>
-        addEdge(
-          {
-            ...params,
-            type: "removableEdge",
-            animated: true,
-            data: { onRemove: (id: string) => removeEdge(id) },
-          },
-          eds
-        )
-      );
-    },
-    [removeEdge]
-  );
-
-  const addComponent = (type: string, label: string) => {
-    playBlipSound();
-    const newId = `${type}-${Date.now()}`;
-    const newNode: Node = {
-      id: newId,
-      type: "customNode",
-      position: {
-        x: 200 + Math.floor(Math.random() * 200),
-        y: 100 + Math.floor(Math.random() * 200),
-      },
-      data: {
-        label,
-        type,
-        status: "healthy",
-        cpu: 25,
-        onRemove: () => removeNode(newId),
-      },
-    };
-    setNodes((nds) => [...nds, newNode]);
-  };
-
-
-  // Recompute node statuses dynamically when traffic or topology changes
-  const evaluateTopology = useCallback((rps: number, currentNodes: Node[]) => {
-    const hasLB = currentNodes.some((n) => (n.data as any).type === "load_balancer");
-    const serverNodes = currentNodes.filter((n) => (n.data as any).type === "server");
-    const hasCache = currentNodes.some((n) => (n.data as any).type === "cache");
-    const hasDB = currentNodes.some((n) => (n.data as any).type === "database");
-    const hasCDN = currentNodes.some((n) => (n.data as any).type === "cdn");
-
-    const serverCount = Math.max(1, serverNodes.length);
-    // If no LB, server 1 takes 100% of traffic
-    const effectiveTrafficPerServer = hasLB ? rps / serverCount : rps;
-    const baseServerCpu = Math.min(100, Math.round((effectiveTrafficPerServer / 2500) * 40));
-
-    return currentNodes.map((n) => {
-      const type = (n.data as any).type;
-      let cpu = 15;
-      let status: "healthy" | "warning" | "overloaded" = "healthy";
-
-      if (type === "server") {
-        cpu = baseServerCpu;
-        if (cpu > 85) status = "overloaded";
-        else if (cpu > 55) status = "warning";
-      } else if (type === "database") {
-        // Cache intercepts 90% of traffic
-        const dbHits = hasCache ? rps * 0.08 : rps;
-        cpu = Math.min(100, Math.round((dbHits / 1500) * 35));
-        if (cpu > 85) status = "overloaded";
-        else if (cpu > 60) status = "warning";
-      } else if (type === "load_balancer") {
-        cpu = Math.min(75, Math.round((rps / 5000) * 20));
-      } else if (type === "cache") {
-        cpu = Math.min(60, Math.round((rps / 10000) * 15));
-      }
-
-      return {
-        ...n,
-        data: {
-          ...n.data,
-          cpu,
-          status,
-        },
-      };
-    });
+  const onNodesChange: OnNodesChange = useCallback((changes) => {
+    setNodes((nds) => applyNodeChanges(changes, nds));
+    if (changes.some((c) => c.type === "remove")) setDesignVersion((v) => v + 1);
+    if (changes.some((c) => c.type === "position" && c.dragging === false)) setLayoutVersion((v) => v + 1);
   }, []);
 
-  const handleSliderChange = (newRps: number) => {
-    setTrafficRps(newRps);
-    setNodes((prev) => evaluateTopology(newRps, prev));
-  };
+  const onEdgesChange: OnEdgesChange = useCallback((changes) => {
+    setEdges((eds) => applyEdgeChanges(changes, eds));
+    if (changes.some((c) => c.type === "remove")) setDesignVersion((v) => v + 1);
+  }, []);
 
-  const handleSimulate = () => {
-    setIsSimulating(true);
+  const onConnect: OnConnect = useCallback((params) => {
     playBlipSound();
-    setNodes((prev) => evaluateTopology(trafficRps, prev));
+    setEdges((eds) => addEdge({ ...params, type: "removableEdge", animated: true }, eds));
+    setDesignVersion((v) => v + 1);
+  }, []);
 
-    const serverNodes = nodes.filter((n) => (n.data as any).type === "server");
-    const hasCache = nodes.some((n) => (n.data as any).type === "cache");
-    const hasLB = nodes.some((n) => (n.data as any).type === "load_balancer");
-
-    if ((serverNodes.length === 1 && trafficRps > 10000) || (!hasCache && trafficRps > 20000) || !hasLB && serverNodes.length > 1) {
-      playErrorSound();
-    } else {
-      playSuccessSound();
+  const addComponent = (type: ArchitectureNodeType, name: string) => {
+    playBlipSound();
+    counter.current += 1;
+    const sameType = nodes.filter((n) => (n.data as { type?: string }).type === type).length;
+    let newId = `${type}-new-${counter.current}`;
+    while (nodes.some((n) => n.id === newId)) {
+      counter.current += 1;
+      newId = `${type}-new-${counter.current}`;
     }
+    const label = type === "server" || type === "replica" ? `${name} ${sameType + 1}` : name;
+    setNodes((nds) => [
+      ...nds,
+      {
+        id: newId,
+        type: "customNode",
+        position: findFreeSpot(nds),
+        data: { label, type, status: "idle" },
+      },
+    ]);
+    setDesignVersion((v) => v + 1);
   };
 
-  // Build - Break - Fix: Chaos Trigger
-  const triggerChaosBreak = () => {
+  // ---------------- Sandbox evaluation ----------------
+
+  const runSandbox = (rps: number) => {
+    setNodes((prev) => applySimulation(prev, simulateTopology(prev, sandboxWorkload(rps))));
+  };
+
+  const sandboxScore = useMemo(() => evaluateArchitectureScore(nodes, trafficRps), [nodes, trafficRps]);
+
+  // ---------------- Boss evaluation ----------------
+
+  const freshTest = tested && tested.version === designVersion ? tested.evaluation : null;
+
+  const stressTest = () => {
+    if (!scenario || stressing) return;
+    setStressing(true);
+    setEdges((eds) => eds.map((e) => ({ ...e, style: { stroke: "#f43f5e" } })));
     playErrorSound();
-    const extremeRps = 100000;
-    setTrafficRps(extremeRps);
-    setNodes((prev) => evaluateTopology(extremeRps, prev));
+    const version = designVersion;
+    setTimeout(() => {
+      const evaluation = evaluateScenario(nodes, edges, scenario);
+      setNodes((prev) => applySimulation(prev, evaluation.simulation));
+      setEdges((eds) => eds.map((e) => ({ ...e, style: undefined })));
+      setTested({ version, evaluation });
+      setStressing(false);
+      if (evaluation.canPass) {
+        playSuccessSound();
+      } else {
+        playErrorSound();
+        // Failures are practice evidence; they never award XP.
+        submitBuilderResult(scenario, pattern?.rewards.builderXp ?? 0, false, evaluation.failureReasons);
+      }
+    }, 1200);
   };
 
-  const handleReset = () => {
+  const submitDesign = () => {
+    if (!scenario || !freshTest?.canPass || !explainPassed) return;
+    const out = submitBuilderResult(scenario, pattern?.rewards.builderXp ?? 0, true, []);
+    saveScenarioDesign(scenario.id, "passed", currentDesign());
+    saveScenarioDesign(scenario.id, "draft", undefined);
+    setOutcome(out);
+    playSuccessSound();
+  };
+
+  const resetDesign = () => {
+    const design = scenario ? scenarioStart(scenario) : SANDBOX_START;
+    const start = designToNodes(design);
     setNodes(
-      rawInitialNodes.map((n) => ({
-        ...n,
-        data: {
-          ...n.data,
-          onRemove: () => removeNode(n.id),
-        },
-      }))
+      scenario
+        ? applySimulation(start, evaluateScenario(start, design.edges, scenario).simulation)
+        : applySimulation(start, simulateTopology(start, sandboxWorkload(10000)))
     );
-    setEdges(
-      rawInitialEdges.map((e) => ({
-        ...e,
-        type: "removableEdge",
-        data: { onRemove: (id: string) => removeEdge(id) },
-      }))
-    );
-    setTrafficRps(10000);
-    setIsSimulating(false);
-    setSelectedElement(null);
+    setEdges(designToEdges(design));
+    setSelected(null);
+    setTested(null);
+    setOutcome(null);
+    setExplainPassed(false);
+    if (!scenario) setTrafficRps(10000);
+    setDesignVersion((v) => v + 1);
+    if (scenario) saveScenarioDesign(scenario.id, "draft", undefined);
   };
 
-  const handleClear = () => {
-    setNodes([]);
-    setEdges([]);
-    setIsSimulating(false);
-    setSelectedElement(null);
-  };
+  // ---------------- Render ----------------
 
-  // Diagnostics check
-  const serverCount = nodes.filter((n) => (n.data as any).type === "server").length;
-  const hasLB = nodes.some((n) => (n.data as any).type === "load_balancer");
-  const hasCache = nodes.some((n) => (n.data as any).type === "cache");
-  const hasDB = nodes.some((n) => (n.data as any).type === "database");
-  const architectureScore = evaluateArchitectureScore(nodes, trafficRps);
+  const failing = freshTest?.checks.filter((c) => c.status === "fail") ?? [];
+  const steps = [
+    { label: "Inspect", done: designVersion > 0 || tested !== null },
+    { label: "Build", done: designVersion > 0 },
+    { label: "Stress test", done: freshTest !== null },
+    { label: "Explain", done: explainPassed },
+    { label: "Submit", done: outcome !== null },
+  ];
+  const activeStep = steps.findIndex((s) => !s.done);
+  const alreadyPassed = scenario && stats ? getEvidence(stats, scenario.patternId).scenariosPassed.includes(scenario.id) : false;
 
   return (
-    <div className="min-h-screen bg-[#080c14] text-slate-100 flex flex-col">
-      <Navbar />
+    <>
+      {scenario && pattern ? (
+        <ScenarioBrief scenario={scenario} levelNumber={pattern.levelNumber} source={initial.source} alreadyPassed={alreadyPassed} />
+      ) : (
+        <SandboxHeader
+          trafficRps={trafficRps}
+          onTraffic={(rps) => {
+            setTrafficRps(rps);
+            runSandbox(rps);
+          }}
+          onSimulate={() => {
+            playBlipSound();
+            runSandbox(trafficRps);
+          }}
+          onChaos={() => {
+            playErrorSound();
+            setTrafficRps(100000);
+            runSandbox(100000);
+          }}
+          onReset={resetDesign}
+          onClear={() => {
+            setNodes([]);
+            setEdges([]);
+            setSelected(null);
+          }}
+        />
+      )}
 
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 flex flex-col space-y-4">
-        <div className="grid grid-cols-1 xl:grid-cols-[1.4fr_0.8fr] gap-4">
-          <div className="flex flex-wrap items-center justify-between gap-4 p-4 rounded-2xl glass-panel border border-white/10">
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="px-2.5 py-0.5 rounded bg-cyan-500/20 text-cyan-400 font-bold text-xs uppercase tracking-wider border border-cyan-500/30">
-                Sandbox Mode
-              </span>
-              <h1 className="text-xl font-black text-white">
-                Architecture Builder Playground
-              </h1>
-            </div>
-            <p className="text-xs text-slate-400 mt-0.5">
-              Drag, connect, and stress-test custom distributed systems in real time.
-            </p>
-          </div>
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+        {/* Left column: task rail, evidence, CTA, palette (comes first on mobile) */}
+        <div className="lg:col-span-4 space-y-4">
+          {isBoss && scenario && (
+            <section className="surface p-5 space-y-5" aria-label="Boss tasks">
+              <ol className="grid grid-cols-5 gap-1.5">
+                {steps.map((s, i) => (
+                  <li
+                    key={s.label}
+                    aria-current={i === activeStep ? "step" : undefined}
+                    className="space-y-1.5 min-w-0"
+                  >
+                    <span
+                      aria-hidden
+                      className={`block h-1 rounded-full ${
+                        s.done ? "bg-emerald-400/70" : i === activeStep ? "bg-[var(--accent)]" : "bg-white/[0.07]"
+                      }`}
+                    />
+                    <span
+                      className={`block text-[10px] font-medium truncate ${
+                        s.done ? "text-emerald-300/80" : i === activeStep ? "text-white" : "text-slate-500"
+                      }`}
+                    >
+                      {s.label}
+                    </span>
+                  </li>
+                ))}
+              </ol>
 
-          {/* Traffic Simulator Slider (Enhancement 4) */}
-          <div className="flex items-center gap-4 bg-slate-900/80 px-4 py-2 rounded-xl border border-slate-800">
-            <div className="flex flex-col">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                Traffic Load
-              </span>
-              <span className="text-xs font-mono font-bold text-cyan-400">
-                {trafficRps.toLocaleString()} req/s
-              </span>
-            </div>
-            <input
-              type="range"
-              min="100"
-              max="100000"
-              step="500"
-              value={trafficRps}
-              onChange={(e) => handleSliderChange(Number(e.target.value))}
-              className="w-32 accent-cyan-400 cursor-pointer"
-            />
-          </div>
+              {outcome ? (
+                <BossResult scenario={scenario} outcome={outcome} baseline={baseline} evaluation={freshTest} onReset={resetDesign} />
+              ) : (
+                <>
+                  <EvidencePanel baseline={baseline} evaluation={freshTest} stale={tested !== null && !freshTest} />
 
-          {/* Action Buttons: Simulate, Chaos Break, Reset */}
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleSimulate}
-                className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-cyan-500 to-emerald-500 hover:from-cyan-400 hover:to-emerald-400 text-slate-950 font-bold text-xs flex items-center gap-1.5 shadow-lg shadow-cyan-500/20 transition-all"
-              >
-                <Play className="w-3.5 h-3.5 fill-slate-950" />
-                Simulate
-              </button>
-              <button
-                onClick={triggerChaosBreak}
-                className="px-3 py-2 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-rose-300 font-bold text-xs flex items-center gap-1.5 transition-all"
-                title="Break System (Traffic Spike to 100k RPS)"
-              >
-                <Flame className="w-3.5 h-3.5 fill-rose-500" />
-                Break System
-              </button>
-              <button
-                onClick={handleReset}
-                className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
-                title="Reset to Template"
-              >
-                <RotateCcw className="w-4 h-4" />
-              </button>
-              <button
-                onClick={handleClear}
-                className="p-2 rounded-xl bg-slate-800 hover:bg-rose-900/40 text-slate-300 hover:text-rose-400 transition-colors"
-                title="Clear Canvas"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
+                  {failing.length > 0 && (
+                    <div className="space-y-2">
+                      {hintsShown > 0 &&
+                        scenario.hints.slice(0, hintsShown).map((h, i) => (
+                          <p key={i} className="text-[13px] text-slate-300 pl-3 border-l-2 border-amber-300/40 animate-fadeIn">
+                            <span className="text-slate-500">Hint {i + 1}. </span>
+                            {h}
+                          </p>
+                        ))}
+                      {hintsShown < scenario.hints.length && (
+                        <button
+                          type="button"
+                          onClick={() => setHintsShown((n) => n + 1)}
+                          className="btn btn-ghost !px-0 text-xs"
+                        >
+                          <HelpCircle className="w-3.5 h-3.5" />
+                          {hintsShown === 0 ? "Stuck? Get a hint" : "Another hint"}
+                        </button>
+                      )}
+                    </div>
+                  )}
 
-          <div className="p-4 rounded-2xl border border-cyan-500/30 bg-gradient-to-br from-slate-900 via-slate-900 to-cyan-950/20 shadow-xl">
+                  {freshTest?.canPass && (
+                    <div className="pt-5 border-t border-[var(--line)]">
+                      <QuestionCard
+                        eyebrow="Explain your design"
+                        question={scenario.explain}
+                        submitLabel="Submit explanation"
+                        onAnswer={(opt) => opt.isCorrect && setExplainPassed(true)}
+                      />
+                    </div>
+                  )}
+
+                  {/* One primary action */}
+                  {!freshTest || !freshTest.canPass ? (
+                    <button
+                      type="button"
+                      onClick={stressTest}
+                      disabled={stressing || (freshTest !== null && !freshTest.canPass)}
+                      className={`btn btn-lg w-full ${freshTest && !freshTest.canPass ? "btn-secondary" : "btn-danger"} ${
+                        stressing ? "animate-pulse-glow" : ""
+                      }`}
+                    >
+                      <Flame className="w-4 h-4" />
+                      {stressing
+                        ? `Flooding with ${scenario.trafficRps.toLocaleString()} req/s…`
+                        : freshTest
+                        ? "Change the design, then stress test again"
+                        : "Stress test architecture"}
+                    </button>
+                  ) : explainPassed ? (
+                    <button
+                      type="button"
+                      onClick={submitDesign}
+                      className="btn btn-primary btn-lg w-full"
+                    >
+                      <CheckCircle2 className="w-4 h-4" />
+                      Submit design
+                    </button>
+                  ) : null}
+                  <p role="status" aria-live="polite" className="sr-only">
+                    {stressing ? "Stress test running" : freshTest ? (freshTest.canPass ? "Stress test passed" : `Stress test failed: ${failing.map((f) => f.message).join(" ")}`) : ""}
+                  </p>
+                </>
+              )}
+            </section>
+          )}
+
+          {!isBoss && <SandboxScore score={sandboxScore} />}
+
+          <section className="surface p-5 space-y-3" aria-label="Component palette">
             <div className="flex items-center justify-between">
-              <span className="text-[10px] font-black uppercase tracking-[0.18em] text-cyan-300">Boss Challenge</span>
-              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${architectureScore.canPass ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30" : "bg-amber-500/15 text-amber-300 border-amber-500/30"}`}>
-                {architectureScore.canPass ? "Pass" : "Needs Fix"}
+              <h2 className="eyebrow flex items-center gap-1.5">
+                <Plus className="w-3.5 h-3.5" /> Components
+              </h2>
+              <button type="button" onClick={resetDesign} className="btn btn-ghost !py-1 text-[11px]">
+                <RotateCcw className="w-3 h-3" /> {isBoss ? "Reset to start" : "Reset template"}
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {PALETTE.map((p) => {
+                const Icon = p.icon;
+                return (
+                  <button
+                    key={p.type}
+                    type="button"
+                    onClick={() => addComponent(p.type, p.name)}
+                    disabled={outcome !== null}
+                    className="choice !p-2.5 !items-center !justify-start !text-xs disabled:opacity-40"
+                  >
+                    <Icon className={`w-4 h-4 shrink-0 ${TONES[p.tone]}`} />
+                    <span>{p.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[11px] text-slate-500">
+              Drag from a node&apos;s right handle to another node&apos;s left handle to connect them. Components only count when connected.
+            </p>
+          </section>
+
+          {!isBoss && <ScenarioLibrary stats={stats} />}
+        </div>
+
+        {/* Canvas */}
+        <div className="lg:col-span-8 h-[440px] sm:h-[600px] surface overflow-hidden relative !bg-[#080b12]">
+          {selected && (
+            <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-3 pl-4 pr-2 py-1.5 surface !rounded-full shadow-2xl text-xs animate-fadeIn">
+              <span className="text-slate-400">
+                {selected.type === "node" ? "Node" : "Connection"} <span className="num text-white">{selected.label}</span>
               </span>
+              <button
+                type="button"
+                onClick={() => (selected.type === "node" ? removeNode(selected.id) : removeEdge(selected.id))}
+                className="btn btn-danger !py-1 !px-2.5 !rounded-full text-xs"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Delete
+              </button>
+              <button type="button" onClick={() => setSelected(null)} className="p-1 text-slate-400 hover:text-white" aria-label="Deselect">
+                <X className="w-3.5 h-3.5" />
+              </button>
             </div>
-            <div className="mt-3 flex items-baseline gap-2">
-              <span className="text-3xl font-black text-white">{architectureScore.score}</span>
-              <span className="text-sm text-slate-400">/ 100</span>
+          )}
+
+          <ReactFlow
+            nodes={displayNodes}
+            edges={displayEdges}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onConnect={onConnect}
+            nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
+            defaultEdgeOptions={{ type: "removableEdge", animated: true }}
+            onNodeClick={(_, node) =>
+              setSelected({ type: "node", id: node.id, label: String((node.data as { label?: string })?.label ?? node.id) })
+            }
+            onEdgeClick={(_, edge) => setSelected({ type: "edge", id: edge.id, label: `${edge.source} ➔ ${edge.target}` })}
+            onPaneClick={() => setSelected(null)}
+            deleteKeyCode={["Backspace", "Delete"]}
+            nodesDraggable={outcome === null}
+            fitView
+          >
+            <Background color="#1a2234" gap={22} size={1.2} />
+            <Controls showInteractive={false} />
+          </ReactFlow>
+
+          {isBoss && freshTest === null && !stressing && (
+            <div className="absolute bottom-3 right-3 left-14 sm:left-auto px-3 py-1.5 rounded-full surface text-[11px] text-slate-400 pointer-events-none">
+              Loads shown are from the last stress test. Change the design, then stress test to see the new result.
             </div>
-            <div className="mt-2 text-lg font-black text-cyan-300">Grade {architectureScore.grade}</div>
-            <p className="mt-2 text-xs text-slate-300 leading-relaxed">{architectureScore.summary}</p>
-            <div className="mt-4 h-2 rounded-full bg-slate-800 overflow-hidden">
-              <div
-                className={`h-full rounded-full ${architectureScore.canPass ? "bg-gradient-to-r from-emerald-400 to-cyan-400" : "bg-gradient-to-r from-amber-400 to-rose-500"}`}
-                style={{ width: `${architectureScore.score}%` }}
-              />
-            </div>
-            <ul className="mt-4 space-y-2 text-[11px] text-slate-300">
-              {architectureScore.findings.map((finding) => (
-                <li key={finding} className="flex items-start gap-2">
-                  <span className="mt-1 h-1.5 w-1.5 rounded-full bg-cyan-400" />
-                  <span>{finding}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
+          )}
         </div>
+      </div>
+    </>
+  );
+}
 
-        {/* Builder Workspace: Sidebar Palette + React Flow Canvas */}
-        <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-4 min-h-[580px]">
-          {/* Component Palette Toolbar */}
-          <div className="lg:col-span-3 p-4 rounded-2xl glass-card border border-white/10 space-y-4">
-            <h2 className="text-xs font-bold uppercase tracking-wider text-cyan-400 flex items-center gap-1.5">
-              <Plus className="w-3.5 h-3.5" />
-              Component Palette
-            </h2>
+// ---------------------------------------------------------------------------
+// Pieces
+// ---------------------------------------------------------------------------
 
-            <div className="space-y-2">
-              <button
-                onClick={() => addComponent("client", "Users Fleet")}
-                className="w-full p-2.5 rounded-xl bg-cyan-950/20 hover:bg-cyan-950/40 border border-cyan-500/30 flex items-center gap-2.5 text-left text-xs font-semibold text-cyan-300 transition-all"
-              >
-                <Users className="w-4 h-4 text-cyan-400" />
-                <span>+ Users Client</span>
-              </button>
-
-              <button
-                onClick={() => addComponent("load_balancer", "HAProxy LB")}
-                className="w-full p-2.5 rounded-xl bg-emerald-950/20 hover:bg-emerald-950/40 border border-emerald-500/30 flex items-center gap-2.5 text-left text-xs font-semibold text-emerald-300 transition-all"
-              >
-                <Layers className="w-4 h-4 text-emerald-400" />
-                <span>+ Load Balancer</span>
-              </button>
-
-              <button
-                onClick={() => addComponent("server", `Server ${serverCount + 1}`)}
-                className="w-full p-2.5 rounded-xl bg-blue-950/20 hover:bg-blue-950/40 border border-blue-500/30 flex items-center gap-2.5 text-left text-xs font-semibold text-blue-300 transition-all"
-              >
-                <Server className="w-4 h-4 text-blue-400" />
-                <span>+ Web/API Server</span>
-              </button>
-
-              <button
-                onClick={() => addComponent("cache", "Redis Cache")}
-                className="w-full p-2.5 rounded-xl bg-amber-950/20 hover:bg-amber-950/40 border border-amber-500/30 flex items-center gap-2.5 text-left text-xs font-semibold text-amber-300 transition-all"
-              >
-                <Zap className="w-4 h-4 text-amber-400" />
-                <span>+ In-Memory Cache</span>
-              </button>
-
-              <button
-                onClick={() => addComponent("database", "Postgres Master")}
-                className="w-full p-2.5 rounded-xl bg-purple-950/20 hover:bg-purple-950/40 border border-purple-500/30 flex items-center gap-2.5 text-left text-xs font-semibold text-purple-300 transition-all"
-              >
-                <Database className="w-4 h-4 text-purple-400" />
-                <span>+ SQL Database</span>
-              </button>
-
-              <button
-                onClick={() => addComponent("replica", "Read Replica")}
-                className="w-full p-2.5 rounded-xl bg-teal-950/20 hover:bg-teal-950/40 border border-teal-500/30 flex items-center gap-2.5 text-left text-xs font-semibold text-teal-300 transition-all"
-              >
-                <HardDrive className="w-4 h-4 text-teal-400" />
-                <span>+ Read Replica</span>
-              </button>
-
-              <button
-                onClick={() => addComponent("cdn", "Cloudflare CDN")}
-                className="w-full p-2.5 rounded-xl bg-sky-950/20 hover:bg-sky-950/40 border border-sky-500/30 flex items-center gap-2.5 text-left text-xs font-semibold text-sky-300 transition-all"
-              >
-                <Globe className="w-4 h-4 text-sky-400" />
-                <span>+ Edge CDN</span>
-              </button>
-            </div>
-
-            {/* Architecture Diagnostics & Fix Suggestions (Build-Break-Fix Loop) */}
-            <div className="pt-4 border-t border-slate-800 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                  System Diagnostics
-                </span>
-                <span className="text-[10px] text-cyan-400 font-mono">Phase 3: Fix</span>
-              </div>
-
-              <div className="space-y-2 text-xs">
-                {!hasLB && serverCount > 1 && (
-                  <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 space-y-1.5">
-                    <div className="flex items-start gap-1.5">
-                      <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                      <span>Multiple servers need a Load Balancer to balance traffic.</span>
-                    </div>
-                    <button
-                      onClick={() => addComponent("load_balancer", "HAProxy LB")}
-                      className="w-full py-1 rounded bg-amber-500/20 hover:bg-amber-500/30 text-[11px] font-bold text-amber-200 border border-amber-500/40 transition-colors"
-                    >
-                      + Fix: Deploy Load Balancer
-                    </button>
-                  </div>
-                )}
-
-                {trafficRps > 12000 && !hasCache && (
-                  <div className="p-2.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 space-y-1.5">
-                    <div className="flex items-start gap-1.5">
-                      <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                      <span>High traffic without cache risks database disk bottleneck!</span>
-                    </div>
-                    <button
-                      onClick={() => addComponent("cache", "Redis Cache")}
-                      className="w-full py-1 rounded bg-rose-500/20 hover:bg-rose-500/30 text-[11px] font-bold text-rose-200 border border-rose-500/40 transition-colors"
-                    >
-                      + Fix: Deploy In-Memory Cache
-                    </button>
-                  </div>
-                )}
-
-                {serverCount === 1 && trafficRps > 8000 && (
-                  <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 space-y-1.5">
-                    <div className="flex items-start gap-1.5">
-                      <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                      <span>Single compute node is overheating under traffic load.</span>
-                    </div>
-                    <button
-                      onClick={() => addComponent("server", `Server ${serverCount + 1}`)}
-                      className="w-full py-1 rounded bg-cyan-500/20 hover:bg-cyan-500/30 text-[11px] font-bold text-cyan-200 border border-cyan-500/40 transition-colors"
-                    >
-                      + Fix: Scale Web Server
-                    </button>
-                  </div>
-                )}
-
-                {hasLB && hasCache && serverCount >= 2 && hasDB && (
-                  <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-start gap-1.5">
-                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                    <span>Fault-tolerant Tier-3 design! System survives 100k+ RPS spikes.</span>
-                  </div>
-                )}
-              </div>
-            </div>
+function ScenarioBrief({
+  scenario,
+  levelNumber,
+  source,
+  alreadyPassed,
+}: {
+  scenario: BuilderScenario;
+  levelNumber: number;
+  source: InitialDesign["source"];
+  alreadyPassed: boolean;
+}) {
+  const facts = [
+    { label: "Scale", value: scenario.userScale },
+    { label: "Traffic", value: scenario.trafficPattern },
+    { label: "Failure", value: scenario.failureCondition },
+    { label: "Win condition", value: scenario.winCondition },
+  ];
+  return (
+    <section className="surface-accent p-5 sm:p-6 space-y-4" aria-label="Scenario">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="chip chip-bad">
+          <Swords className="w-3.5 h-3.5" /> Level {levelNumber} builder boss
+        </span>
+        {alreadyPassed && (
+          <span className="chip chip-ok">
+            Passed before · replays pay a small bonus once a day
+          </span>
+        )}
+        {source === "draft" && <span className="chip chip-accent">Resumed your saved draft.</span>}
+        {source === "inherited" && <span className="chip chip-accent">Starting from the design you passed last level.</span>}
+      </div>
+      <h1 className="space-y-1">
+        <span className="block eyebrow">{scenario.title}</span>
+        <span className="block text-2xl sm:text-3xl display">{scenario.objective}</span>
+      </h1>
+      <dl className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 rounded-xl overflow-hidden border border-[var(--line)] divide-y sm:divide-y-0 sm:divide-x divide-[var(--line)] bg-black/10">
+        {facts.map((f) => (
+          <div key={f.label} className="p-3.5">
+            <dt className="eyebrow !text-[10px]">{f.label}</dt>
+            <dd className="text-[13px] text-slate-200 mt-1 leading-snug">{f.value}</dd>
           </div>
+        ))}
+      </dl>
+    </section>
+  );
+}
 
-          {/* React Flow Canvas with Node & Connection Removal Options */}
-          <div className="lg:col-span-9 h-[580px] rounded-2xl border border-white/10 overflow-hidden shadow-2xl relative">
-            {/* Contextual Selection Action Bar */}
-            {selectedElement && (
-              <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-3 px-4 py-2 rounded-xl bg-slate-900/95 border border-cyan-500/50 shadow-2xl backdrop-blur-md animate-fadeIn text-xs">
-                <div className="flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
-                  <span className="text-slate-400">Selected {selectedElement.type}:</span>
-                  <span className="font-bold text-white font-mono">{selectedElement.label}</span>
-                </div>
-                <button
-                  onClick={() => {
-                    if (selectedElement.type === "node") {
-                      removeNode(selectedElement.id);
-                    } else {
-                      removeEdge(selectedElement.id);
-                    }
-                  }}
-                  className="px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span>Delete {selectedElement.type === "node" ? "Node" : "Connection"}</span>
-                </button>
-                <button
-                  onClick={() => setSelectedElement(null)}
-                  className="p-1 text-slate-400 hover:text-white transition-colors"
-                  title="Deselect"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            )}
-
-            <ReactFlow
-              nodes={nodes}
-              edges={edges}
-              onNodesChange={onNodesChange}
-              onEdgesChange={onEdgesChange}
-              onConnect={onConnect}
-              nodeTypes={nodeTypes}
-              edgeTypes={edgeTypes}
-              defaultEdgeOptions={{ type: "removableEdge", animated: true }}
-              onNodeClick={(_, node) =>
-                setSelectedElement({
-                  type: "node",
-                  id: node.id,
-                  label: (node.data as any)?.label || node.id,
-                })
-              }
-              onEdgeClick={(_, edge) =>
-                setSelectedElement({
-                  type: "edge",
-                  id: edge.id,
-                  label: `${edge.source} ➔ ${edge.target}`,
-                })
-              }
-              onPaneClick={() => setSelectedElement(null)}
-              deleteKeyCode={["Backspace", "Delete"]}
-              fitView
-            >
-              <Background color="#1e293b" gap={20} />
-              <Controls className="!bg-slate-900 !border-slate-800 !text-white" />
-            </ReactFlow>
-
-            {/* Instruction Tag */}
-            <div className="absolute bottom-3 left-3 px-3 py-1.5 rounded-lg bg-slate-950/80 border border-slate-800 text-[11px] text-slate-400 backdrop-blur pointer-events-none flex items-center gap-2">
-              <span className="font-semibold text-cyan-400">Controls:</span>
-              <span>Click ✕ on connection or 🗑 on node to remove. Or select &amp; press Delete/Backspace.</span>
-            </div>
-          </div>
+function MetricPair({ label, before, now, unit, bad }: { label: string; before?: number; now?: number; unit: string; bad: boolean }) {
+  return (
+    <div className="p-3 bg-[var(--surface)]">
+      <div className="flex items-center gap-1.5"><span aria-hidden className={`dot ${bad ? "text-rose-400" : "text-emerald-400"}`} /><span className="eyebrow !text-[10px]">{label}</span></div>
+      <div className={`num text-lg mt-1 ${bad ? "text-rose-300" : "text-white"}`}>
+        {now !== undefined ? `${now.toLocaleString()}${unit}` : "—"}
+      </div>
+      {before !== undefined && now !== undefined && before !== now && (
+        <div className="num text-[10px] text-slate-500">
+          start: {before.toLocaleString()}
+          {unit}
         </div>
-      </main>
+      )}
     </div>
+  );
+}
+
+function EvidencePanel({
+  baseline,
+  evaluation,
+  stale,
+}: {
+  baseline: ScenarioEvaluation | null;
+  evaluation: ScenarioEvaluation | null;
+  stale: boolean;
+}) {
+  const shown = evaluation ?? baseline;
+  if (!shown || !baseline) return null;
+  const m = shown.simulation.metrics;
+  const b = baseline.simulation.metrics;
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between text-[11px]">
+        <span className="eyebrow">{evaluation ? "Stress test result" : "Starting design under load"}</span>
+        {stale && <span className="chip chip-warn !py-0">Design changed · retest</span>}
+      </div>
+      <div className="grid grid-cols-2 gap-px rounded-lg overflow-hidden bg-[var(--line)] border border-[var(--line)]">
+        <MetricPair label="Busiest server" before={evaluation ? b.maxServerCpu : undefined} now={m.maxServerCpu} unit="%" bad={m.maxServerCpu > 85} />
+        <MetricPair label="Busiest DB node" before={evaluation ? b.maxDbCpu : undefined} now={m.maxDbCpu} unit="%" bad={m.maxDbCpu > 85} />
+        <MetricPair label="p95 latency" before={evaluation ? b.latencyMs : undefined} now={m.latencyMs} unit="ms" bad={m.latencyMs > 500} />
+        <MetricPair label="Error rate" before={evaluation ? b.errorRate : undefined} now={m.errorRate} unit="%" bad={m.errorRate > 0} />
+      </div>
+      {m.serverShares.length > 0 && (
+        <p className="text-xs text-slate-500">
+          Traffic split across live servers: <span className="num text-slate-200">{m.serverShares.map((s) => `${s}%`).join(" / ")}</span>
+        </p>
+      )}
+      {evaluation && (
+        <>
+          <ul className="space-y-2 text-[13px] leading-snug">
+            {evaluation.checks.map((c) => (
+              <li
+                key={c.id}
+                className={`flex items-start gap-1.5 ${
+                  c.status === "pass" ? "text-emerald-300" : c.status === "warn" ? "text-amber-300" : "text-rose-300"
+                }`}
+              >
+                {c.status === "pass" ? (
+                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                ) : (
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                )}
+                <span>{c.message}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="text-[11px] text-slate-400">
+            Design score {evaluation.score.score}/100 (grade {evaluation.score.grade}). Passing needs every check green and a score of at least 70.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+function BossResult({
+  scenario,
+  outcome,
+  baseline,
+  evaluation,
+  onReset,
+}: {
+  scenario: BuilderScenario;
+  outcome: ProgressionOutcome;
+  baseline: ScenarioEvaluation | null;
+  evaluation: ScenarioEvaluation | null;
+  onReset: () => void;
+}) {
+  const pattern = getPatternById(scenario.patternId);
+  const next = getAllPatterns().find((p) => pattern && p.levelNumber === pattern.levelNumber + 1);
+  const b = baseline?.simulation.metrics;
+  const a = evaluation?.simulation.metrics;
+  return (
+    <div className="space-y-4" role="status">
+      <div className="p-4 rounded-xl bg-emerald-400/[0.06] border border-emerald-400/25 animate-fadeIn">
+        <p className="text-[15px] font-semibold text-emerald-300 flex items-center gap-2">
+          <CheckCircle2 className="w-4 h-4" /> Design passed
+        </p>
+        <p className="text-[13px] text-slate-300 mt-1">
+          {outcome.xpAwarded > 0 ? `+${outcome.xpAwarded} XP. ` : "No XP this time (replay bonus is once a day). "}
+          {pattern ? `Builder evidence recorded for ${pattern.title}.` : ""}
+        </p>
+      </div>
+      {b && a && pattern && (
+        <PostMortemCard
+          data={{
+            incidentId: `BOSS-${String(pattern.levelNumber).padStart(3, "0")}`,
+            title: scenario.title,
+            impact: `${scenario.userScale}. ${scenario.failureCondition}.`,
+            rootCause: pattern.tradeoff.whatFailed,
+            fix: pattern.tradeoff.whyFixWorked,
+            followUp: pattern.tradeoff.insufficientWhen,
+            before: { latencyMs: b.latencyMs, errorRate: b.errorRate, cpu: Math.max(b.maxServerCpu, b.maxDbCpu) },
+            after: { latencyMs: a.latencyMs, errorRate: a.errorRate, cpu: Math.max(a.maxServerCpu, a.maxDbCpu) },
+          }}
+        />
+      )}
+      <div className="flex flex-col gap-2">
+        {next ? (
+          <Link
+            href={`/campaign/${next.chapterId}`}
+            className="btn btn-primary btn-lg w-full"
+          >
+            Level {next.levelNumber}: {next.levelGoal} <ArrowRight className="w-4 h-4" />
+          </Link>
+        ) : (
+          <Link
+            href="/interview"
+            className="btn btn-primary btn-lg w-full"
+          >
+            Try the Interview Arena <ArrowRight className="w-4 h-4" />
+          </Link>
+        )}
+        <Link href="/dashboard" className="btn btn-secondary w-full">
+          Back to home
+        </Link>
+        <button type="button" onClick={onReset} className="btn btn-ghost w-full text-xs">
+          Practice again from the start
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SandboxHeader({
+  trafficRps,
+  onTraffic,
+  onSimulate,
+  onChaos,
+  onReset,
+  onClear,
+}: {
+  trafficRps: number;
+  onTraffic: (rps: number) => void;
+  onSimulate: () => void;
+  onChaos: () => void;
+  onReset: () => void;
+  onClear: () => void;
+}) {
+  return (
+    <section className="flex flex-wrap items-end justify-between gap-5">
+      <div>
+        <div className="space-y-1.5">
+          <span className="eyebrow text-cyan-300/80">Sandbox · not graded</span>
+          <h1 className="text-3xl display">Architecture Sandbox</h1>
+        </div>
+        <p className="text-[13px] text-slate-400 mt-1.5">Build anything, change the traffic, and see what breaks. Nothing here is graded.</p>
+      </div>
+      <label className="flex items-center gap-4 surface !rounded-xl px-4 py-2">
+        <span className="flex flex-col">
+          <span className="eyebrow !text-[10px]">Traffic</span>
+          <span className="num text-sm text-white">{trafficRps.toLocaleString()} req/s</span>
+        </span>
+        <input
+          type="range"
+          min="500"
+          max="100000"
+          step="500"
+          value={trafficRps}
+          onChange={(e) => onTraffic(Number(e.target.value))}
+          className="w-32 accent-cyan-400 cursor-pointer"
+          aria-label="Traffic in requests per second"
+        />
+      </label>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={onSimulate}
+          className="btn btn-primary"
+        >
+          <Play className="w-3.5 h-3.5" /> Simulate
+        </button>
+        <button
+          type="button"
+          onClick={onChaos}
+          className="btn btn-danger"
+        >
+          <Flame className="w-3.5 h-3.5" /> Inject 10x spike
+        </button>
+        <button type="button" onClick={onReset} className="btn btn-secondary !px-2.5" aria-label="Reset to template">
+          <RotateCcw className="w-4 h-4" />
+        </button>
+        <button type="button" onClick={onClear} className="btn btn-secondary !px-2.5" aria-label="Clear canvas">
+          <Trash2 className="w-4 h-4" />
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function SandboxScore({ score }: { score: ReturnType<typeof evaluateArchitectureScore> }) {
+  return (
+    <section className="surface p-5 space-y-3" aria-label="Design score">
+      <div className="flex items-baseline justify-between">
+        <span className="eyebrow">Design score</span>
+        <span className="chip chip-accent !py-0">Grade {score.grade}</span>
+      </div>
+      <div className="flex items-baseline gap-2">
+        <span className="num text-4xl text-white">{score.score}</span>
+        <span className="num text-sm text-slate-500">/ 100</span>
+      </div>
+      <p className="text-[13px] text-slate-300 leading-relaxed">{score.summary}</p>
+      <ul className="space-y-1.5 text-xs text-slate-400">
+        {score.findings.map((f) => (
+          <li key={f} className="flex items-start gap-2">
+            <span aria-hidden className="mt-1.5 dot text-slate-500" />
+            {f}
+          </li>
+        ))}
+      </ul>
+      <p className="text-[11px] text-slate-500">Scores reflect the last simulation. Press Simulate after changing the design.</p>
+    </section>
+  );
+}
+
+function ScenarioLibrary({ stats }: { stats: UserStats | null }) {
+  const patterns = getAllPatterns();
+  return (
+    <section className="surface p-5 space-y-3" aria-label="Builder bosses">
+      <h2 className="eyebrow flex items-center gap-1.5">
+        <Swords className="w-3.5 h-3.5" /> Builder bosses
+      </h2>
+      <ul className="divide-y divide-[var(--line)]">
+        {getAllBuilderScenarios().map((s) => {
+          const pattern = patterns.find((p) => p.id === s.patternId);
+          const unlocked = stats && pattern ? isPatternCleared(stats, pattern) : false;
+          const passed = stats ? getEvidence(stats, s.patternId).scenariosPassed.includes(s.id) : false;
+          return (
+            <li key={s.id} className="flex items-center justify-between gap-2 text-[13px] py-2">
+              <span className={unlocked ? "text-slate-200" : "text-slate-500"}>
+                <span className="num text-slate-500 mr-2">{String(pattern?.levelNumber).padStart(2, "0")}</span>{s.title}
+                <span className="sr-only">{passed ? " (passed)" : unlocked ? "" : " (locked)"}</span>
+              </span>
+              {unlocked ? (
+                <Link href={`/builder?scenario=${s.id}`} className="text-xs font-medium text-cyan-300 hover:text-cyan-200 flex items-center gap-1">
+                  {passed ? "Replay" : "Start"} <ArrowRight className="w-3 h-3" />
+                </Link>
+              ) : (
+                <span className="text-[10px] text-slate-600">Clear L{pattern?.levelNumber} run</span>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      <p className="text-[11px] text-slate-500">Each boss unlocks after its level run.</p>
+    </section>
   );
 }

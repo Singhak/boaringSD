@@ -1,612 +1,666 @@
 "use client";
 
-import React, { useState, useEffect, use } from "react";
+import React, { use, useState } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import {
   ArrowLeft,
   ArrowRight,
-  Zap,
   CheckCircle2,
-  AlertTriangle,
+  Clock,
+  Lock,
   Play,
   RotateCcw,
   Sparkles,
-  Server,
-  Layers,
-  Globe,
-  HelpCircle,
-  Flame,
+  Swords,
+  Zap,
 } from "lucide-react";
 import confetti from "canvas-confetti";
 import Navbar from "@/components/Navbar";
 import LevelUpModal from "@/components/LevelUpModal";
-import { getCampaignChapterById, getAllCampaignChapters } from "@/data/campaign";
-import { recordChapterComplete, getUserStats } from "@/lib/storage";
+import QuestionCard from "@/components/run/QuestionCard";
+import PostMortemCard from "@/components/run/PostMortemCard";
+import { MetricsStrip, RunStepper, RunTopology } from "@/components/run/RunVisuals";
+import { getAllCampaignChapters, getCampaignChapterById } from "@/data/campaign";
+import { getPatternByChapterId, getPatternById, getAllPatterns } from "@/data/patterns";
 import {
-  playSuccessSound,
-  playErrorSound,
-  playLevelUpSound,
-  playDeploySound,
-  playBlipSound,
-} from "@/lib/sound";
+  clearRunProgress,
+  completePatternRun,
+  getRunProgress,
+  markFixApplied,
+  markRunStarted,
+  markTransferMiss,
+  saveRunProgress,
+  submitReview,
+} from "@/lib/storage";
+import {
+  MASTERY_LABELS,
+  ProgressionOutcome,
+  describeEvidence,
+  getEvidence,
+  getEvidenceChecklist,
+  getMasteryState,
+  isPatternCleared,
+  isPatternUnlocked,
+  isReviewDue,
+} from "@/lib/progression";
+import { useUserStats } from "@/lib/useUserStats";
+import { playDeploySound, playLevelUpSound } from "@/lib/sound";
+import type { CampaignChapter, PatternQuestion, RunProgress, SystemDesignPattern, UserStats } from "@/types";
+
+type SearchParams = Promise<{ [key: string]: string | string[] | undefined }>;
 
 export default function CampaignChapterPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ chapterId: string }>;
+  searchParams: SearchParams;
 }) {
-  const resolvedParams = use(params);
-  const chapter = getCampaignChapterById(resolvedParams.chapterId);
+  const { chapterId } = use(params);
+  const { mode } = use(searchParams);
+  const chapter = getCampaignChapterById(chapterId);
+  const pattern = getPatternByChapterId(chapterId);
 
-  if (!chapter) {
+  if (!chapter || !pattern) {
     notFound();
   }
 
-  const allChapters = getAllCampaignChapters();
-  const nextChapter = allChapters.find((c) => c.chapterNumber === chapter.chapterNumber + 1);
-
-  const transferChallenge = {
-    add_load_balancer: {
-      question: "A second application server is online, but users still hit only Server 1. What completes the fix?",
-      options: [
-        { id: "keep-direct", label: "Keep sending clients directly to Server 1", isCorrect: false },
-        { id: "route-lb", label: "Route traffic through a Load Balancer", isCorrect: true },
-        { id: "add-dns", label: "Add another DNS record and wait for propagation", isCorrect: false },
-      ],
-    },
-    add_cache: {
-      question: "A product page is requested 10,000 times and changes once an hour. Which layer should absorb repeated reads?",
-      options: [
-        { id: "cache-read", label: "A cache with a short TTL", isCorrect: true },
-        { id: "more-writes", label: "A larger write queue", isCorrect: false },
-        { id: "dns-read", label: "A DNS resolver", isCorrect: false },
-      ],
-    },
-    add_replica: {
-      question: "Most database traffic is read-only. Where should those reads go while writes continue?",
-      options: [
-        { id: "primary-only", label: "Send every read to the primary database", isCorrect: false },
-        { id: "read-replica", label: "Distribute reads across read replicas", isCorrect: true },
-        { id: "cdn-db", label: "Move transactional writes to a CDN", isCorrect: false },
-      ],
-    },
-    scale_servers: {
-      question: "One server is at its hardware limit. What is the most resilient next step?",
-      options: [
-        { id: "bigger-server", label: "Keep buying a larger single machine", isCorrect: false },
-        { id: "more-servers", label: "Add multiple stateless application servers", isCorrect: true },
-        { id: "more-timeout", label: "Increase request timeouts", isCorrect: false },
-      ],
-    },
-    add_cdn: {
-      question: "Users far from the origin wait for large images and videos. What reduces that distance?",
-      options: [
-        { id: "edge-cache", label: "Cache static media at CDN edge locations", isCorrect: true },
-        { id: "db-replica", label: "Add a database replica in the origin region", isCorrect: false },
-        { id: "more-threads", label: "Add more application threads in the origin", isCorrect: false },
-      ],
-    },
-  }[chapter.solutionActionType];
-
-  // Simulation State
-  const [isSimulated, setIsSimulated] = useState(false);
-  const [metrics, setMetrics] = useState(chapter.initialMetrics);
-
-  // Challenge State
-  const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null);
-  const [challengeSubmitted, setChallengeSubmitted] = useState(false);
-  const [isCorrect, setIsCorrect] = useState(false);
-  const [selectedTransferId, setSelectedTransferId] = useState<string | null>(null);
-  const [transferSubmitted, setTransferSubmitted] = useState(false);
-  const [transferCorrect, setTransferCorrect] = useState(false);
-  const [showHint, setShowHint] = useState(false);
-  const [levelUpData, setLevelUpData] = useState<{ newLevel: number; totalXp: number } | null>(null);
-
-  useEffect(() => {
-    const stats = getUserStats();
-    if (stats.completedChapters?.includes(chapter.id)) {
-      setIsSimulated(true);
-      setMetrics(chapter.targetMetrics);
-      setSelectedOptionId(chapter.challenge.options.find((o) => o.isCorrect)?.id || null);
-      setChallengeSubmitted(true);
-      setIsCorrect(true);
-      setSelectedTransferId(transferChallenge.options.find((o) => o.isCorrect)?.id || null);
-      setTransferSubmitted(true);
-      setTransferCorrect(true);
-    }
-  }, [chapter]);
-
-  // Execute architectural fix
-  const handleDeployFix = () => {
-    setIsSimulated(true);
-    setMetrics(chapter.targetMetrics);
-    playDeploySound();
-    setTimeout(() => playSuccessSound(), 250);
-  };
-
-  const handleResetSimulation = () => {
-    setIsSimulated(false);
-    setMetrics(chapter.initialMetrics);
-    playBlipSound();
-  };
-
-  // Submit challenge answer
-  const handleSubmitChallenge = () => {
-    if (!selectedOptionId) return;
-    const selected = chapter.challenge.options.find((o) => o.id === selectedOptionId);
-    setChallengeSubmitted(true);
-
-    if (selected?.isCorrect) {
-      setIsCorrect(true);
-      playSuccessSound();
-      try {
-        confetti({
-          particleCount: 70,
-          spread: 70,
-          origin: { y: 0.6 },
-          colors: ["#22d3ee", "#10b981", "#f59e0b"],
-        });
-      } catch {
-        // Fallback
-      }
-
-    } else {
-      setIsCorrect(false);
-      playErrorSound();
-    }
-  };
-
-  const handleTransferSubmit = () => {
-    if (!selectedTransferId || transferSubmitted) return;
-    const selected = transferChallenge.options.find((option) => option.id === selectedTransferId);
-    const passed = selected?.isCorrect === true;
-    setTransferSubmitted(true);
-    setTransferCorrect(passed);
-
-    if (passed) {
-      playSuccessSound();
-      try {
-        confetti({
-          particleCount: 70,
-          spread: 70,
-          origin: { y: 0.6 },
-          colors: ["#22d3ee", "#10b981", "#f59e0b"],
-        });
-      } catch {
-        // Fallback
-      }
-
-      const { stats, leveledUp } = recordChapterComplete(chapter.id, chapter.xpReward);
-      if (leveledUp) {
-        setTimeout(() => {
-          setLevelUpData({ newLevel: stats.level, totalXp: stats.currentXp });
-          playLevelUpSound();
-        }, 500);
-      }
-    } else {
-      playErrorSound();
-    }
-  };
+  const stats = useUserStats();
+  const total = getAllCampaignChapters().length;
 
   return (
-    <div className="min-h-screen bg-[#080c14] text-slate-100 flex flex-col">
+    <div className="min-h-screen text-slate-100 flex flex-col">
       <Navbar />
 
-      <main className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
-        {/* Navigation Breadcrumb */}
-        <div className="flex items-center justify-between">
+      <main className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 space-y-7">
+        <div className="flex items-center justify-between gap-3">
           <Link
             href="/campaign"
-            className="inline-flex items-center gap-2 text-xs font-bold text-slate-400 hover:text-cyan-400 transition-colors"
+            className="btn btn-ghost !px-1 text-xs"
           >
             <ArrowLeft className="w-4 h-4" />
-            <span>Back to Campaign Roadmap</span>
+            <span>Level map</span>
           </Link>
-
-          <span className="text-xs font-mono font-bold text-cyan-400 px-2.5 py-1 rounded bg-cyan-950/80 border border-cyan-800/60">
-            Chapter {chapter.chapterNumber} of {allChapters.length}
+          <span className="eyebrow">
+            Level {pattern.levelNumber} of {total}
           </span>
         </div>
 
-        {/* Chapter Header Banner */}
-        <div className="p-6 sm:p-8 rounded-3xl glass-panel border border-cyan-500/30 relative overflow-hidden">
-          <div className="flex flex-wrap items-center justify-between gap-4 mb-3">
-            <span className="px-3 py-1 rounded-full bg-cyan-500/20 text-cyan-300 text-xs font-mono font-bold border border-cyan-500/30">
-              Concept: {chapter.concept}
-            </span>
-            <span className="text-xs font-bold text-amber-400 flex items-center gap-1">
-              <Zap className="w-4 h-4 fill-amber-400" />
-              Bounty: +{chapter.xpReward} XP
-            </span>
-          </div>
-
-          <h1 className="text-3xl sm:text-4xl font-black text-white tracking-tight">
-            {chapter.title}
-          </h1>
-          <p className="text-sm font-semibold text-cyan-400 mt-1">{chapter.tagline}</p>
-          <p className="text-sm text-slate-300 mt-2 max-w-3xl leading-relaxed">
-            {chapter.description}
+        {stats === null ? (
+          <p role="status" className="text-sm text-slate-400 py-16 text-center">
+            Loading your saved progress…
           </p>
+        ) : !isPatternUnlocked(stats, pattern) ? (
+          <LockedLevel pattern={pattern} />
+        ) : mode === "review" ? (
+          <ReviewRun chapter={chapter} pattern={pattern} stats={stats} />
+        ) : (
+          <PatternRun chapter={chapter} pattern={pattern} stats={stats} />
+        )}
+      </main>
+    </div>
+  );
+}
 
-          <div className="mt-4 p-3.5 rounded-xl bg-slate-900/90 border border-slate-800 text-xs text-slate-300 flex items-start gap-2.5">
-            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-            <div>
-              <strong className="text-white">Active Production Problem: </strong>
-              <span>{chapter.scenario}</span>
-            </div>
-          </div>
-        </div>
+// ---------------------------------------------------------------------------
+// Header
+// ---------------------------------------------------------------------------
 
-        {/* ================= INTERACTIVE SIMULATION CANVAS ================= */}
-        <section className="space-y-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-xl font-black text-white tracking-tight flex items-center gap-2">
-                <Sparkles className="w-5 h-5 text-cyan-400" />
-                Live Architecture Simulation
+function LevelHeader({
+  chapter,
+  pattern,
+  reward,
+}: {
+  chapter: CampaignChapter;
+  pattern: SystemDesignPattern;
+  reward: string;
+}) {
+  const inherited = pattern.inherits.map((id) => getPatternById(id)?.title).filter(Boolean);
+  return (
+    <header className="space-y-4">
+      <div className="space-y-2">
+        <span className="eyebrow text-cyan-300/80">
+          Level {pattern.levelNumber} · {pattern.title}
+        </span>
+        <h1 className="text-3xl sm:text-4xl display">{pattern.levelGoal}</h1>
+        <p className="text-[15px] text-slate-400 max-w-3xl leading-relaxed">{chapter.scenario}</p>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        {inherited.length > 0 && <span className="chip">Keep working: {inherited.join(", ")}</span>}
+        <span className="chip">
+          <Clock className="w-3 h-3" /> ~{pattern.estimatedMinutes} min
+        </span>
+        <span className="chip chip-warn">
+          <Zap className="w-3 h-3" /> {reward}
+        </span>
+      </div>
+    </header>
+  );
+}
+
+function LockedLevel({ pattern }: { pattern: SystemDesignPattern }) {
+  const missing = pattern.prerequisites.map((id) => getPatternById(id)).filter(Boolean) as SystemDesignPattern[];
+  return (
+    <section className="surface p-10 text-center space-y-4 max-w-xl mx-auto">
+      <span className="w-11 h-11 rounded-xl surface-2 grid place-items-center mx-auto"><Lock className="w-5 h-5 text-slate-400" /></span>
+      <h1 className="text-2xl display">
+        Level {pattern.levelNumber}: {pattern.levelGoal} is locked
+      </h1>
+      <p className="text-sm text-slate-400 max-w-lg mx-auto">
+        This level builds on earlier patterns. Clear {missing.map((p) => `Level ${p.levelNumber} (${p.title})`).join(", ")} first so
+        you have the architecture this level starts from.
+      </p>
+      {missing[0] && (
+        <Link
+          href={`/campaign/${missing[0].chapterId}`}
+          className="btn btn-primary"
+        >
+          Go to Level {missing[0].levelNumber}
+          <ArrowRight className="w-4 h-4" />
+        </Link>
+      )}
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Pattern run
+// ---------------------------------------------------------------------------
+
+function freshRun(chapterId: string): RunProgress {
+  return {
+    chapterId,
+    stage: "observe",
+    diagnosisAttempts: 0,
+    interventionAttempts: 0,
+    counterAttempts: 0,
+    transferAttempts: 0,
+    hintsUsed: 0,
+    failureReasons: [],
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function celebrate() {
+  try {
+    confetti({ particleCount: 70, spread: 70, origin: { y: 0.6 }, colors: ["#22d3ee", "#10b981", "#f59e0b"] });
+  } catch {
+    // Canvas unavailable
+  }
+}
+
+function PatternRun({
+  chapter,
+  pattern,
+  stats,
+}: {
+  chapter: CampaignChapter;
+  pattern: SystemDesignPattern;
+  stats: UserStats;
+}) {
+  // Rendered only after stats load on the client, so reading localStorage here is safe.
+  const [run, setRun] = useState<RunProgress>(() => {
+    const saved = getRunProgress(chapter.id);
+    return saved && saved.stage !== "result" ? saved : freshRun(chapter.id);
+  });
+  const [resumed, setResumed] = useState(() => run.stage !== "observe");
+  const [fixDeployed, setFixDeployed] = useState(false);
+  const [outcome, setOutcome] = useState<ProgressionOutcome | null>(null);
+  const [levelUp, setLevelUp] = useState<number | null>(null);
+
+  const cleared = isPatternCleared(stats, pattern);
+  const reward = cleared ? `Replay: +${pattern.rewards.replayXp} XP (once a day)` : `+${pattern.rewards.firstClearXp} XP first clear`;
+
+  const update = (patch: Partial<RunProgress>) => {
+    const next = { ...run, ...patch, updatedAt: new Date().toISOString() };
+    setRun(next);
+    if (next.stage === "result") clearRunProgress(chapter.id);
+    else if (next.stage !== "observe") saveRunProgress(next);
+  };
+
+  const pastFix = run.stage === "counter" || run.stage === "transfer" || run.stage === "result";
+  const fixed = pastFix || fixDeployed;
+  const metrics = fixed ? chapter.targetMetrics : chapter.initialMetrics;
+
+  const counterQuestion: PatternQuestion = {
+    question: chapter.challenge.question,
+    options: chapter.challenge.options,
+  };
+
+  const restart = () => {
+    clearRunProgress(chapter.id);
+    setResumed(false);
+    setFixDeployed(false);
+    setOutcome(null);
+    setRun(freshRun(chapter.id));
+  };
+
+  const objective = pattern.objectives.find((o) => o.stage === run.stage);
+
+  return (
+    <>
+      <LevelHeader chapter={chapter} pattern={pattern} reward={reward} />
+      <RunStepper stage={run.stage} />
+
+      {resumed && run.stage !== "result" && (
+        <p role="status" className="text-[13px] text-slate-300 flex items-center justify-between gap-3 px-4 py-2.5 rounded-xl border border-cyan-300/20 bg-cyan-300/[0.04] animate-fadeIn">
+          <span>Resumed where you left off. Earlier answers are saved.</span>
+          <button type="button" onClick={restart} className="btn btn-ghost !py-1 text-xs">
+            <RotateCcw className="w-3.5 h-3.5" /> Start over
+          </button>
+        </p>
+      )}
+
+      {run.stage === "result" && outcome ? (
+        <RunResult chapter={chapter} pattern={pattern} outcome={outcome} onReplay={restart} />
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.1fr] gap-6 items-start">
+          {/* Live system */}
+          <section className="space-y-3 lg:sticky lg:top-20" aria-label="Live system">
+            <div className="flex items-center justify-between">
+              <h2 className="eyebrow flex items-center gap-2">
+                <Sparkles className="w-3.5 h-3.5 text-cyan-300" /> Live system
               </h2>
-              <p className="text-xs text-slate-400">
-                Observe the system crash under unmitigated load, then deploy the architectural solution.
+              <span className={`chip ${fixed ? "chip-ok" : "chip-bad"}`}>
+                <span className={`dot ${fixed ? "" : "animate-pulse-glow"}`} aria-hidden />
+                {fixed ? "Stabilized" : "Degraded"}
+              </span>
+            </div>
+            <MetricsStrip metrics={metrics} before={fixed ? chapter.initialMetrics : undefined} />
+            <RunTopology patternId={pattern.id} fixed={fixed} />
+          </section>
+
+          {/* Current stage */}
+          <section className="surface p-5 sm:p-7 space-y-5" aria-live="polite">
+            {objective && (
+              <p className="text-xs text-slate-500 pb-4 border-b border-[var(--line)]">
+                Objective · <span className="text-slate-200">{objective.label}</span>
               </p>
-            </div>
+            )}
 
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleResetSimulation}
-                className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 text-xs font-bold border border-slate-800 flex items-center gap-1.5 transition-colors"
-                title="Reset simulation to initial state"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-                <span>Reset</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Telemetry Bar */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <div className="p-4 rounded-xl bg-slate-900/90 border border-slate-800">
-              <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block">
-                Inbound RPS
-              </span>
-              <div className="text-xl font-black text-cyan-400 mt-1">
-                {metrics.requestsPerSec.toLocaleString()} req/s
-              </div>
-              <span className="text-[10px] text-slate-500">Live Traffic</span>
-            </div>
-
-            <div
-              className={`p-4 rounded-xl border transition-all ${
-                metrics.cpuUsage > 80
-                  ? "bg-rose-950/40 border-rose-500/50 text-rose-300 animate-pulse"
-                  : "bg-emerald-950/20 border-emerald-500/40 text-emerald-300"
-              }`}
-            >
-              <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block">
-                CPU Utilization
-              </span>
-              <div className="text-xl font-black mt-1 flex items-center gap-1">
-                {metrics.cpuUsage > 80 && <Flame className="w-4 h-4 fill-rose-500 text-rose-500" />}
-                <span>{metrics.cpuUsage}%</span>
-              </div>
-              <span className="text-[10px]">
-                {metrics.cpuUsage > 80 ? "Critical Bottleneck" : "Optimal Operating Range"}
-              </span>
-            </div>
-
-            <div
-              className={`p-4 rounded-xl border transition-all ${
-                metrics.latencyMs > 1000
-                  ? "bg-slate-900/90 border-slate-800 text-rose-400"
-                  : "bg-slate-900/90 border-slate-800 text-emerald-400"
-              }`}
-            >
-              <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block">
-                Response Latency
-              </span>
-              <div className="text-xl font-black mt-1">{metrics.latencyMs} ms</div>
-              <span className="text-[10px] text-slate-500">Round-Trip Time</span>
-            </div>
-
-            <div
-              className={`p-4 rounded-xl border transition-all ${
-                metrics.errorRate > 0
-                  ? "bg-rose-950/30 border-rose-500/40 text-rose-400"
-                  : "bg-slate-900/90 border-slate-800 text-emerald-400"
-              }`}
-            >
-              <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block">
-                Error Rate
-              </span>
-              <div className="text-xl font-black mt-1">{metrics.errorRate}%</div>
-              <span className="text-[10px]">
-                {metrics.errorRate > 0 ? "Dropping Packets" : "Zero Dropouts"}
-              </span>
-            </div>
-          </div>
-
-          {/* Interactive Topology Display */}
-          <div className="p-8 rounded-3xl bg-[#0b101c] border border-cyan-500/20 text-center space-y-6">
-            <div className="flex flex-col md:flex-row items-center justify-around gap-6">
-              {/* Clients */}
-              <div className="space-y-1">
-                <div className="w-20 h-20 rounded-2xl bg-cyan-950/60 border border-cyan-500/40 flex flex-col items-center justify-center mx-auto shadow-lg shadow-cyan-500/10">
-                  <Globe className="w-6 h-6 text-cyan-400" />
-                  <span className="text-xs font-black text-cyan-300 mt-1">Clients</span>
-                </div>
-                <span className="text-[11px] text-slate-400">{metrics.requestsPerSec.toLocaleString()} RPS</span>
-              </div>
-
-              <div className="text-cyan-400 font-black text-lg">➔</div>
-
-              {/* Middle Component or LB */}
-              {isSimulated ? (
-                <div className="space-y-1 animate-fadeIn">
-                  <div className="w-28 h-20 rounded-2xl bg-emerald-950/80 border-2 border-emerald-400 flex flex-col items-center justify-center mx-auto shadow-xl shadow-emerald-500/20 ring-4 ring-emerald-500/20">
-                    <Layers className="w-6 h-6 text-emerald-400 animate-bounce" />
-                    <span className="text-[11px] font-black text-emerald-300 mt-1">
-                      Architectural Fix
-                    </span>
-                  </div>
-                  <span className="text-[10px] font-bold text-emerald-400">Deployed & Active</span>
-                </div>
-              ) : (
-                <div className="px-3 py-2 rounded-xl bg-rose-500/10 border border-rose-500/40 text-rose-400 text-xs font-mono font-bold animate-pulse">
-                  ⚠ Bottleneck Active
-                </div>
-              )}
-
-              <div className="text-cyan-400 font-black text-lg">➔</div>
-
-              {/* Data / Backend Tier */}
-              <div className="space-y-1">
-                <div
-                  className={`w-24 h-20 rounded-2xl border flex flex-col items-center justify-center mx-auto transition-all ${
-                    isSimulated
-                      ? "bg-slate-900 border-emerald-500/60 text-emerald-400"
-                      : "bg-rose-950/60 border-rose-500 text-rose-300 animate-pulse"
-                  }`}
-                >
-                  <Server className="w-6 h-6" />
-                  <span className="text-[11px] font-bold mt-1 text-white">Compute Cluster</span>
-                </div>
-                <span className="text-[10px] text-slate-400">
-                  {isSimulated ? "Stabilized" : "Overheating"}
-                </span>
-              </div>
-            </div>
-
-            {/* Action Deployment Button */}
-            <div className="pt-4 flex flex-col items-center gap-3">
-              {!isSimulated ? (
-                <button
-                  onClick={handleDeployFix}
-                  className="px-8 py-3.5 rounded-xl bg-gradient-to-r from-cyan-500 to-emerald-500 hover:from-cyan-400 hover:to-emerald-400 text-slate-950 font-black text-sm flex items-center gap-2 shadow-xl shadow-cyan-500/25 transition-all transform hover:scale-105 cursor-pointer"
-                >
-                  <Play className="w-4 h-4 fill-slate-950" />
-                  <span>Deploy Fix: {chapter.solutionNarrative}</span>
-                </button>
-              ) : (
-                <div className="p-3 px-5 rounded-xl bg-emerald-950/40 border border-emerald-500/40 text-emerald-300 text-xs font-bold flex items-center gap-2 animate-fadeIn">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                  <span>Fix Deployed Successfully! Metrics Stabilized. Now complete the boss challenge below.</span>
-                </div>
-              )}
-            </div>
-          </div>
-        </section>
-
-        {/* ================= BOSS CHALLENGE ================= */}
-        <section className="p-6 sm:p-8 rounded-3xl glass-panel border border-cyan-500/30 space-y-6">
-          <div className="flex items-center justify-between">
-            <div className="space-y-1">
-              <span className="text-xs font-mono font-bold text-amber-400 uppercase tracking-wider block">
-                Chapter Boss Challenge
-              </span>
-              <h3 className="text-xl font-black text-white">{chapter.challenge.title}</h3>
-            </div>
-            <span className="text-xs font-bold text-amber-400 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 flex items-center gap-1">
-              <Zap className="w-3.5 h-3.5 fill-amber-400" />
-              +{chapter.challenge.rewardXp} XP
-            </span>
-          </div>
-
-          <div className="p-4 rounded-xl bg-slate-900/80 border border-slate-800 text-xs text-slate-300 leading-relaxed">
-            <strong className="text-white block mb-1">Scenario:</strong>
-            {chapter.challenge.scenario}
-          </div>
-
-          <div className="space-y-3">
-            <h4 className="text-sm font-bold text-white">{chapter.challenge.question}</h4>
-
-            <div className="space-y-2">
-              {chapter.challenge.options.map((opt) => {
-                const isSelected = selectedOptionId === opt.id;
-                return (
-                  <button
-                    key={opt.id}
-                    onClick={() => {
-                      if (!challengeSubmitted || !isCorrect) {
-                        setSelectedOptionId(opt.id);
-                        playBlipSound();
-                      }
-                    }}
-                    className={`w-full p-4 rounded-xl border text-left text-xs transition-all flex items-start justify-between gap-3 ${
-                      isSelected
-                        ? "bg-cyan-500/15 border-cyan-400 text-white font-semibold"
-                        : "bg-slate-900/60 hover:bg-slate-800 border-slate-800 text-slate-300"
-                    }`}
-                  >
-                    <span>{opt.label}</span>
-                    <span
-                      className={`w-4 h-4 rounded-full border shrink-0 mt-0.5 flex items-center justify-center ${
-                        isSelected ? "border-cyan-400 bg-cyan-400" : "border-slate-600"
-                      }`}
-                    >
-                      {isSelected && <span className="w-1.5 h-1.5 rounded-full bg-slate-950" />}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Hint Trigger */}
-          {chapter.challenge.hints && chapter.challenge.hints.length > 0 && (
-            <div className="pt-1">
-              <button
-                onClick={() => setShowHint(!showHint)}
-                className="text-xs font-semibold text-slate-400 hover:text-cyan-400 flex items-center gap-1.5 transition-colors"
-              >
-                <HelpCircle className="w-3.5 h-3.5" />
-                <span>{showHint ? "Hide Hint" : "Need a hint?"}</span>
-              </button>
-              {showHint && (
-                <div className="mt-2 p-3 rounded-lg bg-cyan-950/30 border border-cyan-500/20 text-xs text-cyan-200 animate-fadeIn">
-                  💡 {chapter.challenge.hints[0]}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Submit Button & Feedback */}
-          <div className="pt-2 space-y-4">
-            {!challengeSubmitted || !isCorrect ? (
-              <button
-                onClick={handleSubmitChallenge}
-                disabled={!selectedOptionId}
-                className={`px-8 py-3.5 rounded-xl font-black text-xs transition-all ${
-                  selectedOptionId
-                    ? "bg-gradient-to-r from-cyan-500 to-emerald-500 hover:from-cyan-400 hover:to-emerald-400 text-slate-950 shadow-lg shadow-cyan-500/20 cursor-pointer"
-                    : "bg-slate-800 text-slate-500 cursor-not-allowed"
-                }`}
-              >
-                Submit Chapter Triage Decision
-              </button>
-            ) : null}
-
-            {challengeSubmitted && (
-              <div
-                className={`p-4 rounded-xl border text-xs leading-relaxed space-y-2 ${
-                  isCorrect
-                    ? "bg-emerald-950/40 border-emerald-500/50 text-emerald-200"
-                    : "bg-rose-950/40 border-rose-500/50 text-rose-200"
-                }`}
-              >
-                <div className="flex items-center gap-2 font-bold text-sm">
-                  {isCorrect ? (
-                    <>
-                      <CheckCircle2 className="w-5 h-5 text-emerald-400" />
-                      <span className="text-emerald-300">Boss Answer Correct</span>
-                    </>
-                  ) : (
-                    <>
-                      <AlertTriangle className="w-5 h-5 text-rose-400" />
-                      <span className="text-rose-300">Incorrect Choice</span>
-                    </>
-                  )}
-                </div>
-
-                <p>
-                  {
-                    chapter.challenge.options.find((o) => o.id === selectedOptionId)?.explanation
-                  }
+            {run.stage === "observe" && (
+              <div className="space-y-4">
+                <span className="eyebrow text-cyan-300/80">Observe</span>
+                <p className="text-[15px] text-slate-200 leading-relaxed">
+                  Look at the metrics and the system diagram. Something is failing. Before you touch anything, work out what.
                 </p>
-
-                {isCorrect && !transferSubmitted && (
-                  <div className="pt-3 border-t border-cyan-500/20 space-y-3">
-                    <div>
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-cyan-400">
-                        Prove the pattern
-                      </span>
-                      <h4 className="text-sm font-bold text-white mt-1">{transferChallenge.question}</h4>
-                    </div>
-
-                    <div className="space-y-2">
-                      {transferChallenge.options.map((option) => (
-                        <button
-                          key={option.id}
-                          onClick={() => setSelectedTransferId(option.id)}
-                          className={`w-full p-3 rounded-lg border text-left text-xs transition-all ${
-                            selectedTransferId === option.id
-                              ? "bg-cyan-500/15 border-cyan-400 text-white font-semibold"
-                              : "bg-slate-900/60 hover:bg-slate-800 border-slate-800 text-slate-300"
-                          }`}
-                        >
-                          {option.label}
-                        </button>
-                      ))}
-                    </div>
-
-                    <button
-                      onClick={handleTransferSubmit}
-                      disabled={!selectedTransferId}
-                      className={`px-6 py-2.5 rounded-xl font-black text-xs transition-all ${
-                        selectedTransferId
-                          ? "bg-gradient-to-r from-cyan-500 to-emerald-500 text-slate-950 shadow-lg shadow-cyan-500/20"
-                          : "bg-slate-800 text-slate-500 cursor-not-allowed"
-                      }`}
-                    >
-                      Check Understanding
-                    </button>
-                  </div>
+                <p className="text-[13px] text-slate-400">
+                  New constraint this level: <span className="text-slate-200">{pattern.newConstraint}</span>
+                </p>
+                {cleared && (
+                  <p className="text-[13px] text-emerald-200/90 px-3 py-2.5 rounded-lg bg-emerald-400/[0.06] border border-emerald-400/20">
+                    You have cleared this level before. Replaying is good practice; it pays +{pattern.rewards.replayXp} XP once a day.
+                  </p>
                 )}
-
-                {isCorrect && transferSubmitted && (
-                  <div className={`pt-3 border-t ${transferCorrect ? "border-emerald-500/30" : "border-rose-500/30"}`}>
-                    <p className={transferCorrect ? "text-emerald-300" : "text-rose-300"}>
-                      {transferCorrect
-                        ? "Correct. You applied the same bottleneck pattern to a new situation."
-                        : "Not quite. Re-read the bottleneck explanation and try the transfer question again."}
-                    </p>
-                    {!transferCorrect && (
-                      <button
-                        onClick={() => {
-                          setTransferSubmitted(false);
-                          setSelectedTransferId(null);
-                        }}
-                        className="mt-2 text-xs font-bold text-cyan-400 hover:text-cyan-300"
-                      >
-                        Try again
-                      </button>
-                    )}
-                  </div>
-                )}
-
-                {isCorrect && transferCorrect && nextChapter && (
-                  <div className="pt-3">
-                    <Link
-                      href={`/campaign/${nextChapter.id}`}
-                      className="inline-flex items-center gap-2 px-6 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-emerald-500 text-slate-950 font-black text-xs shadow-lg shadow-cyan-500/20 hover:scale-105 transition-all"
-                    >
-                      <span>▶ Next Mission: Chapter {nextChapter.chapterNumber} — {nextChapter.title}</span>
-                      <ArrowRight className="w-4 h-4" />
-                    </Link>
-                  </div>
-                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    markRunStarted(pattern.id);
+                    update({ stage: "diagnose" });
+                  }}
+                  className="btn btn-primary btn-lg"
+                >
+                  <Play className="w-4 h-4" />
+                  Start diagnosis
+                </button>
               </div>
             )}
-          </div>
-        </section>
-      </main>
 
-      {/* Level Up Modal */}
-      {levelUpData && (
+            {run.stage === "diagnose" && (
+              <QuestionCard
+                key="diagnose"
+                eyebrow="Diagnose"
+                question={pattern.diagnosis}
+                submitLabel="Lock in diagnosis"
+                continueLabel="Choose a fix"
+                onAnswer={(opt, attempt) =>
+                  update({
+                    diagnosisAttempts: attempt,
+                    failureReasons: opt.isCorrect ? run.failureReasons : [...run.failureReasons, "diagnosis"],
+                  })
+                }
+                onContinue={() => update({ stage: "choose" })}
+              />
+            )}
+
+            {run.stage === "choose" && (
+              <QuestionCard
+                key="choose"
+                eyebrow="Deploy a fix"
+                question={pattern.intervention}
+                submitLabel="Deploy this change"
+                continueLabel="Continue"
+                onAnswer={(opt, attempt) => {
+                  update({
+                    interventionAttempts: attempt,
+                    failureReasons: opt.isCorrect ? run.failureReasons : [...run.failureReasons, "intervention"],
+                  });
+                  if (opt.isCorrect) {
+                    playDeploySound();
+                    setFixDeployed(true);
+                    markFixApplied(pattern.id);
+                  }
+                }}
+                afterCorrect={
+                  <div className="p-3 rounded-lg bg-black/20 border border-[var(--line)] text-slate-300 space-y-1">
+                    <p className="font-medium text-white">Verify: compare the metrics.</p>
+                    <p>
+                      CPU {chapter.initialMetrics.cpuUsage}% → {chapter.targetMetrics.cpuUsage}%, latency{" "}
+                      {chapter.initialMetrics.latencyMs.toLocaleString()}ms → {chapter.targetMetrics.latencyMs.toLocaleString()}ms,
+                      errors {chapter.initialMetrics.errorRate}% → {chapter.targetMetrics.errorRate}%.
+                    </p>
+                    <p className="text-amber-200/80">Hold on. Fixes have side effects.</p>
+                  </div>
+                }
+                onContinue={() => update({ stage: "counter" })}
+              />
+            )}
+
+            {run.stage === "counter" && (
+              <QuestionCard
+                key="counter"
+                eyebrow="Tradeoff counter-strike"
+                title={chapter.challenge.title}
+                context={chapter.challenge.scenario}
+                question={counterQuestion}
+                hints={chapter.challenge.hints}
+                onHint={() => update({ hintsUsed: run.hintsUsed + 1 })}
+                submitLabel="Submit decision"
+                continueLabel="One more: new situation"
+                onAnswer={(opt, attempt) =>
+                  update({
+                    counterAttempts: attempt,
+                    failureReasons: opt.isCorrect ? run.failureReasons : [...run.failureReasons, "counter"],
+                  })
+                }
+                onContinue={() => update({ stage: "transfer" })}
+              />
+            )}
+
+            {run.stage === "transfer" && (
+              <QuestionCard
+                key="transfer"
+                eyebrow="Transfer: same pattern, different product"
+                question={pattern.transfer}
+                submitLabel="Check my answer"
+                continueLabel="See the result"
+                onAnswer={(opt, attempt) => {
+                  if (!opt.isCorrect) {
+                    markTransferMiss(pattern.id);
+                    update({ transferAttempts: attempt, failureReasons: [...run.failureReasons, "transfer"] });
+                    return;
+                  }
+                  const out = completePatternRun(pattern, {
+                    patternId: pattern.id,
+                    diagnosisFirstTry: run.diagnosisAttempts === 1,
+                    interventionFirstTry: run.interventionAttempts === 1,
+                    transferFirstTry: attempt === 1,
+                    hintsUsed: run.hintsUsed,
+                    failureReasons: run.failureReasons,
+                  });
+                  setOutcome(out);
+                  clearRunProgress(chapter.id);
+                  celebrate();
+                  if (out.leveledUp) {
+                    setTimeout(() => {
+                      setLevelUp(out.stats.level);
+                      playLevelUpSound();
+                    }, 600);
+                  }
+                }}
+                onContinue={() => update({ stage: "result" })}
+              />
+            )}
+          </section>
+        </div>
+      )}
+
+      {levelUp !== null && outcome && (
         <LevelUpModal
           isOpen={true}
-          title={`Rank Promoted to Level ${levelUpData.newLevel}!`}
-          subtitle={`You passed the Chapter Boss Challenge and accrued ${levelUpData.totalXp} XP.`}
-          xpEarned={chapter.xpReward}
-          onClose={() => setLevelUpData(null)}
+          title={`Rank Promoted to Level ${levelUp}!`}
+          subtitle={`You cleared Level ${pattern.levelNumber}: ${pattern.levelGoal}.`}
+          xpEarned={outcome.xpAwarded}
+          onClose={() => setLevelUp(null)}
           onNext={() => {
-            setLevelUpData(null);
-            if (nextChapter) {
-              window.location.href = `/campaign/${nextChapter.id}`;
-            }
+            setLevelUp(null);
+            update({ stage: "result" });
           }}
-          nextLabel={nextChapter ? `Next: Chapter ${nextChapter.chapterNumber}` : "Campaign Hub"}
+          nextLabel="See the result"
         />
       )}
-    </div>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Result: post-mortem, what was learned, honest evidence, next step
+// ---------------------------------------------------------------------------
+
+function RunResult({
+  chapter,
+  pattern,
+  outcome,
+  onReplay,
+}: {
+  chapter: CampaignChapter;
+  pattern: SystemDesignPattern;
+  outcome: ProgressionOutcome;
+  onReplay: () => void;
+}) {
+  const now = new Date();
+  const stats = outcome.stats;
+  const evidence = getEvidence(stats, pattern.id);
+  const state = getMasteryState(evidence, now);
+  const nextPattern = getAllPatterns().find((p) => p.levelNumber === pattern.levelNumber + 1);
+  const nextUnlocked = nextPattern ? isPatternUnlocked(stats, nextPattern) : false;
+  const builderDone = evidence.builderPasses > 0;
+
+  return (
+    <section className="space-y-6">
+      <div className="surface p-5 sm:p-6 flex flex-wrap items-center justify-between gap-4 !border-emerald-400/25 animate-fadeIn" role="status">
+        <div className="flex items-center gap-3">
+          <span className="w-11 h-11 rounded-xl bg-emerald-400/10 border border-emerald-400/30 grid place-items-center"><CheckCircle2 className="w-5 h-5 text-emerald-300" /></span>
+          <div>
+            <h2 className="text-xl display">Level {pattern.levelNumber} cleared</h2>
+            <p className="text-[13px] text-slate-400 num">
+              {outcome.xpAwarded > 0
+                ? `+${outcome.xpAwarded} XP${outcome.firstClear ? " (first clear)" : " (replay)"}`
+                : "No XP this time: replay XP is paid once a day. Your practice still counts."}
+            </p>
+          </div>
+        </div>
+        <span className="chip chip-accent">
+          {MASTERY_LABELS[state]} · {describeEvidence(evidence, now)}
+        </span>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+        <PostMortemCard
+          data={{
+            incidentId: `INC-${String(chapter.chapterNumber).padStart(3, "0")}`,
+            title: chapter.title,
+            impact: chapter.scenario,
+            rootCause: pattern.tradeoff.whatFailed,
+            fix: pattern.tradeoff.whyFixWorked,
+            followUp: pattern.tradeoff.insufficientWhen,
+            before: {
+              latencyMs: chapter.initialMetrics.latencyMs,
+              errorRate: chapter.initialMetrics.errorRate,
+              cpu: chapter.initialMetrics.cpuUsage,
+            },
+            after: {
+              latencyMs: chapter.targetMetrics.latencyMs,
+              errorRate: chapter.targetMetrics.errorRate,
+              cpu: chapter.targetMetrics.cpuUsage,
+            },
+          }}
+        />
+
+        <div className="space-y-4">
+          <dl className="surface p-5 space-y-4 text-[13px] leading-relaxed">
+            <div>
+              <dt className="flex items-center gap-2 text-rose-300 font-medium"><span className="dot" aria-hidden />What failed?</dt>
+              <dd className="text-slate-300 pl-3.5 mt-1">{pattern.tradeoff.whatFailed}</dd>
+            </div>
+            <div>
+              <dt className="flex items-center gap-2 text-emerald-300 font-medium"><span className="dot" aria-hidden />Why did the fix work?</dt>
+              <dd className="text-slate-300 pl-3.5 mt-1">{pattern.tradeoff.whyFixWorked}</dd>
+            </div>
+            <div>
+              <dt className="flex items-center gap-2 text-amber-300 font-medium"><span className="dot" aria-hidden />When is it not enough?</dt>
+              <dd className="text-slate-300 pl-3.5 mt-1">{pattern.tradeoff.insufficientWhen}</dd>
+            </div>
+          </dl>
+
+          <div className="surface p-5 space-y-3">
+            <h3 className="eyebrow">Evidence · {pattern.title}</h3>
+            <ul className="space-y-2 text-[13px]">
+              {getEvidenceChecklist(evidence).map((c) => (
+                <li key={c.id} className={`flex items-center gap-2 ${c.done ? "text-emerald-300" : "text-slate-400"}`}>
+                  {c.done ? <CheckCircle2 className="w-3.5 h-3.5" /> : <span className="w-3.5 h-3.5 rounded-full border border-slate-600" />}
+                  {c.label}
+                  <span className="sr-only">{c.done ? "done" : "not yet"}</span>
+                </li>
+              ))}
+            </ul>
+            <p className="text-[11px] text-slate-500">
+              A pattern becomes Reliable only after a builder pass and a successful review a day or more later.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="surface-accent p-5 sm:p-6 space-y-4">
+        <p className="text-[15px] text-slate-200">{pattern.nextHook}</p>
+        <div className="flex flex-wrap items-center gap-3">
+          {!builderDone ? (
+            <Link
+              href={`/builder?scenario=${pattern.builderScenarioId}`}
+              className="btn btn-primary btn-lg"
+            >
+              <Swords className="w-4 h-4" />
+              Prove it in the builder (+{pattern.rewards.builderXp} XP)
+            </Link>
+          ) : null}
+          {nextPattern && nextUnlocked && (
+            <Link
+              href={`/campaign/${nextPattern.chapterId}`}
+              className={`btn btn-lg ${builderDone ? "btn-primary" : "btn-secondary"}`}
+            >
+              Level {nextPattern.levelNumber}: {nextPattern.levelGoal}
+              <ArrowRight className="w-4 h-4" />
+            </Link>
+          )}
+          <button
+            type="button"
+            onClick={onReplay}
+            className="btn btn-ghost"
+          >
+            <RotateCcw className="w-3.5 h-3.5" /> Replay run
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Review (spaced recall)
+// ---------------------------------------------------------------------------
+
+function ReviewRun({
+  chapter,
+  pattern,
+  stats,
+}: {
+  chapter: CampaignChapter;
+  pattern: SystemDesignPattern;
+  stats: UserStats;
+}) {
+  const questions: { eyebrow: string; q: PatternQuestion }[] = [
+    { eyebrow: "Recall 1 of 2", q: pattern.review },
+    { eyebrow: "Recall 2 of 2", q: { question: chapter.challenge.question, options: chapter.challenge.options } },
+  ];
+  const [index, setIndex] = useState(0);
+  const [allFirstTry, setAllFirstTry] = useState(true);
+  const [result, setResult] = useState<ReturnType<typeof submitReview> | null>(null);
+  const [passed, setPassed] = useState(false);
+
+  const evidence = getEvidence(stats, pattern.id);
+  const due = isReviewDue(evidence, new Date());
+
+  if (!isPatternCleared(stats, pattern)) {
+    return (
+      <section className="surface p-10 text-center space-y-3 max-w-xl mx-auto">
+        <h1 className="text-xl display">Nothing to review yet</h1>
+        <p className="text-sm text-slate-400">Clear Level {pattern.levelNumber} first. Reviews check what you have already practiced.</p>
+        <Link href={`/campaign/${chapter.id}`} className="inline-flex items-center gap-2 text-sm font-medium text-cyan-300 hover:text-cyan-200">
+          Start Level {pattern.levelNumber} <ArrowRight className="w-4 h-4" />
+        </Link>
+      </section>
+    );
+  }
+
+  const finish = (firstTry: boolean) => {
+    const ok = allFirstTry && firstTry;
+    setPassed(ok);
+    setResult(submitReview(pattern, ok));
+  };
+
+  return (
+    <section className="max-w-2xl mx-auto space-y-5">
+      <header className="space-y-1">
+        <span className="eyebrow text-amber-300/80">Review · {pattern.title}</span>
+        <h1 className="text-3xl display">What do you still remember?</h1>
+        <p className="text-xs text-slate-400">
+          {due
+            ? "Answer both on the first try to pass. No hints: this checks recall."
+            : "This review is not due yet. You can practice, but it will not count as recall."}
+        </p>
+      </header>
+
+      {result ? (
+        <div role="status" className="surface p-6 space-y-3 text-sm animate-fadeIn">
+          {result.early ? (
+            <p className="text-slate-300">Practice logged. Come back when the review is due for it to count toward Reliable.</p>
+          ) : passed ? (
+            <p className="text-emerald-300 font-bold">
+              Recalled. {result.xpAwarded > 0 ? `+${result.xpAwarded} XP. ` : ""}
+              {describeEvidence(getEvidence(result.stats, pattern.id), new Date())}.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-rose-300 font-bold">Not solid yet. The review stays due.</p>
+              <p className="text-slate-400 text-xs">Recovery step: replay the level run, then try the review again.</p>
+              <Link href={`/campaign/${chapter.id}`} className="inline-flex items-center gap-2 text-xs font-medium text-cyan-300 hover:text-cyan-200">
+                Replay Level {pattern.levelNumber} <ArrowRight className="w-3.5 h-3.5" />
+              </Link>
+            </div>
+          )}
+          <Link href="/dashboard" className="btn btn-ghost !px-0 text-xs">
+            Back to home <ArrowRight className="w-3.5 h-3.5" />
+          </Link>
+        </div>
+      ) : (
+        <div className="surface p-5 sm:p-7">
+          <QuestionCard
+            key={index}
+            eyebrow={questions[index].eyebrow}
+            question={questions[index].q}
+            submitLabel="Submit"
+            continueLabel={index < questions.length - 1 ? "Next question" : "Finish review"}
+            onAnswer={(opt, attempt) => {
+              if (attempt === 1 && !opt.isCorrect) setAllFirstTry(false);
+            }}
+            onContinue={() => {
+              if (index < questions.length - 1) setIndex(index + 1);
+              else finish(true);
+            }}
+          />
+        </div>
+      )}
+    </section>
   );
 }

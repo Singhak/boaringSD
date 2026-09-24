@@ -1,572 +1,262 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React from "react";
 import Link from "next/link";
-import {
-  Trophy,
-  Zap,
-  Flame,
-  CheckCircle2,
-  Lock,
-  ArrowRight,
-  Play,
-  Layers,
-  Sparkles,
-  ShieldCheck,
-  Crown,
-  Server,
-  Database,
-  Globe,
-  Compass,
-  GitMerge,
-  Award,
-  AlertTriangle,
-  RotateCcw,
-} from "lucide-react";
+import { ArrowRight, Award, Check, Compass, Flame, GitBranch, Lock, Play, Sparkles, Trophy } from "lucide-react";
 import Navbar from "@/components/Navbar";
-import { getAllCampaignChapters } from "@/data/campaign";
-import { BADGES, LESSONS } from "@/lib/lessons";
-import { getUserStats, getFeatureUnlockStatus } from "@/lib/storage";
-import { UserStats } from "@/types";
+import PatternMap from "@/components/PatternMap";
+import { BADGES } from "@/lib/lessons";
+import { getAllRunProgress, getFeatureUnlockStatus } from "@/lib/storage";
+import { getAllPatterns } from "@/data/patterns";
+import { NextActionKind, getDailyObjective, getEvidence, getMasteryState } from "@/lib/progression";
+import { useUserStats } from "@/lib/useUserStats";
+
+const KIND_LABELS: Record<NextActionKind, string> = {
+  onboarding: "Start here",
+  resume: "Resume",
+  review: "Review due",
+  "builder-boss": "Builder boss",
+  "pattern-run": "Next level",
+  practice: "Practice",
+};
+
+const getRankTitle = (lvl: number) => {
+  if (lvl <= 1) return "Novice Architect";
+  if (lvl === 2) return "Cloud Apprentice";
+  if (lvl === 3) return "Distributed Systems Engineer";
+  return "Principal Infrastructure Lead";
+};
 
 export default function DashboardPage() {
-  const chapters = getAllCampaignChapters();
-  const [stats, setStats] = useState<UserStats>({
-    level: 1,
-    currentXp: 0,
-    nextLevelXp: 150,
-    streakDays: 1,
-    completedLessons: [],
-    completedChallenges: [],
-    completedGuided: [],
-    completedInterviews: [],
-    completedMissions: [],
-    completedChapters: [],
-    systemsSaved: 0,
-    incidentsSolved: 0,
-    isLoggedIn: false,
-    userEmail: null,
-    userName: null,
-    totalScore: 0,
-    soundEnabled: true,
-    unlockedBadges: [],
-  });
+  const stats = useUserStats();
 
-  useEffect(() => {
-    setStats(getUserStats());
-    const handleUpdate = () => setStats(getUserStats());
-    window.addEventListener("sd_quest_stats_updated", handleUpdate);
-    return () => window.removeEventListener("sd_quest_stats_updated", handleUpdate);
-  }, []);
+  if (!stats) {
+    return (
+      <div className="min-h-screen text-slate-100 flex flex-col">
+        <Navbar />
+        <p role="status" className="text-sm text-slate-500 py-24 text-center">
+          Loading your progress…
+        </p>
+      </div>
+    );
+  }
 
-  const completedChapters = stats.completedChapters || [];
-  const completedMissions = stats.completedMissions || [];
-  const completedChapterCount = completedChapters.length;
-  const progressPercent = Math.min(100, Math.round((completedChapterCount / chapters.length) * 100));
-
-  // Determine Next Mission (The Golden Rule)
-  // If user hasn't saved Twitter in Pushpa Mode: First Mission is Save Twitter!
-  // Otherwise next unfinished Chapter!
-  const hasSavedTwitter = completedMissions.includes("mission-1") && completedMissions.includes("mission-2");
-
-  const nextChapter = chapters.find((c) => !completedChapters.includes(c.id)) || chapters[chapters.length - 1];
-
-  const conceptPath = LESSONS.map((lesson, index) => {
-    const unlocked = index === 0 || completedChapters.length > 0 || stats.completedLessons.includes(LESSONS[index - 1].id);
-    const mastered = stats.completedLessons.includes(lesson.id);
-
-    return {
-      ...lesson,
-      unlocked,
-      mastered,
-    };
-  });
-
-  const currentMission = !hasSavedTwitter
-    ? {
-        type: "incident",
-        title: "Incident 001: Twitter Feed Is Down",
-        tagline: "Stabilize 100,000 req/sec Spike in Pushpa Mode",
-        description: "Twitter feeds are failing worldwide. Server 1 CPU is redlining at 96% and database is exhausted. Deploy load balancing and in-memory caching to save the platform.",
-        xpReward: 150,
-        href: "/mission",
-        ctaLabel: "▶ Continue Mission: Save Twitter",
-        badge: "🚨 High Severity Crisis",
-      }
-    : {
-        type: "chapter",
-        title: `Chapter ${nextChapter.chapterNumber}: ${nextChapter.title}`,
-        tagline: nextChapter.tagline,
-        description: nextChapter.description,
-        xpReward: nextChapter.xpReward,
-        href: `/campaign/${nextChapter.id}`,
-        ctaLabel: `▶ Continue Mission: Chapter ${nextChapter.chapterNumber}`,
-        badge: `Chapter ${nextChapter.chapterNumber} Target`,
-      };
-
-  const getRankTitle = (lvl: number) => {
-    if (lvl <= 1) return "Novice Architect";
-    if (lvl === 2) return "Cloud Apprentice";
-    if (lvl === 3) return "Distributed Systems Engineer";
-    return "Principal Infrastructure Lead";
-  };
-
+  const now = new Date();
+  const daily = getDailyObjective(stats, now, getAllRunProgress());
+  const action = daily.action;
+  const patterns = getAllPatterns();
+  const states = patterns.map((p) => getMasteryState(getEvidence(stats, p.id), now));
+  const reliableCount = states.filter((s) => s === "reliable").length;
+  const clearedCount = patterns.filter((p) => getEvidence(stats, p.id).runsCleared > 0).length;
+  const reviewsDue = states.filter((s) => s === "needs_review").length;
   const unlockStatus = getFeatureUnlockStatus(stats);
+  const xpIntoLevel = stats.currentXp % 150;
+
+  const labs = [
+    { name: "Architecture Sandbox", desc: "Build any topology, change traffic, and watch what breaks.", href: "/builder", icon: Sparkles, unlocked: unlockStatus.builder.unlocked, hint: "Level 2" },
+    { name: "Interview Arena", desc: "Design a system against the clock and get graded on failure points.", href: "/interview", icon: Award, unlocked: unlockStatus.interview.unlocked, hint: "Level 2" },
+    { name: "Challenge Lab", desc: "Requirements → entities → APIs → architecture, one step at a time.", href: "/guided", icon: Compass, unlocked: true, hint: "" },
+    { name: "Architecture Evolution", desc: "See how one architecture changes from 100 to 10M users.", href: "/evolution", icon: GitBranch, unlocked: true, hint: "" },
+  ];
 
   return (
-    <div className="min-h-screen bg-[#080c14] text-slate-100 flex flex-col">
+    <div className="min-h-screen text-slate-100 flex flex-col">
       <Navbar />
 
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
-        {/* ================= HERO: CURRENT MISSION (GOLDEN RULE) ================= */}
-        {/* "Users should never ask: 'What should I do?' The app should always answer: 'This is your next mission.'" */}
-        <section className="p-8 sm:p-10 rounded-3xl bg-gradient-to-r from-[#0d1424] via-[#09101d] to-[#070b13] border-2 border-cyan-500/40 shadow-2xl relative overflow-hidden space-y-6">
-          <div className="absolute top-0 right-0 w-96 h-full bg-gradient-to-l from-cyan-500/15 via-emerald-500/5 to-transparent pointer-events-none" />
-
-          {/* Mission Top Header */}
-          <div className="flex flex-wrap items-center justify-between gap-3 relative z-10">
-            <div className="flex items-center gap-2.5">
-              <span className="px-3.5 py-1 rounded-full bg-cyan-500/20 text-cyan-300 text-xs font-black uppercase tracking-wider border border-cyan-500/30 flex items-center gap-1.5 animate-pulse">
-                <span className="w-2 h-2 rounded-full bg-cyan-400" />
-                <span>Next Mission Assigned</span>
-              </span>
-              <span className="px-3 py-1 rounded-full bg-slate-800 text-slate-300 text-xs font-mono">
-                {currentMission.badge}
-              </span>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-bold text-amber-400 flex items-center gap-1 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/20">
-                <Zap className="w-3.5 h-3.5 fill-amber-400" />
-                +{currentMission.xpReward} XP Bounty
-              </span>
-            </div>
-          </div>
-
-          {/* Mission Details */}
-          <div className="max-w-3xl space-y-3 relative z-10">
-            <h1 className="text-3xl sm:text-5xl font-black text-white tracking-tight leading-tight">
-              {currentMission.title}
-            </h1>
-            <p className="text-base sm:text-lg font-bold text-cyan-400">
-              {currentMission.tagline}
-            </p>
-            <p className="text-sm text-slate-300 leading-relaxed">
-              {currentMission.description}
-            </p>
-          </div>
-
-          {/* Primary CTA Button (Golden Rule) */}
-          <div className="pt-2 relative z-10 flex flex-wrap items-center gap-4">
-            <Link
-              href={currentMission.href}
-              className="px-8 py-4 rounded-2xl bg-gradient-to-r from-cyan-400 via-teal-400 to-emerald-400 hover:from-cyan-300 hover:to-emerald-300 text-slate-950 font-black text-base sm:text-lg flex items-center gap-3 shadow-xl shadow-cyan-500/30 transition-all transform hover:scale-105 uppercase tracking-wide cursor-pointer"
-            >
-              <Play className="w-5 h-5 fill-slate-950" />
-              <span>{currentMission.ctaLabel}</span>
-            </Link>
-
-            <Link
-              href="/campaign"
-              className="px-6 py-4 rounded-2xl bg-slate-900/90 hover:bg-slate-800 text-slate-300 font-bold text-sm border border-slate-800 transition-colors"
-            >
-              Browse All Chapters
-            </Link>
-          </div>
-        </section>
-
-        {/* ================= CONCEPT MASTERY PATH ================= */}
-        <section className="p-6 sm:p-8 rounded-3xl glass-panel border border-white/10 space-y-6">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <div className="flex items-center gap-2">
-                <Compass className="w-5 h-5 text-cyan-400" />
-                <h2 className="text-xl font-black text-white tracking-tight">Concept Mastery Path</h2>
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-10 space-y-10">
+        {/* ================= NEXT ACTION + TODAY ================= */}
+        <section className="grid grid-cols-1 lg:grid-cols-[1.7fr_1fr] gap-4">
+          <div className="surface-accent p-6 sm:p-8 flex flex-col justify-between gap-8 animate-fadeIn">
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="chip chip-accent">
+                  <span className="dot animate-pulse-glow" aria-hidden />
+                  {KIND_LABELS[action.kind]}
+                </span>
+                <span className="chip">{action.badge}</span>
               </div>
-              <p className="text-xs text-slate-400 mt-1">
-                Learn system design by fixing real bottlenecks, not by memorizing abstract theory.
-              </p>
+              <div className="space-y-2 max-w-2xl">
+                <h1 className="text-3xl sm:text-[2.6rem] display">{action.title}</h1>
+                <p className="text-[15px] text-slate-400 leading-relaxed">{action.description}</p>
+              </div>
             </div>
-            <span className="text-[10px] font-black uppercase tracking-[0.18em] text-cyan-300">
-              Play → Learn → Scale
-            </span>
+            <div className="flex flex-wrap items-center gap-3">
+              <Link href={action.href} className="btn btn-primary btn-lg">
+                <Play className="w-4 h-4" />
+                {action.ctaLabel}
+              </Link>
+              <span className="num text-sm text-amber-200/80">+{action.xpReward} XP</span>
+            </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {conceptPath.map((lesson) => (
-              <div
-                key={lesson.id}
-                className={`p-4 rounded-2xl border transition-all ${
-                  lesson.mastered
-                    ? "bg-emerald-950/20 border-emerald-500/40"
-                    : lesson.unlocked
-                    ? "bg-cyan-950/20 border-cyan-500/30"
-                    : "bg-slate-900/40 border-slate-800 opacity-60"
+          <div className="surface p-6 flex flex-col gap-5">
+            <div className="flex items-center justify-between">
+              <h2 className="eyebrow">Today</h2>
+              <span className={`chip ${daily.streak > 0 ? "chip-warn" : ""}`}>
+                <Flame className="w-3 h-3" aria-hidden />
+                <span className="num">{daily.streak}-day streak</span>
+              </span>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <span
+                className={`w-9 h-9 rounded-full grid place-items-center shrink-0 border ${
+                  daily.completedToday ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-300" : "border-[var(--line-strong)] text-slate-500"
                 }`}
               >
-                <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-300">
-                    Level {lesson.level}
-                  </span>
-                  <span
-                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
-                      lesson.mastered
-                        ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
-                        : lesson.unlocked
-                        ? "bg-cyan-500/15 text-cyan-300 border-cyan-500/30"
-                        : "bg-slate-800 text-slate-400 border-slate-700"
-                    }`}
-                  >
-                    {lesson.mastered ? "Mastered" : lesson.unlocked ? "Unlocked" : "Locked"}
-                  </span>
-                </div>
-
-                <h3 className="mt-3 text-lg font-black text-white">{lesson.title}</h3>
-                <p className="mt-1 text-xs font-bold text-cyan-400">{lesson.concept}</p>
-                <p className="mt-2 text-xs text-slate-300 leading-relaxed">{lesson.description}</p>
-
-                <div className="mt-4 flex items-center justify-between gap-3 border-t border-slate-800 pt-3">
-                  <span className="text-[11px] font-bold text-amber-300">+{lesson.xpReward} XP</span>
-                  {lesson.unlocked ? (
-                    <Link
-                      href={`/learn/${lesson.id}`}
-                      className="inline-flex items-center gap-1 text-[11px] font-bold text-cyan-300 hover:text-cyan-200"
-                    >
-                      Learn now <ArrowRight className="w-3 h-3" />
-                    </Link>
-                  ) : (
-                    <span className="text-[11px] text-slate-500">Complete previous mission</span>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        {/* ================= TELEMETRY & PLAYER STATUS ================= */}
-        <section className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-          <div className="p-5 rounded-2xl glass-panel border border-white/10 space-y-1">
-            <span className="text-xs text-slate-400 font-medium">Rank & Level</span>
-            <div className="text-xl sm:text-2xl font-black text-white flex items-center gap-2">
-              <span>Lvl {stats.level}</span>
-              <span className="text-xs font-semibold px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
-                {getRankTitle(stats.level)}
+                {daily.completedToday ? <Check className="w-4 h-4" /> : <span className="num text-xs">1</span>}
               </span>
+              <div>
+                <p className="text-[15px] font-medium text-white">
+                  {daily.completedToday ? "Practiced today" : "One meaningful run"}
+                </p>
+                <p className="text-[13px] text-slate-500 leading-relaxed">
+                  {daily.completedToday
+                    ? "Your streak is safe. Extra runs still add evidence."
+                    : "Clear a level, pass a builder boss, or finish a due review. Opening pages doesn't count."}
+                </p>
+              </div>
             </div>
-            <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden mt-2">
-              <div
-                className="bg-cyan-400 h-full rounded-full transition-all"
-                style={{ width: `${Math.min(100, Math.round(((stats.currentXp % 150) / 150) * 100))}%` }}
-              />
-            </div>
-            <span className="text-[10px] text-slate-500 block pt-0.5">
-              {stats.nextLevelXp - stats.currentXp} XP to Level {stats.level + 1}
-            </span>
-          </div>
 
-          <div className="p-5 rounded-2xl glass-panel border border-white/10 space-y-1">
-            <span className="text-xs text-slate-400 font-medium">Experience (XP)</span>
-            <div className="text-2xl sm:text-3xl font-black text-amber-400 flex items-center gap-1.5">
-              <Zap className="w-5 h-5 fill-amber-400" />
-              <span>{stats.currentXp}</span>
-            </div>
-            <span className="text-[11px] text-emerald-400 font-bold">Total Accumulated</span>
-          </div>
-
-          <div className="p-5 rounded-2xl glass-panel border border-white/10 space-y-1">
-            <span className="text-xs text-slate-400 font-medium">Systems Saved</span>
-            <div className="text-2xl sm:text-3xl font-black text-cyan-400 flex items-center gap-1.5">
-              <ShieldCheck className="w-5 h-5" />
-              <span>{stats.systemsSaved || 0}</span>
-            </div>
-            <span className="text-[11px] text-slate-400">{stats.incidentsSolved || 0} Incidents Mitigated</span>
-          </div>
-
-          <div className="p-5 rounded-2xl glass-panel border border-white/10 space-y-1">
-            <span className="text-xs text-slate-400 font-medium">Daily Streak</span>
-            <div className="text-2xl sm:text-3xl font-black text-amber-500 flex items-center gap-1.5">
-              <Flame className="w-5 h-5 fill-amber-500 animate-bounce" />
-              <span>{stats.streakDays} Day</span>
-            </div>
-            <span className="text-[11px] text-slate-400">Keep momentum alive</span>
+            <dl className="grid grid-cols-3 mt-auto rounded-lg overflow-hidden border border-[var(--line)] divide-x divide-[var(--line)]">
+              {[
+                { k: "Cleared", v: `${clearedCount}/${patterns.length}`, tone: "text-white" },
+                { k: "Reliable", v: reliableCount, tone: reliableCount > 0 ? "text-emerald-300" : "text-white" },
+                { k: "Reviews due", v: reviewsDue, tone: reviewsDue > 0 ? "text-amber-300" : "text-white" },
+              ].map((s) => (
+                <div key={s.k} className="p-3">
+                  <dt className="eyebrow !text-[10px]">{s.k}</dt>
+                  <dd className={`num text-xl mt-1 ${s.tone}`}>{s.v}</dd>
+                </div>
+              ))}
+            </dl>
           </div>
         </section>
 
-        {/* ================= CHAPTER PROGRESSION TRACK ================= */}
-        <section className="p-6 sm:p-8 rounded-3xl glass-panel border border-white/10 space-y-6">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <div className="flex items-center gap-2">
-                <Layers className="w-5 h-5 text-cyan-400" />
-                <h2 className="text-xl font-black text-white tracking-tight">
-                  Campaign Chapter Progress
-                </h2>
-              </div>
-              <p className="text-xs text-slate-400 mt-1">
-                Completed {completedChapterCount} of {chapters.length} core distributed scaling chapters ({progressPercent}%)
+        {/* ================= LEVEL MAP ================= */}
+        <section className="space-y-4">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div className="space-y-1">
+              <h2 className="text-xl display">Your system, level by level</h2>
+              <p className="text-[13px] text-slate-500">
+                Bars show evidence: transfer question, builder boss, and a review a day later.
               </p>
             </div>
-
-            <Link
-              href="/campaign"
-              className="text-xs font-bold text-cyan-400 hover:text-cyan-300 flex items-center gap-1"
-            >
-              <span>View Full Campaign View</span>
-              <ArrowRight className="w-3.5 h-3.5" />
+            <Link href="/campaign" className="btn btn-ghost text-xs">
+              Level details <ArrowRight className="w-3.5 h-3.5" />
             </Link>
           </div>
+          <PatternMap stats={stats} highlightId={action.patternId} />
+        </section>
 
-          {/* 6 Step Progress Roadmap */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-            {chapters.map((ch, idx) => {
-              const isCompleted = completedChapters.includes(ch.id);
-              const isCurrent = !isCompleted && (idx === 0 || completedChapters.includes(chapters[idx - 1].id));
-              const isLocked = !isCompleted && !isCurrent && stats.level < ch.unlockLevel;
+        {/* ================= PLAYER STATUS ================= */}
+        <section className="surface grid grid-cols-2 lg:grid-cols-4 divide-x divide-y lg:divide-y-0 divide-[var(--line)] overflow-hidden">
+          <div className="p-5 space-y-2">
+            <span className="eyebrow">Rank</span>
+            <div className="num text-2xl text-white">Lv {stats.level}</div>
+            <p className="text-xs text-slate-400">{getRankTitle(stats.level)}</p>
+          </div>
+          <div className="p-5 space-y-2">
+            <span className="eyebrow">Experience</span>
+            <div className="num text-2xl text-white">
+              {stats.currentXp}
+              <span className="text-sm text-slate-500 ml-1">XP</span>
+            </div>
+            <div className="space-y-1">
+              <div className="h-1 rounded-full bg-white/[0.07] overflow-hidden">
+                <div className="h-full bg-[var(--accent)] rounded-full" style={{ width: `${Math.round((xpIntoLevel / 150) * 100)}%` }} />
+              </div>
+              <p className="num text-[11px] text-slate-500">
+                {stats.nextLevelXp - stats.currentXp} XP to Lv {stats.level + 1}
+              </p>
+            </div>
+          </div>
+          <div className="p-5 space-y-2">
+            <span className="eyebrow">Incidents resolved</span>
+            <div className="num text-2xl text-white">{stats.incidentsSolved || 0}</div>
+            <p className="text-xs text-slate-400">{stats.systemsSaved || 0} systems saved</p>
+          </div>
+          <div className="p-5 space-y-2">
+            <span className="eyebrow">Practice days</span>
+            <div className="num text-2xl text-white">{stats.practiceDays?.length ?? 0}</div>
+            <p className="text-xs text-slate-400">Short daily runs beat long sessions</p>
+          </div>
+        </section>
 
-              return (
-                <Link
-                  key={ch.id}
-                  href={`/campaign/${ch.id}`}
-                  className={`p-4 rounded-2xl border flex flex-col justify-between transition-all duration-200 text-left relative overflow-hidden ${
-                    isCompleted
-                      ? "bg-emerald-950/20 border-emerald-500/40 hover:border-emerald-400"
-                      : isCurrent
-                      ? "bg-cyan-950/30 border-cyan-400 ring-2 ring-cyan-500/30 shadow-lg shadow-cyan-500/10"
-                      : "bg-slate-900/40 border-slate-800 opacity-60"
-                  }`}
-                >
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-[10px] font-mono font-bold text-slate-400">
-                        Ch {ch.chapterNumber}
-                      </span>
-                      {isCompleted ? (
-                        <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                      ) : isLocked ? (
-                        <Lock className="w-3.5 h-3.5 text-slate-500" />
-                      ) : (
-                        <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
-                      )}
-                    </div>
-                    <div className="text-xs font-bold text-white line-clamp-1">{ch.title}</div>
-                    <div className="text-[10px] text-slate-400 mt-1 line-clamp-1">{ch.concept}</div>
-                  </div>
-
-                  <div className="pt-3 mt-2 border-t border-slate-800/80 flex items-center justify-between text-[10px]">
-                    <span className="text-amber-400 font-semibold">+{ch.xpReward} XP</span>
-                    <span className="font-bold text-cyan-400">
-                      {isCompleted ? "Cleared" : isCurrent ? "Active" : "Locked"}
+        {/* ================= LABS ================= */}
+        <section className="space-y-4">
+          <div className="space-y-1">
+            <h2 className="text-xl display">Labs</h2>
+            <p className="text-[13px] text-slate-500">Open practice outside the level path.</p>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            {labs.map((lab) => {
+              const Icon = lab.icon;
+              const body = (
+                <>
+                  <div className="flex items-center justify-between">
+                    <span className="w-9 h-9 rounded-lg surface-2 grid place-items-center">
+                      <Icon className={`w-4 h-4 ${lab.unlocked ? "text-cyan-300" : "text-slate-600"}`} />
                     </span>
+                    {!lab.unlocked && (
+                      <span className="chip !text-[10px]">
+                        <Lock className="w-3 h-3" /> {lab.hint}
+                      </span>
+                    )}
                   </div>
+                  <div className="space-y-1">
+                    <h3 className={`text-[15px] font-semibold ${lab.unlocked ? "text-white" : "text-slate-500"}`}>{lab.name}</h3>
+                    <p className="text-[13px] text-slate-500 leading-relaxed">{lab.desc}</p>
+                  </div>
+                  {lab.unlocked && (
+                    <span className="text-xs font-medium text-slate-300 group-hover:text-white flex items-center gap-1 mt-auto">
+                      Open <ArrowRight className="w-3 h-3 transition-transform group-hover:translate-x-0.5" />
+                    </span>
+                  )}
+                </>
+              );
+              return lab.unlocked ? (
+                <Link key={lab.name} href={lab.href} className="group surface p-5 flex flex-col gap-4 hover:!border-[var(--line-strong)] transition-colors">
+                  {body}
                 </Link>
+              ) : (
+                <div key={lab.name} className="p-5 flex flex-col gap-4 rounded-2xl border border-dashed border-[var(--line)]">
+                  {body}
+                </div>
               );
             })}
           </div>
         </section>
 
-        {/* ================= UNLOCKED ENGINEERING LABS (PROGRESSIVE DISCLOSURE) ================= */}
+        {/* ================= BADGES ================= */}
         <section className="space-y-4">
           <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-xl font-black text-white tracking-tight flex items-center gap-2">
-                <Sparkles className="w-5 h-5 text-cyan-400" />
-                Advanced Engineering Labs
-              </h2>
-              <p className="text-xs text-slate-400">
-                Unlocked as you level up and clear campaign milestones
-              </p>
-            </div>
+            <h2 className="text-xl display">Badges</h2>
+            <span className="num text-xs text-slate-500">
+              {stats.unlockedBadges.length}/{BADGES.length}
+            </span>
           </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            {/* Architecture Sandbox */}
-            <div
-              className={`p-5 rounded-2xl border transition-all flex flex-col justify-between ${
-                unlockStatus.builder.unlocked
-                  ? "glass-card border-cyan-500/30 hover:border-cyan-400 group"
-                  : "bg-slate-900/40 border-slate-800 opacity-60"
-              }`}
-            >
-              <div>
-                <div className="flex items-center justify-between mb-3">
-                  <span className="px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 font-mono text-[10px] font-black uppercase">
-                    Interactive Canvas
-                  </span>
-                  {unlockStatus.builder.unlocked ? (
-                    <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded">
-                      UNLOCKED
-                    </span>
-                  ) : (
-                    <span className="text-[10px] font-bold text-slate-400 flex items-center gap-1">
-                      <Lock className="w-3 h-3" /> Level 2
-                    </span>
-                  )}
-                </div>
-                <h3 className="text-base font-bold text-white group-hover:text-cyan-400 transition-colors">
-                  Architecture Sandbox
-                </h3>
-                <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                  Drag & drop servers, load balancers, and caches on a freeform canvas. Run chaos traffic stress tests.
-                </p>
-              </div>
-
-              <div className="pt-4 mt-2 border-t border-slate-800/80">
-                {unlockStatus.builder.unlocked ? (
-                  <Link
-                    href="/builder"
-                    className="inline-flex items-center gap-1.5 text-xs font-bold text-cyan-400 group-hover:translate-x-1 transition-transform"
-                  >
-                    <span>Launch Sandbox</span>
-                    <ArrowRight className="w-3.5 h-3.5" />
-                  </Link>
-                ) : (
-                  <span className="text-xs text-slate-500">Unlocks at Level 2 (Clear Chapter 1)</span>
-                )}
-              </div>
-            </div>
-
-            {/* Technical Interview Arena */}
-            <div
-              className={`p-5 rounded-2xl border transition-all flex flex-col justify-between ${
-                unlockStatus.interview.unlocked
-                  ? "glass-card border-amber-500/30 hover:border-amber-400 group"
-                  : "bg-slate-900/40 border-slate-800 opacity-60"
-              }`}
-            >
-              <div>
-                <div className="flex items-center justify-between mb-3">
-                  <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 font-mono text-[10px] font-black uppercase">
-                    10-Min Timer
-                  </span>
-                  {unlockStatus.interview.unlocked ? (
-                    <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded">
-                      UNLOCKED
-                    </span>
-                  ) : (
-                    <span className="text-[10px] font-bold text-slate-400 flex items-center gap-1">
-                      <Lock className="w-3 h-3" /> Level 2
-                    </span>
-                  )}
-                </div>
-                <h3 className="text-base font-bold text-white group-hover:text-amber-400 transition-colors">
-                  Interview Arena
-                </h3>
-                <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                  Design TinyURL under interview conditions. Receive automated grading for Single Points of Failure.
-                </p>
-              </div>
-
-              <div className="pt-4 mt-2 border-t border-slate-800/80">
-                {unlockStatus.interview.unlocked ? (
-                  <Link
-                    href="/interview"
-                    className="inline-flex items-center gap-1.5 text-xs font-bold text-amber-400 group-hover:translate-x-1 transition-transform"
-                  >
-                    <span>Enter Arena</span>
-                    <ArrowRight className="w-3.5 h-3.5" />
-                  </Link>
-                ) : (
-                  <span className="text-xs text-slate-500">Unlocks at Level 2</span>
-                )}
-              </div>
-            </div>
-
-            {/* Guided Thinking Mode */}
-            <Link
-              href="/guided"
-              className="p-5 rounded-2xl glass-card border border-purple-500/30 hover:border-purple-400 transition-all group flex flex-col justify-between"
-            >
-              <div>
-                <div className="flex items-center justify-between mb-3">
-                  <span className="px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 font-mono text-[10px] font-black uppercase">
-                    4-Step Framework
-                  </span>
-                  <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded">
-                    UNLOCKED
-                  </span>
-                </div>
-                <h3 className="text-base font-bold text-white group-hover:text-purple-400 transition-colors">
-                  Guided Thinking Wizard
-                </h3>
-                <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                  Step-by-step thinking: Requirements → Core Entities → REST APIs → High-Level Architecture.
-                </p>
-              </div>
-
-              <div className="pt-4 mt-2 border-t border-slate-800/80 flex items-center justify-between text-xs font-bold text-purple-400">
-                <span>Start Framework</span>
-                <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
-              </div>
-            </Link>
-
-            {/* Architecture Evolution Mode */}
-            <Link
-              href="/evolution"
-              className="p-5 rounded-2xl glass-card border border-emerald-500/30 hover:border-emerald-400 transition-all group flex flex-col justify-between"
-            >
-              <div>
-                <div className="flex items-center justify-between mb-3">
-                  <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-mono text-[10px] font-black uppercase">
-                    5-Stage Timeline
-                  </span>
-                  <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded">
-                    UNLOCKED
-                  </span>
-                </div>
-                <h3 className="text-base font-bold text-white group-hover:text-emerald-400 transition-colors">
-                  Architecture Evolution
-                </h3>
-                <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                  Interactive timeline demonstrating how architecture naturally morphs as user base explodes.
-                </p>
-              </div>
-
-              <div className="pt-4 mt-2 border-t border-slate-800/80 flex items-center justify-between text-xs font-bold text-emerald-400">
-                <span>Watch Growth</span>
-                <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
-              </div>
-            </Link>
-          </div>
-        </section>
-
-        {/* ================= ACHIEVEMENTS BADGES ================= */}
-        <section className="space-y-4">
-          <div className="flex items-center gap-2">
-            <Trophy className="w-5 h-5 text-amber-400" />
-            <h2 className="text-xl font-black text-white tracking-tight">
-              Engineering Badges & Achievements
-            </h2>
-          </div>
-
-          <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
             {BADGES.map((badge) => {
               const isUnlocked = stats.unlockedBadges.includes(badge.id);
-
               return (
                 <div
                   key={badge.id}
-                  className={`p-3.5 rounded-2xl border text-center transition-all ${
-                    isUnlocked
-                      ? "bg-amber-500/10 border-amber-500/30 text-amber-300"
-                      : "bg-slate-900/40 border-slate-800 text-slate-500 opacity-50"
+                  className={`p-4 rounded-xl border text-center space-y-2 ${
+                    isUnlocked ? "border-amber-300/25 bg-amber-300/[0.04]" : "border-[var(--line)] opacity-50"
                   }`}
+                  title={badge.description}
                 >
-                  <div className="w-9 h-9 mx-auto rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-center mb-2">
-                    <Trophy
-                      className={`w-4 h-4 ${
-                        isUnlocked ? "text-amber-400 animate-pulse" : "text-slate-600"
-                      }`}
-                    />
-                  </div>
-                  <div className="text-xs font-bold text-white mb-0.5 line-clamp-1">{badge.title}</div>
-                  <div className="text-[10px] text-slate-400 leading-tight line-clamp-2">
-                    {badge.description}
-                  </div>
-                  {isUnlocked && (
-                    <span className="inline-block mt-1.5 text-[9px] font-bold text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded">
-                      Unlocked
-                    </span>
-                  )}
+                  <span
+                    className={`w-9 h-9 mx-auto rounded-full grid place-items-center border ${
+                      isUnlocked ? "border-amber-300/40 text-amber-300" : "border-[var(--line-strong)] text-slate-600"
+                    }`}
+                  >
+                    <Trophy className="w-4 h-4" />
+                  </span>
+                  <div className="text-xs font-medium text-white leading-tight">{badge.title}</div>
+                  <div className="text-[10px] text-slate-500 leading-snug line-clamp-2">{badge.description}</div>
+                  <span className="sr-only">{isUnlocked ? "Unlocked" : "Locked"}</span>
                 </div>
               );
             })}
