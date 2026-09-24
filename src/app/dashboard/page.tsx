@@ -25,7 +25,7 @@ import {
 } from "lucide-react";
 import Navbar from "@/components/Navbar";
 import { getAllCampaignChapters } from "@/data/campaign";
-import { BADGES } from "@/lib/lessons";
+import { BADGES, LESSONS } from "@/lib/lessons";
 import { getUserStats, getFeatureUnlockStatus } from "@/lib/storage";
 import { UserStats } from "@/types";
 
@@ -70,6 +70,17 @@ export default function DashboardPage() {
   const hasSavedTwitter = completedMissions.includes("mission-1") && completedMissions.includes("mission-2");
 
   const nextChapter = chapters.find((c) => !completedChapters.includes(c.id)) || chapters[chapters.length - 1];
+
+  const conceptPath = LESSONS.map((lesson, index) => {
+    const unlocked = index === 0 || completedChapters.length > 0 || stats.completedLessons.includes(LESSONS[index - 1].id);
+    const mastered = stats.completedLessons.includes(lesson.id);
+
+    return {
+      ...lesson,
+      unlocked,
+      mastered,
+    };
+  });
 
   const currentMission = !hasSavedTwitter
     ? {
@@ -161,6 +172,74 @@ export default function DashboardPage() {
             >
               Browse All Chapters
             </Link>
+          </div>
+        </section>
+
+        {/* ================= CONCEPT MASTERY PATH ================= */}
+        <section className="p-6 sm:p-8 rounded-3xl glass-panel border border-white/10 space-y-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <Compass className="w-5 h-5 text-cyan-400" />
+                <h2 className="text-xl font-black text-white tracking-tight">Concept Mastery Path</h2>
+              </div>
+              <p className="text-xs text-slate-400 mt-1">
+                Learn system design by fixing real bottlenecks, not by memorizing abstract theory.
+              </p>
+            </div>
+            <span className="text-[10px] font-black uppercase tracking-[0.18em] text-cyan-300">
+              Play → Learn → Scale
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {conceptPath.map((lesson) => (
+              <div
+                key={lesson.id}
+                className={`p-4 rounded-2xl border transition-all ${
+                  lesson.mastered
+                    ? "bg-emerald-950/20 border-emerald-500/40"
+                    : lesson.unlocked
+                    ? "bg-cyan-950/20 border-cyan-500/30"
+                    : "bg-slate-900/40 border-slate-800 opacity-60"
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-300">
+                    Level {lesson.level}
+                  </span>
+                  <span
+                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                      lesson.mastered
+                        ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
+                        : lesson.unlocked
+                        ? "bg-cyan-500/15 text-cyan-300 border-cyan-500/30"
+                        : "bg-slate-800 text-slate-400 border-slate-700"
+                    }`}
+                  >
+                    {lesson.mastered ? "Mastered" : lesson.unlocked ? "Unlocked" : "Locked"}
+                  </span>
+                </div>
+
+                <h3 className="mt-3 text-lg font-black text-white">{lesson.title}</h3>
+                <p className="mt-1 text-xs font-bold text-cyan-400">{lesson.concept}</p>
+                <p className="mt-2 text-xs text-slate-300 leading-relaxed">{lesson.description}</p>
+
+                <div className="mt-4 flex items-center justify-between gap-3 border-t border-slate-800 pt-3">
+                  <span className="text-[11px] font-bold text-amber-300">+{lesson.xpReward} XP</span>
+                  {lesson.unlocked ? (
+                    <Link
+                      href={`/learn/${lesson.id}`}
+                      className="inline-flex items-center gap-1 text-[11px] font-bold text-cyan-300 hover:text-cyan-200"
+                    >
+                      Learn now <ArrowRight className="w-3 h-3" />
+                    </Link>
+                  ) : (
+                    <span className="text-[11px] text-slate-500">Complete previous mission</span>
+                  )}
+                </div>
+              </div>
+            ))}
           </div>
         </section>
 

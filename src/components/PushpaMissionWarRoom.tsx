@@ -492,7 +492,7 @@ export default function PushpaMissionWarRoom({
                 }`}
               >
                 <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">
-                  Database CPU
+                  App Server CPU
                 </span>
                 <div className="text-base sm:text-lg font-black my-0.5">
                   {m2Solved ? "18%" : "99% 🔥"}

@@ -114,39 +114,55 @@ export default function InterviewPage() {
   const calculateEvaluation = () => {
     const issues: string[] = [];
     const strengths: string[] = [];
-    let score = 100;
+    const isTwitterInterview = problem.id === "interview-twitter-timeline";
+    const criteria = [
+      {
+        passed: userComponents.hasLB,
+        penalty: 25,
+        strength: "Load Balancer deployed: Traffic is evenly distributed across stateless servers.",
+        issue: "Missing Load Balancer: Peak timeline traffic has no reverse-proxy layer to distribute sessions.",
+      },
+      {
+        passed: userComponents.serverCount > 1,
+        penalty: 25,
+        strength: `Horizontally scaled compute: ${userComponents.serverCount} stateless worker servers active.`,
+        issue: "Single Point of Failure (SPOF): The selected architecture still has only one application server.",
+      },
+      {
+        passed: userComponents.hasCache,
+        penalty: isTwitterInterview ? 30 : 25,
+        strength: isTwitterInterview
+          ? "Timeline cache configured: Precomputed feed reads avoid expensive follow-graph queries."
+          : "Sub-millisecond RAM caching configured: Protects persistent storage from read bursts.",
+        issue: isTwitterInterview
+          ? "Missing timeline cache: Feed reads would repeatedly execute expensive joins at extreme QPS."
+          : "Missing in-memory cache: High-volume reads will saturate the database connection pool.",
+      },
+      {
+        passed: userComponents.hasDatabase,
+        penalty: 25,
+        strength: "Durable persistent storage configured for system records.",
+        issue: "Missing persistent storage: The architecture cannot durably store system records.",
+      },
+    ];
 
-    if (!userComponents.hasLB) {
-      issues.push("Missing Load Balancer: Direct traffic to app servers causes uneven socket load and lacks reverse-proxy resilience.");
-      score -= 25;
-    } else {
-      strengths.push("Load Balancer deployed: Traffic is evenly distributed across stateless servers.");
+    if (isTwitterInterview) {
+      criteria.push({
+        passed: userComponents.hasReplica,
+        penalty: 15,
+        strength: "Read/write capacity is separated with a replica for high-volume feed reads.",
+        issue: "Missing read/write separation: Feed reads and tweet writes still compete for one database tier.",
+      });
     }
 
-    if (userComponents.serverCount < 2) {
-      issues.push("Single Point of Failure (SPOF): Only 1 app server running. If it crashes, 100% of users experience downtime.");
-      score -= 25;
-    } else {
-      strengths.push(`Horizontally scaled compute: ${userComponents.serverCount} stateless worker servers active.`);
-    }
-
-    if (!userComponents.hasCache) {
-      issues.push("Missing In-Memory Cache (Redis): High-volume read redirects hit the database directly, risking connection pool saturation.");
-      score -= 30;
-    } else {
-      strengths.push("Sub-millisecond RAM caching configured: Protects persistent storage from read bursts.");
-    }
-
-    if (!userComponents.hasDatabase) {
-      issues.push("Missing Persistent Storage: No database found to persist records permanently.");
-      score -= 35;
-    } else {
-      strengths.push("Persistent relational/NoSQL storage configured.");
-    }
-
-    if (userComponents.hasReplica) {
-      strengths.push("Read Replica offloading queries from primary leader.");
-    }
+    const score = criteria.reduce((total, criterion) => {
+      if (criterion.passed) {
+        strengths.push(criterion.strength);
+        return total;
+      }
+      issues.push(criterion.issue);
+      return total - criterion.penalty;
+    }, 100);
 
     return {
       score: Math.max(0, score),

@@ -35,6 +35,7 @@ import {
   X,
 } from "lucide-react";
 import { playBlipSound, playSuccessSound, playErrorSound } from "@/lib/sound";
+import { evaluateArchitectureScore } from "@/lib/builderScore";
 import { RemovableEdge } from "@/components/builder/RemovableEdge";
 
 const nodeTypes = {
@@ -292,14 +293,15 @@ export default function BuilderPage() {
   const hasLB = nodes.some((n) => (n.data as any).type === "load_balancer");
   const hasCache = nodes.some((n) => (n.data as any).type === "cache");
   const hasDB = nodes.some((n) => (n.data as any).type === "database");
+  const architectureScore = evaluateArchitectureScore(nodes, trafficRps);
 
   return (
     <div className="min-h-screen bg-[#080c14] text-slate-100 flex flex-col">
       <Navbar />
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 flex flex-col space-y-4">
-        {/* Header & Controls Bar */}
-        <div className="flex flex-wrap items-center justify-between gap-4 p-4 rounded-2xl glass-panel border border-white/10">
+        <div className="grid grid-cols-1 xl:grid-cols-[1.4fr_0.8fr] gap-4">
+          <div className="flex flex-wrap items-center justify-between gap-4 p-4 rounded-2xl glass-panel border border-white/10">
           <div>
             <div className="flex items-center gap-2">
               <span className="px-2.5 py-0.5 rounded bg-cyan-500/20 text-cyan-400 font-bold text-xs uppercase tracking-wider border border-cyan-500/30">
@@ -336,36 +338,66 @@ export default function BuilderPage() {
           </div>
 
           {/* Action Buttons: Simulate, Chaos Break, Reset */}
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handleSimulate}
-              className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-cyan-500 to-emerald-500 hover:from-cyan-400 hover:to-emerald-400 text-slate-950 font-bold text-xs flex items-center gap-1.5 shadow-lg shadow-cyan-500/20 transition-all"
-            >
-              <Play className="w-3.5 h-3.5 fill-slate-950" />
-              Simulate
-            </button>
-            <button
-              onClick={triggerChaosBreak}
-              className="px-3 py-2 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-rose-300 font-bold text-xs flex items-center gap-1.5 transition-all"
-              title="Break System (Traffic Spike to 100k RPS)"
-            >
-              <Flame className="w-3.5 h-3.5 fill-rose-500" />
-              Break System
-            </button>
-            <button
-              onClick={handleReset}
-              className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
-              title="Reset to Template"
-            >
-              <RotateCcw className="w-4 h-4" />
-            </button>
-            <button
-              onClick={handleClear}
-              className="p-2 rounded-xl bg-slate-800 hover:bg-rose-900/40 text-slate-300 hover:text-rose-400 transition-colors"
-              title="Clear Canvas"
-            >
-              <Trash2 className="w-4 h-4" />
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleSimulate}
+                className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-cyan-500 to-emerald-500 hover:from-cyan-400 hover:to-emerald-400 text-slate-950 font-bold text-xs flex items-center gap-1.5 shadow-lg shadow-cyan-500/20 transition-all"
+              >
+                <Play className="w-3.5 h-3.5 fill-slate-950" />
+                Simulate
+              </button>
+              <button
+                onClick={triggerChaosBreak}
+                className="px-3 py-2 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-rose-300 font-bold text-xs flex items-center gap-1.5 transition-all"
+                title="Break System (Traffic Spike to 100k RPS)"
+              >
+                <Flame className="w-3.5 h-3.5 fill-rose-500" />
+                Break System
+              </button>
+              <button
+                onClick={handleReset}
+                className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+                title="Reset to Template"
+              >
+                <RotateCcw className="w-4 h-4" />
+              </button>
+              <button
+                onClick={handleClear}
+                className="p-2 rounded-xl bg-slate-800 hover:bg-rose-900/40 text-slate-300 hover:text-rose-400 transition-colors"
+                title="Clear Canvas"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+
+          <div className="p-4 rounded-2xl border border-cyan-500/30 bg-gradient-to-br from-slate-900 via-slate-900 to-cyan-950/20 shadow-xl">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-black uppercase tracking-[0.18em] text-cyan-300">Boss Challenge</span>
+              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${architectureScore.canPass ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30" : "bg-amber-500/15 text-amber-300 border-amber-500/30"}`}>
+                {architectureScore.canPass ? "Pass" : "Needs Fix"}
+              </span>
+            </div>
+            <div className="mt-3 flex items-baseline gap-2">
+              <span className="text-3xl font-black text-white">{architectureScore.score}</span>
+              <span className="text-sm text-slate-400">/ 100</span>
+            </div>
+            <div className="mt-2 text-lg font-black text-cyan-300">Grade {architectureScore.grade}</div>
+            <p className="mt-2 text-xs text-slate-300 leading-relaxed">{architectureScore.summary}</p>
+            <div className="mt-4 h-2 rounded-full bg-slate-800 overflow-hidden">
+              <div
+                className={`h-full rounded-full ${architectureScore.canPass ? "bg-gradient-to-r from-emerald-400 to-cyan-400" : "bg-gradient-to-r from-amber-400 to-rose-500"}`}
+                style={{ width: `${architectureScore.score}%` }}
+              />
+            </div>
+            <ul className="mt-4 space-y-2 text-[11px] text-slate-300">
+              {architectureScore.findings.map((finding) => (
+                <li key={finding} className="flex items-start gap-2">
+                  <span className="mt-1 h-1.5 w-1.5 rounded-full bg-cyan-400" />
+                  <span>{finding}</span>
+                </li>
+              ))}
+            </ul>
           </div>
         </div>
 

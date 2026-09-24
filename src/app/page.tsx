@@ -139,16 +139,16 @@ export default function RootPage() {
                   <span className="text-[9px] text-slate-400 font-mono">Requests Per Sec</span>
                 </div>
 
-                {/* Database CPU Metric */}
+                {/* Application CPU Metric */}
                 <div className="p-2.5 sm:p-3 rounded-xl bg-rose-950/40 border border-rose-500/50 text-rose-300 flex flex-col justify-between">
                   <span className="text-[10px] font-bold text-rose-400 uppercase tracking-wider">
-                    Database CPU
+                    App Server CPU
                   </span>
                   <div className="text-base sm:text-lg font-black text-rose-400 my-0.5 flex items-center gap-1">
                     <Flame className="w-4 h-4 fill-rose-500 shrink-0" />
                     <span>98%</span>
                   </div>
-                  <span className="text-[9px] text-rose-300/80 font-mono">Connections Maxed</span>
+                  <span className="text-[9px] text-rose-300/80 font-mono">Request Threads Maxed</span>
                 </div>
 
                 {/* Impact Metric */}

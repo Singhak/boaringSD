@@ -21,7 +21,7 @@ import Navbar from "@/components/Navbar";
 import MetricCard from "@/components/MetricCard";
 import InteractiveStage from "@/components/simulation/InteractiveStage";
 import LevelUpModal from "@/components/LevelUpModal";
-import { getLessonById, LESSONS } from "@/lib/lessons";
+import { getConceptReveal, getLessonById, LESSONS } from "@/lib/lessons";
 import { completeLesson } from "@/lib/storage";
 import { playLevelUpSound, playBlipSound } from "@/lib/sound";
 import { SimulationState } from "@/types";
@@ -149,6 +149,7 @@ export default function LessonPage() {
 
   const nextLessonIndex = LESSONS.findIndex((l) => l.id === lesson.id) + 1;
   const nextLesson = LESSONS[nextLessonIndex];
+  const conceptReveal = getConceptReveal(lesson.id);
 
   return (
     <div className="min-h-screen bg-[#080c14] text-slate-100 flex flex-col">
@@ -216,6 +217,23 @@ export default function LessonPage() {
                   <Play className="w-3.5 h-3.5 fill-cyan-400" /> In Progress
                 </span>
               )}
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-[1.3fr_0.7fr] gap-4 p-5 rounded-2xl border border-cyan-500/30 bg-gradient-to-r from-slate-900/80 via-slate-900/70 to-cyan-950/20">
+          <div>
+            <div className="text-[10px] font-black uppercase tracking-[0.18em] text-cyan-300">System Design Principle</div>
+            <h2 className="mt-2 text-xl font-black text-white">{conceptReveal.title}</h2>
+            <p className="mt-2 text-sm text-slate-300 leading-relaxed">{conceptReveal.principle}</p>
+          </div>
+
+          <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800">
+            <div className="text-[10px] font-black uppercase tracking-[0.18em] text-amber-300">Key Tradeoff</div>
+            <p className="mt-2 text-xs text-slate-300 leading-relaxed">{conceptReveal.tradeoff}</p>
+            <div className="mt-4 border-t border-slate-800 pt-3">
+              <div className="text-[10px] font-black uppercase tracking-[0.18em] text-emerald-300">Takeaway</div>
+              <p className="mt-2 text-xs text-cyan-100 leading-relaxed">{conceptReveal.takeaway}</p>
             </div>
           </div>
         </div>

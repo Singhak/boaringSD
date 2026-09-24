@@ -14,11 +14,8 @@ import {
   Sparkles,
   Server,
   Layers,
-  Database,
   Globe,
-  Crown,
   HelpCircle,
-  ShieldCheck,
   Flame,
 } from "lucide-react";
 import confetti from "canvas-confetti";
@@ -49,6 +46,49 @@ export default function CampaignChapterPage({
   const allChapters = getAllCampaignChapters();
   const nextChapter = allChapters.find((c) => c.chapterNumber === chapter.chapterNumber + 1);
 
+  const transferChallenge = {
+    add_load_balancer: {
+      question: "A second application server is online, but users still hit only Server 1. What completes the fix?",
+      options: [
+        { id: "keep-direct", label: "Keep sending clients directly to Server 1", isCorrect: false },
+        { id: "route-lb", label: "Route traffic through a Load Balancer", isCorrect: true },
+        { id: "add-dns", label: "Add another DNS record and wait for propagation", isCorrect: false },
+      ],
+    },
+    add_cache: {
+      question: "A product page is requested 10,000 times and changes once an hour. Which layer should absorb repeated reads?",
+      options: [
+        { id: "cache-read", label: "A cache with a short TTL", isCorrect: true },
+        { id: "more-writes", label: "A larger write queue", isCorrect: false },
+        { id: "dns-read", label: "A DNS resolver", isCorrect: false },
+      ],
+    },
+    add_replica: {
+      question: "Most database traffic is read-only. Where should those reads go while writes continue?",
+      options: [
+        { id: "primary-only", label: "Send every read to the primary database", isCorrect: false },
+        { id: "read-replica", label: "Distribute reads across read replicas", isCorrect: true },
+        { id: "cdn-db", label: "Move transactional writes to a CDN", isCorrect: false },
+      ],
+    },
+    scale_servers: {
+      question: "One server is at its hardware limit. What is the most resilient next step?",
+      options: [
+        { id: "bigger-server", label: "Keep buying a larger single machine", isCorrect: false },
+        { id: "more-servers", label: "Add multiple stateless application servers", isCorrect: true },
+        { id: "more-timeout", label: "Increase request timeouts", isCorrect: false },
+      ],
+    },
+    add_cdn: {
+      question: "Users far from the origin wait for large images and videos. What reduces that distance?",
+      options: [
+        { id: "edge-cache", label: "Cache static media at CDN edge locations", isCorrect: true },
+        { id: "db-replica", label: "Add a database replica in the origin region", isCorrect: false },
+        { id: "more-threads", label: "Add more application threads in the origin", isCorrect: false },
+      ],
+    },
+  }[chapter.solutionActionType];
+
   // Simulation State
   const [isSimulated, setIsSimulated] = useState(false);
   const [metrics, setMetrics] = useState(chapter.initialMetrics);
@@ -57,6 +97,9 @@ export default function CampaignChapterPage({
   const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null);
   const [challengeSubmitted, setChallengeSubmitted] = useState(false);
   const [isCorrect, setIsCorrect] = useState(false);
+  const [selectedTransferId, setSelectedTransferId] = useState<string | null>(null);
+  const [transferSubmitted, setTransferSubmitted] = useState(false);
+  const [transferCorrect, setTransferCorrect] = useState(false);
   const [showHint, setShowHint] = useState(false);
   const [levelUpData, setLevelUpData] = useState<{ newLevel: number; totalXp: number } | null>(null);
 
@@ -68,6 +111,9 @@ export default function CampaignChapterPage({
       setSelectedOptionId(chapter.challenge.options.find((o) => o.isCorrect)?.id || null);
       setChallengeSubmitted(true);
       setIsCorrect(true);
+      setSelectedTransferId(transferChallenge.options.find((o) => o.isCorrect)?.id || null);
+      setTransferSubmitted(true);
+      setTransferCorrect(true);
     }
   }, [chapter]);
 
@@ -105,6 +151,32 @@ export default function CampaignChapterPage({
         // Fallback
       }
 
+    } else {
+      setIsCorrect(false);
+      playErrorSound();
+    }
+  };
+
+  const handleTransferSubmit = () => {
+    if (!selectedTransferId || transferSubmitted) return;
+    const selected = transferChallenge.options.find((option) => option.id === selectedTransferId);
+    const passed = selected?.isCorrect === true;
+    setTransferSubmitted(true);
+    setTransferCorrect(passed);
+
+    if (passed) {
+      playSuccessSound();
+      try {
+        confetti({
+          particleCount: 70,
+          spread: 70,
+          origin: { y: 0.6 },
+          colors: ["#22d3ee", "#10b981", "#f59e0b"],
+        });
+      } catch {
+        // Fallback
+      }
+
       const { stats, leveledUp } = recordChapterComplete(chapter.id, chapter.xpReward);
       if (leveledUp) {
         setTimeout(() => {
@@ -113,7 +185,6 @@ export default function CampaignChapterPage({
         }, 500);
       }
     } else {
-      setIsCorrect(false);
       playErrorSound();
     }
   };
@@ -426,7 +497,7 @@ export default function CampaignChapterPage({
                   {isCorrect ? (
                     <>
                       <CheckCircle2 className="w-5 h-5 text-emerald-400" />
-                      <span className="text-emerald-300">Chapter Cleared!</span>
+                      <span className="text-emerald-300">Boss Answer Correct</span>
                     </>
                   ) : (
                     <>
@@ -442,7 +513,67 @@ export default function CampaignChapterPage({
                   }
                 </p>
 
-                {isCorrect && nextChapter && (
+                {isCorrect && !transferSubmitted && (
+                  <div className="pt-3 border-t border-cyan-500/20 space-y-3">
+                    <div>
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-cyan-400">
+                        Prove the pattern
+                      </span>
+                      <h4 className="text-sm font-bold text-white mt-1">{transferChallenge.question}</h4>
+                    </div>
+
+                    <div className="space-y-2">
+                      {transferChallenge.options.map((option) => (
+                        <button
+                          key={option.id}
+                          onClick={() => setSelectedTransferId(option.id)}
+                          className={`w-full p-3 rounded-lg border text-left text-xs transition-all ${
+                            selectedTransferId === option.id
+                              ? "bg-cyan-500/15 border-cyan-400 text-white font-semibold"
+                              : "bg-slate-900/60 hover:bg-slate-800 border-slate-800 text-slate-300"
+                          }`}
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    <button
+                      onClick={handleTransferSubmit}
+                      disabled={!selectedTransferId}
+                      className={`px-6 py-2.5 rounded-xl font-black text-xs transition-all ${
+                        selectedTransferId
+                          ? "bg-gradient-to-r from-cyan-500 to-emerald-500 text-slate-950 shadow-lg shadow-cyan-500/20"
+                          : "bg-slate-800 text-slate-500 cursor-not-allowed"
+                      }`}
+                    >
+                      Check Understanding
+                    </button>
+                  </div>
+                )}
+
+                {isCorrect && transferSubmitted && (
+                  <div className={`pt-3 border-t ${transferCorrect ? "border-emerald-500/30" : "border-rose-500/30"}`}>
+                    <p className={transferCorrect ? "text-emerald-300" : "text-rose-300"}>
+                      {transferCorrect
+                        ? "Correct. You applied the same bottleneck pattern to a new situation."
+                        : "Not quite. Re-read the bottleneck explanation and try the transfer question again."}
+                    </p>
+                    {!transferCorrect && (
+                      <button
+                        onClick={() => {
+                          setTransferSubmitted(false);
+                          setSelectedTransferId(null);
+                        }}
+                        className="mt-2 text-xs font-bold text-cyan-400 hover:text-cyan-300"
+                      >
+                        Try again
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {isCorrect && transferCorrect && nextChapter && (
                   <div className="pt-3">
                     <Link
                       href={`/campaign/${nextChapter.id}`}

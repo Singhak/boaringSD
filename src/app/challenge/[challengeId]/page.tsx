@@ -20,7 +20,7 @@ import {
 } from "lucide-react";
 import Navbar from "@/components/Navbar";
 import LevelUpModal from "@/components/LevelUpModal";
-import { getChallengeById, LESSONS } from "@/lib/lessons";
+import { getChallengeById, getConceptReveal, LESSONS } from "@/lib/lessons";
 import { completeChallenge } from "@/lib/storage";
 import { playSuccessSound, playErrorSound, playBlipSound } from "@/lib/sound";
 
@@ -50,6 +50,7 @@ export default function ChallengePage() {
 
   const selectedOption = challenge.options.find((o) => o.id === selectedOptionId);
   const isCorrect = selectedOption?.isCorrect ?? false;
+  const conceptReveal = getConceptReveal(challenge.lessonId || challenge.id);
 
   const handleSubmit = () => {
     if (!selectedOptionId) return;
@@ -264,6 +265,24 @@ export default function ChallengePage() {
               <p className="text-xs text-slate-200 mt-2 leading-relaxed">
                 {selectedOption.explanation}
               </p>
+            </div>
+          )}
+
+          {isSubmitted && (
+            <div className="p-4 rounded-xl border border-cyan-500/30 bg-cyan-500/5">
+              <div className="text-[10px] font-black uppercase tracking-[0.18em] text-cyan-300">Concept Reveal</div>
+              <h3 className="mt-2 text-lg font-black text-white">{conceptReveal.title}</h3>
+              <p className="mt-2 text-sm text-slate-300 leading-relaxed">{conceptReveal.principle}</p>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2 text-xs text-slate-200">
+                <div className="p-3 rounded-lg bg-slate-900/60 border border-slate-800">
+                  <div className="font-black uppercase tracking-[0.12em] text-amber-300">Tradeoff</div>
+                  <p className="mt-2 leading-relaxed">{conceptReveal.tradeoff}</p>
+                </div>
+                <div className="p-3 rounded-lg bg-slate-900/60 border border-slate-800">
+                  <div className="font-black uppercase tracking-[0.12em] text-emerald-300">Takeaway</div>
+                  <p className="mt-2 leading-relaxed">{conceptReveal.takeaway}</p>
+                </div>
+              </div>
             </div>
           )}
 
