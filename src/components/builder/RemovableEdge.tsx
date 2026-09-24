@@ -34,8 +34,8 @@ export function RemovableEdge({
         path={edgePath}
         markerEnd={markerEnd}
         style={{
-          strokeWidth: selected ? 3 : 2,
-          stroke: selected ? "#38bdf8" : "#0284c7",
+          strokeWidth: selected ? 2.5 : 1.5,
+          stroke: selected ? "#7dd3fc" : "rgba(56, 214, 232, 0.45)",
           ...(style || {}),
         }}
       />
