@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useEffect } from "react";
+import React, { useEffect, useRef } from "react";
 import confetti from "canvas-confetti";
-import { Trophy, Zap, ArrowRight, X } from "lucide-react";
+import { ArrowRight, Trophy, X, Zap } from "lucide-react";
 import { playSuccessSound } from "@/lib/sound";
 
 interface LevelUpModalProps {
@@ -24,75 +24,85 @@ export default function LevelUpModal({
   xpEarned,
   badgeEarned,
   onNext,
-  nextLabel = "Continue Quest",
+  nextLabel = "Continue",
 }: LevelUpModalProps) {
+  const primaryRef = useRef<HTMLButtonElement>(null);
+  // Callers pass inline closures; keep the latest without re-running the celebration.
+  const closeRef = useRef(onClose);
   useEffect(() => {
-    if (isOpen) {
-      playSuccessSound();
-      try {
-        confetti({
-          particleCount: 80,
-          spread: 70,
-          origin: { y: 0.6 },
-          colors: ["#06b6d4", "#10b981", "#f59e0b", "#8b5cf6"],
-        });
-      } catch {
-        // Safe fallback
-      }
+    closeRef.current = onClose;
+  });
+
+  useEffect(() => {
+    if (!isOpen) return;
+    playSuccessSound();
+    try {
+      confetti({ particleCount: 70, spread: 70, origin: { y: 0.6 }, colors: ["#38d6e8", "#34d399", "#fbbf24"] });
+    } catch {
+      // Canvas unavailable
     }
+    primaryRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeRef.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, [isOpen]);
 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fadeIn">
-      <div className="relative w-full max-w-md p-6 sm:p-8 rounded-2xl bg-gradient-to-b from-[#131d31] to-[#090d16] border border-cyan-500/40 shadow-2xl shadow-cyan-500/10 text-center">
-        <button
-          onClick={onClose}
-          className="absolute top-4 right-4 p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800"
-          aria-label="Close"
-        >
-          <X className="w-5 h-5" />
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[rgba(7,9,15,0.8)] backdrop-blur-sm animate-fadeIn"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="levelup-title"
+        className="surface-accent relative w-full max-w-md p-6 sm:p-8 space-y-6"
+      >
+        <button onClick={onClose} className="btn btn-ghost !p-1.5 absolute top-3 right-3" aria-label="Close">
+          <X className="w-4 h-4" />
         </button>
 
-        <div className="mx-auto w-16 h-16 rounded-2xl bg-gradient-to-tr from-cyan-500 to-emerald-400 p-[1px] mb-5">
-          <div className="w-full h-full bg-[#090d16] rounded-2xl flex items-center justify-center">
-            <Trophy className="w-8 h-8 text-amber-400 animate-bounce" />
-          </div>
+        <div className="space-y-3">
+          <span className="w-11 h-11 rounded-xl border border-amber-300/40 bg-amber-300/[0.08] grid place-items-center">
+            <Trophy className="w-5 h-5 text-amber-300" aria-hidden />
+          </span>
+          <h2 id="levelup-title" className="text-2xl display pr-6">
+            {title}
+          </h2>
+          <p className="text-sm text-slate-400 leading-relaxed">{subtitle}</p>
         </div>
 
-        <h3 className="text-2xl font-black text-white tracking-tight">{title}</h3>
-        <p className="mt-2 text-sm text-slate-300 leading-relaxed">{subtitle}</p>
-
-        <div className="mt-6 flex items-center justify-center gap-4">
-          <div className="px-4 py-2.5 rounded-xl bg-cyan-500/10 border border-cyan-500/30 flex items-center gap-2 text-cyan-300 font-bold text-sm">
-            <Zap className="w-4 h-4 fill-cyan-400 text-cyan-400" />
-            <span>+{xpEarned} XP Earned</span>
-          </div>
-
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="chip chip-warn">
+            <Zap className="w-3 h-3" aria-hidden />
+            <span className="num">+{xpEarned} XP</span>
+          </span>
           {badgeEarned && (
-            <div className="px-4 py-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 font-bold text-sm">
-              🏆 {badgeEarned}
-            </div>
+            <span className="chip chip-ok">
+              <Trophy className="w-3 h-3" aria-hidden />
+              {badgeEarned}
+            </span>
           )}
         </div>
 
-        <div className="mt-8 flex gap-3">
-          <button
-            onClick={onClose}
-            className="flex-1 px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-sm transition-colors"
-          >
-            Review Architecture
+        <div className="flex flex-col-reverse sm:flex-row gap-2">
+          <button onClick={onClose} className="btn btn-secondary flex-1">
+            Stay here
           </button>
           {onNext && (
             <button
+              ref={primaryRef}
               onClick={() => {
                 onClose();
                 onNext();
               }}
-              className="flex-1 px-4 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-emerald-500 hover:from-cyan-400 hover:to-emerald-400 text-slate-950 font-bold text-sm flex items-center justify-center gap-2 shadow-lg shadow-cyan-500/20 transition-all"
+              className="btn btn-primary flex-1"
             >
-              <span>{nextLabel}</span>
+              {nextLabel}
               <ArrowRight className="w-4 h-4" />
             </button>
           )}

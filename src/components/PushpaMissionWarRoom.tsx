@@ -1,832 +1,443 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import {
-  Flame,
-  Zap,
-  Activity,
-  Server,
-  Database,
-  Layers,
-  CheckCircle2,
-  AlertTriangle,
-  ArrowRight,
-  ShieldCheck,
-  RotateCcw,
-  Sparkles,
-  Volume2,
-  VolumeX,
-  ExternalLink,
-  Lock,
-  Globe,
-  Award,
-} from "lucide-react";
+import { ArrowRight, Check, Volume2, VolumeX, X, Zap } from "lucide-react";
 import confetti from "canvas-confetti";
-import {
-  playSuccessSound,
-  playErrorSound,
-  playLevelUpSound,
-  playAlarmSound,
-  playDeploySound,
-  playBlipSound,
-} from "@/lib/sound";
-import { recordMissionComplete, loginUser, getUserStats } from "@/lib/storage";
+import QuestionCard from "@/components/run/QuestionCard";
+import { StatStrip, Stepper, T, Topology } from "@/components/run/RunVisuals";
+import type { Stat, Tier } from "@/components/run/RunVisuals";
+import { playAlarmSound, playBlipSound, playDeploySound, playLevelUpSound } from "@/lib/sound";
+import { getUserStats, loginUser, recordMissionComplete, saveUserStats } from "@/lib/storage";
+import { useUserStats } from "@/lib/useUserStats";
+import type { PatternQuestion } from "@/types";
 
 interface PushpaMissionWarRoomProps {
   onClose?: () => void;
+  /** Kept for callers; layout is the same either way. */
   isStandalonePage?: boolean;
 }
 
-export default function PushpaMissionWarRoom({
-  onClose,
-  isStandalonePage = false,
-}: PushpaMissionWarRoomProps) {
-  const router = useRouter();
+// ---------------------------------------------------------------------------
+// The two onboarding incidents, as data
+// ---------------------------------------------------------------------------
 
-  // Step 1: Mission 1 (Traffic Overload)
-  // Step 2: Mission 2 (Database Meltdown)
-  // Step 3: Mission Complete & Save Progress
-  const [currentStep, setCurrentStep] = useState<1 | 2 | 3>(1);
+interface Mission {
+  id: string;
+  incidentId: string;
+  step: string;
+  xp: number;
+  title: string;
+  context: string;
+  hint: string;
+  question: PatternQuestion;
+  before: { stats: Stat[]; tiers: Tier[] };
+  after: { stats: Stat[]; tiers: Tier[] };
+  fixSummary: string;
+  pattern: string;
+}
 
-  // Solved states
-  const [m1Solved, setM1Solved] = useState(false);
-  const [m1SelectedChoice, setM1SelectedChoice] = useState<string | null>(null);
-  const [m1Feedback, setM1Feedback] = useState<string | null>(null);
+const MISSIONS: Mission[] = [
+  {
+    id: "mission-1",
+    incidentId: "INC-001",
+    step: "Overload",
+    xp: 50,
+    title: "One server is taking all the traffic",
+    context:
+      "A spike sent 100,000 requests a second at a single app server. Its CPU is pinned and feed requests are timing out. The database is still fine.",
+    hint: "Look at which box is red. The database is healthy, so the problem is how much work lands on one server.",
+    question: {
+      question: "Traffic is 10× normal and one server is at 96% CPU. What do you add?",
+      options: [
+        {
+          id: "cache",
+          label: "A cache in front of the database",
+          isCorrect: false,
+          explanation:
+            "A cache saves database reads, but the database isn't the problem. The single server is out of CPU just handling the connections.",
+        },
+        {
+          id: "lb",
+          label: "A load balancer and a second app server",
+          isCorrect: true,
+          explanation:
+            "The load balancer splits the 100k req/s across two servers, so each one does half the work. CPU drops to 38% and the feed loads again.",
+        },
+        {
+          id: "cdn",
+          label: "A CDN at the edge",
+          isCorrect: false,
+          explanation:
+            "A CDN serves static files like images and scripts. Feed requests are personalised, so they still have to reach an app server.",
+        },
+      ],
+    },
+    before: {
+      stats: [
+        { label: "Traffic", value: "100,000", unit: "req/s", sub: "10× normal" },
+        { label: "Server CPU", value: 96, unit: "%", tone: "bad", sub: "one server" },
+        { label: "p95 latency", value: "4,200", unit: "ms", tone: "bad", sub: "feeds time out" },
+      ],
+      tiers: [[T("Users", "ok", "100k req/s")], [T("App Server 1", "hot", "96% CPU")], [T("Database")]],
+    },
+    after: {
+      stats: [
+        { label: "Traffic", value: "100,000", unit: "req/s", sub: "same spike" },
+        { label: "Server CPU", value: 38, unit: "%", tone: "ok", sub: "was 96%" },
+        { label: "p95 latency", value: "195", unit: "ms", tone: "ok", sub: "was 4,200 ms" },
+      ],
+      tiers: [
+        [T("Users", "ok", "100k req/s")],
+        [T("Load Balancer", "new", "round robin")],
+        [T("App Server 1", "ok", "38%"), T("App Server 2", "new", "37%")],
+        [T("Database")],
+      ],
+    },
+    fixSummary: "Load balancer + a second server: CPU 96% → 38%, latency 4,200 → 195 ms",
+    pattern: "Load balancing",
+  },
+  {
+    id: "mission-2",
+    incidentId: "INC-002",
+    step: "DB meltdown",
+    xp: 100,
+    title: "Now the database is drowning in reads",
+    context:
+      "With two servers the app tier is healthy, so twice as many requests reach the database. Every feed refresh runs the same queries, and it has used all 1,000 connections.",
+    hint: "Most of these requests read the same feed rows again and again. What can answer a repeated read without touching disk?",
+    question: {
+      question: "The database is at 99% CPU with every connection in use. What do you add?",
+      options: [
+        {
+          id: "cache",
+          label: "An in-memory cache (Redis) in front of the database",
+          isCorrect: true,
+          explanation:
+            "Repeated feed reads now come from memory. 96% of requests never reach the database, so its CPU falls to 18%.",
+        },
+        {
+          id: "cdn",
+          label: "A CDN at the edge",
+          isCorrect: false,
+          explanation:
+            "A CDN caches static files near users. Each user's feed is different, so those queries still hit the database.",
+        },
+        {
+          id: "dns",
+          label: "A faster DNS provider",
+          isCorrect: false,
+          explanation: "DNS only turns a domain name into an IP address. It runs before a request arrives and does nothing for database load.",
+        },
+      ],
+    },
+    before: {
+      stats: [
+        { label: "App tier", value: "2", unit: "servers", tone: "ok", sub: "load balanced" },
+        { label: "Database CPU", value: 99, unit: "%", tone: "bad", sub: "1,000/1,000 conns" },
+        { label: "p95 latency", value: "7,000", unit: "ms", tone: "bad", sub: "queries queue up" },
+        { label: "Cache hits", value: "0", unit: "%", sub: "no cache" },
+      ],
+      tiers: [
+        [T("Users", "ok", "100k req/s")],
+        [T("Load Balancer")],
+        [T("App Servers ×2", "ok", "40%")],
+        [T("Database", "hot", "99% · conns full")],
+      ],
+    },
+    after: {
+      stats: [
+        { label: "App tier", value: "2", unit: "servers", tone: "ok", sub: "load balanced" },
+        { label: "Database CPU", value: 18, unit: "%", tone: "ok", sub: "was 99%" },
+        { label: "p95 latency", value: "42", unit: "ms", tone: "ok", sub: "was 7,000 ms" },
+        { label: "Cache hits", value: "96", unit: "%", tone: "ok", sub: "reads from memory" },
+      ],
+      tiers: [
+        [T("Users", "ok", "100k req/s")],
+        [T("Load Balancer")],
+        [T("App Servers ×2", "ok", "18%")],
+        [T("Redis Cache", "new", "96% hits"), T("Database", "ok", "misses + writes")],
+      ],
+    },
+    fixSummary: "Redis cache: database CPU 99% → 18%, latency 7,000 → 42 ms",
+    pattern: "Caching",
+  },
+];
 
-  const [m2Solved, setM2Solved] = useState(false);
-  const [m2SelectedChoice, setM2SelectedChoice] = useState<string | null>(null);
-  const [m2Feedback, setM2Feedback] = useState<string | null>(null);
+const STEPS = [...MISSIONS.map((m) => ({ id: m.id, label: m.step })), { id: "debrief", label: "Debrief" }];
 
-  // Sound preference
-  const [soundEnabled, setSoundEnabled] = useState(true);
+function celebrate() {
+  try {
+    confetti({ particleCount: 90, spread: 80, origin: { y: 0.6 }, colors: ["#38d6e8", "#34d399", "#fbbf24"] });
+  } catch {
+    // Canvas unavailable
+  }
+}
 
-  // Auth / Save state
-  const [isSaved, setIsSaved] = useState(false);
-  const [savedUser, setSavedUser] = useState<{ name: string; email: string } | null>(null);
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
 
-  // Initial trigger for alarm sound
+export default function PushpaMissionWarRoom({ onClose }: PushpaMissionWarRoomProps) {
+  const stats = useUserStats();
+  const soundOn = stats?.soundEnabled ?? true;
+
+  const [step, setStep] = useState(0);
+  const [solved, setSolved] = useState<Record<string, number>>({}); // mission id → XP actually awarded
+  const [savedAs, setSavedAs] = useState<"guest" | string | null>(null);
+
+  const mission = MISSIONS[step] as Mission | undefined;
+  const done = step >= MISSIONS.length;
+  const isSolved = mission ? mission.id in solved : true;
+  const view = mission ? (isSolved ? mission.after : mission.before) : null;
+  const totalXp = Object.values(solved).reduce((a, b) => a + b, 0);
+
   useEffect(() => {
-    const stats = getUserStats();
-    setSoundEnabled(stats.soundEnabled);
-    if (stats.soundEnabled) {
-      playAlarmSound();
-    }
+    playAlarmSound();
   }, []);
 
-  // Trigger confetti upon reaching completion
   useEffect(() => {
-    if (currentStep === 3) {
-      if (soundEnabled) playLevelUpSound();
-      try {
-        confetti({
-          particleCount: 90,
-          spread: 80,
-          origin: { y: 0.6 },
-          colors: ["#22d3ee", "#10b981", "#f59e0b", "#a855f7"],
-        });
-      } catch {
-        // Fallback
-      }
-    }
-  }, [currentStep, soundEnabled]);
+    if (!done) return;
+    playLevelUpSound();
+    celebrate();
+  }, [done]);
 
-  // Handle Mission 1 choice
-  const handleM1Choice = (choice: "cache" | "lb" | "cdn") => {
-    setM1SelectedChoice(choice);
-    if (choice === "lb") {
-      setM1Solved(true);
-      setM1Feedback("System Stabilized! The Load Balancer deployed and divided 100k RPS between 2 worker nodes.");
-      if (soundEnabled) {
-        playDeploySound();
-        setTimeout(() => playSuccessSound(), 200);
-      }
-      recordMissionComplete("mission-1", 50);
-    } else if (choice === "cache") {
-      if (soundEnabled) playErrorSound();
-      setM1Feedback("Incorrect: Caching reduces database hits, but here Server 1 compute CPU is 96% overwhelmed by raw incoming connection handling!");
-    } else {
-      if (soundEnabled) playErrorSound();
-      setM1Feedback("Incorrect: CDN handles static assets, but Twitter's dynamic feed requests require application compute scaling!");
-    }
+  const toggleSound = () => {
+    const current = getUserStats();
+    saveUserStats({ ...current, soundEnabled: !current.soundEnabled });
   };
 
-  // Handle Mission 2 choice
-  const handleM2Choice = (choice: "cache" | "cdn" | "dns") => {
-    setM2SelectedChoice(choice);
-    if (choice === "cache") {
-      setM2Solved(true);
-      setM2Feedback("Database Rescued! Redis in-memory cache intercepts 95%+ of feed queries before hitting PostgreSQL!");
-      if (soundEnabled) {
-        playDeploySound();
-        setTimeout(() => playSuccessSound(), 200);
-      }
-      recordMissionComplete("mission-2", 100);
-    } else if (choice === "cdn") {
-      if (soundEnabled) playErrorSound();
-      setM2Feedback("Incorrect: CDN caches static files at the edge, not personalized dynamic user feed queries!");
-    } else {
-      if (soundEnabled) playErrorSound();
-      setM2Feedback("Incorrect: DNS only maps domain names to IP addresses; it does not reduce database CPU usage!");
-    }
+  const handleAnswer = (m: Mission, correct: boolean) => {
+    if (!correct || m.id in solved) return;
+    const outcome = recordMissionComplete(m.id, m.xp);
+    setSolved((s) => ({ ...s, [m.id]: outcome.xpAwarded }));
+    setTimeout(() => playDeploySound(), 250);
   };
 
-  // Handle Google Login Mock
-  const handleGoogleLogin = () => {
-    if (soundEnabled) playSuccessSound();
-    const user = loginUser("alex.chen@systemdesignquest.io", "Alex Chen");
-    setSavedUser({ name: user.userName || "Alex Chen", email: user.userEmail || "alex.chen@systemdesignquest.io" });
-    setIsSaved(true);
+  const next = () => {
+    playBlipSound();
+    setStep((s) => s + 1);
   };
 
-  const handleGuestContinue = () => {
-    if (soundEnabled) playBlipSound();
-    setIsSaved(true);
-  };
+  const incidentOpen = !done && !isSolved;
 
   return (
-    <div className="w-full max-w-5xl bg-[#080c14] border border-cyan-500/40 rounded-2xl shadow-2xl overflow-hidden relative text-slate-100 flex flex-col justify-between my-auto">
-      {/* Top Incident Status Banner */}
-      <div className="bg-gradient-to-r from-rose-950/80 via-slate-900 to-slate-900 border-b border-rose-500/30 px-3.5 py-2 sm:px-5 sm:py-2.5 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2.5">
-          <div className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-ping shrink-0" />
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] font-black uppercase tracking-widest text-rose-400">
-                🚨 P0 Critical Incident
-              </span>
-              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40">
-                LIVE OUTAGE
-              </span>
-            </div>
-            <h2 className="text-xs sm:text-sm font-black text-white tracking-tight">
-              Twitter Feed Outage: 100,000 req/sec Spike
-            </h2>
-          </div>
+    <article
+      className={`surface overflow-hidden w-full text-left transition-[border-color,box-shadow] duration-700 ${
+        incidentOpen
+          ? "!border-rose-400/25 shadow-[0_30px_80px_-30px_rgba(251,113,133,0.35)]"
+          : "!border-emerald-400/20 shadow-[0_30px_80px_-30px_rgba(52,211,153,0.25)]"
+      }`}
+      aria-label="Onboarding incident"
+    >
+      {/* Pager header */}
+      <header
+        className={`flex items-center justify-between gap-3 px-4 sm:px-6 py-3 border-b border-[var(--line)] transition-colors duration-700 ${
+          incidentOpen ? "bg-rose-400/[0.04]" : "bg-emerald-400/[0.03]"
+        }`}
+      >
+        <div className="flex items-center gap-2.5 min-w-0">
+          {done ? (
+            <span className="chip chip-ok">
+              <Check className="w-3 h-3" aria-hidden /> All clear
+            </span>
+          ) : incidentOpen ? (
+            <span className="chip chip-bad">
+              <span className="dot animate-pulse-glow" aria-hidden /> P0 · Live outage
+            </span>
+          ) : (
+            <span className="chip chip-ok">
+              <span className="dot" aria-hidden /> Mitigated
+            </span>
+          )}
+          <span className="num text-[11px] text-slate-500 truncate">
+            {mission ? `${mission.incidentId} · feed service` : "2 incidents resolved"}
+          </span>
         </div>
-
-        {/* Step Indicator & Controls */}
-        <div className="flex items-center gap-2 sm:gap-3 text-xs font-bold">
-          <div className="flex items-center gap-1 sm:gap-1.5 text-[11px]">
-            <span
-              className={`px-2 py-0.5 rounded-md ${
-                currentStep === 1
-                  ? "bg-cyan-500 text-slate-950 font-black"
-                  : m1Solved
-                  ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
-                  : "bg-slate-800 text-slate-400"
-              }`}
-            >
-              1. Overload
-            </span>
-            <span className="text-slate-600 text-[10px]">➔</span>
-            <span
-              className={`px-2 py-0.5 rounded-md ${
-                currentStep === 2
-                  ? "bg-cyan-500 text-slate-950 font-black"
-                  : m2Solved
-                  ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
-                  : "bg-slate-800 text-slate-400"
-              }`}
-            >
-              2. DB Meltdown
-            </span>
-            <span className="text-slate-600 text-[10px]">➔</span>
-            <span
-              className={`px-2 py-0.5 rounded-md ${
-                currentStep === 3
-                  ? "bg-amber-500 text-slate-950 font-black"
-                  : "bg-slate-800 text-slate-400"
-              }`}
-            >
-              3. Progress
-            </span>
-          </div>
-
+        <div className="flex items-center gap-1 shrink-0">
           <button
-            onClick={() => setSoundEnabled(!soundEnabled)}
-            className="p-1 rounded-md bg-slate-800/80 hover:bg-slate-700 text-slate-300 transition-colors"
-            title={soundEnabled ? "Mute War Room Audio" : "Enable Audio"}
+            type="button"
+            onClick={toggleSound}
+            className="btn btn-ghost !p-1.5"
+            aria-label={soundOn ? "Mute sound effects" : "Turn sound effects on"}
+            title={soundOn ? "Mute" : "Sound on"}
           >
-            {soundEnabled ? <Volume2 className="w-3.5 h-3.5 text-cyan-400" /> : <VolumeX className="w-3.5 h-3.5 text-slate-500" />}
+            {soundOn ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
           </button>
-
           {onClose && (
-            <button
-              onClick={onClose}
-              className="text-[11px] text-slate-400 hover:text-white px-2 py-0.5 rounded bg-slate-800 transition-colors"
-            >
-              Exit War Room
+            <button type="button" onClick={onClose} className="btn btn-ghost !py-1.5 text-xs">
+              <X className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Exit</span>
             </button>
           )}
         </div>
+      </header>
+
+      <div className="p-4 sm:p-6 space-y-6">
+        <Stepper steps={STEPS} current={step} label="Incident progress" />
+
+        {mission && view && (
+          <div key={mission.id} className="grid grid-cols-1 lg:grid-cols-[1.35fr_1fr] gap-6 animate-fadeIn">
+            {/* Left: what the system is doing */}
+            <section className="space-y-4 min-w-0" aria-label="System state">
+              <div className="space-y-1.5">
+                <span className="eyebrow">
+                  Incident {step + 1} of {MISSIONS.length}
+                </span>
+                <h2 className="text-2xl display">{mission.title}</h2>
+                <p className="text-[14px] text-slate-400 leading-relaxed">{mission.context}</p>
+              </div>
+              <StatStrip stats={view.stats} />
+              <Topology
+                tiers={view.tiers}
+                caption={
+                  <>
+                    <span className="eyebrow">Live topology</span>
+                    {isSolved ? (
+                      <span className="chip chip-ok !py-0">
+                        <span className="dot" aria-hidden /> Healthy
+                      </span>
+                    ) : (
+                      <span className="chip chip-bad !py-0">
+                        <span className="dot animate-pulse-glow" aria-hidden /> Bottleneck
+                      </span>
+                    )}
+                  </>
+                }
+              />
+            </section>
+
+            {/* Right: the decision */}
+            <section className="lg:border-l lg:border-[var(--line)] lg:pl-6" aria-label="Your move">
+              <QuestionCard
+                eyebrow="Your move"
+                question={mission.question}
+                hints={[mission.hint]}
+                submitLabel="Deploy"
+                continueLabel={step + 1 < MISSIONS.length ? "Next incident" : "Close the incident"}
+                onAnswer={(opt) => handleAnswer(mission, opt.isCorrect)}
+                onContinue={next}
+                afterCorrect={<XpLine xp={solved[mission.id]} />}
+              />
+            </section>
+          </div>
+        )}
+
+        {done && <Debrief totalXp={totalXp} savedAs={savedAs} onSave={setSavedAs} />}
+      </div>
+    </article>
+  );
+}
+
+function XpLine({ xp }: { xp: number | undefined }) {
+  if (xp === undefined) return null;
+  return xp > 0 ? (
+    <p className="flex items-center gap-1.5 text-amber-200/90">
+      <Zap className="w-3.5 h-3.5" aria-hidden />
+      <span className="num">+{xp} XP</span>
+    </p>
+  ) : (
+    <p className="text-slate-500">You&apos;ve already cleared this today, so no extra XP.</p>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Debrief
+// ---------------------------------------------------------------------------
+
+function Debrief({
+  totalXp,
+  savedAs,
+  onSave,
+}: {
+  totalXp: number;
+  savedAs: "guest" | string | null;
+  onSave: (who: "guest" | string) => void;
+}) {
+  const signIn = () => {
+    const user = loginUser("alex.chen@systemdesignquest.io", "Alex Chen");
+    onSave(user.userName || "Alex Chen");
+  };
+
+  return (
+    <div className="space-y-6 animate-fadeIn">
+      <div className="space-y-2 max-w-2xl">
+        <span className="eyebrow text-emerald-300/80">Debrief</span>
+        <h2 className="text-3xl display">The feed is back up.</h2>
+        <p className="text-[15px] text-slate-400 leading-relaxed">
+          You fixed two bottlenecks in a row, and the second only appeared because you fixed the first. That&apos;s how real
+          systems grow, and it&apos;s how the levels work.
+        </p>
       </div>
 
-      {/* Main War Room Content */}
-      <div className="p-3 sm:p-4 space-y-2 sm:space-y-2.5">
-        {/* ================= STEP 1: MISSION 1 (TRAFFIC OVERLOAD) ================= */}
-        {currentStep === 1 && (
-          <div className="space-y-2 sm:space-y-2.5 animate-fadeIn">
-            {/* Telemetry Gauge Grid */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              <div className="p-2.5 rounded-xl bg-slate-900/90 border border-slate-800">
-                <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">
-                  Inbound Traffic
+      <div className="grid grid-cols-1 lg:grid-cols-[1.4fr_1fr] gap-4">
+        <section className="surface !rounded-xl overflow-hidden" aria-label="What you changed">
+          <header className="px-5 py-3 border-b border-[var(--line)] flex items-center justify-between gap-2">
+            <span className="eyebrow">What you changed</span>
+            <span className="num text-xs text-amber-200/90">+{totalXp} XP</span>
+          </header>
+          <ol className="divide-y divide-[var(--line)]">
+            {MISSIONS.map((m, i) => (
+              <li key={m.id} className="px-5 py-3.5 flex items-start gap-3">
+                <span className="w-6 h-6 rounded-full grid place-items-center shrink-0 border border-emerald-400/40 bg-emerald-400/10 text-emerald-300">
+                  <Check className="w-3.5 h-3.5" aria-hidden />
+                  <span className="sr-only">Incident {i + 1} resolved</span>
                 </span>
-                <div className="text-base sm:text-lg font-black text-cyan-400 my-0.5 flex items-center gap-1">
-                  <Activity className="w-3.5 h-3.5 animate-pulse" />
-                  <span>100,000 req/s</span>
+                <div className="space-y-1 min-w-0">
+                  <p className="text-[13px] text-slate-200 leading-snug">{m.fixSummary}</p>
+                  <span className="chip !text-[10px] !py-0">{m.pattern}</span>
                 </div>
-                <span className="text-[9px] text-rose-400 font-bold">10x Normal Capacity</span>
-              </div>
+              </li>
+            ))}
+          </ol>
+        </section>
 
-              <div
-                className={`p-2.5 rounded-xl border transition-all ${
-                  m1Solved
-                    ? "bg-emerald-950/30 border-emerald-500/40 text-emerald-300"
-                    : "bg-rose-950/40 border-rose-500/50 text-rose-400 animate-pulse"
-                }`}
-              >
-                <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">
-                  Server CPU
-                </span>
-                <div className="text-base sm:text-lg font-black my-0.5">
-                  {m1Solved ? "38%" : "96% 🔥"}
-                </div>
-                <span className="text-[9px] font-bold">
-                  {m1Solved ? "Healthy Multi-Node" : "CPU Redlining"}
-                </span>
-              </div>
-
-              <div
-                className={`p-2.5 rounded-xl border transition-all ${
-                  m1Solved
-                    ? "bg-slate-900/90 border-slate-800 text-emerald-400"
-                    : "bg-slate-900/90 border-slate-800 text-rose-400"
-                }`}
-              >
-                <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">
-                  Feed Latency
-                </span>
-                <div className="text-base sm:text-lg font-black my-0.5">
-                  {m1Solved ? "195 ms" : "4.2s ⚠️"}
-                </div>
-                <span className="text-[9px] text-slate-400">
-                  {m1Solved ? "Optimal response" : "Users cannot refresh feed"}
-                </span>
-              </div>
-
-              <div className="p-2.5 rounded-xl bg-slate-900/90 border border-slate-800">
-                <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">
-                  Incident Bounty
-                </span>
-                <div className="text-base sm:text-lg font-black text-amber-400 my-0.5 flex items-center gap-1">
-                  <Zap className="w-3.5 h-3.5 fill-amber-400" />
-                  <span>+50 XP</span>
-                </div>
-                <span className="text-[9px] text-slate-400">Instant Experience</span>
-              </div>
-            </div>
-
-            {/* Architecture Visual Topology Box */}
-            <div className="p-2.5 sm:p-3 rounded-xl bg-[#0b101c] border border-cyan-500/20 relative overflow-hidden">
-              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1 flex items-center justify-between">
-                <span>Live Infrastructure Topology</span>
-                <span className="text-cyan-400 font-mono">
-                  {m1Solved ? "Cluster: 2 Active Nodes" : "Cluster: 1 Single Monolith"}
-                </span>
-              </div>
-
-              {/* Topology SVG / Diagram */}
-              <div className="py-1.5 flex flex-row items-center justify-around gap-2 text-center">
-                {/* Users Node */}
-                <div className="space-y-0.5">
-                  <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-xl bg-cyan-950/60 border border-cyan-500/40 flex flex-col items-center justify-center mx-auto shadow-md">
-                    <Globe className="w-5 h-5 text-cyan-400" />
-                    <span className="text-[10px] font-black text-cyan-300 mt-0.5">100k Users</span>
-                  </div>
-                  <span className="text-[9px] text-slate-400">Global Clients</span>
-                </div>
-
-                <div className="text-cyan-400 font-black text-base">➔</div>
-
-                {/* Load Balancer or Direct Hit */}
-                {m1Solved ? (
-                  <div className="space-y-0.5 animate-fadeIn">
-                    <div className="w-20 h-14 sm:w-20 sm:h-16 rounded-xl bg-emerald-950/80 border-2 border-emerald-400 flex flex-col items-center justify-center mx-auto shadow-md ring-2 ring-emerald-500/20">
-                      <Layers className="w-5 h-5 text-emerald-400 animate-bounce" />
-                      <span className="text-[10px] font-black text-emerald-300 mt-0.5">
-                        Load Balancer
-                      </span>
-                    </div>
-                    <span className="text-[9px] font-bold text-emerald-400">Round-Robin Active</span>
-                  </div>
-                ) : (
-                  <div className="px-2.5 py-1 rounded-md bg-rose-500/10 border border-rose-500/30 text-rose-400 text-[10px] font-mono font-bold animate-pulse">
-                    ⚠ Single Point of Failure
-                  </div>
-                )}
-
-                <div className="text-cyan-400 font-black text-base">➔</div>
-
-                {/* Server Instances */}
-                <div className="flex flex-col gap-1.5">
-                  <div
-                    className={`px-3 py-1 rounded-lg border flex items-center gap-2 transition-all ${
-                      m1Solved
-                        ? "bg-slate-900 border-emerald-500/50 text-emerald-400"
-                        : "bg-rose-950/60 border-rose-500 text-rose-300 animate-pulse"
-                    }`}
-                  >
-                    <Server className="w-4 h-4 shrink-0" />
-                    <div className="text-left">
-                      <div className="text-[11px] font-bold text-white">App Server 1</div>
-                      <div className="text-[9px]">{m1Solved ? "CPU 38% • Healthy" : "CPU 96% • Overheating"}</div>
-                    </div>
-                    {!m1Solved && <Flame className="w-3.5 h-3.5 fill-rose-500 text-rose-500 shrink-0" />}
-                  </div>
-
-                  {m1Solved && (
-                    <div className="px-3 py-1 rounded-lg border bg-slate-900 border-emerald-500/50 text-emerald-400 flex items-center gap-2 animate-fadeIn">
-                      <Server className="w-4 h-4 shrink-0" />
-                      <div className="text-left">
-                        <div className="text-[11px] font-bold text-white">App Server 2</div>
-                        <div className="text-[9px]">CPU 37% • Healthy</div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Feedback Alert Bar */}
-              {m1Feedback && (
-                <div
-                  className={`mt-1.5 p-2 rounded-lg border text-[11px] leading-snug flex items-start gap-2 ${
-                    m1Solved
-                      ? "bg-emerald-950/40 border-emerald-500/50 text-emerald-200"
-                      : "bg-rose-950/40 border-rose-500/50 text-rose-200"
-                  }`}
-                >
-                  {m1Solved ? (
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
-                  ) : (
-                    <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0 mt-0.5" />
-                  )}
-                  <span>{m1Feedback}</span>
-                </div>
-              )}
-            </div>
-
-            {/* Incident Question & Action Selection */}
-            {!m1Solved ? (
-              <div className="p-2.5 sm:p-3 rounded-xl glass-card border border-white/10 space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <span className="text-[10px] font-bold text-cyan-400 uppercase tracking-wider block">
-                      Emergency Action Required
-                    </span>
-                    <h3 className="text-xs sm:text-sm font-black text-white">
-                      Traffic overload detected. What should we add?
-                    </h3>
-                  </div>
-                  <span className="text-[10px] text-slate-400 hidden sm:inline">
-                    Select component to rescue Server 1
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-0.5">
-                  <button
-                    onClick={() => handleM1Choice("cache")}
-                    className={`p-2 sm:p-2.5 rounded-xl border text-left transition-all ${
-                      m1SelectedChoice === "cache"
-                        ? "bg-rose-500/10 border-rose-500 text-rose-300"
-                        : "bg-slate-900/80 hover:bg-slate-800 border-slate-700 text-slate-200"
-                    }`}
-                  >
-                    <div className="text-xs sm:text-sm font-bold flex items-center justify-between">
-                      <span>Cache</span>
-                      <Zap className="w-3.5 h-3.5 text-amber-400" />
-                    </div>
-                    <p className="text-[10px] text-slate-400 mt-0.5">In-Memory Redis Layer</p>
-                  </button>
-
-                  <button
-                    onClick={() => handleM1Choice("lb")}
-                    className={`p-2 sm:p-2.5 rounded-xl border text-left transition-all group ${
-                      m1SelectedChoice === "lb"
-                        ? "bg-emerald-500/20 border-emerald-400 text-emerald-300"
-                        : "bg-slate-900/80 hover:bg-slate-800 border-cyan-500/40 hover:border-cyan-400 text-white"
-                    }`}
-                  >
-                    <div className="text-xs sm:text-sm font-bold flex items-center justify-between">
-                      <span className="text-cyan-300 group-hover:text-cyan-200">Load Balancer</span>
-                      <Layers className="w-3.5 h-3.5 text-cyan-400" />
-                    </div>
-                    <p className="text-[10px] text-slate-400 mt-0.5">Reverse Proxy + Multi-Node</p>
-                  </button>
-
-                  <button
-                    onClick={() => handleM1Choice("cdn")}
-                    className={`p-2 sm:p-2.5 rounded-xl border text-left transition-all ${
-                      m1SelectedChoice === "cdn"
-                        ? "bg-rose-500/10 border-rose-500 text-rose-300"
-                        : "bg-slate-900/80 hover:bg-slate-800 border-slate-700 text-slate-200"
-                    }`}
-                  >
-                    <div className="text-xs sm:text-sm font-bold flex items-center justify-between">
-                      <span>CDN</span>
-                      <Globe className="w-3.5 h-3.5 text-purple-400" />
-                    </div>
-                    <p className="text-[10px] text-slate-400 mt-0.5">Edge Content Delivery</p>
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="p-2.5 sm:p-3 rounded-xl bg-emerald-950/30 border border-emerald-500/40 flex flex-row items-center justify-between gap-3">
-                <div className="space-y-0.5">
-                  <div className="flex items-center gap-2">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                    <span className="text-xs sm:text-sm font-black text-white">Mission 1 Completed • System Stabilized</span>
-                  </div>
-                  <p className="text-[11px] text-slate-300">
-                    Earned <strong className="text-amber-400">+50 XP</strong>. Next crisis: Database overheating!
-                  </p>
-                </div>
-
-                <button
-                  onClick={() => {
-                    setCurrentStep(2);
-                    if (soundEnabled) playBlipSound();
-                  }}
-                  className="px-4 py-2 rounded-lg bg-gradient-to-r from-cyan-500 to-emerald-500 hover:from-cyan-400 hover:to-emerald-400 text-slate-950 font-black text-xs flex items-center gap-1.5 shadow-md shadow-cyan-500/25 transition-all shrink-0"
-                >
-                  <span>Respond to Mission 2: DB Meltdown</span>
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            )}
+        <section className="surface !rounded-xl p-5 space-y-4" aria-label="Save progress">
+          <div className="space-y-1">
+            <h3 className="text-[15px] font-semibold text-white">Keep your progress</h3>
+            <p className="text-[13px] text-slate-500 leading-relaxed">
+              Progress is saved in this browser. Sign-in is a demo for now.
+            </p>
           </div>
-        )}
-
-        {/* ================= STEP 2: MISSION 2 (DATABASE OVERLOAD) ================= */}
-        {currentStep === 2 && (
-          <div className="space-y-2 sm:space-y-2.5 animate-fadeIn">
-            {/* Telemetry Gauge Grid */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              <div className="p-2.5 rounded-xl bg-slate-900/90 border border-slate-800">
-                <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">
-                  Web Tier Status
-                </span>
-                <div className="text-base sm:text-lg font-black text-emerald-400 my-0.5">
-                  Healthy (2 Nodes)
-                </div>
-                <span className="text-[9px] text-slate-400">Load Balancer Active</span>
-              </div>
-
-              <div
-                className={`p-2.5 rounded-xl border transition-all ${
-                  m2Solved
-                    ? "bg-emerald-950/30 border-emerald-500/40 text-emerald-300"
-                    : "bg-rose-950/40 border-rose-500/50 text-rose-400 animate-pulse"
-                }`}
-              >
-                <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">
-                  App Server CPU
-                </span>
-                <div className="text-base sm:text-lg font-black my-0.5">
-                  {m2Solved ? "18%" : "99% 🔥"}
-                </div>
-                <span className="text-[9px] font-bold">
-                  {m2Solved ? "Read Load Offloaded" : "Connections Full (1000/1000)"}
-                </span>
-              </div>
-
-              <div
-                className={`p-2.5 rounded-xl border transition-all ${
-                  m2Solved
-                    ? "bg-slate-900/90 border-slate-800 text-emerald-400"
-                    : "bg-slate-900/90 border-slate-800 text-rose-400"
-                }`}
-              >
-                <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">
-                  Response Time
-                </span>
-                <div className="text-base sm:text-lg font-black my-0.5">
-                  {m2Solved ? "42 ms" : "7.0 Seconds ⚠️"}
-                </div>
-                <span className="text-[9px] text-slate-400">
-                  {m2Solved ? "Sub-second speed" : "Severe query lockups"}
-                </span>
-              </div>
-
-              <div className="p-2.5 rounded-xl bg-slate-900/90 border border-slate-800">
-                <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">
-                  Mission Bounty
-                </span>
-                <div className="text-base sm:text-lg font-black text-amber-400 my-0.5 flex items-center gap-1">
-                  <Zap className="w-3.5 h-3.5 fill-amber-400" />
-                  <span>+100 XP</span>
-                </div>
-                <span className="text-[9px] text-slate-400">Level Up Milestone</span>
-              </div>
+          {savedAs ? (
+            <p role="status" className="flex items-start gap-2 text-[13px] text-emerald-200">
+              <Check className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" aria-hidden />
+              {savedAs === "guest" ? "Saved in this browser." : `Signed in as ${savedAs} (saved in this browser).`}
+            </p>
+          ) : (
+            <div className="flex flex-col sm:flex-row lg:flex-col xl:flex-row gap-2">
+              <button type="button" onClick={signIn} className="btn btn-secondary flex-1">
+                <GoogleMark />
+                Google (demo)
+              </button>
+              <button type="button" onClick={() => onSave("guest")} className="btn btn-ghost flex-1 border border-[var(--line)]">
+                Continue as guest
+              </button>
             </div>
+          )}
+        </section>
+      </div>
 
-            {/* Architecture Visual Topology Box */}
-            <div className="p-2.5 sm:p-3 rounded-xl bg-[#0b101c] border border-cyan-500/20 relative overflow-hidden">
-              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1 flex items-center justify-between">
-                <span>Database Tier Topology</span>
-                <span className="text-amber-400 font-mono">
-                  {m2Solved ? "Redis Cache Hit Rate: 96%" : "Direct DB Disk Reads: 100%"}
-                </span>
-              </div>
-
-              {/* Topology SVG / Diagram */}
-              <div className="py-1.5 flex flex-row items-center justify-around gap-2 text-center">
-                {/* Web Servers */}
-                <div className="px-3 py-1 rounded-lg bg-slate-900 border border-slate-700 text-emerald-400 flex items-center gap-2">
-                  <Server className="w-4 h-4" />
-                  <div className="text-left">
-                    <div className="text-[11px] font-bold text-white">App Servers Fleet</div>
-                    <div className="text-[9px]">100k RPS Handled</div>
-                  </div>
-                </div>
-
-                <div className="text-cyan-400 font-black text-base">➔</div>
-
-                {/* Cache Node */}
-                {m2Solved ? (
-                  <div className="space-y-0.5 animate-fadeIn">
-                    <div className="w-20 h-14 sm:w-20 sm:h-16 rounded-xl bg-amber-950/80 border-2 border-amber-400 flex flex-col items-center justify-center mx-auto shadow-md ring-2 ring-amber-500/20">
-                      <Zap className="w-5 h-5 text-amber-400 animate-pulse fill-amber-400" />
-                      <span className="text-[10px] font-black text-amber-300 mt-0.5">
-                        Redis Cache
-                      </span>
-                    </div>
-                    <span className="text-[9px] font-bold text-emerald-400">96% Hit Rate</span>
-                  </div>
-                ) : (
-                  <div className="px-2.5 py-1 rounded-md bg-rose-500/10 border border-rose-500/30 text-rose-400 text-[10px] font-mono font-bold animate-pulse">
-                    ⚠ Direct Disk Reads
-                  </div>
-                )}
-
-                <div className="text-cyan-400 font-black text-base">➔</div>
-
-                {/* Primary DB */}
-                <div
-                  className={`px-3 py-1.5 rounded-lg border transition-all ${
-                    m2Solved
-                      ? "bg-slate-900 border-emerald-500/50 text-emerald-400"
-                      : "bg-rose-950/60 border-rose-500 text-rose-300 animate-pulse"
-                  }`}
-                >
-                  <Database className="w-5 h-5 mx-auto mb-0.5" />
-                  <div className="text-[11px] font-bold text-white">PostgreSQL Primary</div>
-                  <div className="text-[9px]">{m2Solved ? "CPU 18% • Fast Writes" : "CPU 99% • Connections Full"}</div>
-                </div>
-              </div>
-
-              {/* Feedback Alert Bar */}
-              {m2Feedback && (
-                <div
-                  className={`mt-1.5 p-2 rounded-lg border text-[11px] leading-snug flex items-start gap-2 ${
-                    m2Solved
-                      ? "bg-emerald-950/40 border-emerald-500/50 text-emerald-200"
-                      : "bg-rose-950/40 border-rose-500/50 text-rose-200"
-                  }`}
-                >
-                  {m2Solved ? (
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
-                  ) : (
-                    <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0 mt-0.5" />
-                  )}
-                  <span>{m2Feedback}</span>
-                </div>
-              )}
-            </div>
-
-            {/* Incident Question & Action Selection */}
-            {!m2Solved ? (
-              <div className="p-2.5 sm:p-3 rounded-xl glass-card border border-white/10 space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <span className="text-[10px] font-bold text-amber-400 uppercase tracking-wider block">
-                      Database Emergency
-                    </span>
-                    <h3 className="text-xs sm:text-sm font-black text-white">
-                      Database Overload: CPU 99%, Connections Full. How to fix?
-                    </h3>
-                  </div>
-                  <span className="text-[10px] text-slate-400 hidden sm:inline">
-                    10,000 read queries/sec choking disk I/O
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-0.5">
-                  <button
-                    onClick={() => handleM2Choice("cache")}
-                    className={`p-2 sm:p-2.5 rounded-xl border text-left transition-all group ${
-                      m2SelectedChoice === "cache"
-                        ? "bg-emerald-500/20 border-emerald-400 text-emerald-300"
-                        : "bg-slate-900/80 hover:bg-slate-800 border-amber-500/40 hover:border-amber-400 text-white"
-                    }`}
-                  >
-                    <div className="text-xs sm:text-sm font-bold flex items-center justify-between">
-                      <span className="text-amber-300 group-hover:text-amber-200">Cache</span>
-                      <Zap className="w-3.5 h-3.5 text-amber-400 fill-amber-400" />
-                    </div>
-                    <p className="text-[10px] text-slate-400 mt-0.5">In-Memory Redis Buffer</p>
-                  </button>
-
-                  <button
-                    onClick={() => handleM2Choice("cdn")}
-                    className={`p-2 sm:p-2.5 rounded-xl border text-left transition-all ${
-                      m2SelectedChoice === "cdn"
-                        ? "bg-rose-500/10 border-rose-500 text-rose-300"
-                        : "bg-slate-900/80 hover:bg-slate-800 border-slate-700 text-slate-200"
-                    }`}
-                  >
-                    <div className="text-xs sm:text-sm font-bold flex items-center justify-between">
-                      <span>CDN</span>
-                      <Globe className="w-3.5 h-3.5 text-purple-400" />
-                    </div>
-                    <p className="text-[10px] text-slate-400 mt-0.5">Edge Static Caching</p>
-                  </button>
-
-                  <button
-                    onClick={() => handleM2Choice("dns")}
-                    className={`p-2 sm:p-2.5 rounded-xl border text-left transition-all ${
-                      m2SelectedChoice === "dns"
-                        ? "bg-rose-500/10 border-rose-500 text-rose-300"
-                        : "bg-slate-900/80 hover:bg-slate-800 border-slate-700 text-slate-200"
-                    }`}
-                  >
-                    <div className="text-xs sm:text-sm font-bold flex items-center justify-between">
-                      <span>DNS</span>
-                      <Activity className="w-3.5 h-3.5 text-cyan-400" />
-                    </div>
-                    <p className="text-[10px] text-slate-400 mt-0.5">Domain Name Resolution</p>
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="p-2.5 sm:p-3 rounded-xl bg-emerald-950/30 border border-emerald-500/40 flex flex-row items-center justify-between gap-3">
-                <div className="space-y-0.5">
-                  <div className="flex items-center gap-2">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                    <span className="text-xs sm:text-sm font-black text-white">Twitter Saved! All Outages Mitigated</span>
-                  </div>
-                  <p className="text-[11px] text-slate-300">
-                    Earned <strong className="text-amber-400">+100 XP</strong> (150 XP Total). Unlocked Level 2!
-                  </p>
-                </div>
-
-                <button
-                  onClick={() => {
-                    setCurrentStep(3);
-                  }}
-                  className="px-4 py-2 rounded-lg bg-gradient-to-r from-amber-400 to-emerald-400 hover:from-amber-300 hover:to-emerald-300 text-slate-950 font-black text-xs flex items-center gap-1.5 shadow-md shadow-amber-500/25 transition-all shrink-0"
-                >
-                  <span>Claim 150 XP & Save</span>
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* ================= STEP 3: MISSION COMPLETE & SAVE PROGRESS ================= */}
-        {currentStep === 3 && (
-          <div className="space-y-2.5 sm:space-y-3 animate-fadeIn text-center max-w-xl mx-auto py-1">
-            <div className="space-y-1">
-              <div className="inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-[10px] font-black uppercase tracking-wider border border-amber-500/40">
-                <Sparkles className="w-3 h-3 text-amber-400" />
-                <span>Mission Accomplished</span>
-              </div>
-
-              <h2 className="text-xl sm:text-2xl font-black text-white tracking-tight">
-                Congratulations, Systems Hero!
-              </h2>
-
-              <p className="text-xs text-slate-300 leading-snug">
-                You stabilized Twitter under real production pressure with zero friction:
-              </p>
-            </div>
-
-            {/* Scoreboard Cards */}
-            <div className="grid grid-cols-3 gap-2">
-              <div className="p-2.5 rounded-xl bg-slate-900/90 border border-slate-800">
-                <span className="text-[10px] text-slate-400 block">XP Earned</span>
-                <div className="text-xl sm:text-2xl font-black text-amber-400 my-0.5 flex items-center justify-center gap-1">
-                  <Zap className="w-4 h-4 fill-amber-400" />
-                  <span>150</span>
-                </div>
-                <span className="text-[9px] text-emerald-400 font-bold">Level 2 Unlocked</span>
-              </div>
-
-              <div className="p-2.5 rounded-xl bg-slate-900/90 border border-slate-800">
-                <span className="text-[10px] text-slate-400 block">Systems Saved</span>
-                <div className="text-xl sm:text-2xl font-black text-cyan-400 my-0.5 flex items-center justify-center gap-1">
-                  <ShieldCheck className="w-4 h-4" />
-                  <span>2</span>
-                </div>
-                <span className="text-[9px] text-slate-400 font-bold">100% Uptime</span>
-              </div>
-
-              <div className="p-2.5 rounded-xl bg-slate-900/90 border border-slate-800">
-                <span className="text-[10px] text-slate-400 block">Incidents Solved</span>
-                <div className="text-xl sm:text-2xl font-black text-emerald-400 my-0.5 flex items-center justify-center gap-1">
-                  <CheckCircle2 className="w-4 h-4" />
-                  <span>2</span>
-                </div>
-                <span className="text-[9px] text-slate-400 font-bold">0 Dropouts</span>
-              </div>
-            </div>
-
-            {/* Save Progress Card */}
-            <div className="p-2.5 sm:p-3 rounded-xl glass-panel border border-cyan-500/30 text-left space-y-2">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-xs sm:text-sm font-bold text-white">Save Your Progress</h3>
-                  <p className="text-[10px] text-slate-400">
-                    Lock in 150 XP across devices, or continue as guest.
-                  </p>
-                </div>
-                <span className="px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 text-[9px] font-bold border border-cyan-500/20">
-                  Zero Friction
-                </span>
-              </div>
-
-              {isSaved ? (
-                <div className="p-2 rounded-lg bg-emerald-950/40 border border-emerald-500/40 text-emerald-300 text-xs flex items-center gap-2">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <div>
-                    <div className="font-bold text-white text-xs">Progress Saved Successfully!</div>
-                    <div className="text-[10px] text-emerald-200/90">
-                      {savedUser ? `Synced as ${savedUser.name}` : "Saved to local browser storage."}
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div className="flex flex-row items-center gap-2">
-                  {/* Google Login Mock */}
-                  <button
-                    onClick={handleGoogleLogin}
-                    className="flex-1 py-2 px-3 rounded-lg bg-white hover:bg-slate-100 text-slate-950 font-bold text-xs flex items-center justify-center gap-1.5 shadow transition-all cursor-pointer"
-                  >
-                    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24">
-                      <path
-                        fill="#4285F4"
-                        d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-                      />
-                      <path
-                        fill="#34A853"
-                        d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                      />
-                      <path
-                        fill="#FBBC05"
-                        d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
-                      />
-                      <path
-                        fill="#EA4335"
-                        d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
-                      />
-                    </svg>
-                    <span>Google Login</span>
-                  </button>
-
-                  {/* Guest Continue */}
-                  <button
-                    onClick={handleGuestContinue}
-                    className="flex-1 py-2 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs border border-slate-700 transition-colors"
-                  >
-                    <span>⚡ Guest</span>
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {/* Next Destination Actions */}
-            <div className="pt-0.5 flex flex-row items-center justify-center gap-3">
-              <Link
-                href="/campaign"
-                className="flex-1 sm:flex-none px-4 py-2 rounded-xl bg-gradient-to-r from-cyan-500 to-emerald-500 hover:from-cyan-400 hover:to-emerald-400 text-slate-950 font-black text-xs flex items-center justify-center gap-1.5 shadow-md shadow-cyan-500/25 transition-all"
-              >
-                <span>▶ Campaign Mode (Chapter 1)</span>
-                <ArrowRight className="w-3.5 h-3.5" />
-              </Link>
-
-              <Link
-                href="/dashboard"
-                className="flex-1 sm:flex-none px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 font-bold text-xs border border-slate-800 transition-colors text-center"
-              >
-                Dashboard
-              </Link>
-            </div>
-          </div>
-        )}
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+        <Link href="/campaign" className="btn btn-primary btn-lg">
+          Go to the level map
+          <ArrowRight className="w-4 h-4" />
+        </Link>
+        <Link href="/dashboard" className="btn btn-ghost">
+          Open your progress
+        </Link>
       </div>
     </div>
+  );
+}
+
+function GoogleMark() {
+  return (
+    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" aria-hidden>
+      <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+      <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+      <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
+      <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
+    </svg>
   );
 }

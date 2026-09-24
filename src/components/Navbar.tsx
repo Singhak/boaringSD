@@ -1,93 +1,72 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  Award,
+  BarChart3,
+  ChevronDown,
+  Compass,
   Flame,
-  Zap,
+  GitBranch,
+  Home,
+  Layers,
+  Lock,
+  LogOut,
+  Menu,
+  Sparkles,
+  User,
   Volume2,
   VolumeX,
-  Layers,
-  Sparkles,
-  Cpu,
-  Trophy,
-  Menu,
   X,
-  Compass,
-  Award,
-  Lock,
-  User,
-  LogOut,
-  ShieldAlert,
-  ChevronDown,
 } from "lucide-react";
-import { getUserStats, saveUserStats, loginUser, logoutUser, getFeatureUnlockStatus } from "@/lib/storage";
-import { UserStats } from "@/types";
+import { saveUserStats, loginUser, logoutUser, getFeatureUnlockStatus } from "@/lib/storage";
+import { DEFAULT_STATS, getCurrentStreak, getEvidence } from "@/lib/progression";
+import { useUserStats } from "@/lib/useUserStats";
+import { getAllPatterns } from "@/data/patterns";
 import { playSuccessSound, playBlipSound } from "@/lib/sound";
 
 export default function Navbar() {
   const pathname = usePathname();
-  const [stats, setStats] = useState<UserStats>({
-    level: 1,
-    currentXp: 0,
-    nextLevelXp: 150,
-    streakDays: 1,
-    completedLessons: [],
-    completedChallenges: [],
-    completedGuided: [],
-    completedInterviews: [],
-    completedMissions: [],
-    completedChapters: [],
-    systemsSaved: 0,
-    incidentsSolved: 0,
-    isLoggedIn: false,
-    userEmail: null,
-    userName: null,
-    totalScore: 0,
-    soundEnabled: true,
-    unlockedBadges: [],
-  });
-
+  const stats = useUserStats() ?? DEFAULT_STATS;
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [labsOpen, setLabsOpen] = useState(false);
   const [showLoginModal, setShowLoginModal] = useState(false);
+  const labsRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    setStats(getUserStats());
-
-    const handleUpdate = () => {
-      setStats(getUserStats());
+    if (!labsOpen) return;
+    const close = (e: MouseEvent | KeyboardEvent) => {
+      if (e instanceof KeyboardEvent ? e.key === "Escape" : !labsRef.current?.contains(e.target as Node)) {
+        setLabsOpen(false);
+      }
     };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", close);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", close);
+    };
+  }, [labsOpen]);
 
-    window.addEventListener("sd_quest_stats_updated", handleUpdate);
-    return () => window.removeEventListener("sd_quest_stats_updated", handleUpdate);
-  }, []);
-
-  const toggleSound = () => {
-    const updated = { ...stats, soundEnabled: !stats.soundEnabled };
-    setStats(updated);
-    saveUserStats(updated);
-  };
-
+  const toggleSound = () => saveUserStats({ ...stats, soundEnabled: !stats.soundEnabled });
   const unlockStatus = getFeatureUnlockStatus(stats);
+  const streak = getCurrentStreak(stats, new Date());
+  const allPatterns = getAllPatterns();
+  const levelsCleared = allPatterns.filter((p) => getEvidence(stats, p.id).runsCleared > 0).length;
+  const xpProgressPercent = Math.min(100, Math.round(((stats.currentXp % 150) / 150) * 100));
 
-  const xpProgressPercent = Math.min(
-    100,
-    Math.round(((stats.currentXp % 150) / 150) * 100)
-  );
-
-  // Pushpa Mode Navigation:
-  // Only show Home, Campaign, Profile by default.
-  // Unlock later: Interview Arena, Architecture Sandbox, Challenge Lab
   const coreNavLinks = [
-    { name: "Home", href: "/", icon: Cpu },
-    { name: "Campaign", href: "/campaign", icon: Layers },
-    { name: "Mission Hub", href: "/dashboard", icon: Trophy },
+    { name: "Home", href: "/", icon: Home },
+    { name: "Levels", href: "/campaign", icon: Layers },
+    { name: "Progress", href: "/dashboard", icon: BarChart3 },
   ];
 
-  const unlockedLabs = [
+  const labs = [
     {
-      name: "Arch Sandbox",
+      name: "Architecture Sandbox",
+      hint: "Build and break anything",
       href: "/builder",
       icon: Sparkles,
       unlocked: unlockStatus.builder.unlocked,
@@ -95,6 +74,7 @@ export default function Navbar() {
     },
     {
       name: "Interview Arena",
+      hint: "Timed design practice",
       href: "/interview",
       icon: Award,
       unlocked: unlockStatus.interview.unlocked,
@@ -102,273 +82,279 @@ export default function Navbar() {
     },
     {
       name: "Challenge Lab",
+      hint: "Requirements → APIs → design",
       href: "/guided",
       icon: Compass,
       unlocked: unlockStatus.challengeLab.unlocked,
       unlockHint: "Unlocks at Level 3",
     },
+    {
+      name: "Architecture Evolution",
+      hint: "How systems grow",
+      href: "/evolution",
+      icon: GitBranch,
+      unlocked: true,
+      unlockHint: "",
+    },
   ];
+  const labActive = labs.some((l) => pathname.startsWith(l.href));
+
+  const isActive = (href: string) => (href === "/" ? pathname === "/" : pathname.startsWith(href));
 
   const handleGoogleLogin = () => {
     playSuccessSound();
-    const user = loginUser("alex.chen@systemdesignquest.io", "Alex Chen");
-    setStats(user);
+    loginUser("alex.chen@systemdesignquest.io", "Alex Chen");
     setShowLoginModal(false);
   };
 
   const handleLogout = () => {
     playBlipSound();
-    const user = logoutUser();
-    setStats(user);
+    logoutUser();
   };
 
   return (
-    <header className="sticky top-0 z-50 w-full border-b border-white/10 bg-[#090d16]/85 backdrop-blur-xl">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-        {/* Brand Logo */}
-        <Link href="/" className="flex items-center gap-3 group">
-          <div className="relative w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-500 to-emerald-400 p-[1px] transition-transform duration-300 group-hover:scale-105">
-            <div className="w-full h-full bg-[#090d16] rounded-xl flex items-center justify-center">
-              <Cpu className="w-5 h-5 text-cyan-400 animate-pulse" />
-            </div>
-          </div>
-          <div>
-            <span className="text-lg font-bold tracking-tight bg-gradient-to-r from-cyan-400 via-teal-300 to-emerald-400 bg-clip-text text-transparent">
-              SystemDesign<span className="text-white">Quest</span>
-            </span>
-            <span className="hidden sm:inline-block ml-2 px-1.5 py-0.5 text-[10px] font-black uppercase tracking-wider bg-rose-500/20 text-rose-300 border border-rose-500/40 rounded">
-              Pushpa Mode
-            </span>
-          </div>
+    <header className="sticky top-0 z-50 w-full border-b border-[var(--line)] bg-[#07090f]/80 backdrop-blur-xl">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between gap-4">
+        {/* Wordmark */}
+        <Link href="/" className="flex items-center gap-2.5 shrink-0" aria-label="System Design Quest home">
+          <span className="w-7 h-7 rounded-lg bg-[var(--accent-soft)] border border-cyan-400/30 grid place-items-center">
+            <svg viewBox="0 0 24 24" className="w-4 h-4 text-cyan-300" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+              <rect x="3" y="3" width="7" height="7" rx="1.5" />
+              <rect x="14" y="3" width="7" height="7" rx="1.5" />
+              <rect x="8.5" y="14" width="7" height="7" rx="1.5" />
+              <path d="M6.5 10v2h11v-2M12 12v2" />
+            </svg>
+          </span>
+          <span className="text-[15px] font-semibold tracking-tight text-white">
+            System Design <span className="text-slate-400 font-normal">Quest</span>
+          </span>
         </Link>
 
-        {/* Desktop Navigation (Pushpa Mode: Home, Campaign, Profile + Unlocked Labs) */}
-        <nav className="hidden md:flex items-center gap-1.5">
-          {/* Core Nav Links */}
-          {coreNavLinks.map((link) => {
-            const Icon = link.icon;
-            const isActive = link.href === "/" ? pathname === "/" : pathname.startsWith(link.href);
-            return (
-              <Link
-                key={link.name}
-                href={link.href}
-                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold transition-all duration-200 ${
-                  isActive
-                    ? "bg-cyan-500/15 text-cyan-400 border border-cyan-500/30"
-                    : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
-                }`}
-              >
-                <Icon className="w-4 h-4" />
-                <span>{link.name}</span>
-              </Link>
-            );
-          })}
+        {/* Desktop navigation */}
+        <nav className="hidden md:flex items-center gap-0.5" aria-label="Main">
+          {coreNavLinks.map((link) => (
+            <Link
+              key={link.name}
+              href={link.href}
+              aria-current={isActive(link.href) ? "page" : undefined}
+              className={`px-3 py-1.5 rounded-md text-[13px] font-medium transition-colors ${
+                isActive(link.href) ? "text-white bg-white/[0.06]" : "text-slate-400 hover:text-white"
+              }`}
+            >
+              {link.name}
+            </Link>
+          ))}
 
-          {/* Unlocked Labs (Progressive Disclosure) */}
-          <div className="h-4 w-[1px] bg-slate-800 mx-1" />
-
-          {unlockedLabs.map((lab) => {
-            const Icon = lab.icon;
-            const isActive = pathname.startsWith(lab.href);
-
-            if (!lab.unlocked) {
-              return (
-                <div
-                  key={lab.name}
-                  className="flex items-center gap-1.5 px-2.5 py-2 rounded-lg text-xs font-semibold text-slate-500 cursor-not-allowed group relative"
-                  title={`${lab.name}: ${lab.unlockHint}`}
-                >
-                  <Lock className="w-3.5 h-3.5 text-slate-600" />
-                  <span>{lab.name}</span>
-                </div>
-              );
-            }
-
-            return (
-              <Link
-                key={lab.name}
-                href={lab.href}
-                className={`flex items-center gap-1.5 px-2.5 py-2 rounded-lg text-xs font-semibold transition-all ${
-                  isActive
-                    ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
-                    : "text-slate-300 hover:text-white hover:bg-slate-800/60"
-                }`}
-              >
-                <Icon className="w-3.5 h-3.5 text-emerald-400" />
-                <span>{lab.name}</span>
-              </Link>
-            );
-          })}
+          <div className="relative" ref={labsRef}>
+            <button
+              type="button"
+              onClick={() => setLabsOpen((o) => !o)}
+              aria-expanded={labsOpen}
+              aria-haspopup="menu"
+              className={`px-3 py-1.5 rounded-md text-[13px] font-medium flex items-center gap-1 transition-colors ${
+                labActive || labsOpen ? "text-white bg-white/[0.06]" : "text-slate-400 hover:text-white"
+              }`}
+            >
+              Labs <ChevronDown className={`w-3.5 h-3.5 transition-transform ${labsOpen ? "rotate-180" : ""}`} />
+            </button>
+            {labsOpen && (
+              <div role="menu" className="absolute left-0 top-full mt-2 w-72 p-1.5 surface shadow-2xl animate-fadeIn">
+                {labs.map((lab) => {
+                  const Icon = lab.icon;
+                  const content = (
+                    <>
+                      <span className="w-8 h-8 rounded-lg surface-2 grid place-items-center shrink-0">
+                        {lab.unlocked ? <Icon className="w-4 h-4 text-slate-300" /> : <Lock className="w-3.5 h-3.5 text-slate-600" />}
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block text-[13px] font-medium">{lab.name}</span>
+                        <span className="block text-[11px] text-slate-500">{lab.unlocked ? lab.hint : lab.unlockHint}</span>
+                      </span>
+                    </>
+                  );
+                  return lab.unlocked ? (
+                    <Link
+                      key={lab.name}
+                      href={lab.href}
+                      role="menuitem"
+                      onClick={() => setLabsOpen(false)}
+                      className="flex items-center gap-3 p-2 rounded-lg text-slate-200 hover:bg-white/[0.05]"
+                    >
+                      {content}
+                    </Link>
+                  ) : (
+                    <div key={lab.name} role="menuitem" aria-disabled className="flex items-center gap-3 p-2 rounded-lg text-slate-500 cursor-not-allowed">
+                      {content}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </nav>
 
-        {/* Right Stats & Profile Controls */}
-        <div className="hidden sm:flex items-center gap-3">
-          {/* Daily Streak */}
-          <div
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs font-semibold"
-            title="Daily Learning Streak"
+        {/* Status + account */}
+        <div className="hidden sm:flex items-center gap-2">
+          <Link
+            href="/dashboard"
+            className="flex items-center gap-3 pl-3 pr-2.5 h-8 rounded-full border border-[var(--line)] bg-white/[0.02] hover:border-[var(--line-strong)] transition-colors"
+            title={`Level ${stats.level} · ${stats.currentXp} XP · ${levelsCleared} of ${allPatterns.length} levels cleared · ${streak}-day streak`}
           >
-            <Flame className="w-3.5 h-3.5 text-amber-400 fill-amber-400 animate-bounce" />
-            <span>{stats.streakDays}d</span>
-          </div>
-
-          {/* XP & Level Progress */}
-          <div className="flex items-center gap-2.5 px-3 py-1.5 rounded-xl bg-slate-900/90 border border-slate-800">
-            <div className="flex items-center gap-1 text-cyan-400 font-bold text-xs">
-              <Zap className="w-3.5 h-3.5 fill-cyan-400" />
-              <span>{stats.currentXp} XP</span>
-            </div>
-
-            <div className="w-16 bg-slate-800 rounded-full h-1.5 overflow-hidden">
-              <div
-                className="bg-gradient-to-r from-cyan-500 to-emerald-400 h-full rounded-full transition-all duration-500"
-                style={{ width: `${xpProgressPercent}%` }}
-              />
-            </div>
-
-            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-              Lvl {stats.level}
-            </span>
-          </div>
-
-          {/* User Account / Save Status Button */}
-          {stats.isLoggedIn ? (
-            <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-xs">
-              <div className="w-5 h-5 rounded-full bg-cyan-500/20 border border-cyan-500/40 flex items-center justify-center text-cyan-300 font-bold text-[10px]">
-                {stats.userName ? stats.userName.charAt(0) : "A"}
-              </div>
-              <span className="font-semibold text-slate-200 text-xs line-clamp-1 max-w-[80px]">
-                {stats.userName || "Alex"}
+            <span className="flex items-center gap-2">
+              <span className="text-[11px] font-semibold text-white">Lv {stats.level}</span>
+              <span className="w-12 h-1 rounded-full bg-white/10 overflow-hidden hidden lg:block">
+                <span className="block h-full bg-[var(--accent)]" style={{ width: `${xpProgressPercent}%` }} />
               </span>
+              <span className="num text-[11px] text-slate-400">{stats.currentXp} XP</span>
+            </span>
+            <span className="w-px h-3.5 bg-white/10" aria-hidden />
+            <span className={`flex items-center gap-1 text-[11px] font-medium ${streak > 0 ? "text-amber-300" : "text-slate-500"}`}>
+              <Flame className="w-3.5 h-3.5" aria-hidden />
+              <span className="num">{streak}</span>
+              <span className="sr-only">day streak</span>
+            </span>
+          </Link>
+
+          <button
+            type="button"
+            onClick={toggleSound}
+            className="w-8 h-8 grid place-items-center rounded-full text-slate-400 hover:text-white hover:bg-white/[0.06] transition-colors"
+            aria-label={stats.soundEnabled ? "Mute sound effects" : "Enable sound effects"}
+          >
+            {stats.soundEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+          </button>
+
+          {stats.isLoggedIn ? (
+            <div className="flex items-center gap-1.5 pl-1 pr-1 h-8 rounded-full border border-[var(--line)]">
+              <span className="w-6 h-6 rounded-full bg-[var(--accent-soft)] text-cyan-200 grid place-items-center text-[11px] font-semibold">
+                {stats.userName ? stats.userName.charAt(0) : "A"}
+              </span>
+              <span className="text-xs text-slate-300 max-w-[88px] truncate hidden lg:block">{stats.userName || "Alex"}</span>
               <button
+                type="button"
                 onClick={handleLogout}
-                className="text-slate-500 hover:text-rose-400 p-0.5 ml-1 transition-colors"
-                title="Logout"
+                className="w-6 h-6 grid place-items-center rounded-full text-slate-500 hover:text-rose-300"
+                aria-label="Sign out"
               >
                 <LogOut className="w-3.5 h-3.5" />
               </button>
             </div>
           ) : (
-            <button
-              onClick={() => setShowLoginModal(true)}
-              className="px-2.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-cyan-500/30 text-cyan-300 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
-            >
-              <Zap className="w-3 h-3 text-cyan-400" />
-              <span>Save Progress</span>
+            <button type="button" onClick={() => setShowLoginModal(true)} className="btn btn-secondary !py-1.5 !px-3 !rounded-full text-xs">
+              <User className="w-3.5 h-3.5" />
+              Sign in
             </button>
           )}
-
-          {/* Sound Toggle */}
-          <button
-            onClick={toggleSound}
-            className="p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800 border border-slate-800/80 transition-colors"
-            title={stats.soundEnabled ? "Mute Sound FX" : "Enable Sound FX"}
-            aria-label="Toggle Sound"
-          >
-            {stats.soundEnabled ? (
-              <Volume2 className="w-4 h-4 text-cyan-400" />
-            ) : (
-              <VolumeX className="w-4 h-4 text-slate-500" />
-            )}
-          </button>
         </div>
 
-        {/* Mobile menu toggle */}
-        <div className="flex md:hidden items-center gap-2">
-          <button
-            onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-            className="p-2 text-slate-400 hover:text-white"
-            aria-label="Toggle Menu"
-          >
-            {mobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+          className="md:hidden w-9 h-9 grid place-items-center rounded-lg text-slate-300 hover:bg-white/[0.06]"
+          aria-label={mobileMenuOpen ? "Close menu" : "Open menu"}
+          aria-expanded={mobileMenuOpen}
+        >
+          {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+        </button>
       </div>
 
-      {/* Mobile dropdown */}
+      {/* Mobile menu */}
       {mobileMenuOpen && (
-        <div className="md:hidden border-b border-white/10 bg-[#090d16] px-4 pt-2 pb-4 space-y-2">
-          <div className="flex items-center justify-between py-2 border-b border-slate-800 mb-2">
-            <div className="flex items-center gap-2 text-xs text-amber-400 font-semibold">
-              <Flame className="w-4 h-4 fill-amber-400" />
-              {stats.streakDays} Day Streak
-            </div>
-            <div className="text-xs text-cyan-400 font-bold">
-              Level {stats.level} • {stats.currentXp} XP
-            </div>
+        <div className="md:hidden border-t border-[var(--line)] bg-[#07090f] px-4 pt-3 pb-4 space-y-4 animate-fadeIn">
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-slate-300">
+              Lv {stats.level} · <span className="num">{stats.currentXp}</span> XP · {levelsCleared}/{allPatterns.length} levels
+            </span>
+            <span className="text-amber-300 flex items-center gap-1">
+              <Flame className="w-3.5 h-3.5" /> {streak}-day streak
+            </span>
           </div>
-
-          <div className="space-y-1">
-            <span className="text-[10px] uppercase font-bold text-slate-500 px-3 block">Navigation</span>
+          <div className="space-y-0.5">
             {coreNavLinks.map((link) => {
               const Icon = link.icon;
-              const isActive = pathname === link.href;
               return (
                 <Link
                   key={link.name}
                   href={link.href}
                   onClick={() => setMobileMenuOpen(false)}
-                  className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium ${
-                    isActive ? "bg-cyan-500/10 text-cyan-400" : "text-slate-300 hover:bg-slate-800"
+                  className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm ${
+                    isActive(link.href) ? "bg-white/[0.06] text-white" : "text-slate-300"
                   }`}
                 >
-                  <Icon className="w-4 h-4" />
-                  <span>{link.name}</span>
+                  <Icon className="w-4 h-4 text-slate-400" />
+                  {link.name}
                 </Link>
               );
             })}
           </div>
-
-          <div className="pt-2 border-t border-slate-800 space-y-1">
-            <span className="text-[10px] uppercase font-bold text-slate-500 px-3 block">Unlocked Labs</span>
-            {unlockedLabs.map((lab) => {
+          <div className="space-y-0.5">
+            <span className="eyebrow px-3 block pb-1">Labs</span>
+            {labs.map((lab) => {
               const Icon = lab.icon;
-              if (!lab.unlocked) return null;
-              return (
+              return lab.unlocked ? (
                 <Link
                   key={lab.name}
                   href={lab.href}
                   onClick={() => setMobileMenuOpen(false)}
-                  className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-slate-300 hover:bg-slate-800"
+                  className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-slate-300"
                 >
-                  <Icon className="w-4 h-4 text-emerald-400" />
-                  <span>{lab.name}</span>
+                  <Icon className="w-4 h-4 text-slate-400" />
+                  {lab.name}
                 </Link>
+              ) : (
+                <div key={lab.name} className="flex items-center gap-3 px-3 py-2.5 text-sm text-slate-600">
+                  <Lock className="w-4 h-4" />
+                  {lab.name} <span className="text-[11px]">· {lab.unlockHint}</span>
+                </div>
               );
             })}
+          </div>
+          <div className="flex gap-2">
+            <button type="button" onClick={toggleSound} className="btn btn-secondary flex-1">
+              {stats.soundEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+              Sound {stats.soundEnabled ? "on" : "off"}
+            </button>
+            {stats.isLoggedIn ? (
+              <button type="button" onClick={handleLogout} className="btn btn-secondary flex-1">
+                <LogOut className="w-4 h-4" /> Sign out
+              </button>
+            ) : (
+              <button type="button" onClick={() => setShowLoginModal(true)} className="btn btn-secondary flex-1">
+                <User className="w-4 h-4" /> Sign in
+              </button>
+            )}
           </div>
         </div>
       )}
 
-      {/* Save Progress / Login Modal */}
+      {/* Sign-in modal (demo) */}
       {showLoginModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
-          <div className="w-full max-w-md p-6 rounded-3xl bg-[#0d1424] border border-cyan-500/40 shadow-2xl space-y-5 text-left">
+        <div
+          className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="signin-title"
+        >
+          <div className="w-full max-w-sm p-6 surface space-y-5">
             <div className="flex items-start justify-between">
-              <div>
-                <span className="text-[10px] font-bold uppercase tracking-wider text-cyan-400 block mb-1">
-                  Pushpa Mode Principle
-                </span>
-                <h3 className="text-xl font-black text-white">Save Your Progress</h3>
+              <div className="space-y-1">
+                <span className="eyebrow">Demo</span>
+                <h3 id="signin-title" className="text-lg display">
+                  Sign in
+                </h3>
               </div>
-              <button
-                onClick={() => setShowLoginModal(false)}
-                className="text-slate-400 hover:text-white p-1"
-              >
-                <X className="w-5 h-5" />
+              <button type="button" onClick={() => setShowLoginModal(false)} className="btn btn-ghost !p-1.5" aria-label="Close">
+                <X className="w-4 h-4" />
               </button>
             </div>
 
-            <p className="text-xs text-slate-300 leading-relaxed">
-              We never ask for signup before showing value. Now that you&apos;ve earned XP and ranked up, save your progress across devices!
+            <p className="text-sm text-slate-400 leading-relaxed">
+              Sign-in is a demo. Your progress is saved in this browser only; syncing across devices is not available yet.
             </p>
 
-            <div className="space-y-3 pt-2">
-              <button
-                onClick={handleGoogleLogin}
-                className="w-full py-3.5 px-4 rounded-xl bg-white hover:bg-slate-100 text-slate-950 font-bold text-sm flex items-center justify-center gap-2.5 shadow-lg transition-all cursor-pointer"
-              >
-                <svg className="w-4 h-4" viewBox="0 0 24 24">
+            <div className="space-y-2">
+              <button type="button" onClick={handleGoogleLogin} className="btn btn-lg w-full bg-white text-slate-900 hover:bg-slate-100">
+                <svg className="w-4 h-4" viewBox="0 0 24 24" aria-hidden>
                   <path
                     fill="#4285F4"
                     d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
@@ -386,14 +372,10 @@ export default function Navbar() {
                     d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
                   />
                 </svg>
-                <span>Login with Google</span>
+                Continue with Google
               </button>
-
-              <button
-                onClick={() => setShowLoginModal(false)}
-                className="w-full py-3 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 font-semibold text-xs border border-slate-800 transition-colors"
-              >
-                Continue as Guest (Auto-Saved Locally)
+              <button type="button" onClick={() => setShowLoginModal(false)} className="btn btn-secondary w-full">
+                Keep playing as guest
               </button>
             </div>
           </div>
