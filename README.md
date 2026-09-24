@@ -35,6 +35,25 @@ npm run dev
 
 Visit [http://localhost:3000](http://localhost:3000) in your browser!
 
+### 4. Run tests
+```bash
+npm test
+```
+
+---
+
+## 🎯 Pattern Mastery Game
+
+The campaign is played as six cumulative levels (`src/data/patterns.ts`), each linked to an existing campaign chapter:
+
+1. **Level run** (`/campaign/[chapterId]`): observe → diagnose → deploy a fix → tradeoff counter-strike → transfer question → post-mortem. Runs resume after a refresh.
+2. **Builder boss** (`/builder?scenario=<id>`): a scenario from `src/data/builderScenarios.ts` starts broken; the player builds, stress-tests, explains, and submits. `evaluateScenario` in `src/lib/builderScore.ts` is the only scoring authority.
+3. **Review** (`/campaign/[chapterId]?mode=review`): spaced recall at 1, 3, 7, then 30 days.
+
+Progress is evidence, not a percentage: `Unseen → Introduced → Applied once → Passed transfer → Reliable` (plus `Needs review` when a review is overdue). Reliable requires a builder pass and a successful later review. Reward, streak, mastery, and next-action rules live in `src/lib/progression.ts` as pure, tested functions.
+
+**Persistence:** progress lives in the browser (`localStorage`, versioned with a v1 → v2 migration). `/api/progress` is a best-effort mirror to a single demo user with no authentication or merging, so there is no cross-device sync yet.
+
 ---
 
 ## 🕹️ Features Implemented
