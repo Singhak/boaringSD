@@ -185,23 +185,40 @@ function freshRun(chapterId: string): RunProgress {
   };
 }
 
+function deterministicShuffle<T>(items: T[], seed: string): T[] {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) {
+    hash = (hash << 5) - hash + seed.charCodeAt(i);
+    hash |= 0;
+  }
+  const arr = [...items];
+  for (let i = arr.length - 1; i > 0; i--) {
+    hash = (hash * 9301 + 49297) % 233280;
+    const j = Math.floor((Math.abs(hash) / 233280) * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
 function toReplayQuestion(variant: ReturnType<typeof getPatternReplayVariant>): PatternQuestion {
+  const rawOptions = [
+    {
+      id: `${variant.id}-expected`,
+      label: variant.expectedPattern,
+      isCorrect: true,
+      explanation: `Correct: Specifically resolves the bottleneck "${variant.constraint}" by applying ${variant.expectedPattern.toLowerCase().replace(/\.$/, "")}.`,
+    },
+    ...variant.wrongChoices.map((label, index) => ({
+      id: `${variant.id}-wrong-${index}`,
+      label,
+      isCorrect: false,
+      explanation: `Does not resolve the root bottleneck under "${variant.constraint}".`,
+    })),
+  ];
+
   return {
     question: variant.question,
-    options: [
-      {
-        id: `${variant.id}-expected`,
-        label: variant.expectedPattern,
-        isCorrect: true,
-        explanation: "This matches the architecture pattern the scenario is testing.",
-      },
-      ...variant.wrongChoices.map((label, index) => ({
-        id: `${variant.id}-wrong-${index}`,
-        label,
-        isCorrect: false,
-        explanation: "This does not address the scenario's main constraint.",
-      })),
-    ],
+    options: deterministicShuffle(rawOptions, variant.id),
   };
 }
 
@@ -364,8 +381,8 @@ function PatternRun({
 
             {run.stage === "diagnose" && (
               <QuestionCard
-                key="diagnose"
-                eyebrow="Diagnose"
+                key={`diagnose-${replayVariant.id}`}
+                eyebrow={`Diagnose · Incident: ${replayVariant.title}`}
                 context={replayVariant.context}
                 question={replayQuestion}
                 submitLabel="Lock in diagnosis"
@@ -635,9 +652,13 @@ function ReviewRun({
   pattern: SystemDesignPattern;
   stats: UserStats;
 }) {
+  const rotationOffset = readScenarioRotationState()[`pattern:${pattern.id}`] ?? 0;
+  const reviewVariant = getPatternReplayVariant(pattern.id, rotationOffset + 1);
+  const reviewVariantQuestion = toReplayQuestion(reviewVariant);
+
   const questions: { eyebrow: string; q: PatternQuestion }[] = [
-    { eyebrow: "Recall 1 of 2", q: pattern.review },
-    { eyebrow: "Recall 2 of 2", q: { question: chapter.challenge.question, options: chapter.challenge.options } },
+    { eyebrow: "Recall 1 of 2 · Core Principle", q: pattern.review },
+    { eyebrow: `Recall 2 of 2 · Incident: ${reviewVariant.title}`, q: reviewVariantQuestion },
   ];
   const [index, setIndex] = useState(0);
   const [allFirstTry, setAllFirstTry] = useState(true);

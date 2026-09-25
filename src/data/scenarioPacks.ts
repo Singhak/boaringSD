@@ -6,6 +6,13 @@ import cdnEdgePack from "@/data/scenarioPacks/cdn-edge.json";
 import asyncQueuesPack from "@/data/scenarioPacks/async-queues.json";
 import shardingPack from "@/data/scenarioPacks/sharding.json";
 import consistencyPack from "@/data/scenarioPacks/consistency.json";
+import rateLimitingPack from "@/data/scenarioPacks/rate-limiting.json";
+import circuitBreakerPack from "@/data/scenarioPacks/circuit-breaker.json";
+import connectionPoolingPack from "@/data/scenarioPacks/connection-pooling.json";
+import backpressurePack from "@/data/scenarioPacks/backpressure.json";
+import idempotencyPack from "@/data/scenarioPacks/idempotency.json";
+import multiRegionPack from "@/data/scenarioPacks/multi-region.json";
+import healthChecksPack from "@/data/scenarioPacks/health-checks.json";
 
 export interface ScenarioVariant {
   id: string;
@@ -32,6 +39,13 @@ const SCENARIO_PACKS: Record<string, ScenarioPack> = {
   "async-queues": asyncQueuesPack as ScenarioPack,
   sharding: shardingPack as ScenarioPack,
   consistency: consistencyPack as ScenarioPack,
+  "rate-limiting": rateLimitingPack as ScenarioPack,
+  "circuit-breaker": circuitBreakerPack as ScenarioPack,
+  "connection-pooling": connectionPoolingPack as ScenarioPack,
+  backpressure: backpressurePack as ScenarioPack,
+  idempotency: idempotencyPack as ScenarioPack,
+  "multi-region": multiRegionPack as ScenarioPack,
+  "health-checks": healthChecksPack as ScenarioPack,
 };
 
 export function getScenarioPackByPatternId(patternId: string): ScenarioPack | undefined {
