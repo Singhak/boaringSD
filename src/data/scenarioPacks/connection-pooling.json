@@ -1,202 +1,2996 @@
 {
-  "version": 1,
+  "version": 2,
   "patternId": "connection-pooling",
   "patternName": "Connection Pooling",
-  "variants": [
+  "level": 11,
+  "phase": "Mastery",
+  "canonicalId": "pool-01",
+  "nextCanonicalId": "mr-01",
+  "incidents": [
     {
       "id": "pool-01",
+      "incidentCode": "INC-011",
+      "level": 11,
+      "patternId": "connection-pooling",
+      "canonical": true,
+      "severity": "P0",
+      "xp": 150,
       "title": "App servers open a connection per request",
-      "context": "Each HTTP request opens a new Postgres connection and p99 login time on the database climbs.",
+      "brief": "Each HTTP request opens a new Postgres connection and p99 login time on the database climbs.",
       "constraint": "The database max_connections is 200 and there are 40 app pods.",
       "question": "What is the first fix?",
-      "expectedPattern": "Reuse a bounded connection pool per process instead of connecting per request.",
-      "wrongChoices": [
-        "Raise max_connections without a pool",
-        "Open more connections on every retry",
-        "Move SQL into the browser"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 200,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 99,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 1500,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 60,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App pods",
+            "tone": "warn"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres",
+            "tone": "bad",
+            "cpu": 90
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "bound-pool",
+          "label": "Bound pool",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App pods",
+                "tone": "good"
+              },
+              {
+                "id": "pool",
+                "kind": "lb",
+                "label": "Conn pool",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres",
+                "tone": "good",
+                "cpu": 35
+              }
+            ],
+            "edges": [
+              {
+                "from": "app",
+                "to": "pool"
+              },
+              {
+                "from": "pool",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 33,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 100,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Reuse a bounded connection pool per process instead of connecting per request."
+        },
+        {
+          "id": "raise-max-conn",
+          "label": "Raise max conn",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1875,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 100,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sessions explode",
+          "resultBody": "Each request still opens a new database login."
+        },
+        {
+          "id": "connect-per-request",
+          "label": "Connect per request",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1650,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 80,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sessions explode",
+          "resultBody": "Open more connections on every retry"
+        }
+      ],
+      "hints": [
+        "Sessions to the database are unbounded.",
+        "Handshake cost is the tax.",
+        "Reuse a bounded pool."
+      ],
+      "nextId": "mr-01"
     },
     {
       "id": "pool-02",
+      "incidentCode": "INC-011-02",
+      "level": 11,
+      "patternId": "connection-pooling",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
       "title": "Pool size times replica count",
-      "context": "Each of 50 pods uses a pool of 50, so the database sees 2,500 connections and refuses new ones.",
+      "brief": "Each of 50 pods uses a pool of 50, so the database sees 2,500 connections and refuses new ones.",
       "constraint": "Query volume does not need that many sessions.",
       "question": "What sizing rule did you miss?",
-      "expectedPattern": "Size pools so replicas × pool size stays under the database connection budget.",
-      "wrongChoices": [
-        "Set every pool to max_connections",
-        "Disable pooling in production",
-        "Add more pods to get more connections"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 2500,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 70,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 1500,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 60,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App pods",
+            "tone": "warn"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres",
+            "tone": "bad",
+            "cpu": 90
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "read-replicas",
+          "label": "Read replicas",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App pods",
+                "tone": "good"
+              },
+              {
+                "id": "pool",
+                "kind": "lb",
+                "label": "Conn pool",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres",
+                "tone": "good",
+                "cpu": 35
+              }
+            ],
+            "edges": [
+              {
+                "from": "app",
+                "to": "pool"
+              },
+              {
+                "from": "pool",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 23,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 100,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Size pools so replicas \u00d7 pool size stays under the database connection budget."
+        },
+        {
+          "id": "set-every-pool",
+          "label": "Set every pool",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 74,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1875,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 100,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sessions explode",
+          "resultBody": "Each request still opens a new database login."
+        },
+        {
+          "id": "disable-pooling-producti",
+          "label": "Disable pooling production",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 72,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1650,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 80,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sessions explode",
+          "resultBody": "Disable pooling in production"
+        }
+      ],
+      "hints": [
+        "Sessions to the database are unbounded.",
+        "Handshake cost is the tax.",
+        "Reuse a bounded pool."
+      ],
+      "nextId": null
     },
     {
       "id": "pool-03",
+      "incidentCode": "INC-011-03",
+      "level": 11,
+      "patternId": "connection-pooling",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
       "title": "Checkout waits on a leaked connection",
-      "context": "A code path forgets to release connections and the pool empties during peak.",
+      "brief": "A code path forgets to release connections and the pool empties during peak.",
       "constraint": "The database still has idle sessions owned by the app.",
       "question": "What operational pattern prevents the stall?",
-      "expectedPattern": "Always return connections (try/finally or pool checkout), plus leak detection and timeouts.",
-      "wrongChoices": [
-        "Grow the pool forever",
-        "Restart Postgres on every leak",
-        "Share one connection across threads with no lock"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 5000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 70,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 1500,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 60,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App pods",
+            "tone": "warn"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres",
+            "tone": "bad",
+            "cpu": 90
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "bound-pool",
+          "label": "Bound pool",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App pods",
+                "tone": "good"
+              },
+              {
+                "id": "pool",
+                "kind": "lb",
+                "label": "Conn pool",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres",
+                "tone": "good",
+                "cpu": 35
+              }
+            ],
+            "edges": [
+              {
+                "from": "app",
+                "to": "pool"
+              },
+              {
+                "from": "pool",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 23,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 100,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Always return connections (try/finally or pool checkout), plus leak detection and timeouts."
+        },
+        {
+          "id": "grow-pool-forever",
+          "label": "Grow pool forever",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 74,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1875,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 100,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sessions explode",
+          "resultBody": "Each request still opens a new database login."
+        },
+        {
+          "id": "restart-postgres-every",
+          "label": "Restart Postgres every",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 72,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1650,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 80,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sessions explode",
+          "resultBody": "Restart Postgres on every leak"
+        }
+      ],
+      "hints": [
+        "Sessions to the database are unbounded.",
+        "Handshake cost is the tax.",
+        "Reuse a bounded pool."
+      ],
+      "nextId": null
     },
     {
       "id": "pool-04",
+      "incidentCode": "INC-011-04",
+      "level": 11,
+      "patternId": "connection-pooling",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
       "title": "Idle transactions hold locks",
-      "context": "A pooled connection stays in an open transaction while the app waits on a vendor API.",
+      "brief": "A pooled connection stays in an open transaction while the app waits on a vendor API.",
       "constraint": "Locks block other checkouts.",
       "question": "What should not happen on a pooled connection?",
-      "expectedPattern": "Do not hold a database transaction across slow external I/O; commit or rollback before waiting.",
-      "wrongChoices": [
-        "Keep the transaction open during the HTTP timeout",
-        "Disable idle_in_transaction timeouts",
-        "Increase lock_timeout to hours"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 5000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 70,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 1500,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 60,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App pods",
+            "tone": "warn"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres",
+            "tone": "bad",
+            "cpu": 90
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "bound-pool",
+          "label": "Bound pool",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App pods",
+                "tone": "good"
+              },
+              {
+                "id": "pool",
+                "kind": "lb",
+                "label": "Conn pool",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres",
+                "tone": "good",
+                "cpu": 35
+              }
+            ],
+            "edges": [
+              {
+                "from": "app",
+                "to": "pool"
+              },
+              {
+                "from": "pool",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 23,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 100,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Do not hold a database transaction across slow external I/O; commit or rollback before waiting."
+        },
+        {
+          "id": "keep-transaction-open",
+          "label": "Keep transaction open",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 74,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1875,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 100,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sessions explode",
+          "resultBody": "Each request still opens a new database login."
+        },
+        {
+          "id": "disable-idle-transaction",
+          "label": "Disable idle transaction",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 72,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1650,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 80,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sessions explode",
+          "resultBody": "Disable idle_in_transaction timeouts"
+        }
+      ],
+      "hints": [
+        "Sessions to the database are unbounded.",
+        "Handshake cost is the tax.",
+        "Reuse a bounded pool."
+      ],
+      "nextId": null
     },
     {
       "id": "pool-05",
+      "incidentCode": "INC-011-05",
+      "level": 11,
+      "patternId": "connection-pooling",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
       "title": "Serverless cold start storm",
-      "context": "Lambda concurrency jumps to 500 and each runtime opens its own DB connections.",
+      "brief": "Lambda concurrency jumps to 500 and each runtime opens its own DB connections.",
       "constraint": "The database cannot accept 500 simultaneous handshakes.",
       "question": "What sits between functions and Postgres?",
-      "expectedPattern": "A connection proxy or pooled gateway so short-lived runtimes share a small set of DB sessions.",
-      "wrongChoices": [
-        "One connection per concurrent invocation with no proxy",
-        "Disable function concurrency",
-        "Embed Postgres in each Lambda package"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 500,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 70,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 1500,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 60,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App pods",
+            "tone": "warn"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres",
+            "tone": "bad",
+            "cpu": 90
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "bound-pool",
+          "label": "Bound pool",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App pods",
+                "tone": "good"
+              },
+              {
+                "id": "pool",
+                "kind": "lb",
+                "label": "Conn pool",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres",
+                "tone": "good",
+                "cpu": 35
+              }
+            ],
+            "edges": [
+              {
+                "from": "app",
+                "to": "pool"
+              },
+              {
+                "from": "pool",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 23,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 100,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "A connection proxy or pooled gateway so short-lived runtimes share a small set of DB sessions."
+        },
+        {
+          "id": "one-connection-per",
+          "label": "One connection per",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 74,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1875,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 100,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sessions explode",
+          "resultBody": "Each request still opens a new database login."
+        },
+        {
+          "id": "disable-function-concurr",
+          "label": "Disable function concurrency",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 72,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1650,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 80,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sessions explode",
+          "resultBody": "Disable function concurrency"
+        }
+      ],
+      "hints": [
+        "Sessions to the database are unbounded.",
+        "Handshake cost is the tax.",
+        "Reuse a bounded pool."
+      ],
+      "nextId": null
     },
     {
       "id": "pool-06",
+      "incidentCode": "INC-011-06",
+      "level": 11,
+      "patternId": "connection-pooling",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
       "title": "Health check uses a real query connection",
-      "context": "Load balancer probes check out a pool connection and run a heavy query.",
+      "brief": "Load balancer probes check out a pool connection and run a heavy query.",
       "constraint": "Probes run every 2 seconds on every pod.",
       "question": "How should probes treat the pool?",
-      "expectedPattern": "Use a cheap ping or a dedicated lightweight check that does not starve the request pool.",
-      "wrongChoices": [
-        "SELECT * FROM a large table on every probe",
-        "Check out all pool connections for the probe",
-        "Skip database health entirely"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 5000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 70,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 1500,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 60,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App pods",
+            "tone": "warn"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres",
+            "tone": "bad",
+            "cpu": 90
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "bound-pool",
+          "label": "Bound pool",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App pods",
+                "tone": "good"
+              },
+              {
+                "id": "pool",
+                "kind": "lb",
+                "label": "Conn pool",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres",
+                "tone": "good",
+                "cpu": 35
+              }
+            ],
+            "edges": [
+              {
+                "from": "app",
+                "to": "pool"
+              },
+              {
+                "from": "pool",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 23,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 100,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Use a cheap ping or a dedicated lightweight check that does not starve the request pool."
+        },
+        {
+          "id": "select-large-table",
+          "label": "SELECT large table",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 74,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1875,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 100,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sessions explode",
+          "resultBody": "Each request still opens a new database login."
+        },
+        {
+          "id": "check-out-all",
+          "label": "Check out all",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 72,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1650,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 80,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sessions explode",
+          "resultBody": "Check out all pool connections for the probe"
+        }
+      ],
+      "hints": [
+        "Sessions to the database are unbounded.",
+        "Handshake cost is the tax.",
+        "Reuse a bounded pool."
+      ],
+      "nextId": null
     },
     {
       "id": "pool-07",
+      "incidentCode": "INC-011-07",
+      "level": 11,
+      "patternId": "connection-pooling",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
       "title": "Read and write share one exhausted pool",
-      "context": "Analytics reports occupy every connection, so checkouts cannot write orders.",
+      "brief": "Analytics reports occupy every connection, so checkouts cannot write orders.",
       "constraint": "Report queries are long.",
       "question": "How do you isolate traffic?",
-      "expectedPattern": "Separate pools (or a replica) for reports versus transactional writes.",
-      "wrongChoices": [
-        "One pool with no timeout for both workloads",
-        "Let reports hold connections indefinitely",
-        "Kill the primary to free sessions"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 5000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 70,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 1500,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 60,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App pods",
+            "tone": "warn"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres",
+            "tone": "bad",
+            "cpu": 90
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "read-replicas",
+          "label": "Read replicas",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App pods",
+                "tone": "good"
+              },
+              {
+                "id": "pool",
+                "kind": "lb",
+                "label": "Conn pool",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres",
+                "tone": "good",
+                "cpu": 35
+              }
+            ],
+            "edges": [
+              {
+                "from": "app",
+                "to": "pool"
+              },
+              {
+                "from": "pool",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 23,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 100,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Separate pools (or a replica) for reports versus transactional writes."
+        },
+        {
+          "id": "one-pool-no",
+          "label": "One pool no",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 74,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1875,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 100,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sessions explode",
+          "resultBody": "Each request still opens a new database login."
+        },
+        {
+          "id": "let-reports-hold",
+          "label": "Let reports hold",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 72,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1650,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 80,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sessions explode",
+          "resultBody": "Let reports hold connections indefinitely"
+        }
+      ],
+      "hints": [
+        "Sessions to the database are unbounded.",
+        "Handshake cost is the tax.",
+        "Reuse a bounded pool."
+      ],
+      "nextId": null
     },
     {
       "id": "pool-08",
+      "incidentCode": "INC-011-08",
+      "level": 11,
+      "patternId": "connection-pooling",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
       "title": "Stale connections after failover",
-      "context": "The primary fails over, but pooled sockets still point at the old node and errors persist.",
+      "brief": "The primary fails over, but pooled sockets still point at the old node and errors persist.",
       "constraint": "The pool does not validate on checkout.",
       "question": "What pool behavior is required?",
-      "expectedPattern": "Validate or recycle connections after errors and failover so clients reach the new primary.",
-      "wrongChoices": [
-        "Keep dead sockets until process restart",
-        "Disable TCP keepalive",
-        "Retry forever on the old IP"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 5000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 70,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 1500,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 60,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App pods",
+            "tone": "warn"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres",
+            "tone": "bad",
+            "cpu": 90
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "bound-pool",
+          "label": "Bound pool",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App pods",
+                "tone": "good"
+              },
+              {
+                "id": "pool",
+                "kind": "lb",
+                "label": "Conn pool",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres",
+                "tone": "good",
+                "cpu": 35
+              }
+            ],
+            "edges": [
+              {
+                "from": "app",
+                "to": "pool"
+              },
+              {
+                "from": "pool",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 23,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 100,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Validate or recycle connections after errors and failover so clients reach the new primary."
+        },
+        {
+          "id": "keep-dead-sockets",
+          "label": "Keep dead sockets",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 74,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1875,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 100,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sessions explode",
+          "resultBody": "Each request still opens a new database login."
+        },
+        {
+          "id": "disable-tcp-keepalive",
+          "label": "Disable TCP keepalive",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 72,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1650,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 80,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sessions explode",
+          "resultBody": "Disable TCP keepalive"
+        }
+      ],
+      "hints": [
+        "Sessions to the database are unbounded.",
+        "Handshake cost is the tax.",
+        "Reuse a bounded pool."
+      ],
+      "nextId": null
     },
     {
       "id": "pool-09",
+      "incidentCode": "INC-011-09",
+      "level": 11,
+      "patternId": "connection-pooling",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
       "title": "Thread pool vs DB pool mismatch",
-      "context": "200 servlet threads each wait on a 10-connection DB pool.",
+      "brief": "200 servlet threads each wait on a 10-connection DB pool.",
       "constraint": "Most threads sit blocked on checkout.",
       "question": "What is the mismatch?",
-      "expectedPattern": "Align request concurrency with pool size, or fail fast when the pool is exhausted.",
-      "wrongChoices": [
-        "Unbounded servlet threads waiting on checkout",
-        "Set DB pool size to 1 for 200 threads",
-        "Remove checkout timeouts"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 200,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 70,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 1500,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 60,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App pods",
+            "tone": "warn"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres",
+            "tone": "bad",
+            "cpu": 90
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "trip-breaker",
+          "label": "Trip breaker",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App pods",
+                "tone": "good"
+              },
+              {
+                "id": "pool",
+                "kind": "lb",
+                "label": "Conn pool",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres",
+                "tone": "good",
+                "cpu": 35
+              }
+            ],
+            "edges": [
+              {
+                "from": "app",
+                "to": "pool"
+              },
+              {
+                "from": "pool",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 23,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 100,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Align request concurrency with pool size, or fail fast when the pool is exhausted."
+        },
+        {
+          "id": "unbounded-servlet-thread",
+          "label": "Unbounded servlet threads",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 74,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1875,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 100,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sessions explode",
+          "resultBody": "Each request still opens a new database login."
+        },
+        {
+          "id": "set-db-pool",
+          "label": "Set DB pool",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 72,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1650,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 80,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sessions explode",
+          "resultBody": "Set DB pool size to 1 for 200 threads"
+        }
+      ],
+      "hints": [
+        "Sessions to the database are unbounded.",
+        "Handshake cost is the tax.",
+        "Reuse a bounded pool."
+      ],
+      "nextId": null
     },
     {
       "id": "pool-10",
+      "incidentCode": "INC-011-10",
+      "level": 11,
+      "patternId": "connection-pooling",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
       "title": "PgBouncer transaction vs session mode",
-      "context": "The app uses session-level SET and prepared statements, but the proxy is in transaction pooling mode.",
+      "brief": "The app uses session-level SET and prepared statements, but the proxy is in transaction pooling mode.",
       "constraint": "Session state leaks across clients.",
       "question": "What must match?",
-      "expectedPattern": "Pooling mode must match how the app uses session state, or the app must be session-stateless.",
-      "wrongChoices": [
-        "Ignore pooling mode",
-        "SET role on a connection and return it without reset",
-        "Disable the proxy and hope"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 5000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 70,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 1500,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 60,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App pods",
+            "tone": "warn"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres",
+            "tone": "bad",
+            "cpu": 90
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "bound-pool",
+          "label": "Bound pool",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App pods",
+                "tone": "good"
+              },
+              {
+                "id": "pool",
+                "kind": "lb",
+                "label": "Conn pool",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres",
+                "tone": "good",
+                "cpu": 35
+              }
+            ],
+            "edges": [
+              {
+                "from": "app",
+                "to": "pool"
+              },
+              {
+                "from": "pool",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 23,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 100,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Pooling mode must match how the app uses session state, or the app must be session-stateless."
+        },
+        {
+          "id": "ignore-pooling-mode",
+          "label": "Ignore pooling mode",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 74,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1875,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 100,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sessions explode",
+          "resultBody": "Each request still opens a new database login."
+        },
+        {
+          "id": "set-role-connection",
+          "label": "SET role connection",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 72,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1650,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 80,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sessions explode",
+          "resultBody": "SET role on a connection and return it without reset"
+        }
+      ],
+      "hints": [
+        "Sessions to the database are unbounded.",
+        "Handshake cost is the tax.",
+        "Reuse a bounded pool."
+      ],
+      "nextId": null
     },
     {
       "id": "pool-11",
+      "incidentCode": "INC-011-11",
+      "level": 11,
+      "patternId": "connection-pooling",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
       "title": "Redis unbounded clients",
-      "context": "Each worker opens Redis connections in a loop until the instance hits maxclients.",
+      "brief": "Each worker opens Redis connections in a loop until the instance hits maxclients.",
       "constraint": "Work is bursty but connections are never reused.",
       "question": "What Redis access pattern is correct?",
-      "expectedPattern": "A bounded Redis connection pool (or multiplexed client) shared by the process.",
-      "wrongChoices": [
-        "connect() on every cache get",
-        "One global static connection used from many threads without a safe client",
-        "Disable Redis maxclients"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 5000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 70,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 1500,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 60,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App pods",
+            "tone": "warn"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres",
+            "tone": "bad",
+            "cpu": 90
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "bound-pool",
+          "label": "Bound pool",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App pods",
+                "tone": "good"
+              },
+              {
+                "id": "pool",
+                "kind": "lb",
+                "label": "Conn pool",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres",
+                "tone": "good",
+                "cpu": 35
+              }
+            ],
+            "edges": [
+              {
+                "from": "app",
+                "to": "pool"
+              },
+              {
+                "from": "pool",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 23,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 100,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "A bounded Redis connection pool (or multiplexed client) shared by the process."
+        },
+        {
+          "id": "connect-every-cache",
+          "label": "connect every cache",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 74,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1875,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 100,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sessions explode",
+          "resultBody": "Each request still opens a new database login."
+        },
+        {
+          "id": "one-global-static",
+          "label": "One global static",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 72,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1650,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 80,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sessions explode",
+          "resultBody": "One global static connection used from many threads without a safe client"
+        }
+      ],
+      "hints": [
+        "Sessions to the database are unbounded.",
+        "Handshake cost is the tax.",
+        "Reuse a bounded pool."
+      ],
+      "nextId": null
     },
     {
       "id": "pool-12",
+      "incidentCode": "INC-011-12",
+      "level": 11,
+      "patternId": "connection-pooling",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
       "title": "Checkout timeout too long",
-      "context": "When the pool is empty, requests wait 60 seconds for a connection.",
+      "brief": "When the pool is empty, requests wait 60 seconds for a connection.",
       "constraint": "Users abandon at 3 seconds.",
       "question": "What should the pool do under saturation?",
-      "expectedPattern": "Fail checkout quickly with a clear error so the request can shed or retry elsewhere.",
-      "wrongChoices": [
-        "Block the user thread for a full minute",
-        "Grow the pool past database limits",
-        "Return 200 with empty data"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 5000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 70,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 1500,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 60,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App pods",
+            "tone": "warn"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres",
+            "tone": "bad",
+            "cpu": 90
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "bound-pool",
+          "label": "Bound pool",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App pods",
+                "tone": "good"
+              },
+              {
+                "id": "pool",
+                "kind": "lb",
+                "label": "Conn pool",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres",
+                "tone": "good",
+                "cpu": 35
+              }
+            ],
+            "edges": [
+              {
+                "from": "app",
+                "to": "pool"
+              },
+              {
+                "from": "pool",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 23,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 100,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Fail checkout quickly with a clear error so the request can shed or retry elsewhere."
+        },
+        {
+          "id": "block-user-thread",
+          "label": "Block user thread",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 74,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1875,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 100,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sessions explode",
+          "resultBody": "Each request still opens a new database login."
+        },
+        {
+          "id": "grow-pool-past",
+          "label": "Grow pool past",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 72,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1650,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 80,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sessions explode",
+          "resultBody": "Grow the pool past database limits"
+        }
+      ],
+      "hints": [
+        "Sessions to the database are unbounded.",
+        "Handshake cost is the tax.",
+        "Reuse a bounded pool."
+      ],
+      "nextId": null
     },
     {
       "id": "pool-13",
+      "incidentCode": "INC-011-13",
+      "level": 11,
+      "patternId": "connection-pooling",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
       "title": "Overnight idle disconnects",
-      "context": "The firewall drops idle TCP after 5 minutes and the first morning request fails.",
+      "brief": "The firewall drops idle TCP after 5 minutes and the first morning request fails.",
       "constraint": "The pool still thinks sockets are live.",
       "question": "How do you keep pooled connections healthy?",
-      "expectedPattern": "Idle timeouts, validation queries, or keepalives shorter than the network idle drop.",
-      "wrongChoices": [
-        "Infinite idle lifetime",
-        "No TCP keepalive",
-        "Reconnect only after a customer pages you"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 5000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 70,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 1500,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 60,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App pods",
+            "tone": "warn"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres",
+            "tone": "bad",
+            "cpu": 90
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "bound-pool",
+          "label": "Bound pool",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App pods",
+                "tone": "good"
+              },
+              {
+                "id": "pool",
+                "kind": "lb",
+                "label": "Conn pool",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres",
+                "tone": "good",
+                "cpu": 35
+              }
+            ],
+            "edges": [
+              {
+                "from": "app",
+                "to": "pool"
+              },
+              {
+                "from": "pool",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 23,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 100,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Idle timeouts, validation queries, or keepalives shorter than the network idle drop."
+        },
+        {
+          "id": "infinite-idle-lifetime",
+          "label": "Infinite idle lifetime",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 74,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1875,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 100,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sessions explode",
+          "resultBody": "Each request still opens a new database login."
+        },
+        {
+          "id": "no-tcp-keepalive",
+          "label": "No TCP keepalive",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 72,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1650,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 80,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sessions explode",
+          "resultBody": "No TCP keepalive"
+        }
+      ],
+      "hints": [
+        "Sessions to the database are unbounded.",
+        "Handshake cost is the tax.",
+        "Reuse a bounded pool."
+      ],
+      "nextId": null
     },
     {
       "id": "pool-14",
+      "incidentCode": "INC-011-14",
+      "level": 11,
+      "patternId": "connection-pooling",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
       "title": "ORM opens a second hidden pool",
-      "context": "The app already pools via a proxy, but the ORM also opens 20 connections per pod.",
+      "brief": "The app already pools via a proxy, but the ORM also opens 20 connections per pod.",
       "constraint": "Two layers of pooling multiply sessions.",
       "question": "What is the design mistake?",
-      "expectedPattern": "Have a single pooling layer with a known size; do not stack unbounded pools.",
-      "wrongChoices": [
-        "Pool at ORM, sidecar, and database with no budget",
-        "Disable the proxy and also disable the ORM pool",
-        "Set both pools to max_connections"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 5000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 70,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 1500,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 60,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App pods",
+            "tone": "warn"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres",
+            "tone": "bad",
+            "cpu": 90
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "bound-pool",
+          "label": "Bound pool",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App pods",
+                "tone": "good"
+              },
+              {
+                "id": "pool",
+                "kind": "lb",
+                "label": "Conn pool",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres",
+                "tone": "good",
+                "cpu": 35
+              }
+            ],
+            "edges": [
+              {
+                "from": "app",
+                "to": "pool"
+              },
+              {
+                "from": "pool",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 23,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 100,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Have a single pooling layer with a known size; do not stack unbounded pools."
+        },
+        {
+          "id": "pool-orm-sidecar",
+          "label": "Pool ORM sidecar",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 74,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1875,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 100,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sessions explode",
+          "resultBody": "Each request still opens a new database login."
+        },
+        {
+          "id": "disable-proxy-also",
+          "label": "Disable proxy also",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 72,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1650,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 80,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sessions explode",
+          "resultBody": "Disable the proxy and also disable the ORM pool"
+        }
+      ],
+      "hints": [
+        "Sessions to the database are unbounded.",
+        "Handshake cost is the tax.",
+        "Reuse a bounded pool."
+      ],
+      "nextId": null
     },
     {
       "id": "pool-15",
+      "incidentCode": "INC-011-15",
+      "level": 11,
+      "patternId": "connection-pooling",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
       "title": "Migration job starves the site",
-      "context": "A schema migration uses 80 connections from the same app pool as web traffic.",
+      "brief": "A schema migration uses 80 connections from the same app pool as web traffic.",
       "constraint": "Users still need to check out.",
       "question": "How should the job get connections?",
-      "expectedPattern": "A separate, capped pool (or a maintenance window) so migrations cannot empty the web pool.",
-      "wrongChoices": [
-        "Share the web pool with no cap for DDL",
-        "max_connections for the migrator",
-        "Run migrations inside each user request"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 5000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 80,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 1500,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 60,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App pods",
+            "tone": "warn"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres",
+            "tone": "bad",
+            "cpu": 90
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "bound-pool",
+          "label": "Bound pool",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App pods",
+                "tone": "good"
+              },
+              {
+                "id": "pool",
+                "kind": "lb",
+                "label": "Conn pool",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres",
+                "tone": "good",
+                "cpu": 35
+              }
+            ],
+            "edges": [
+              {
+                "from": "app",
+                "to": "pool"
+              },
+              {
+                "from": "pool",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 26,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 100,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "A separate, capped pool (or a maintenance window) so migrations cannot empty the web pool."
+        },
+        {
+          "id": "share-web-pool",
+          "label": "Share web pool",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 84,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1875,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 100,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sessions explode",
+          "resultBody": "Each request still opens a new database login."
+        },
+        {
+          "id": "max-connections-migrator",
+          "label": "max connections migrator",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 82,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1650,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 80,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sessions explode",
+          "resultBody": "max_connections for the migrator"
+        }
+      ],
+      "hints": [
+        "Sessions to the database are unbounded.",
+        "Handshake cost is the tax.",
+        "Reuse a bounded pool."
+      ],
+      "nextId": null
     }
   ]
 }

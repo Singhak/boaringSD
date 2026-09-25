@@ -13,7 +13,11 @@ import backpressurePack from "@/data/scenarioPacks/backpressure.json";
 import idempotencyPack from "@/data/scenarioPacks/idempotency.json";
 import multiRegionPack from "@/data/scenarioPacks/multi-region.json";
 import healthChecksPack from "@/data/scenarioPacks/health-checks.json";
+import indexData from "@/data/scenarioPacks/index.json";
+import type { IncidentGraph, IncidentNode, IncidentPackV2, IncidentV2 } from "@/types";
+import type { Health, Tier } from "@/components/run/RunVisuals";
 
+// Backward compatibility interfaces
 export interface ScenarioVariant {
   id: string;
   title: string;
@@ -30,43 +34,167 @@ export interface ScenarioPack {
   variants: ScenarioVariant[];
 }
 
-const SCENARIO_PACKS: Record<string, ScenarioPack> = {
-  "horizontal-scaling": horizontalScalingPack as ScenarioPack,
-  "load-balancing": loadBalancingPack as ScenarioPack,
-  "read-replicas": readReplicasPack as ScenarioPack,
-  caching: cachingPack as ScenarioPack,
-  "cdn-edge": cdnEdgePack as ScenarioPack,
-  "async-queues": asyncQueuesPack as ScenarioPack,
-  sharding: shardingPack as ScenarioPack,
-  consistency: consistencyPack as ScenarioPack,
-  "rate-limiting": rateLimitingPack as ScenarioPack,
-  "circuit-breaker": circuitBreakerPack as ScenarioPack,
-  "connection-pooling": connectionPoolingPack as ScenarioPack,
-  backpressure: backpressurePack as ScenarioPack,
-  idempotency: idempotencyPack as ScenarioPack,
-  "multi-region": multiRegionPack as ScenarioPack,
-  "health-checks": healthChecksPack as ScenarioPack,
+const RAW_PACKS = [
+  horizontalScalingPack,
+  loadBalancingPack,
+  readReplicasPack,
+  cachingPack,
+  cdnEdgePack,
+  asyncQueuesPack,
+  shardingPack,
+  consistencyPack,
+  rateLimitingPack,
+  circuitBreakerPack,
+  connectionPoolingPack,
+  backpressurePack,
+  idempotencyPack,
+  multiRegionPack,
+  healthChecksPack,
+] as unknown as IncidentPackV2[];
+
+export type ScenarioPackV2 = IncidentPackV2 & {
+  variants: ScenarioVariant[];
 };
 
-export function getScenarioPackByPatternId(patternId: string): ScenarioPack | undefined {
-  return SCENARIO_PACKS[patternId];
+const PACKS_BY_PATTERN: Record<string, ScenarioPackV2> = {};
+
+for (const raw of RAW_PACKS) {
+  const pack = {
+    ...raw,
+    get variants(): ScenarioVariant[] {
+      return (raw.incidents || []).map((inc) => ({
+        id: inc.id,
+        title: inc.title,
+        context: inc.brief,
+        constraint: inc.constraint,
+        question: inc.question,
+        expectedPattern: raw.patternName,
+        wrongChoices: (inc.choices || []).filter((c) => !c.correct).map((c) => c.label),
+      }));
+    },
+  };
+  PACKS_BY_PATTERN[raw.patternId] = pack as ScenarioPackV2;
 }
+
+const PACKS_BY_LEVEL: Record<number, ScenarioPackV2> = Object.values(PACKS_BY_PATTERN).reduce(
+  (acc, pack) => {
+    acc[pack.level] = pack;
+    return acc;
+  },
+  {} as Record<number, ScenarioPackV2>
+);
+
+
+export function getAllScenarioPacks(): IncidentPackV2[] {
+  return Object.values(PACKS_BY_PATTERN);
+}
+
+export function getScenarioPackByPatternId(patternId: string): IncidentPackV2 | undefined {
+  return PACKS_BY_PATTERN[patternId];
+}
+
+export function getScenarioPackByLevel(level: number): IncidentPackV2 | undefined {
+  return PACKS_BY_LEVEL[level];
+}
+
+export function getCanonicalIncident(levelOrPatternId: number | string): IncidentV2 | undefined {
+  const pack =
+    typeof levelOrPatternId === "number"
+      ? getScenarioPackByLevel(levelOrPatternId)
+      : getScenarioPackByPatternId(levelOrPatternId);
+
+  if (!pack) return undefined;
+  return pack.incidents.find((i) => i.canonical || i.id === pack.canonicalId) || pack.incidents[0];
+}
+
+export function getIncidentById(incidentId: string): IncidentV2 | undefined {
+  for (const pack of Object.values(PACKS_BY_PATTERN)) {
+    const found = pack.incidents.find((i) => i.id === incidentId);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+export function getCanonicalCampaign() {
+  return indexData.canonicalCampaign;
+}
+
+/**
+ * Converts any IncidentGraph (nodes + edges) into horizontal Tier columns
+ * for live visual rendering in RunVisuals / Topology.
+ */
+export function graphToTiers(graph: IncidentGraph): Tier[] {
+  if (!graph || !graph.nodes || graph.nodes.length === 0) return [];
+
+  const LAYER_ORDER: Record<string, number> = {
+    users: 0,
+    cdn: 1,
+    lb: 2,
+    server: 3,
+    cache: 4,
+    queue: 4,
+    worker: 4,
+    gpu: 4,
+    db: 5,
+    replica: 5,
+  };
+
+  const layers: Map<number, IncidentNode[]> = new Map();
+  for (const node of graph.nodes) {
+    const layer = LAYER_ORDER[node.kind] ?? 3;
+    if (!layers.has(layer)) layers.set(layer, []);
+    layers.get(layer)!.push(node);
+  }
+
+  const sortedLayerKeys = Array.from(layers.keys()).sort((a, b) => a - b);
+
+  return sortedLayerKeys.map((key) => {
+    const nodes = layers.get(key)!;
+    return nodes.map((node) => {
+      let health: Health = "ok";
+      if (node.tone === "bad") health = "hot";
+      else if (node.tone === "warn") health = "warn";
+      else if (node.tone === "good") health = "new";
+      else if (node.tone === "neutral") health = "ok";
+
+      let note = node.sub;
+      if (!note && node.cpu !== undefined) {
+        note = `${node.cpu}% CPU`;
+      }
+
+      return {
+        label: node.label,
+        health,
+        note,
+      };
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Backward Compatibility for legacy callers / tests
+// ---------------------------------------------------------------------------
 
 export function getScenarioVariantForPattern(patternId: string, rotationIndex: number): ScenarioVariant {
   const pack = getScenarioPackByPatternId(patternId);
-
-  if (!pack || pack.variants.length === 0) {
+  if (!pack || pack.incidents.length === 0) {
     throw new Error(`No scenario pack found for pattern: ${patternId}`);
   }
 
-  const safeIndex = Math.abs(rotationIndex) % pack.variants.length;
-  return pack.variants[safeIndex];
+  const safeIndex = Math.abs(rotationIndex) % pack.incidents.length;
+  const inc = pack.incidents[safeIndex];
+
+  return {
+    id: inc.id,
+    title: inc.title,
+    context: inc.brief,
+    constraint: inc.constraint,
+    question: inc.question,
+    expectedPattern: pack.patternName,
+    wrongChoices: inc.choices.filter((c) => !c.correct).map((c) => c.label),
+  };
 }
 
 export function getPatternReplayVariant(patternId: string, runsStarted: number): ScenarioVariant {
   return getScenarioVariantForPattern(patternId, runsStarted);
-}
-
-export function getAllScenarioPacks(): ScenarioPack[] {
-  return Object.values(SCENARIO_PACKS);
 }

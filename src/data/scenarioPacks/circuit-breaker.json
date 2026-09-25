@@ -1,202 +1,3266 @@
 {
-  "version": 1,
+  "version": 2,
   "patternId": "circuit-breaker",
   "patternName": "Circuit Breaker",
-  "variants": [
+  "level": 10,
+  "phase": "Resilience",
+  "canonicalId": "cb-01",
+  "nextCanonicalId": "pool-01",
+  "incidents": [
     {
       "id": "cb-01",
+      "incidentCode": "INC-010",
+      "level": 10,
+      "patternId": "circuit-breaker",
+      "canonical": true,
+      "severity": "P0",
+      "xp": 150,
       "title": "Payments hang every checkout",
-      "context": "The payment provider is down and every checkout thread waits 30 seconds.",
+      "brief": "The payment provider is down and every checkout thread waits 30 seconds.",
       "constraint": "The rest of the site could still browse.",
       "question": "What stops the thread pileup?",
-      "expectedPattern": "Open a circuit after consecutive failures and fail fast instead of waiting on the timeout.",
-      "wrongChoices": [
-        "Increase the payment timeout",
-        "Retry every call immediately",
-        "Block the homepage too"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 3000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 95,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 30000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 200,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Checkout",
+            "tone": "bad",
+            "cpu": 97
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Payments (down)",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "trip-breaker",
+          "label": "Trip breaker",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Checkout",
+                "tone": "good",
+                "cpu": 30
+              },
+              {
+                "id": "cb",
+                "kind": "lb",
+                "label": "Breaker open",
+                "tone": "good"
+              },
+              {
+                "id": "fb",
+                "kind": "cache",
+                "label": "Fallback",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "cb"
+              },
+              {
+                "from": "cb",
+                "to": "fb"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 31,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2000,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Open a circuit after consecutive failures and fail fast instead of waiting on the timeout."
+        },
+        {
+          "id": "longer-timeout",
+          "label": "Longer timeout",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 37500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 240,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Threads still stuck",
+          "resultBody": "Calls keep waiting on the dead dependency."
+        },
+        {
+          "id": "retry-harder",
+          "label": "Retry harder",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 97,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 33000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 220,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Threads still stuck",
+          "resultBody": "Retry every call immediately"
+        }
+      ],
+      "hints": [
+        "Waiting on a dead dependency burns threads.",
+        "Retries make it worse.",
+        "Fail fast, then probe."
+      ],
+      "nextId": "pool-01"
     },
     {
       "id": "cb-02",
+      "incidentCode": "INC-010-02",
+      "level": 10,
+      "patternId": "circuit-breaker",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Retrying a dead dependency",
-      "context": "An inventory service returns 503 and callers retry three times, tripling load.",
+      "brief": "An inventory service returns 503 and callers retry three times, tripling load.",
       "constraint": "The dependency needs time to recover.",
       "question": "What should happen after the error budget is spent?",
-      "expectedPattern": "Trip the breaker, stop calling for a cooldown, then probe with limited traffic.",
-      "wrongChoices": [
-        "Retry harder",
-        "Remove timeouts",
-        "Cache 503 as success"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 503,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 95,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 30000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 200,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Checkout",
+            "tone": "bad",
+            "cpu": 97
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Payments (down)",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "trip-breaker",
+          "label": "Trip breaker",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Checkout",
+                "tone": "good",
+                "cpu": 30
+              },
+              {
+                "id": "cb",
+                "kind": "lb",
+                "label": "Breaker open",
+                "tone": "good"
+              },
+              {
+                "id": "fb",
+                "kind": "cache",
+                "label": "Fallback",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "cb"
+              },
+              {
+                "from": "cb",
+                "to": "fb"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 31,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2000,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Trip the breaker, stop calling for a cooldown, then probe with limited traffic."
+        },
+        {
+          "id": "retry-harder",
+          "label": "Retry harder",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 37500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 240,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Threads still stuck",
+          "resultBody": "Calls keep waiting on the dead dependency."
+        },
+        {
+          "id": "remove-timeouts",
+          "label": "Remove timeouts",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 97,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 33000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 220,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Threads still stuck",
+          "resultBody": "Remove timeouts"
+        }
+      ],
+      "hints": [
+        "Waiting on a dead dependency burns threads.",
+        "Retries make it worse.",
+        "Fail fast, then probe."
+      ],
+      "nextId": null
     },
     {
       "id": "cb-03",
+      "incidentCode": "INC-010-03",
+      "level": 10,
+      "patternId": "circuit-breaker",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Partial outage looks healthy",
-      "context": "1 in 3 calls fail, but the breaker never opens because it only trips on 100% failure.",
+      "brief": "1 in 3 calls fail, but the breaker never opens because it only trips on 100% failure.",
       "constraint": "Users already see errors.",
       "question": "What trip condition is better?",
-      "expectedPattern": "Open on error rate or latency SLO breach, not only total blackout.",
-      "wrongChoices": [
-        "Trip only if every call fails",
-        "Never trip in production",
-        "Count only TCP resets"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 3000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 100,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 30000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 200,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Checkout",
+            "tone": "bad",
+            "cpu": 97
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Payments (down)",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "trip-breaker",
+          "label": "Trip breaker",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Checkout",
+                "tone": "good",
+                "cpu": 30
+              },
+              {
+                "id": "cb",
+                "kind": "lb",
+                "label": "Breaker open",
+                "tone": "good"
+              },
+              {
+                "id": "fb",
+                "kind": "cache",
+                "label": "Fallback",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "cb"
+              },
+              {
+                "from": "cb",
+                "to": "fb"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 33,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2000,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Open on error rate or latency SLO breach, not only total blackout."
+        },
+        {
+          "id": "trip-if-every",
+          "label": "Trip if every",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 37500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 240,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Threads still stuck",
+          "resultBody": "Calls keep waiting on the dead dependency."
+        },
+        {
+          "id": "never-trip-production",
+          "label": "Never trip production",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 33000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 220,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Threads still stuck",
+          "resultBody": "Never trip in production"
+        }
+      ],
+      "hints": [
+        "Waiting on a dead dependency burns threads.",
+        "Retries make it worse.",
+        "Fail fast, then probe."
+      ],
+      "nextId": null
     },
     {
       "id": "cb-04",
+      "incidentCode": "INC-010-04",
+      "level": 10,
+      "patternId": "circuit-breaker",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Breaker never half-opens",
-      "context": "A circuit opened at 02:00 and still rejects all calls at noon even though the dependency recovered at 02:10.",
+      "brief": "A circuit opened at 02:00 and still rejects all calls at noon even though the dependency recovered at 02:10.",
       "constraint": "There is no probe interval.",
       "question": "What state is missing?",
-      "expectedPattern": "Half-open: allow a small probe, then close the circuit if the dependency is healthy.",
-      "wrongChoices": [
-        "Stay open forever until a restart",
-        "Close immediately on the first timeout",
-        "Page a human for every recovery"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 3000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 95,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 30000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 200,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Checkout",
+            "tone": "bad",
+            "cpu": 97
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Payments (down)",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "trip-breaker",
+          "label": "Trip breaker",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Checkout",
+                "tone": "good",
+                "cpu": 30
+              },
+              {
+                "id": "cb",
+                "kind": "lb",
+                "label": "Breaker open",
+                "tone": "good"
+              },
+              {
+                "id": "fb",
+                "kind": "cache",
+                "label": "Fallback",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "cb"
+              },
+              {
+                "from": "cb",
+                "to": "fb"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 31,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2000,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Half-open: allow a small probe, then close the circuit if the dependency is healthy."
+        },
+        {
+          "id": "stay-open-forever",
+          "label": "Stay open forever",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 37500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 240,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Threads still stuck",
+          "resultBody": "Calls keep waiting on the dead dependency."
+        },
+        {
+          "id": "close-immediately-first",
+          "label": "Close immediately first",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 97,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 33000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 220,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Threads still stuck",
+          "resultBody": "Close immediately on the first timeout"
+        }
+      ],
+      "hints": [
+        "Waiting on a dead dependency burns threads.",
+        "Retries make it worse.",
+        "Fail fast, then probe."
+      ],
+      "nextId": null
     },
     {
       "id": "cb-05",
+      "incidentCode": "INC-010-05",
+      "level": 10,
+      "patternId": "circuit-breaker",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "One slow endpoint poisons the client",
-      "context": "A shared HTTP client trips for all routes because /reports is slow.",
+      "brief": "A shared HTTP client trips for all routes because /reports is slow.",
       "constraint": " /checkout is still healthy.",
       "question": "How should breakers be scoped?",
-      "expectedPattern": "Per-dependency and per-endpoint circuits, not one breaker for the whole host.",
-      "wrongChoices": [
-        "One global breaker for every outbound call",
-        "No isolation between routes",
-        "Disable the healthy endpoint"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 3000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 95,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 30000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 200,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Checkout",
+            "tone": "bad",
+            "cpu": 97
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Payments (down)",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "trip-breaker",
+          "label": "Trip breaker",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Checkout",
+                "tone": "good",
+                "cpu": 30
+              },
+              {
+                "id": "cb",
+                "kind": "lb",
+                "label": "Breaker open",
+                "tone": "good"
+              },
+              {
+                "id": "fb",
+                "kind": "cache",
+                "label": "Fallback",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "cb"
+              },
+              {
+                "from": "cb",
+                "to": "fb"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 31,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2000,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Per-dependency and per-endpoint circuits, not one breaker for the whole host."
+        },
+        {
+          "id": "one-global-breaker",
+          "label": "One global breaker",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 37500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 240,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Threads still stuck",
+          "resultBody": "Calls keep waiting on the dead dependency."
+        },
+        {
+          "id": "no-isolation-between",
+          "label": "No isolation between",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 97,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 33000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 220,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Threads still stuck",
+          "resultBody": "No isolation between routes"
+        }
+      ],
+      "hints": [
+        "Waiting on a dead dependency burns threads.",
+        "Retries make it worse.",
+        "Fail fast, then probe."
+      ],
+      "nextId": null
     },
     {
       "id": "cb-06",
+      "incidentCode": "INC-010-06",
+      "level": 10,
+      "patternId": "circuit-breaker",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Fallback to stale catalog",
-      "context": "The recommendations service is down and the homepage waits on it.",
+      "brief": "The recommendations service is down and the homepage waits on it.",
       "constraint": "A slightly stale list is acceptable.",
       "question": "What should the open circuit return?",
-      "expectedPattern": "A fallback: cached or default recommendations instead of blocking the page.",
-      "wrongChoices": [
-        "Blank 500 for the whole homepage",
-        "Hang until recommendations return",
-        "Write a full outage banner for unrelated pages"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 3000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 95,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 30000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 200,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Checkout",
+            "tone": "bad",
+            "cpu": 97
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Payments (down)",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "add-cache",
+          "label": "Add cache",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Checkout",
+                "tone": "good",
+                "cpu": 30
+              },
+              {
+                "id": "cb",
+                "kind": "lb",
+                "label": "Breaker open",
+                "tone": "good"
+              },
+              {
+                "id": "fb",
+                "kind": "cache",
+                "label": "Fallback",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "cb"
+              },
+              {
+                "from": "cb",
+                "to": "fb"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 31,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2000,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "A fallback: cached or default recommendations instead of blocking the page."
+        },
+        {
+          "id": "blank-500-whole",
+          "label": "Blank 500 whole",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 37500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 240,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Threads still stuck",
+          "resultBody": "Calls keep waiting on the dead dependency."
+        },
+        {
+          "id": "hang-until-recommendatio",
+          "label": "Hang until recommendations",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 97,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 33000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 220,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Threads still stuck",
+          "resultBody": "Hang until recommendations return"
+        }
+      ],
+      "hints": [
+        "Waiting on a dead dependency burns threads.",
+        "Retries make it worse.",
+        "Fail fast, then probe."
+      ],
+      "nextId": null
     },
     {
       "id": "cb-07",
+      "incidentCode": "INC-010-07",
+      "level": 10,
+      "patternId": "circuit-breaker",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Breaker on the database",
-      "context": "Postgres is slow and every request still opens a new query.",
+      "brief": "Postgres is slow and every request still opens a new query.",
       "constraint": "Holding more connections makes recovery worse.",
       "question": "What does a circuit do here?",
-      "expectedPattern": "Fail fast when the database error rate is high so the pool can recover.",
-      "wrongChoices": [
-        "Raise max_connections during the incident",
-        "Retry every query with no delay",
-        "Disable health checks"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 3000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 95,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 30000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 200,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Checkout",
+            "tone": "bad",
+            "cpu": 97
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Payments (down)",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "trip-breaker",
+          "label": "Trip breaker",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Checkout",
+                "tone": "good",
+                "cpu": 30
+              },
+              {
+                "id": "cb",
+                "kind": "lb",
+                "label": "Breaker open",
+                "tone": "good"
+              },
+              {
+                "id": "fb",
+                "kind": "cache",
+                "label": "Fallback",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "cb"
+              },
+              {
+                "from": "cb",
+                "to": "fb"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 31,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2000,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Fail fast when the database error rate is high so the pool can recover."
+        },
+        {
+          "id": "raise-max-connections",
+          "label": "Raise max connections",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 37500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 240,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Threads still stuck",
+          "resultBody": "Calls keep waiting on the dead dependency."
+        },
+        {
+          "id": "retry-every-query",
+          "label": "Retry every query",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 97,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 33000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 220,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Threads still stuck",
+          "resultBody": "Retry every query with no delay"
+        }
+      ],
+      "hints": [
+        "Waiting on a dead dependency burns threads.",
+        "Retries make it worse.",
+        "Fail fast, then probe."
+      ],
+      "nextId": null
     },
     {
       "id": "cb-08",
+      "incidentCode": "INC-010-08",
+      "level": 10,
+      "patternId": "circuit-breaker",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Flapping circuit",
-      "context": "The breaker opens and closes every few seconds as one probe succeeds then fails.",
+      "brief": "The breaker opens and closes every few seconds as one probe succeeds then fails.",
       "constraint": "Oscillation confuses clients.",
       "question": "How do you stabilize it?",
-      "expectedPattern": "Require a streak of successful probes and a minimum open duration before closing.",
-      "wrongChoices": [
-        "Close on a single success",
-        "Randomize open/closed every request",
-        "Remove metrics"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 3000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 95,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 30000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 200,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Checkout",
+            "tone": "bad",
+            "cpu": 97
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Payments (down)",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "trip-breaker",
+          "label": "Trip breaker",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Checkout",
+                "tone": "good",
+                "cpu": 30
+              },
+              {
+                "id": "cb",
+                "kind": "lb",
+                "label": "Breaker open",
+                "tone": "good"
+              },
+              {
+                "id": "fb",
+                "kind": "cache",
+                "label": "Fallback",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "cb"
+              },
+              {
+                "from": "cb",
+                "to": "fb"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 31,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2000,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Require a streak of successful probes and a minimum open duration before closing."
+        },
+        {
+          "id": "close-single-success",
+          "label": "Close single success",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 37500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 240,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Threads still stuck",
+          "resultBody": "Calls keep waiting on the dead dependency."
+        },
+        {
+          "id": "randomize-open-closed",
+          "label": "Randomize open closed",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 97,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 33000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 220,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Threads still stuck",
+          "resultBody": "Randomize open/closed every request"
+        }
+      ],
+      "hints": [
+        "Waiting on a dead dependency burns threads.",
+        "Retries make it worse.",
+        "Fail fast, then probe."
+      ],
+      "nextId": null
     },
     {
       "id": "cb-09",
+      "incidentCode": "INC-010-09",
+      "level": 10,
+      "patternId": "circuit-breaker",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Timeout longer than user patience",
-      "context": "The user abandons at 3s, but the service waits 30s on a vendor API.",
+      "brief": "The user abandons at 3s, but the service waits 30s on a vendor API.",
       "constraint": "Resources stay occupied after the user is gone.",
       "question": "What bound belongs with the breaker?",
-      "expectedPattern": "Timeouts shorter than the user SLA, then trip if those timeouts become common.",
-      "wrongChoices": [
-        "Vendor timeout of 30s on the user path",
-        "No timeout",
-        "Client-side spinner only"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 3000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 95,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 30000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 200,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Checkout",
+            "tone": "bad",
+            "cpu": 97
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Payments (down)",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "trip-breaker",
+          "label": "Trip breaker",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Checkout",
+                "tone": "good",
+                "cpu": 30
+              },
+              {
+                "id": "cb",
+                "kind": "lb",
+                "label": "Breaker open",
+                "tone": "good"
+              },
+              {
+                "id": "fb",
+                "kind": "cache",
+                "label": "Fallback",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "cb"
+              },
+              {
+                "from": "cb",
+                "to": "fb"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 31,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2000,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Timeouts shorter than the user SLA, then trip if those timeouts become common."
+        },
+        {
+          "id": "vendor-timeout-30s",
+          "label": "Vendor timeout 30s",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 37500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 240,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Threads still stuck",
+          "resultBody": "Calls keep waiting on the dead dependency."
+        },
+        {
+          "id": "no-timeout",
+          "label": "No timeout",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 97,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 33000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 220,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Threads still stuck",
+          "resultBody": "No timeout"
+        }
+      ],
+      "hints": [
+        "Waiting on a dead dependency burns threads.",
+        "Retries make it worse.",
+        "Fail fast, then probe."
+      ],
+      "nextId": null
     },
     {
       "id": "cb-10",
+      "incidentCode": "INC-010-10",
+      "level": 10,
+      "patternId": "circuit-breaker",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Bulkhead missing next to the breaker",
-      "context": "A circuit opens on search, but search still occupies the only thread pool.",
+      "brief": "A circuit opens on search, but search still occupies the only thread pool.",
       "constraint": "Checkout shares that pool.",
       "question": "What complementary pattern is needed?",
-      "expectedPattern": "Isolate thread pools (bulkhead) so a broken dependency cannot starve others, then break the circuit.",
-      "wrongChoices": [
-        "One thread pool for every outbound call",
-        "Larger heap only",
-        "Disable search logs"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 3000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 95,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 30000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 200,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Checkout",
+            "tone": "bad",
+            "cpu": 97
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Payments (down)",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "trip-breaker",
+          "label": "Trip breaker",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Checkout",
+                "tone": "good",
+                "cpu": 30
+              },
+              {
+                "id": "cb",
+                "kind": "lb",
+                "label": "Breaker open",
+                "tone": "good"
+              },
+              {
+                "id": "fb",
+                "kind": "cache",
+                "label": "Fallback",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "cb"
+              },
+              {
+                "from": "cb",
+                "to": "fb"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 31,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2000,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Isolate thread pools (bulkhead) so a broken dependency cannot starve others, then break the circuit."
+        },
+        {
+          "id": "one-thread-pool",
+          "label": "One thread pool",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 37500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 240,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Threads still stuck",
+          "resultBody": "Calls keep waiting on the dead dependency."
+        },
+        {
+          "id": "larger-heap",
+          "label": "Larger heap",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 97,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 33000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 220,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Threads still stuck",
+          "resultBody": "Larger heap only"
+        }
+      ],
+      "hints": [
+        "Waiting on a dead dependency burns threads.",
+        "Retries make it worse.",
+        "Fail fast, then probe."
+      ],
+      "nextId": null
     },
     {
       "id": "cb-11",
+      "incidentCode": "INC-010-11",
+      "level": 10,
+      "patternId": "circuit-breaker",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Error budget vs pager",
-      "context": "On-call is paged for every 500, but the circuit already sheds 99% of calls cleanly.",
+      "brief": "On-call is paged for every 500, but the circuit already sheds 99% of calls cleanly.",
       "constraint": "The dependency is known-down.",
       "question": "What should alerting follow?",
-      "expectedPattern": "Alert on customer impact and breaker state, not every expected fail-fast 503.",
-      "wrongChoices": [
-        "Page on each rejected call",
-        "Silence all dependency alerts",
-        "Treat fail-fast as an unknown outage every time"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 500,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 99,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 30000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 200,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Checkout",
+            "tone": "bad",
+            "cpu": 97
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Payments (down)",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "trip-breaker",
+          "label": "Trip breaker",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Checkout",
+                "tone": "good",
+                "cpu": 30
+              },
+              {
+                "id": "cb",
+                "kind": "lb",
+                "label": "Breaker open",
+                "tone": "good"
+              },
+              {
+                "id": "fb",
+                "kind": "cache",
+                "label": "Fallback",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "cb"
+              },
+              {
+                "from": "cb",
+                "to": "fb"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 33,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2000,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Alert on customer impact and breaker state, not every expected fail-fast 503."
+        },
+        {
+          "id": "page-each-rejected",
+          "label": "Page each rejected",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 37500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 240,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Threads still stuck",
+          "resultBody": "Calls keep waiting on the dead dependency."
+        },
+        {
+          "id": "silence-all-dependency",
+          "label": "Silence all dependency",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 33000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 220,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Threads still stuck",
+          "resultBody": "Silence all dependency alerts"
+        }
+      ],
+      "hints": [
+        "Waiting on a dead dependency burns threads.",
+        "Retries make it worse.",
+        "Fail fast, then probe."
+      ],
+      "nextId": null
     },
     {
       "id": "cb-12",
+      "incidentCode": "INC-010-12",
+      "level": 10,
+      "patternId": "circuit-breaker",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Idempotent probe in half-open",
-      "context": "Half-open sends a real purchase to see if payments are back.",
+      "brief": "Half-open sends a real purchase to see if payments are back.",
       "constraint": "Probes must not create side effects.",
       "question": "What kind of probe is safe?",
-      "expectedPattern": "A health or dry-run call, not a live mutating request, while half-open.",
-      "wrongChoices": [
-        "Charge a real card as the probe",
-        "Send production writes with no idempotency key",
-        "Skip probes and close blindly"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 3000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 95,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 30000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 200,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Checkout",
+            "tone": "bad",
+            "cpu": 97
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Payments (down)",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "trip-breaker",
+          "label": "Trip breaker",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Checkout",
+                "tone": "good",
+                "cpu": 30
+              },
+              {
+                "id": "cb",
+                "kind": "lb",
+                "label": "Breaker open",
+                "tone": "good"
+              },
+              {
+                "id": "fb",
+                "kind": "cache",
+                "label": "Fallback",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "cb"
+              },
+              {
+                "from": "cb",
+                "to": "fb"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 31,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2000,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "A health or dry-run call, not a live mutating request, while half-open."
+        },
+        {
+          "id": "charge-real-card",
+          "label": "Charge real card",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 37500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 240,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Threads still stuck",
+          "resultBody": "Calls keep waiting on the dead dependency."
+        },
+        {
+          "id": "send-production-writes",
+          "label": "Send production writes",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 97,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 33000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 220,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Threads still stuck",
+          "resultBody": "Send production writes with no idempotency key"
+        }
+      ],
+      "hints": [
+        "Waiting on a dead dependency burns threads.",
+        "Retries make it worse.",
+        "Fail fast, then probe."
+      ],
+      "nextId": null
     },
     {
       "id": "cb-13",
+      "incidentCode": "INC-010-13",
+      "level": 10,
+      "patternId": "circuit-breaker",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Shared library default is closed-never",
-      "context": "The HTTP wrapper has retries but no circuit, so a brownout lasts all afternoon.",
+      "brief": "The HTTP wrapper has retries but no circuit, so a brownout lasts all afternoon.",
       "constraint": "Defaults are used by 40 services.",
       "question": "What default should the platform provide?",
-      "expectedPattern": "Timeouts, limited retries, and a circuit breaker as the standard client policy.",
-      "wrongChoices": [
-        "Infinite retries as the SDK default",
-        "No timeouts in the shared client",
-        "Each team invents a different policy with no breaker"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 3000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 95,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 30000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 200,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Checkout",
+            "tone": "bad",
+            "cpu": 97
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Payments (down)",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "trip-breaker",
+          "label": "Trip breaker",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Checkout",
+                "tone": "good",
+                "cpu": 30
+              },
+              {
+                "id": "cb",
+                "kind": "lb",
+                "label": "Breaker open",
+                "tone": "good"
+              },
+              {
+                "id": "fb",
+                "kind": "cache",
+                "label": "Fallback",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "cb"
+              },
+              {
+                "from": "cb",
+                "to": "fb"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 31,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2000,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Timeouts, limited retries, and a circuit breaker as the standard client policy."
+        },
+        {
+          "id": "infinite-retries-sdk",
+          "label": "Infinite retries SDK",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 37500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 240,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Threads still stuck",
+          "resultBody": "Calls keep waiting on the dead dependency."
+        },
+        {
+          "id": "no-timeouts-shared",
+          "label": "No timeouts shared",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 97,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 33000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 220,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Threads still stuck",
+          "resultBody": "No timeouts in the shared client"
+        }
+      ],
+      "hints": [
+        "Waiting on a dead dependency burns threads.",
+        "Retries make it worse.",
+        "Fail fast, then probe."
+      ],
+      "nextId": null
     },
     {
       "id": "cb-14",
+      "incidentCode": "INC-010-14",
+      "level": 10,
+      "patternId": "circuit-breaker",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "gRPC deadline ignored",
-      "context": "Downstream ignores deadlines and the caller’s breaker never sees failures, only hung RPCs.",
+      "brief": "Downstream ignores deadlines and the caller\u2019s breaker never sees failures, only hung RPCs.",
       "constraint": "Threads stay blocked.",
       "question": "What failure signal should trip the circuit?",
-      "expectedPattern": "Treat deadline exceeded and hung RPCs as failures that count toward opening the circuit.",
-      "wrongChoices": [
-        "Only count explicit 500s",
-        "Wait forever for gRPC",
-        "Disable deadlines"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 3000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 95,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 30000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 200,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Checkout",
+            "tone": "bad",
+            "cpu": 97
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Payments (down)",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "trip-breaker",
+          "label": "Trip breaker",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Checkout",
+                "tone": "good",
+                "cpu": 30
+              },
+              {
+                "id": "cb",
+                "kind": "lb",
+                "label": "Breaker open",
+                "tone": "good"
+              },
+              {
+                "id": "fb",
+                "kind": "cache",
+                "label": "Fallback",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "cb"
+              },
+              {
+                "from": "cb",
+                "to": "fb"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 31,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2000,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Treat deadline exceeded and hung RPCs as failures that count toward opening the circuit."
+        },
+        {
+          "id": "only-count-explicit",
+          "label": "Only count explicit",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 37500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 240,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Threads still stuck",
+          "resultBody": "Calls keep waiting on the dead dependency."
+        },
+        {
+          "id": "wait-forever-grpc",
+          "label": "Wait forever gRPC",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 97,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 33000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 220,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Threads still stuck",
+          "resultBody": "Wait forever for gRPC"
+        }
+      ],
+      "hints": [
+        "Waiting on a dead dependency burns threads.",
+        "Retries make it worse.",
+        "Fail fast, then probe."
+      ],
+      "nextId": null
     },
     {
       "id": "cb-15",
+      "incidentCode": "INC-010-15",
+      "level": 10,
+      "patternId": "circuit-breaker",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Regional dependency, global breaker",
-      "context": "EU payments fail, so the breaker opens for US traffic too.",
+      "brief": "EU payments fail, so the breaker opens for US traffic too.",
       "constraint": "Failures are regional.",
       "question": "How should circuits be partitioned?",
-      "expectedPattern": "Per-region or per-cluster breakers so a local outage does not fail other regions.",
-      "wrongChoices": [
-        "One global circuit for all geos",
-        "Close EU and US together always",
-        "Route EU users to a dead US dependency without a breaker"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 3000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 95,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 30000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 200,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Checkout",
+            "tone": "bad",
+            "cpu": 97
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Payments (down)",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "second-region",
+          "label": "Second region",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Checkout",
+                "tone": "good",
+                "cpu": 30
+              },
+              {
+                "id": "cb",
+                "kind": "lb",
+                "label": "Breaker open",
+                "tone": "good"
+              },
+              {
+                "id": "fb",
+                "kind": "cache",
+                "label": "Fallback",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "cb"
+              },
+              {
+                "from": "cb",
+                "to": "fb"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 31,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2000,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Per-region or per-cluster breakers so a local outage does not fail other regions."
+        },
+        {
+          "id": "one-global-circuit",
+          "label": "One global circuit",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 37500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 240,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Threads still stuck",
+          "resultBody": "Calls keep waiting on the dead dependency."
+        },
+        {
+          "id": "close-eu-us",
+          "label": "Close EU US",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 97,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 33000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 220,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Threads still stuck",
+          "resultBody": "Close EU and US together always"
+        }
+      ],
+      "hints": [
+        "Waiting on a dead dependency burns threads.",
+        "Retries make it worse.",
+        "Fail fast, then probe."
+      ],
+      "nextId": null
     }
   ]
 }

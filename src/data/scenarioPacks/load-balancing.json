@@ -1,267 +1,4631 @@
 {
-  "version": 1,
+  "version": 2,
   "patternId": "load-balancing",
   "patternName": "Load Balancing",
-  "variants": [
+  "level": 2,
+  "phase": "Foundation",
+  "canonicalId": "lb-01",
+  "nextCanonicalId": "rr-01",
+  "incidents": [
     {
       "id": "lb-01",
+      "incidentCode": "INC-002",
+      "level": 2,
+      "patternId": "load-balancing",
+      "canonical": true,
+      "severity": "P0",
+      "xp": 150,
       "title": "Server 1 is overloaded",
-      "context": "Three app servers are live, but 90% of traffic still routes to Server 1.",
+      "brief": "Three app servers are live, but 90% of traffic still routes to Server 1.",
       "constraint": "The other servers are almost idle.",
       "question": "What is the root cause?",
-      "expectedPattern": "Clients are bypassing a distribution layer and hitting one server directly.",
-      "wrongChoices": [
-        "Database bottleneck",
-        "Slow DNS propagation",
-        "Missing cache"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 12000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 2800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 100,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "s1",
+            "kind": "server",
+            "label": "Server 1",
+            "tone": "bad",
+            "cpu": 90
+          },
+          {
+            "id": "s2",
+            "kind": "server",
+            "label": "Server 2",
+            "tone": "neutral"
+          },
+          {
+            "id": "s3",
+            "kind": "server",
+            "label": "Server 3",
+            "tone": "neutral"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "s1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "load-balancer",
+          "label": "Load balancer",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer",
+                "tone": "good"
+              },
+              {
+                "id": "s1",
+                "kind": "server",
+                "label": "Server 1",
+                "tone": "good",
+                "cpu": 34
+              },
+              {
+                "id": "s2",
+                "kind": "server",
+                "label": "Server 2",
+                "tone": "good",
+                "cpu": 36
+              },
+              {
+                "id": "s3",
+                "kind": "server",
+                "label": "Server 3",
+                "tone": "good",
+                "cpu": 33
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "lb"
+              },
+              {
+                "from": "lb",
+                "to": "s1"
+              },
+              {
+                "from": "lb",
+                "to": "s2"
+              },
+              {
+                "from": "lb",
+                "to": "s3"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 186,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Clients are bypassing a distribution layer and hitting one server directly."
+        },
+        {
+          "id": "blame-database",
+          "label": "Blame database",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 140,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Traffic never left the hot node."
+        },
+        {
+          "id": "blame-dns",
+          "label": "Blame DNS",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3080,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 120,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Slow DNS propagation"
+        }
+      ],
+      "hints": [
+        "Traffic is not shared evenly.",
+        "Healthy copies sit idle.",
+        "Put a balancer in front."
+      ],
+      "nextId": "rr-01"
     },
     {
       "id": "lb-02",
+      "incidentCode": "INC-002-02",
+      "level": 2,
+      "patternId": "load-balancing",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "One server dies",
-      "context": "An instance fails in the middle of a traffic burst and requests start failing immediately.",
+      "brief": "An instance fails in the middle of a traffic burst and requests start failing immediately.",
       "constraint": "The remaining servers are healthy but not all traffic is rerouted.",
       "question": "How do you route around the failure?",
-      "expectedPattern": "Add a load balancer with health checks that remove unhealthy nodes from rotation.",
-      "wrongChoices": [
-        "Manually update DNS",
-        "Wait for users to retry",
-        "Keep sending requests to the dead node"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 12000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 2800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 100,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "s1",
+            "kind": "server",
+            "label": "Server 1",
+            "tone": "bad",
+            "cpu": 90
+          },
+          {
+            "id": "s2",
+            "kind": "server",
+            "label": "Server 2",
+            "tone": "neutral"
+          },
+          {
+            "id": "s3",
+            "kind": "server",
+            "label": "Server 3",
+            "tone": "neutral"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "s1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "load-balancer",
+          "label": "Load balancer",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer",
+                "tone": "good"
+              },
+              {
+                "id": "s1",
+                "kind": "server",
+                "label": "Server 1",
+                "tone": "good",
+                "cpu": 34
+              },
+              {
+                "id": "s2",
+                "kind": "server",
+                "label": "Server 2",
+                "tone": "good",
+                "cpu": 36
+              },
+              {
+                "id": "s3",
+                "kind": "server",
+                "label": "Server 3",
+                "tone": "good",
+                "cpu": 33
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "lb"
+              },
+              {
+                "from": "lb",
+                "to": "s1"
+              },
+              {
+                "from": "lb",
+                "to": "s2"
+              },
+              {
+                "from": "lb",
+                "to": "s3"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 186,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Add a load balancer with health checks that remove unhealthy nodes from rotation."
+        },
+        {
+          "id": "manually-update-dns",
+          "label": "Manually update DNS",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 140,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Traffic never left the hot node."
+        },
+        {
+          "id": "wait-users-retry",
+          "label": "Wait users retry",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3080,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 120,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Wait for users to retry"
+        }
+      ],
+      "hints": [
+        "Traffic is not shared evenly.",
+        "Healthy copies sit idle.",
+        "Put a balancer in front."
+      ],
+      "nextId": null
     },
     {
       "id": "lb-03",
+      "incidentCode": "INC-002-03",
+      "level": 2,
+      "patternId": "load-balancing",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Mobile clients bypass the public endpoint",
-      "context": "The app has two servers, but mobile traffic is still pointed at the old host directly.",
+      "brief": "The app has two servers, but mobile traffic is still pointed at the old host directly.",
       "constraint": "The app layer is horizontally scaled but not reachable through the load balancer.",
       "question": "What completes the fix?",
-      "expectedPattern": "Send all traffic through the load balancer so distribution is centralized.",
-      "wrongChoices": [
-        "Use a second DNS record",
-        "Run client-side round robin",
-        "Move the database"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 12000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 2800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 100,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "s1",
+            "kind": "server",
+            "label": "Server 1",
+            "tone": "bad",
+            "cpu": 90
+          },
+          {
+            "id": "s2",
+            "kind": "server",
+            "label": "Server 2",
+            "tone": "neutral"
+          },
+          {
+            "id": "s3",
+            "kind": "server",
+            "label": "Server 3",
+            "tone": "neutral"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "s1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "load-balancer",
+          "label": "Load balancer",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer",
+                "tone": "good"
+              },
+              {
+                "id": "s1",
+                "kind": "server",
+                "label": "Server 1",
+                "tone": "good",
+                "cpu": 34
+              },
+              {
+                "id": "s2",
+                "kind": "server",
+                "label": "Server 2",
+                "tone": "good",
+                "cpu": 36
+              },
+              {
+                "id": "s3",
+                "kind": "server",
+                "label": "Server 3",
+                "tone": "good",
+                "cpu": 33
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "lb"
+              },
+              {
+                "from": "lb",
+                "to": "s1"
+              },
+              {
+                "from": "lb",
+                "to": "s2"
+              },
+              {
+                "from": "lb",
+                "to": "s3"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 186,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Send all traffic through the load balancer so distribution is centralized."
+        },
+        {
+          "id": "use-second-dns",
+          "label": "Use second DNS",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 140,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Traffic never left the hot node."
+        },
+        {
+          "id": "run-client-side-round",
+          "label": "Run client-side round",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3080,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 120,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Run client-side round robin"
+        }
+      ],
+      "hints": [
+        "Traffic is not shared evenly.",
+        "Healthy copies sit idle.",
+        "Put a balancer in front."
+      ],
+      "nextId": null
     },
     {
       "id": "lb-04",
+      "incidentCode": "INC-002-04",
+      "level": 2,
+      "patternId": "load-balancing",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Uneven traffic after a deployment",
-      "context": "A new version is deployed to two servers, but one receives 68% of the traffic.",
+      "brief": "A new version is deployed to two servers, but one receives 68% of the traffic.",
       "constraint": "The balancing policy is not consistent and one node gets more than its share.",
       "question": "What is the immediate design problem?",
-      "expectedPattern": "The routing policy is not distributing work evenly.",
-      "wrongChoices": [
-        "Missing cache",
-        "Bad database schema",
-        "Slow client network"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 12000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 2800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 100,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "s1",
+            "kind": "server",
+            "label": "Server 1",
+            "tone": "bad",
+            "cpu": 90
+          },
+          {
+            "id": "s2",
+            "kind": "server",
+            "label": "Server 2",
+            "tone": "neutral"
+          },
+          {
+            "id": "s3",
+            "kind": "server",
+            "label": "Server 3",
+            "tone": "neutral"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "s1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "load-balancer",
+          "label": "Load balancer",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer",
+                "tone": "good"
+              },
+              {
+                "id": "s1",
+                "kind": "server",
+                "label": "Server 1",
+                "tone": "good",
+                "cpu": 34
+              },
+              {
+                "id": "s2",
+                "kind": "server",
+                "label": "Server 2",
+                "tone": "good",
+                "cpu": 36
+              },
+              {
+                "id": "s3",
+                "kind": "server",
+                "label": "Server 3",
+                "tone": "good",
+                "cpu": 33
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "lb"
+              },
+              {
+                "from": "lb",
+                "to": "s1"
+              },
+              {
+                "from": "lb",
+                "to": "s2"
+              },
+              {
+                "from": "lb",
+                "to": "s3"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 186,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "The routing policy is not distributing work evenly."
+        },
+        {
+          "id": "missing-cache",
+          "label": "Missing cache",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 140,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Traffic never left the hot node."
+        },
+        {
+          "id": "bad-database-schema",
+          "label": "Bad database schema",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3080,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 120,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Bad database schema"
+        }
+      ],
+      "hints": [
+        "Traffic is not shared evenly.",
+        "Healthy copies sit idle.",
+        "Put a balancer in front."
+      ],
+      "nextId": null
     },
     {
       "id": "lb-05",
+      "incidentCode": "INC-002-05",
+      "level": 2,
+      "patternId": "load-balancing",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Latency climbs after an app restart",
-      "context": "One app server is restarted and the traffic is still mostly directed to the old instance.",
+      "brief": "One app server is restarted and the traffic is still mostly directed to the old instance.",
       "constraint": "Healthy nodes are available but get little traffic.",
       "question": "What keeps the system unhealthy?",
-      "expectedPattern": "Long-lived client-targeting or stale routing still bypasses the balancing layer.",
-      "wrongChoices": [
-        "Queue overload",
-        "Disk corruption",
-        "Cold cache"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 12000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 2800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 100,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "s1",
+            "kind": "server",
+            "label": "Server 1",
+            "tone": "bad",
+            "cpu": 90
+          },
+          {
+            "id": "s2",
+            "kind": "server",
+            "label": "Server 2",
+            "tone": "neutral"
+          },
+          {
+            "id": "s3",
+            "kind": "server",
+            "label": "Server 3",
+            "tone": "neutral"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "s1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "load-balancer",
+          "label": "Load balancer",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer",
+                "tone": "good"
+              },
+              {
+                "id": "s1",
+                "kind": "server",
+                "label": "Server 1",
+                "tone": "good",
+                "cpu": 34
+              },
+              {
+                "id": "s2",
+                "kind": "server",
+                "label": "Server 2",
+                "tone": "good",
+                "cpu": 36
+              },
+              {
+                "id": "s3",
+                "kind": "server",
+                "label": "Server 3",
+                "tone": "good",
+                "cpu": 33
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "lb"
+              },
+              {
+                "from": "lb",
+                "to": "s1"
+              },
+              {
+                "from": "lb",
+                "to": "s2"
+              },
+              {
+                "from": "lb",
+                "to": "s3"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 186,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Long-lived client-targeting or stale routing still bypasses the balancing layer."
+        },
+        {
+          "id": "queue-overload",
+          "label": "Queue overload",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 140,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Traffic never left the hot node."
+        },
+        {
+          "id": "disk-corruption",
+          "label": "Disk corruption",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3080,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 120,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Disk corruption"
+        }
+      ],
+      "hints": [
+        "Traffic is not shared evenly.",
+        "Healthy copies sit idle.",
+        "Put a balancer in front."
+      ],
+      "nextId": null
     },
     {
       "id": "lb-06",
+      "incidentCode": "INC-002-06",
+      "level": 2,
+      "patternId": "load-balancing",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "All traffic hits one edge instance",
-      "context": "A single edge service is the main public door, but the remaining edges are not in rotation.",
+      "brief": "A single edge service is the main public door, but the remaining edges are not in rotation.",
       "constraint": "The app is scaled yet not balanced.",
       "question": "What is the best fix?",
-      "expectedPattern": "Use a reverse proxy or load balancer with health checks and failover.",
-      "wrongChoices": [
-        "Add another database",
-        "Deploy a CDN only",
-        "Use only round robin without health checks"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 12000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 2800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 100,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "s1",
+            "kind": "server",
+            "label": "Server 1",
+            "tone": "bad",
+            "cpu": 90
+          },
+          {
+            "id": "s2",
+            "kind": "server",
+            "label": "Server 2",
+            "tone": "neutral"
+          },
+          {
+            "id": "s3",
+            "kind": "server",
+            "label": "Server 3",
+            "tone": "neutral"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "s1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "load-balancer",
+          "label": "Load balancer",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer",
+                "tone": "good"
+              },
+              {
+                "id": "s1",
+                "kind": "server",
+                "label": "Server 1",
+                "tone": "good",
+                "cpu": 34
+              },
+              {
+                "id": "s2",
+                "kind": "server",
+                "label": "Server 2",
+                "tone": "good",
+                "cpu": 36
+              },
+              {
+                "id": "s3",
+                "kind": "server",
+                "label": "Server 3",
+                "tone": "good",
+                "cpu": 33
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "lb"
+              },
+              {
+                "from": "lb",
+                "to": "s1"
+              },
+              {
+                "from": "lb",
+                "to": "s2"
+              },
+              {
+                "from": "lb",
+                "to": "s3"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 186,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Use a reverse proxy or load balancer with health checks and failover."
+        },
+        {
+          "id": "add-another-database",
+          "label": "Add another database",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 140,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Traffic never left the hot node."
+        },
+        {
+          "id": "deploy-cdn",
+          "label": "Deploy CDN",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3080,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 120,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Deploy a CDN only"
+        }
+      ],
+      "hints": [
+        "Traffic is not shared evenly.",
+        "Healthy copies sit idle.",
+        "Put a balancer in front."
+      ],
+      "nextId": null
     },
     {
       "id": "lb-07",
+      "incidentCode": "INC-002-07",
+      "level": 2,
+      "patternId": "load-balancing",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "A region fails but no traffic shift happens",
-      "context": "A regional app server crashes, yet clients continue hitting the bad endpoint for a long time.",
+      "brief": "A regional app server crashes, yet clients continue hitting the bad endpoint for a long time.",
       "constraint": "There is a health check gap.",
       "question": "Which property should the distribution layer provide?",
-      "expectedPattern": "Automatic removal of unhealthy targets from the rotation and rerouting.",
-      "wrongChoices": [
-        "Retry-only logic",
-        "Static failover without health checks",
-        "Database failback"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 12000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 2800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 100,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "s1",
+            "kind": "server",
+            "label": "Server 1",
+            "tone": "bad",
+            "cpu": 90
+          },
+          {
+            "id": "s2",
+            "kind": "server",
+            "label": "Server 2",
+            "tone": "neutral"
+          },
+          {
+            "id": "s3",
+            "kind": "server",
+            "label": "Server 3",
+            "tone": "neutral"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "s1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "load-balancer",
+          "label": "Load balancer",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer",
+                "tone": "good"
+              },
+              {
+                "id": "s1",
+                "kind": "server",
+                "label": "Server 1",
+                "tone": "good",
+                "cpu": 34
+              },
+              {
+                "id": "s2",
+                "kind": "server",
+                "label": "Server 2",
+                "tone": "good",
+                "cpu": 36
+              },
+              {
+                "id": "s3",
+                "kind": "server",
+                "label": "Server 3",
+                "tone": "good",
+                "cpu": 33
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "lb"
+              },
+              {
+                "from": "lb",
+                "to": "s1"
+              },
+              {
+                "from": "lb",
+                "to": "s2"
+              },
+              {
+                "from": "lb",
+                "to": "s3"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 186,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Automatic removal of unhealthy targets from the rotation and rerouting."
+        },
+        {
+          "id": "retry-only-logic",
+          "label": "Retry-only logic",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 140,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Traffic never left the hot node."
+        },
+        {
+          "id": "static-failover-health",
+          "label": "Static failover health",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3080,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 120,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Static failover without health checks"
+        }
+      ],
+      "hints": [
+        "Traffic is not shared evenly.",
+        "Healthy copies sit idle.",
+        "Put a balancer in front."
+      ],
+      "nextId": null
     },
     {
       "id": "lb-08",
+      "incidentCode": "INC-002-08",
+      "level": 2,
+      "patternId": "load-balancing",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Traffic spins between two servers",
-      "context": "A two-node system alternates latency spikes even though the nodes are healthy.",
+      "brief": "A two-node system alternates latency spikes even though the nodes are healthy.",
       "constraint": "The routing algorithm is not aware of node health and session stickiness is weak.",
       "question": "What should be improved?",
-      "expectedPattern": "Session-aware or health-aware balancing plus better backend utilization.",
-      "wrongChoices": [
-        "Change the database schema",
-        "Increase TTL on static assets",
-        "Disable app metrics"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 12000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 2800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 100,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "s1",
+            "kind": "server",
+            "label": "Server 1",
+            "tone": "bad",
+            "cpu": 90
+          },
+          {
+            "id": "s2",
+            "kind": "server",
+            "label": "Server 2",
+            "tone": "neutral"
+          },
+          {
+            "id": "s3",
+            "kind": "server",
+            "label": "Server 3",
+            "tone": "neutral"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "s1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "load-balancer",
+          "label": "Load balancer",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer",
+                "tone": "good"
+              },
+              {
+                "id": "s1",
+                "kind": "server",
+                "label": "Server 1",
+                "tone": "good",
+                "cpu": 34
+              },
+              {
+                "id": "s2",
+                "kind": "server",
+                "label": "Server 2",
+                "tone": "good",
+                "cpu": 36
+              },
+              {
+                "id": "s3",
+                "kind": "server",
+                "label": "Server 3",
+                "tone": "good",
+                "cpu": 33
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "lb"
+              },
+              {
+                "from": "lb",
+                "to": "s1"
+              },
+              {
+                "from": "lb",
+                "to": "s2"
+              },
+              {
+                "from": "lb",
+                "to": "s3"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 186,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Session-aware or health-aware balancing plus better backend utilization."
+        },
+        {
+          "id": "change-database-schema",
+          "label": "Change database schema",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 140,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Traffic never left the hot node."
+        },
+        {
+          "id": "increase-ttl-static",
+          "label": "Increase TTL static",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3080,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 120,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Increase TTL on static assets"
+        }
+      ],
+      "hints": [
+        "Traffic is not shared evenly.",
+        "Healthy copies sit idle.",
+        "Put a balancer in front."
+      ],
+      "nextId": null
     },
     {
       "id": "lb-09",
+      "incidentCode": "INC-002-09",
+      "level": 2,
+      "patternId": "load-balancing",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Cascading failures after one crash",
-      "context": "During a moderate surge, one node dies and the rest absorb too much traffic until they also fail.",
+      "brief": "During a moderate surge, one node dies and the rest absorb too much traffic until they also fail.",
       "constraint": "The load balancer had no failover policy for partial failure.",
       "question": "What design decision prevents this pattern?",
-      "expectedPattern": "Keep capacity above normal load and remove failed nodes aggressively.",
-      "wrongChoices": [
-        "Increase first-node capacity only",
-        "Use longer timeouts",
-        "Ignore health checks"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 12000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 2800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 100,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "s1",
+            "kind": "server",
+            "label": "Server 1",
+            "tone": "bad",
+            "cpu": 90
+          },
+          {
+            "id": "s2",
+            "kind": "server",
+            "label": "Server 2",
+            "tone": "neutral"
+          },
+          {
+            "id": "s3",
+            "kind": "server",
+            "label": "Server 3",
+            "tone": "neutral"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "s1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "load-balancer",
+          "label": "Load balancer",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer",
+                "tone": "good"
+              },
+              {
+                "id": "s1",
+                "kind": "server",
+                "label": "Server 1",
+                "tone": "good",
+                "cpu": 34
+              },
+              {
+                "id": "s2",
+                "kind": "server",
+                "label": "Server 2",
+                "tone": "good",
+                "cpu": 36
+              },
+              {
+                "id": "s3",
+                "kind": "server",
+                "label": "Server 3",
+                "tone": "good",
+                "cpu": 33
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "lb"
+              },
+              {
+                "from": "lb",
+                "to": "s1"
+              },
+              {
+                "from": "lb",
+                "to": "s2"
+              },
+              {
+                "from": "lb",
+                "to": "s3"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 186,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Keep capacity above normal load and remove failed nodes aggressively."
+        },
+        {
+          "id": "increase-first-node-capa",
+          "label": "Increase first-node capacity",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 140,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Traffic never left the hot node."
+        },
+        {
+          "id": "use-longer-timeouts",
+          "label": "Use longer timeouts",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3080,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 120,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Use longer timeouts"
+        }
+      ],
+      "hints": [
+        "Traffic is not shared evenly.",
+        "Healthy copies sit idle.",
+        "Put a balancer in front."
+      ],
+      "nextId": null
     },
     {
       "id": "lb-10",
+      "incidentCode": "INC-002-10",
+      "level": 2,
+      "patternId": "load-balancing",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Traffic is uneven by geography",
-      "context": "Users in Europe are routed to one node while Asia goes to another, and one node is overloaded.",
+      "brief": "Users in Europe are routed to one node while Asia goes to another, and one node is overloaded.",
       "constraint": "The balancing layer is not aware of region or health.",
       "question": "What is the correct balancing principle?",
-      "expectedPattern": "Balance by health and capacity, not simply by static rules or manual assignment.",
-      "wrongChoices": [
-        "Round robin without health",
-        "Manual region mapping only",
-        "One database per region"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 12000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 2800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 100,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "s1",
+            "kind": "server",
+            "label": "Server 1",
+            "tone": "bad",
+            "cpu": 90
+          },
+          {
+            "id": "s2",
+            "kind": "server",
+            "label": "Server 2",
+            "tone": "neutral"
+          },
+          {
+            "id": "s3",
+            "kind": "server",
+            "label": "Server 3",
+            "tone": "neutral"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "s1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "load-balancer",
+          "label": "Load balancer",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer",
+                "tone": "good"
+              },
+              {
+                "id": "s1",
+                "kind": "server",
+                "label": "Server 1",
+                "tone": "good",
+                "cpu": 34
+              },
+              {
+                "id": "s2",
+                "kind": "server",
+                "label": "Server 2",
+                "tone": "good",
+                "cpu": 36
+              },
+              {
+                "id": "s3",
+                "kind": "server",
+                "label": "Server 3",
+                "tone": "good",
+                "cpu": 33
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "lb"
+              },
+              {
+                "from": "lb",
+                "to": "s1"
+              },
+              {
+                "from": "lb",
+                "to": "s2"
+              },
+              {
+                "from": "lb",
+                "to": "s3"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 186,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Balance by health and capacity, not simply by static rules or manual assignment."
+        },
+        {
+          "id": "round-robin-health",
+          "label": "Round robin health",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 140,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Traffic never left the hot node."
+        },
+        {
+          "id": "manual-region-mapping",
+          "label": "Manual region mapping",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3080,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 120,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Manual region mapping only"
+        }
+      ],
+      "hints": [
+        "Traffic is not shared evenly.",
+        "Healthy copies sit idle.",
+        "Put a balancer in front."
+      ],
+      "nextId": null
     },
     {
       "id": "lb-11",
+      "incidentCode": "INC-002-11",
+      "level": 2,
+      "patternId": "load-balancing",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
       "title": "gRPC clients pin to one pod",
-      "context": "A gRPC client pool opens long-lived connections and 80% of RPCs stay on the first pod.",
+      "brief": "A gRPC client pool opens long-lived connections and 80% of RPCs stay on the first pod.",
       "constraint": "The balancer only sees connection count, not RPC rate.",
       "question": "What restores even RPC distribution?",
-      "expectedPattern": "Balance at request level or refresh backends so long-lived connections do not pin load.",
-      "wrongChoices": [
-        "Add more database indexes",
-        "Increase HTTP timeouts",
-        "Cache every RPC response forever"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 12000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 80,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 2800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 100,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "s1",
+            "kind": "server",
+            "label": "Server 1",
+            "tone": "bad",
+            "cpu": 90
+          },
+          {
+            "id": "s2",
+            "kind": "server",
+            "label": "Server 2",
+            "tone": "neutral"
+          },
+          {
+            "id": "s3",
+            "kind": "server",
+            "label": "Server 3",
+            "tone": "neutral"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "s1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "fresh-reads",
+          "label": "Fresh reads",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer",
+                "tone": "good"
+              },
+              {
+                "id": "s1",
+                "kind": "server",
+                "label": "Server 1",
+                "tone": "good",
+                "cpu": 34
+              },
+              {
+                "id": "s2",
+                "kind": "server",
+                "label": "Server 2",
+                "tone": "good",
+                "cpu": 36
+              },
+              {
+                "id": "s3",
+                "kind": "server",
+                "label": "Server 3",
+                "tone": "good",
+                "cpu": 33
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "lb"
+              },
+              {
+                "from": "lb",
+                "to": "s1"
+              },
+              {
+                "from": "lb",
+                "to": "s2"
+              },
+              {
+                "from": "lb",
+                "to": "s3"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 26,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 186,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Balance at request level or refresh backends so long-lived connections do not pin load."
+        },
+        {
+          "id": "add-more-database",
+          "label": "Add more database",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 84,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 140,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Traffic never left the hot node."
+        },
+        {
+          "id": "increase-http-timeouts",
+          "label": "Increase HTTP timeouts",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 82,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3080,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 120,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Increase HTTP timeouts"
+        }
+      ],
+      "hints": [
+        "Traffic is not shared evenly.",
+        "Healthy copies sit idle.",
+        "Put a balancer in front."
+      ],
+      "nextId": null
     },
     {
       "id": "lb-12",
+      "incidentCode": "INC-002-12",
+      "level": 2,
+      "patternId": "load-balancing",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Health checks pass on a dying node",
-      "context": "A node answers /health in 5ms but its request queue is 12 seconds deep.",
+      "brief": "A node answers /health in 5ms but its request queue is 12 seconds deep.",
       "constraint": "The probe does not measure real work capacity.",
       "question": "What should the balancer use instead?",
-      "expectedPattern": "Health checks that include queue depth, error rate, or dependency readiness.",
-      "wrongChoices": [
-        "Ping only the operating system",
-        "Disable health checks",
-        "Route extra traffic to that node to test it"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 12000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 2800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 100,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "s1",
+            "kind": "server",
+            "label": "Server 1",
+            "tone": "bad",
+            "cpu": 90
+          },
+          {
+            "id": "s2",
+            "kind": "server",
+            "label": "Server 2",
+            "tone": "neutral"
+          },
+          {
+            "id": "s3",
+            "kind": "server",
+            "label": "Server 3",
+            "tone": "neutral"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "s1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "health-checks",
+          "label": "Health checks",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer",
+                "tone": "good"
+              },
+              {
+                "id": "s1",
+                "kind": "server",
+                "label": "Server 1",
+                "tone": "good",
+                "cpu": 34
+              },
+              {
+                "id": "s2",
+                "kind": "server",
+                "label": "Server 2",
+                "tone": "good",
+                "cpu": 36
+              },
+              {
+                "id": "s3",
+                "kind": "server",
+                "label": "Server 3",
+                "tone": "good",
+                "cpu": 33
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "lb"
+              },
+              {
+                "from": "lb",
+                "to": "s1"
+              },
+              {
+                "from": "lb",
+                "to": "s2"
+              },
+              {
+                "from": "lb",
+                "to": "s3"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 186,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Health checks that include queue depth, error rate, or dependency readiness."
+        },
+        {
+          "id": "ping-operating-system",
+          "label": "Ping operating system",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 140,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Traffic never left the hot node."
+        },
+        {
+          "id": "disable-health-checks",
+          "label": "Disable health checks",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3080,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 120,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Disable health checks"
+        }
+      ],
+      "hints": [
+        "Traffic is not shared evenly.",
+        "Healthy copies sit idle.",
+        "Put a balancer in front."
+      ],
+      "nextId": null
     },
     {
       "id": "lb-13",
+      "incidentCode": "INC-002-13",
+      "level": 2,
+      "patternId": "load-balancing",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Canary takes all production traffic",
-      "context": "A 5% canary is deployed, but weighted routing is misconfigured and the canary receives 100%.",
+      "brief": "A 5% canary is deployed, but weighted routing is misconfigured and the canary receives 100%.",
       "constraint": "The canary has far less capacity than the stable pool.",
       "question": "What did the balancing layer fail to do?",
-      "expectedPattern": "Honor traffic weights so only a small share reaches the canary.",
-      "wrongChoices": [
-        "Delete the stable pool",
-        "Increase canary CPU after the spike",
-        "Use DNS round robin as the only control"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 12000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 100,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 2800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 100,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "s1",
+            "kind": "server",
+            "label": "Server 1",
+            "tone": "bad",
+            "cpu": 90
+          },
+          {
+            "id": "s2",
+            "kind": "server",
+            "label": "Server 2",
+            "tone": "neutral"
+          },
+          {
+            "id": "s3",
+            "kind": "server",
+            "label": "Server 3",
+            "tone": "neutral"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "s1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "load-balancer",
+          "label": "Load balancer",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer",
+                "tone": "good"
+              },
+              {
+                "id": "s1",
+                "kind": "server",
+                "label": "Server 1",
+                "tone": "good",
+                "cpu": 34
+              },
+              {
+                "id": "s2",
+                "kind": "server",
+                "label": "Server 2",
+                "tone": "good",
+                "cpu": 36
+              },
+              {
+                "id": "s3",
+                "kind": "server",
+                "label": "Server 3",
+                "tone": "good",
+                "cpu": 33
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "lb"
+              },
+              {
+                "from": "lb",
+                "to": "s1"
+              },
+              {
+                "from": "lb",
+                "to": "s2"
+              },
+              {
+                "from": "lb",
+                "to": "s3"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 33,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 186,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Honor traffic weights so only a small share reaches the canary."
+        },
+        {
+          "id": "delete-stable-pool",
+          "label": "Delete stable pool",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 140,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Traffic never left the hot node."
+        },
+        {
+          "id": "increase-canary-cpu",
+          "label": "Increase canary CPU",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3080,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 120,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Increase canary CPU after the spike"
+        }
+      ],
+      "hints": [
+        "Traffic is not shared evenly.",
+        "Healthy copies sit idle.",
+        "Put a balancer in front."
+      ],
+      "nextId": null
     },
     {
       "id": "lb-14",
+      "incidentCode": "INC-002-14",
+      "level": 2,
+      "patternId": "load-balancing",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Least-connections prefers a slow node",
-      "context": "A slow instance holds connections longer, so least-connections keeps sending it more work.",
+      "brief": "A slow instance holds connections longer, so least-connections keeps sending it more work.",
       "constraint": "Connection count is a poor proxy for remaining capacity.",
       "question": "How should routing adapt?",
-      "expectedPattern": "Use latency-aware or utilization-aware balancing, not connection count alone.",
-      "wrongChoices": [
-        "Always use source-IP hash",
-        "Turn off the fast nodes",
-        "Increase keep-alive forever"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 12000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 2800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 100,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "s1",
+            "kind": "server",
+            "label": "Server 1",
+            "tone": "bad",
+            "cpu": 90
+          },
+          {
+            "id": "s2",
+            "kind": "server",
+            "label": "Server 2",
+            "tone": "neutral"
+          },
+          {
+            "id": "s3",
+            "kind": "server",
+            "label": "Server 3",
+            "tone": "neutral"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "s1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "load-balancer",
+          "label": "Load balancer",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer",
+                "tone": "good"
+              },
+              {
+                "id": "s1",
+                "kind": "server",
+                "label": "Server 1",
+                "tone": "good",
+                "cpu": 34
+              },
+              {
+                "id": "s2",
+                "kind": "server",
+                "label": "Server 2",
+                "tone": "good",
+                "cpu": 36
+              },
+              {
+                "id": "s3",
+                "kind": "server",
+                "label": "Server 3",
+                "tone": "good",
+                "cpu": 33
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "lb"
+              },
+              {
+                "from": "lb",
+                "to": "s1"
+              },
+              {
+                "from": "lb",
+                "to": "s2"
+              },
+              {
+                "from": "lb",
+                "to": "s3"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 186,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Use latency-aware or utilization-aware balancing, not connection count alone."
+        },
+        {
+          "id": "always-use-source-ip",
+          "label": "Always use source-IP",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 140,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Traffic never left the hot node."
+        },
+        {
+          "id": "turn-off-fast",
+          "label": "Turn off fast",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3080,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 120,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Turn off the fast nodes"
+        }
+      ],
+      "hints": [
+        "Traffic is not shared evenly.",
+        "Healthy copies sit idle.",
+        "Put a balancer in front."
+      ],
+      "nextId": null
     },
     {
       "id": "lb-15",
+      "incidentCode": "INC-002-15",
+      "level": 2,
+      "patternId": "load-balancing",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Internal services skip the mesh",
-      "context": "Public traffic is balanced, but service-to-service calls go to hardcoded IPs.",
+      "brief": "Public traffic is balanced, but service-to-service calls go to hardcoded IPs.",
       "constraint": "One internal host becomes a hidden hotspot.",
       "question": "What completes the architecture?",
-      "expectedPattern": "Send east-west traffic through a balancer or service mesh with health-aware routing.",
-      "wrongChoices": [
-        "Hardcode a second IP in every client",
-        "Add a CDN in front of internal RPCs",
-        "Increase the hotspot’s disk size"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 12000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 2800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 100,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "s1",
+            "kind": "server",
+            "label": "Server 1",
+            "tone": "bad",
+            "cpu": 90
+          },
+          {
+            "id": "s2",
+            "kind": "server",
+            "label": "Server 2",
+            "tone": "neutral"
+          },
+          {
+            "id": "s3",
+            "kind": "server",
+            "label": "Server 3",
+            "tone": "neutral"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "s1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "load-balancer",
+          "label": "Load balancer",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer",
+                "tone": "good"
+              },
+              {
+                "id": "s1",
+                "kind": "server",
+                "label": "Server 1",
+                "tone": "good",
+                "cpu": 34
+              },
+              {
+                "id": "s2",
+                "kind": "server",
+                "label": "Server 2",
+                "tone": "good",
+                "cpu": 36
+              },
+              {
+                "id": "s3",
+                "kind": "server",
+                "label": "Server 3",
+                "tone": "good",
+                "cpu": 33
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "lb"
+              },
+              {
+                "from": "lb",
+                "to": "s1"
+              },
+              {
+                "from": "lb",
+                "to": "s2"
+              },
+              {
+                "from": "lb",
+                "to": "s3"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 186,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Send east-west traffic through a balancer or service mesh with health-aware routing."
+        },
+        {
+          "id": "hardcode-second-ip",
+          "label": "Hardcode second IP",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 140,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Traffic never left the hot node."
+        },
+        {
+          "id": "add-cdn-front",
+          "label": "Add CDN front",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3080,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 120,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Add a CDN in front of internal RPCs"
+        }
+      ],
+      "hints": [
+        "Traffic is not shared evenly.",
+        "Healthy copies sit idle.",
+        "Put a balancer in front."
+      ],
+      "nextId": null
     },
     {
       "id": "lb-16",
+      "incidentCode": "INC-002-16",
+      "level": 2,
+      "patternId": "load-balancing",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Draining a node still receives writes",
-      "context": "An instance is marked for deploy, but new requests keep landing on it until it is killed.",
+      "brief": "An instance is marked for deploy, but new requests keep landing on it until it is killed.",
       "constraint": "The balancer has no connection-drain or weight-zero path.",
       "question": "What should happen before shutdown?",
-      "expectedPattern": "Take the node out of rotation, drain in-flight work, then stop the process.",
-      "wrongChoices": [
-        "Kill the process immediately",
-        "Lower DNS TTL only",
-        "Wait for users to stop clicking"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 12000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 2800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 100,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "s1",
+            "kind": "server",
+            "label": "Server 1",
+            "tone": "bad",
+            "cpu": 90
+          },
+          {
+            "id": "s2",
+            "kind": "server",
+            "label": "Server 2",
+            "tone": "neutral"
+          },
+          {
+            "id": "s3",
+            "kind": "server",
+            "label": "Server 3",
+            "tone": "neutral"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "s1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "load-balancer",
+          "label": "Load balancer",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer",
+                "tone": "good"
+              },
+              {
+                "id": "s1",
+                "kind": "server",
+                "label": "Server 1",
+                "tone": "good",
+                "cpu": 34
+              },
+              {
+                "id": "s2",
+                "kind": "server",
+                "label": "Server 2",
+                "tone": "good",
+                "cpu": 36
+              },
+              {
+                "id": "s3",
+                "kind": "server",
+                "label": "Server 3",
+                "tone": "good",
+                "cpu": 33
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "lb"
+              },
+              {
+                "from": "lb",
+                "to": "s1"
+              },
+              {
+                "from": "lb",
+                "to": "s2"
+              },
+              {
+                "from": "lb",
+                "to": "s3"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 186,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Take the node out of rotation, drain in-flight work, then stop the process."
+        },
+        {
+          "id": "kill-process-immediately",
+          "label": "Kill process immediately",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 140,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Traffic never left the hot node."
+        },
+        {
+          "id": "lower-dns-ttl",
+          "label": "Lower DNS TTL",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3080,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 120,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Lower DNS TTL only"
+        }
+      ],
+      "hints": [
+        "Traffic is not shared evenly.",
+        "Healthy copies sit idle.",
+        "Put a balancer in front."
+      ],
+      "nextId": null
     },
     {
       "id": "lb-17",
+      "incidentCode": "INC-002-17",
+      "level": 2,
+      "patternId": "load-balancing",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Layer-4 balancer hides HTTP errors",
-      "context": "TCP health checks stay green while the app returns 503 on every request.",
+      "brief": "TCP health checks stay green while the app returns 503 on every request.",
       "constraint": "The balancer only knows the port is open.",
       "question": "What check is missing?",
-      "expectedPattern": "Application-level health checks that fail when the service cannot serve correctly.",
-      "wrongChoices": [
-        "More TCP connections",
-        "A larger SYN backlog",
-        "Client-side exponential backoff only"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 503,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 2800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 100,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "s1",
+            "kind": "server",
+            "label": "Server 1",
+            "tone": "bad",
+            "cpu": 90
+          },
+          {
+            "id": "s2",
+            "kind": "server",
+            "label": "Server 2",
+            "tone": "neutral"
+          },
+          {
+            "id": "s3",
+            "kind": "server",
+            "label": "Server 3",
+            "tone": "neutral"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "s1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "health-checks",
+          "label": "Health checks",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer",
+                "tone": "good"
+              },
+              {
+                "id": "s1",
+                "kind": "server",
+                "label": "Server 1",
+                "tone": "good",
+                "cpu": 34
+              },
+              {
+                "id": "s2",
+                "kind": "server",
+                "label": "Server 2",
+                "tone": "good",
+                "cpu": 36
+              },
+              {
+                "id": "s3",
+                "kind": "server",
+                "label": "Server 3",
+                "tone": "good",
+                "cpu": 33
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "lb"
+              },
+              {
+                "from": "lb",
+                "to": "s1"
+              },
+              {
+                "from": "lb",
+                "to": "s2"
+              },
+              {
+                "from": "lb",
+                "to": "s3"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 186,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Application-level health checks that fail when the service cannot serve correctly."
+        },
+        {
+          "id": "more-tcp-connections",
+          "label": "More TCP connections",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 140,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Traffic never left the hot node."
+        },
+        {
+          "id": "a-larger-syn",
+          "label": "A larger SYN",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3080,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 120,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "A larger SYN backlog"
+        }
+      ],
+      "hints": [
+        "Traffic is not shared evenly.",
+        "Healthy copies sit idle.",
+        "Put a balancer in front."
+      ],
+      "nextId": null
     },
     {
       "id": "lb-18",
+      "incidentCode": "INC-002-18",
+      "level": 2,
+      "patternId": "load-balancing",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Sticky sessions after node loss",
-      "context": "A node dies and users bound to it get errors until their sticky cookie expires.",
+      "brief": "A node dies and users bound to it get errors until their sticky cookie expires.",
       "constraint": "Affinity outlives the backend.",
       "question": "How should the balancer behave?",
-      "expectedPattern": "Drop affinity for dead targets and reassign those users to healthy nodes.",
-      "wrongChoices": [
-        "Keep sending them to the dead node",
-        "Force all users onto one remaining node forever",
-        "Disable HTTPS"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 12000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 2800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 100,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "s1",
+            "kind": "server",
+            "label": "Server 1",
+            "tone": "bad",
+            "cpu": 90
+          },
+          {
+            "id": "s2",
+            "kind": "server",
+            "label": "Server 2",
+            "tone": "neutral"
+          },
+          {
+            "id": "s3",
+            "kind": "server",
+            "label": "Server 3",
+            "tone": "neutral"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "s1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "load-balancer",
+          "label": "Load balancer",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer",
+                "tone": "good"
+              },
+              {
+                "id": "s1",
+                "kind": "server",
+                "label": "Server 1",
+                "tone": "good",
+                "cpu": 34
+              },
+              {
+                "id": "s2",
+                "kind": "server",
+                "label": "Server 2",
+                "tone": "good",
+                "cpu": 36
+              },
+              {
+                "id": "s3",
+                "kind": "server",
+                "label": "Server 3",
+                "tone": "good",
+                "cpu": 33
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "lb"
+              },
+              {
+                "from": "lb",
+                "to": "s1"
+              },
+              {
+                "from": "lb",
+                "to": "s2"
+              },
+              {
+                "from": "lb",
+                "to": "s3"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 186,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Drop affinity for dead targets and reassign those users to healthy nodes."
+        },
+        {
+          "id": "keep-sending-them",
+          "label": "Keep sending them",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 140,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Traffic never left the hot node."
+        },
+        {
+          "id": "force-all-users",
+          "label": "Force all users",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3080,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 120,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Force all users onto one remaining node forever"
+        }
+      ],
+      "hints": [
+        "Traffic is not shared evenly.",
+        "Healthy copies sit idle.",
+        "Put a balancer in front."
+      ],
+      "nextId": null
     },
     {
       "id": "lb-19",
+      "incidentCode": "INC-002-19",
+      "level": 2,
+      "patternId": "load-balancing",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Burst of retries overwhelms survivors",
-      "context": "Clients retry failed calls and the remaining two nodes receive 3x traffic instantly.",
+      "brief": "Clients retry failed calls and the remaining two nodes receive 3x traffic instantly.",
       "constraint": "The balancer has no retry budget or overload shed.",
       "question": "What protection belongs at the distribution layer?",
-      "expectedPattern": "Shed load, cap retries, and keep enough healthy capacity before amplifying traffic.",
-      "wrongChoices": [
-        "Retry every failure immediately with no cap",
-        "Disable the remaining nodes",
-        "Increase idle timeouts only"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 12000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 2800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 100,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "s1",
+            "kind": "server",
+            "label": "Server 1",
+            "tone": "bad",
+            "cpu": 90
+          },
+          {
+            "id": "s2",
+            "kind": "server",
+            "label": "Server 2",
+            "tone": "neutral"
+          },
+          {
+            "id": "s3",
+            "kind": "server",
+            "label": "Server 3",
+            "tone": "neutral"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "s1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "load-balancer",
+          "label": "Load balancer",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer",
+                "tone": "good"
+              },
+              {
+                "id": "s1",
+                "kind": "server",
+                "label": "Server 1",
+                "tone": "good",
+                "cpu": 34
+              },
+              {
+                "id": "s2",
+                "kind": "server",
+                "label": "Server 2",
+                "tone": "good",
+                "cpu": 36
+              },
+              {
+                "id": "s3",
+                "kind": "server",
+                "label": "Server 3",
+                "tone": "good",
+                "cpu": 33
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "lb"
+              },
+              {
+                "from": "lb",
+                "to": "s1"
+              },
+              {
+                "from": "lb",
+                "to": "s2"
+              },
+              {
+                "from": "lb",
+                "to": "s3"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 186,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Shed load, cap retries, and keep enough healthy capacity before amplifying traffic."
+        },
+        {
+          "id": "retry-every-failure",
+          "label": "Retry every failure",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 140,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Traffic never left the hot node."
+        },
+        {
+          "id": "disable-remaining-nodes",
+          "label": "Disable remaining nodes",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3080,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 120,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Disable the remaining nodes"
+        }
+      ],
+      "hints": [
+        "Traffic is not shared evenly.",
+        "Healthy copies sit idle.",
+        "Put a balancer in front."
+      ],
+      "nextId": null
     },
     {
       "id": "lb-20",
+      "incidentCode": "INC-002-20",
+      "level": 2,
+      "patternId": "load-balancing",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Anycast edge sends all packets to one PoP",
-      "context": "An Anycast VIP is announced from three PoPs, but one PoP attracts almost all users.",
+      "brief": "An Anycast VIP is announced from three PoPs, but one PoP attracts almost all users.",
       "constraint": "Routing is based on BGP, not backend health.",
       "question": "What should you add behind the VIP?",
-      "expectedPattern": "Local load balancing with health checks inside each PoP, plus withdraw unhealthy announcements.",
-      "wrongChoices": [
-        "A single origin database in that PoP",
-        "Manual user assignment by country code only",
-        "Longer TCP timeouts at the busy PoP"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 12000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 2800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 100,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "s1",
+            "kind": "server",
+            "label": "Server 1",
+            "tone": "bad",
+            "cpu": 90
+          },
+          {
+            "id": "s2",
+            "kind": "server",
+            "label": "Server 2",
+            "tone": "neutral"
+          },
+          {
+            "id": "s3",
+            "kind": "server",
+            "label": "Server 3",
+            "tone": "neutral"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "s1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "health-checks",
+          "label": "Health checks",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer",
+                "tone": "good"
+              },
+              {
+                "id": "s1",
+                "kind": "server",
+                "label": "Server 1",
+                "tone": "good",
+                "cpu": 34
+              },
+              {
+                "id": "s2",
+                "kind": "server",
+                "label": "Server 2",
+                "tone": "good",
+                "cpu": 36
+              },
+              {
+                "id": "s3",
+                "kind": "server",
+                "label": "Server 3",
+                "tone": "good",
+                "cpu": 33
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "lb"
+              },
+              {
+                "from": "lb",
+                "to": "s1"
+              },
+              {
+                "from": "lb",
+                "to": "s2"
+              },
+              {
+                "from": "lb",
+                "to": "s3"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 186,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Local load balancing with health checks inside each PoP, plus withdraw unhealthy announcements."
+        },
+        {
+          "id": "a-single-origin",
+          "label": "A single origin",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 140,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Traffic never left the hot node."
+        },
+        {
+          "id": "manual-user-assignment",
+          "label": "Manual user assignment",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3080,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 120,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still pinned",
+          "resultBody": "Manual user assignment by country code only"
+        }
+      ],
+      "hints": [
+        "Traffic is not shared evenly.",
+        "Healthy copies sit idle.",
+        "Put a balancer in front."
+      ],
+      "nextId": null
     }
   ]
 }

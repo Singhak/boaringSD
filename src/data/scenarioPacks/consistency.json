@@ -1,267 +1,4411 @@
 {
-  "version": 1,
+  "version": 2,
   "patternId": "consistency",
   "patternName": "Consistency & Read-Your-Own-Writes",
-  "variants": [
+  "level": 8,
+  "phase": "Resilience",
+  "canonicalId": "cons-01",
+  "nextCanonicalId": "rl-01",
+  "incidents": [
     {
       "id": "cons-01",
+      "incidentCode": "INC-008",
+      "level": 8,
+      "patternId": "consistency",
+      "canonical": true,
+      "severity": "P0",
+      "xp": 150,
       "title": "User updates profile and refreshes immediately",
-      "context": "The primary database accepts a profile update, but a read goes to a replica that is still stale.",
+      "brief": "The primary database accepts a profile update, but a read goes to a replica that is still stale.",
       "constraint": "Replication is asynchronous and users expect freshness.",
       "question": "What keeps the experience correct?",
-      "expectedPattern": "Read-your-own-writes logic for that user or a short freshness window on their reads.",
-      "wrongChoices": [
-        "Block all reads until replication catches up",
-        "Disable replicas",
-        "Set a long TTL"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 4000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 30,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 0,
+          "unit": "errors",
+          "tone": "neutral"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "user",
+            "kind": "users",
+            "label": "Writer"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Primary",
+            "tone": "good"
+          },
+          {
+            "id": "r1",
+            "kind": "replica",
+            "label": "Stale replica",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "user",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          },
+          {
+            "from": "app",
+            "to": "r1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "fresh-reads",
+          "label": "Fresh reads",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "user",
+                "kind": "users",
+                "label": "Writer"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Primary",
+                "tone": "good"
+              },
+              {
+                "id": "r1",
+                "kind": "replica",
+                "label": "Replica",
+                "tone": "neutral"
+              }
+            ],
+            "edges": [
+              {
+                "from": "user",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 16,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 53,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Read-your-own-writes logic for that user or a short freshness window on their reads."
+        },
+        {
+          "id": "block-all-reads",
+          "label": "Block all reads",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 34,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 40,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "The next read still hit a lagging replica."
+        },
+        {
+          "id": "disable-replicas",
+          "label": "Disable replicas",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 32,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 880,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 20,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "Disable replicas"
+        }
+      ],
+      "hints": [
+        "The writer expects their own update.",
+        "Replicas can lag.",
+        "Use a fresh read path."
+      ],
+      "nextId": "rl-01"
     },
     {
       "id": "cons-02",
+      "incidentCode": "INC-008-02",
+      "level": 8,
+      "patternId": "consistency",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
       "title": "Follower lags behind leader",
-      "context": "A replica is behind and serves the old version of a post while the author refreshed the page.",
+      "brief": "A replica is behind and serves the old version of a post while the author refreshed the page.",
       "constraint": "The rest of the system accepts eventual consistency.",
       "question": "Which read behavior is appropriate?",
-      "expectedPattern": "Read the author’s writes from the primary or a fresh path.",
-      "wrongChoices": [
-        "Force all reads to wait on the leader",
-        "Use CDN caches for everything",
-        "Ignore the freshness issue"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 4000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 30,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 0,
+          "unit": "errors",
+          "tone": "neutral"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "user",
+            "kind": "users",
+            "label": "Writer"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Primary",
+            "tone": "good"
+          },
+          {
+            "id": "r1",
+            "kind": "replica",
+            "label": "Stale replica",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "user",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          },
+          {
+            "from": "app",
+            "to": "r1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "fresh-reads",
+          "label": "Fresh reads",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "user",
+                "kind": "users",
+                "label": "Writer"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Primary",
+                "tone": "good"
+              },
+              {
+                "id": "r1",
+                "kind": "replica",
+                "label": "Replica",
+                "tone": "neutral"
+              }
+            ],
+            "edges": [
+              {
+                "from": "user",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 16,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 53,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Read the author\u2019s writes from the primary or a fresh path."
+        },
+        {
+          "id": "force-all-reads",
+          "label": "Force all reads",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 34,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 40,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "The next read still hit a lagging replica."
+        },
+        {
+          "id": "use-cdn-caches",
+          "label": "Use CDN caches",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 32,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 880,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 20,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "Use CDN caches for everything"
+        }
+      ],
+      "hints": [
+        "The writer expects their own update.",
+        "Replicas can lag.",
+        "Use a fresh read path."
+      ],
+      "nextId": null
     },
     {
       "id": "cons-03",
+      "incidentCode": "INC-008-03",
+      "level": 8,
+      "patternId": "consistency",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
       "title": "Regional failover creates stale data",
-      "context": "A user in a secondary region reads a profile while failover is happening and sees old data.",
+      "brief": "A user in a secondary region reads a profile while failover is happening and sees old data.",
       "constraint": "Some replicas are behind during failover.",
       "question": "What is the right system behavior?",
-      "expectedPattern": "Use lag-aware routing and a freshness policy for critical reads.",
-      "wrongChoices": [
-        "Always read from the zone with the most replicas",
-        "Disable the failover region",
-        "Tell users to retry"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 4000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 30,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 0,
+          "unit": "errors",
+          "tone": "neutral"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "user",
+            "kind": "users",
+            "label": "Writer"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Primary",
+            "tone": "good"
+          },
+          {
+            "id": "r1",
+            "kind": "replica",
+            "label": "Stale replica",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "user",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          },
+          {
+            "from": "app",
+            "to": "r1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "fresh-reads",
+          "label": "Fresh reads",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "user",
+                "kind": "users",
+                "label": "Writer"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Primary",
+                "tone": "good"
+              },
+              {
+                "id": "r1",
+                "kind": "replica",
+                "label": "Replica",
+                "tone": "neutral"
+              }
+            ],
+            "edges": [
+              {
+                "from": "user",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 16,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 53,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Use lag-aware routing and a freshness policy for critical reads."
+        },
+        {
+          "id": "always-read-zone",
+          "label": "Always read zone",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 34,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 40,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "The next read still hit a lagging replica."
+        },
+        {
+          "id": "disable-failover-region",
+          "label": "Disable failover region",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 32,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 880,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 20,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "Disable the failover region"
+        }
+      ],
+      "hints": [
+        "The writer expects their own update.",
+        "Replicas can lag.",
+        "Use a fresh read path."
+      ],
+      "nextId": null
     },
     {
       "id": "cons-04",
+      "incidentCode": "INC-008-04",
+      "level": 8,
+      "patternId": "consistency",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
       "title": "Order status appears stale after update",
-      "context": "The user updates order status, then reads the order immediately and sees an older state.",
+      "brief": "The user updates order status, then reads the order immediately and sees an older state.",
       "constraint": "The system is eventually consistent but needs better user experience.",
       "question": "What is the correct tradeoff?",
-      "expectedPattern": "Provide fresh reads for the same user session or user-specific workflow.",
-      "wrongChoices": [
-        "Explain the lag to the user",
-        "Make all users wait for strong consistency",
-        "Use a read-only API"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 4000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 30,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 0,
+          "unit": "errors",
+          "tone": "neutral"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "user",
+            "kind": "users",
+            "label": "Writer"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Primary",
+            "tone": "good"
+          },
+          {
+            "id": "r1",
+            "kind": "replica",
+            "label": "Stale replica",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "user",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          },
+          {
+            "from": "app",
+            "to": "r1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "fresh-reads",
+          "label": "Fresh reads",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "user",
+                "kind": "users",
+                "label": "Writer"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Primary",
+                "tone": "good"
+              },
+              {
+                "id": "r1",
+                "kind": "replica",
+                "label": "Replica",
+                "tone": "neutral"
+              }
+            ],
+            "edges": [
+              {
+                "from": "user",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 16,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 53,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Provide fresh reads for the same user session or user-specific workflow."
+        },
+        {
+          "id": "explain-lag-user",
+          "label": "Explain lag user",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 34,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 40,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "The next read still hit a lagging replica."
+        },
+        {
+          "id": "make-all-users",
+          "label": "Make all users",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 32,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 880,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 20,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "Make all users wait for strong consistency"
+        }
+      ],
+      "hints": [
+        "The writer expects their own update.",
+        "Replicas can lag.",
+        "Use a fresh read path."
+      ],
+      "nextId": null
     },
     {
       "id": "cons-05",
+      "incidentCode": "INC-008-05",
+      "level": 8,
+      "patternId": "consistency",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
       "title": "User sees stale post after comment",
-      "context": "A user submits a comment and sees a stale thread because the read route goes to a non-authoritative replica.",
+      "brief": "A user submits a comment and sees a stale thread because the read route goes to a non-authoritative replica.",
       "constraint": "The app is optimized for availability and throughputs.",
       "question": "How do you preserve trust?",
-      "expectedPattern": "Sessions or user identity should use a fresh read path for recent writes.",
-      "wrongChoices": [
-        "No read-your-own-writes rule",
-        "Long timeouts on writes",
-        "Move all writes to the edge"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 4000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 30,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 0,
+          "unit": "errors",
+          "tone": "neutral"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "user",
+            "kind": "users",
+            "label": "Writer"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Primary",
+            "tone": "good"
+          },
+          {
+            "id": "r1",
+            "kind": "replica",
+            "label": "Stale replica",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "user",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          },
+          {
+            "from": "app",
+            "to": "r1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "fresh-reads",
+          "label": "Fresh reads",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "user",
+                "kind": "users",
+                "label": "Writer"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Primary",
+                "tone": "good"
+              },
+              {
+                "id": "r1",
+                "kind": "replica",
+                "label": "Replica",
+                "tone": "neutral"
+              }
+            ],
+            "edges": [
+              {
+                "from": "user",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 16,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 53,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Sessions or user identity should use a fresh read path for recent writes."
+        },
+        {
+          "id": "no-read-your-own-writes-",
+          "label": "No read-your-own-writes rule",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 34,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 40,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "The next read still hit a lagging replica."
+        },
+        {
+          "id": "long-timeouts-writes",
+          "label": "Long timeouts writes",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 32,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 880,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 20,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "Long timeouts on writes"
+        }
+      ],
+      "hints": [
+        "The writer expects their own update.",
+        "Replicas can lag.",
+        "Use a fresh read path."
+      ],
+      "nextId": null
     },
     {
       "id": "cons-06",
+      "incidentCode": "INC-008-06",
+      "level": 8,
+      "patternId": "consistency",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
       "title": "Global reads feel inconsistent",
-      "context": "Users in different regions do not see the same state at the same timestamp.",
+      "brief": "Users in different regions do not see the same state at the same timestamp.",
       "constraint": "The system is distributed and sync is not instant.",
       "question": "What is the core principle?",
-      "expectedPattern": "Eventual consistency is acceptable if the system makes freshness guarantees explicit for the active user and critical flows.",
-      "wrongChoices": [
-        "All reads must be fully global strong consistency",
-        "No consistency model is needed",
-        "All data must be in one region"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 4000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 30,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 0,
+          "unit": "errors",
+          "tone": "neutral"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "user",
+            "kind": "users",
+            "label": "Writer"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Primary",
+            "tone": "good"
+          },
+          {
+            "id": "r1",
+            "kind": "replica",
+            "label": "Stale replica",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "user",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          },
+          {
+            "from": "app",
+            "to": "r1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "fresh-reads",
+          "label": "Fresh reads",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "user",
+                "kind": "users",
+                "label": "Writer"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Primary",
+                "tone": "good"
+              },
+              {
+                "id": "r1",
+                "kind": "replica",
+                "label": "Replica",
+                "tone": "neutral"
+              }
+            ],
+            "edges": [
+              {
+                "from": "user",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 16,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 53,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Eventual consistency is acceptable if the system makes freshness guarantees explicit for the active user and critical flows."
+        },
+        {
+          "id": "all-reads-must",
+          "label": "All reads must",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 34,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 40,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "The next read still hit a lagging replica."
+        },
+        {
+          "id": "no-consistency-model",
+          "label": "No consistency model",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 32,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 880,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 20,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "No consistency model is needed"
+        }
+      ],
+      "hints": [
+        "The writer expects their own update.",
+        "Replicas can lag.",
+        "Use a fresh read path."
+      ],
+      "nextId": null
     },
     {
       "id": "cons-07",
+      "incidentCode": "INC-008-07",
+      "level": 8,
+      "patternId": "consistency",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
       "title": "User deletion reads stale content",
-      "context": "A user deletes a post and immediately reloads a page that still shows it on a follower.",
+      "brief": "A user deletes a post and immediately reloads a page that still shows it on a follower.",
       "constraint": "Deletion and visibility updates are asynchronous.",
       "question": "How do you avoid the bug?",
-      "expectedPattern": "Use a freshness-aware read path and metadata-based invalidation for the actor’s own actions.",
-      "wrongChoices": [
-        "Ignore stale reads",
-        "Keep deletes in a queue only",
-        "Wait for global sync before deletion is visible"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 4000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 30,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 0,
+          "unit": "errors",
+          "tone": "neutral"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "user",
+            "kind": "users",
+            "label": "Writer"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Primary",
+            "tone": "good"
+          },
+          {
+            "id": "r1",
+            "kind": "replica",
+            "label": "Stale replica",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "user",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          },
+          {
+            "from": "app",
+            "to": "r1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "fresh-reads",
+          "label": "Fresh reads",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "user",
+                "kind": "users",
+                "label": "Writer"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Primary",
+                "tone": "good"
+              },
+              {
+                "id": "r1",
+                "kind": "replica",
+                "label": "Replica",
+                "tone": "neutral"
+              }
+            ],
+            "edges": [
+              {
+                "from": "user",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 16,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 53,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Use a freshness-aware read path and metadata-based invalidation for the actor\u2019s own actions."
+        },
+        {
+          "id": "ignore-stale-reads",
+          "label": "Ignore stale reads",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 34,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 40,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "The next read still hit a lagging replica."
+        },
+        {
+          "id": "keep-deletes-queue",
+          "label": "Keep deletes queue",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 32,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 880,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 20,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "Keep deletes in a queue only"
+        }
+      ],
+      "hints": [
+        "The writer expects their own update.",
+        "Replicas can lag.",
+        "Use a fresh read path."
+      ],
+      "nextId": null
     },
     {
       "id": "cons-08",
+      "incidentCode": "INC-008-08",
+      "level": 8,
+      "patternId": "consistency",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
       "title": "Cached profile update appears one minute later",
-      "context": "Users update profile preferences and still see the old page for a minute because the cache is serving an older value.",
+      "brief": "Users update profile preferences and still see the old page for a minute because the cache is serving an older value.",
       "constraint": "The cache is valid but the user wants immediate freshness.",
       "question": "What is the right compromise?",
-      "expectedPattern": "Invalidate or refresh the cache for that user immediately and keep a bounded TTL for others.",
-      "wrongChoices": [
-        "Never expire the cache",
-        "Always bypass the cache",
-        "Do nothing and tell users to refresh"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 4000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 30,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 0,
+          "unit": "errors",
+          "tone": "neutral"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "user",
+            "kind": "users",
+            "label": "Writer"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Primary",
+            "tone": "good"
+          },
+          {
+            "id": "r1",
+            "kind": "replica",
+            "label": "Stale replica",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "user",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          },
+          {
+            "from": "app",
+            "to": "r1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "add-cache",
+          "label": "Add cache",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "user",
+                "kind": "users",
+                "label": "Writer"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Primary",
+                "tone": "good"
+              },
+              {
+                "id": "r1",
+                "kind": "replica",
+                "label": "Replica",
+                "tone": "neutral"
+              }
+            ],
+            "edges": [
+              {
+                "from": "user",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 16,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 53,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Invalidate or refresh the cache for that user immediately and keep a bounded TTL for others."
+        },
+        {
+          "id": "never-expire-cache",
+          "label": "Never expire cache",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 34,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 40,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "The next read still hit a lagging replica."
+        },
+        {
+          "id": "always-bypass-cache",
+          "label": "Always bypass cache",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 32,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 880,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 20,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "Always bypass the cache"
+        }
+      ],
+      "hints": [
+        "The writer expects their own update.",
+        "Replicas can lag.",
+        "Use a fresh read path."
+      ],
+      "nextId": null
     },
     {
       "id": "cons-09",
+      "incidentCode": "INC-008-09",
+      "level": 8,
+      "patternId": "consistency",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
       "title": "Social feed shows outdated items",
-      "context": "An item is posted and appears on the feed of the posting user only after a delay.",
+      "brief": "An item is posted and appears on the feed of the posting user only after a delay.",
       "constraint": "The system balances availability and replica lag.",
       "question": "How do you handle the user expectation?",
-      "expectedPattern": "Ensure the writer sees the post immediately from a fresh source while followers accept eventual consistency.",
-      "wrongChoices": [
-        "Update all replicas before the feed is visible",
-        "Block writes until all region replicas sync",
-        "Ignore the lag as acceptable for all users"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 4000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 30,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 0,
+          "unit": "errors",
+          "tone": "neutral"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "user",
+            "kind": "users",
+            "label": "Writer"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Primary",
+            "tone": "good"
+          },
+          {
+            "id": "r1",
+            "kind": "replica",
+            "label": "Stale replica",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "user",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          },
+          {
+            "from": "app",
+            "to": "r1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "fresh-reads",
+          "label": "Fresh reads",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "user",
+                "kind": "users",
+                "label": "Writer"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Primary",
+                "tone": "good"
+              },
+              {
+                "id": "r1",
+                "kind": "replica",
+                "label": "Replica",
+                "tone": "neutral"
+              }
+            ],
+            "edges": [
+              {
+                "from": "user",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 16,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 53,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Ensure the writer sees the post immediately from a fresh source while followers accept eventual consistency."
+        },
+        {
+          "id": "update-all-replicas",
+          "label": "Update all replicas",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 34,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 40,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "The next read still hit a lagging replica."
+        },
+        {
+          "id": "block-writes-until",
+          "label": "Block writes until",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 32,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 880,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 20,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "Block writes until all region replicas sync"
+        }
+      ],
+      "hints": [
+        "The writer expects their own update.",
+        "Replicas can lag.",
+        "Use a fresh read path."
+      ],
+      "nextId": null
     },
     {
       "id": "cons-10",
+      "incidentCode": "INC-008-10",
+      "level": 8,
+      "patternId": "consistency",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
       "title": "Web app modifies account settings in one region",
-      "context": "The user edits a setting, then reads the account page from another region and sees a stale value.",
+      "brief": "The user edits a setting, then reads the account page from another region and sees a stale value.",
       "constraint": "Regional consistency is eventually convergent but not instant.",
       "question": "What is the honest design answer?",
-      "expectedPattern": "Use a bounded freshness policy for the active user and explain that global equality is not guaranteed instantly.",
-      "wrongChoices": [
-        "Promise strong consistency globally",
-        "Do nothing and accept stale reads",
-        "Lock the platform on every write"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 4000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 30,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 0,
+          "unit": "errors",
+          "tone": "neutral"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "user",
+            "kind": "users",
+            "label": "Writer"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Primary",
+            "tone": "good"
+          },
+          {
+            "id": "r1",
+            "kind": "replica",
+            "label": "Stale replica",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "user",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          },
+          {
+            "from": "app",
+            "to": "r1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "fresh-reads",
+          "label": "Fresh reads",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "user",
+                "kind": "users",
+                "label": "Writer"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Primary",
+                "tone": "good"
+              },
+              {
+                "id": "r1",
+                "kind": "replica",
+                "label": "Replica",
+                "tone": "neutral"
+              }
+            ],
+            "edges": [
+              {
+                "from": "user",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 16,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 53,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Use a bounded freshness policy for the active user and explain that global equality is not guaranteed instantly."
+        },
+        {
+          "id": "promise-strong-consisten",
+          "label": "Promise strong consistency",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 34,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 40,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "The next read still hit a lagging replica."
+        },
+        {
+          "id": "do-nothing-accept",
+          "label": "Do nothing accept",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 32,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 880,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 20,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "Do nothing and accept stale reads"
+        }
+      ],
+      "hints": [
+        "The writer expects their own update.",
+        "Replicas can lag.",
+        "Use a fresh read path."
+      ],
+      "nextId": null
     },
     {
       "id": "cons-11",
+      "incidentCode": "INC-008-11",
+      "level": 8,
+      "patternId": "consistency",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
       "title": "Cart item vanishes after add",
-      "context": "A shopper adds an item, then the cart widget reads from a replica and shows zero items.",
+      "brief": "A shopper adds an item, then the cart widget reads from a replica and shows zero items.",
       "constraint": "The add already committed on the primary.",
       "question": "What read policy belongs on the cart?",
-      "expectedPattern": "Sticky or primary reads for the shopper’s recent cart writes.",
-      "wrongChoices": [
-        "Always read carts from the farthest replica",
-        "Delay the add until every replica acknowledges",
-        "Hide the cart until the next day"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 4000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 30,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 0,
+          "unit": "errors",
+          "tone": "neutral"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "user",
+            "kind": "users",
+            "label": "Writer"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Primary",
+            "tone": "good"
+          },
+          {
+            "id": "r1",
+            "kind": "replica",
+            "label": "Stale replica",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "user",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          },
+          {
+            "from": "app",
+            "to": "r1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "fresh-reads",
+          "label": "Fresh reads",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "user",
+                "kind": "users",
+                "label": "Writer"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Primary",
+                "tone": "good"
+              },
+              {
+                "id": "r1",
+                "kind": "replica",
+                "label": "Replica",
+                "tone": "neutral"
+              }
+            ],
+            "edges": [
+              {
+                "from": "user",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 16,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 53,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Sticky or primary reads for the shopper\u2019s recent cart writes."
+        },
+        {
+          "id": "always-read-carts",
+          "label": "Always read carts",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 34,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 40,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "The next read still hit a lagging replica."
+        },
+        {
+          "id": "delay-add-until",
+          "label": "Delay add until",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 32,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 880,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 20,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "Delay the add until every replica acknowledges"
+        }
+      ],
+      "hints": [
+        "The writer expects their own update.",
+        "Replicas can lag.",
+        "Use a fresh read path."
+      ],
+      "nextId": null
     },
     {
       "id": "cons-12",
+      "incidentCode": "INC-008-12",
+      "level": 8,
+      "patternId": "consistency",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
       "title": "Password change then login fails",
-      "context": "The user changes a password, is redirected to login, and authentication still checks a stale replica.",
+      "brief": "The user changes a password, is redirected to login, and authentication still checks a stale replica.",
       "constraint": "Auth cannot accept a lag window for that user.",
       "question": "Where must the login read go?",
-      "expectedPattern": "Read credentials from the primary (or a synchronously confirmed replica) after a password write.",
-      "wrongChoices": [
-        "Authenticate against any replica immediately",
-        "Cache the old password hash at the edge",
-        "Ask the user to wait five minutes without a fresh path"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 4000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 30,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 0,
+          "unit": "errors",
+          "tone": "neutral"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "user",
+            "kind": "users",
+            "label": "Writer"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Primary",
+            "tone": "good"
+          },
+          {
+            "id": "r1",
+            "kind": "replica",
+            "label": "Stale replica",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "user",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          },
+          {
+            "from": "app",
+            "to": "r1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "read-replicas",
+          "label": "Read replicas",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "user",
+                "kind": "users",
+                "label": "Writer"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Primary",
+                "tone": "good"
+              },
+              {
+                "id": "r1",
+                "kind": "replica",
+                "label": "Replica",
+                "tone": "neutral"
+              }
+            ],
+            "edges": [
+              {
+                "from": "user",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 16,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 53,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Read credentials from the primary (or a synchronously confirmed replica) after a password write."
+        },
+        {
+          "id": "authenticate-against-any",
+          "label": "Authenticate against any",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 34,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 40,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "The next read still hit a lagging replica."
+        },
+        {
+          "id": "cache-old-password",
+          "label": "Cache old password",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 32,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 880,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 20,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "Cache the old password hash at the edge"
+        }
+      ],
+      "hints": [
+        "The writer expects their own update.",
+        "Replicas can lag.",
+        "Use a fresh read path."
+      ],
+      "nextId": null
     },
     {
       "id": "cons-13",
+      "incidentCode": "INC-008-13",
+      "level": 8,
+      "patternId": "consistency",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
       "title": "Monotonic reads broken on mobile",
-      "context": "A timeline first shows a new tweet, then an older timeline after a replica switch.",
+      "brief": "A timeline first shows a new tweet, then an older timeline after a replica switch.",
       "constraint": "Users notice time going backwards.",
       "question": "Which session guarantee is missing?",
-      "expectedPattern": "Monotonic reads: once a client has seen version N, later reads in that session must not go backwards.",
-      "wrongChoices": [
-        "Random replica on every scroll",
-        "Global linearizability for every follower",
-        "No version tokens on the client"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 4000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 30,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 0,
+          "unit": "errors",
+          "tone": "neutral"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "user",
+            "kind": "users",
+            "label": "Writer"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Primary",
+            "tone": "good"
+          },
+          {
+            "id": "r1",
+            "kind": "replica",
+            "label": "Stale replica",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "user",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          },
+          {
+            "from": "app",
+            "to": "r1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "hash-urls",
+          "label": "Hash URLs",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "user",
+                "kind": "users",
+                "label": "Writer"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Primary",
+                "tone": "good"
+              },
+              {
+                "id": "r1",
+                "kind": "replica",
+                "label": "Replica",
+                "tone": "neutral"
+              }
+            ],
+            "edges": [
+              {
+                "from": "user",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 16,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 53,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Monotonic reads: once a client has seen version N, later reads in that session must not go backwards."
+        },
+        {
+          "id": "random-replica-every",
+          "label": "Random replica every",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 34,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 40,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "The next read still hit a lagging replica."
+        },
+        {
+          "id": "global-linearizability-e",
+          "label": "Global linearizability every",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 32,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 880,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 20,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "Global linearizability for every follower"
+        }
+      ],
+      "hints": [
+        "The writer expects their own update.",
+        "Replicas can lag.",
+        "Use a fresh read path."
+      ],
+      "nextId": null
     },
     {
       "id": "cons-14",
+      "incidentCode": "INC-008-14",
+      "level": 8,
+      "patternId": "consistency",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Like count jumps then drops",
-      "context": "The author sees 101 likes from the primary, then 97 from a replica on refresh.",
+      "brief": "The author sees 101 likes from the primary, then 97 from a replica on refresh.",
       "constraint": "Counters are eventually consistent.",
-      "question": "How do you keep the author’s view stable?",
-      "expectedPattern": "Pin the author’s reads to a fresh source or show a monotonic client-side count until replicas catch up.",
-      "wrongChoices": [
-        "Show replica counts immediately after a write",
-        "Stop counting likes",
-        "Lock the entire likes table globally"
-      ]
+      "question": "How do you keep the author\u2019s view stable?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 4000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 97,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 0,
+          "unit": "errors",
+          "tone": "neutral"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "user",
+            "kind": "users",
+            "label": "Writer"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Primary",
+            "tone": "good"
+          },
+          {
+            "id": "r1",
+            "kind": "replica",
+            "label": "Stale replica",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "user",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          },
+          {
+            "from": "app",
+            "to": "r1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "read-replicas",
+          "label": "Read replicas",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "user",
+                "kind": "users",
+                "label": "Writer"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Primary",
+                "tone": "good"
+              },
+              {
+                "id": "r1",
+                "kind": "replica",
+                "label": "Replica",
+                "tone": "neutral"
+              }
+            ],
+            "edges": [
+              {
+                "from": "user",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 32,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 53,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Pin the author\u2019s reads to a fresh source or show a monotonic client-side count until replicas catch up."
+        },
+        {
+          "id": "show-replica-counts",
+          "label": "Show replica counts",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 40,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "The next read still hit a lagging replica."
+        },
+        {
+          "id": "stop-counting-likes",
+          "label": "Stop counting likes",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 880,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 20,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "Stop counting likes"
+        }
+      ],
+      "hints": [
+        "The writer expects their own update.",
+        "Replicas can lag.",
+        "Use a fresh read path."
+      ],
+      "nextId": null
     },
     {
       "id": "cons-15",
+      "incidentCode": "INC-008-15",
+      "level": 8,
+      "patternId": "consistency",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
       "title": "Multi-tab edit conflict",
-      "context": "Two browser tabs load the same document from different replicas and last-write-wins silently drops a paragraph.",
+      "brief": "Two browser tabs load the same document from different replicas and last-write-wins silently drops a paragraph.",
       "constraint": "Collaborative edits need conflict detection.",
       "question": "What consistency tool belongs here?",
-      "expectedPattern": "Version tokens or optimistic concurrency so stale writes are rejected or merged.",
-      "wrongChoices": [
-        "Last write always wins with no version check",
-        "Force all edits through one replica without versions",
-        "Disable saving"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 4000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 30,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 0,
+          "unit": "errors",
+          "tone": "neutral"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "user",
+            "kind": "users",
+            "label": "Writer"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Primary",
+            "tone": "good"
+          },
+          {
+            "id": "r1",
+            "kind": "replica",
+            "label": "Stale replica",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "user",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          },
+          {
+            "from": "app",
+            "to": "r1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "hash-urls",
+          "label": "Hash URLs",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "user",
+                "kind": "users",
+                "label": "Writer"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Primary",
+                "tone": "good"
+              },
+              {
+                "id": "r1",
+                "kind": "replica",
+                "label": "Replica",
+                "tone": "neutral"
+              }
+            ],
+            "edges": [
+              {
+                "from": "user",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 16,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 53,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Version tokens or optimistic concurrency so stale writes are rejected or merged."
+        },
+        {
+          "id": "last-write-always",
+          "label": "Last write always",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 34,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 40,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "The next read still hit a lagging replica."
+        },
+        {
+          "id": "force-all-edits",
+          "label": "Force all edits",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 32,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 880,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 20,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "Force all edits through one replica without versions"
+        }
+      ],
+      "hints": [
+        "The writer expects their own update.",
+        "Replicas can lag.",
+        "Use a fresh read path."
+      ],
+      "nextId": null
     },
     {
       "id": "cons-16",
+      "incidentCode": "INC-008-16",
+      "level": 8,
+      "patternId": "consistency",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
       "title": "Causal order of comments",
-      "context": "A reply appears before the parent comment because replicas apply writes out of order.",
+      "brief": "A reply appears before the parent comment because replicas apply writes out of order.",
       "constraint": "Conversation threads need happens-before order.",
       "question": "What ordering guarantee is required?",
-      "expectedPattern": "Causal consistency so a reply is not visible before its parent in the same thread.",
-      "wrongChoices": [
-        "Any replica apply order is fine",
-        "Strong global order for unrelated posts",
-        "Hide all comments until world-wide sync"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 4000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 30,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 0,
+          "unit": "errors",
+          "tone": "neutral"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "user",
+            "kind": "users",
+            "label": "Writer"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Primary",
+            "tone": "good"
+          },
+          {
+            "id": "r1",
+            "kind": "replica",
+            "label": "Stale replica",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "user",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          },
+          {
+            "from": "app",
+            "to": "r1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "fresh-reads",
+          "label": "Fresh reads",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "user",
+                "kind": "users",
+                "label": "Writer"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Primary",
+                "tone": "good"
+              },
+              {
+                "id": "r1",
+                "kind": "replica",
+                "label": "Replica",
+                "tone": "neutral"
+              }
+            ],
+            "edges": [
+              {
+                "from": "user",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 16,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 53,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Causal consistency so a reply is not visible before its parent in the same thread."
+        },
+        {
+          "id": "any-replica-apply",
+          "label": "Any replica apply",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 34,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 40,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "The next read still hit a lagging replica."
+        },
+        {
+          "id": "strong-global-order",
+          "label": "Strong global order",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 32,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 880,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 20,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "Strong global order for unrelated posts"
+        }
+      ],
+      "hints": [
+        "The writer expects their own update.",
+        "Replicas can lag.",
+        "Use a fresh read path."
+      ],
+      "nextId": null
     },
     {
       "id": "cons-17",
+      "incidentCode": "INC-008-17",
+      "level": 8,
+      "patternId": "consistency",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
       "title": "Inventory decrement vs browse",
-      "context": "Checkout decrements stock on the primary; the product page still shows “in stock” from a replica.",
+      "brief": "Checkout decrements stock on the primary; the product page still shows \u201cin stock\u201d from a replica.",
       "constraint": "Overselling is worse than a slightly empty-looking page.",
       "question": "Which path needs stronger reads?",
-      "expectedPattern": "Critical stock checks at checkout read from the primary; browse can stay eventually consistent.",
-      "wrongChoices": [
-        "Both browse and checkout always use the most lagged replica",
-        "Strong consistency on every marketing page",
-        "Never decrement stock"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 4000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 30,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 0,
+          "unit": "errors",
+          "tone": "neutral"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "user",
+            "kind": "users",
+            "label": "Writer"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Primary",
+            "tone": "good"
+          },
+          {
+            "id": "r1",
+            "kind": "replica",
+            "label": "Stale replica",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "user",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          },
+          {
+            "from": "app",
+            "to": "r1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "fresh-reads",
+          "label": "Fresh reads",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "user",
+                "kind": "users",
+                "label": "Writer"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Primary",
+                "tone": "good"
+              },
+              {
+                "id": "r1",
+                "kind": "replica",
+                "label": "Replica",
+                "tone": "neutral"
+              }
+            ],
+            "edges": [
+              {
+                "from": "user",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 16,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 53,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Critical stock checks at checkout read from the primary; browse can stay eventually consistent."
+        },
+        {
+          "id": "both-browse-checkout",
+          "label": "Both browse checkout",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 34,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 40,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "The next read still hit a lagging replica."
+        },
+        {
+          "id": "strong-consistency-every",
+          "label": "Strong consistency every",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 32,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 880,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 20,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "Strong consistency on every marketing page"
+        }
+      ],
+      "hints": [
+        "The writer expects their own update.",
+        "Replicas can lag.",
+        "Use a fresh read path."
+      ],
+      "nextId": null
     },
     {
       "id": "cons-18",
+      "incidentCode": "INC-008-18",
+      "level": 8,
+      "patternId": "consistency",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
       "title": "Session token after logout",
-      "context": "Logout invalidates a token on the primary, but a replica still accepts it for 20 seconds.",
+      "brief": "Logout invalidates a token on the primary, but a replica still accepts it for 20 seconds.",
       "constraint": "Security-sensitive reads cannot be stale.",
       "question": "What is the right invalidation model?",
-      "expectedPattern": "Synchronous invalidation or primary reads for authz checks, plus short-lived tokens.",
-      "wrongChoices": [
-        "Eventual logout is acceptable for session tokens",
-        "Cache valid tokens at the CDN for an hour",
-        "Only delete the cookie in the browser"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 4000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 30,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 0,
+          "unit": "errors",
+          "tone": "neutral"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "user",
+            "kind": "users",
+            "label": "Writer"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Primary",
+            "tone": "good"
+          },
+          {
+            "id": "r1",
+            "kind": "replica",
+            "label": "Stale replica",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "user",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          },
+          {
+            "from": "app",
+            "to": "r1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "fresh-reads",
+          "label": "Fresh reads",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "user",
+                "kind": "users",
+                "label": "Writer"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Primary",
+                "tone": "good"
+              },
+              {
+                "id": "r1",
+                "kind": "replica",
+                "label": "Replica",
+                "tone": "neutral"
+              }
+            ],
+            "edges": [
+              {
+                "from": "user",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 16,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 53,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Synchronous invalidation or primary reads for authz checks, plus short-lived tokens."
+        },
+        {
+          "id": "eventual-logout-acceptab",
+          "label": "Eventual logout acceptable",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 34,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 40,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "The next read still hit a lagging replica."
+        },
+        {
+          "id": "cache-valid-tokens",
+          "label": "Cache valid tokens",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 32,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 880,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 20,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "Cache valid tokens at the CDN for an hour"
+        }
+      ],
+      "hints": [
+        "The writer expects their own update.",
+        "Replicas can lag.",
+        "Use a fresh read path."
+      ],
+      "nextId": null
     },
     {
       "id": "cons-19",
+      "incidentCode": "INC-008-19",
+      "level": 8,
+      "patternId": "consistency",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
       "title": "Leader election split brain",
-      "context": "Two primaries accept writes during a network partition and later diverge.",
+      "brief": "Two primaries accept writes during a network partition and later diverge.",
       "constraint": "The cluster must choose one history.",
       "question": "What consistency property was violated?",
-      "expectedPattern": "Single-leader (or consensus) so only one primary can accept writes in a partition.",
-      "wrongChoices": [
-        "Allow two writable primaries and merge later blindly",
-        "Turn off health checks",
-        "Read from any node as if it were primary"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 4000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 30,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 0,
+          "unit": "errors",
+          "tone": "neutral"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "user",
+            "kind": "users",
+            "label": "Writer"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Primary",
+            "tone": "good"
+          },
+          {
+            "id": "r1",
+            "kind": "replica",
+            "label": "Stale replica",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "user",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          },
+          {
+            "from": "app",
+            "to": "r1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "reshard-data",
+          "label": "Reshard data",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "user",
+                "kind": "users",
+                "label": "Writer"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Primary",
+                "tone": "good"
+              },
+              {
+                "id": "r1",
+                "kind": "replica",
+                "label": "Replica",
+                "tone": "neutral"
+              }
+            ],
+            "edges": [
+              {
+                "from": "user",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 16,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 53,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Single-leader (or consensus) so only one primary can accept writes in a partition."
+        },
+        {
+          "id": "allow-two-writable",
+          "label": "Allow two writable",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 34,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 40,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "The next read still hit a lagging replica."
+        },
+        {
+          "id": "turn-off-health",
+          "label": "Turn off health",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 32,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 880,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 20,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "Turn off health checks"
+        }
+      ],
+      "hints": [
+        "The writer expects their own update.",
+        "Replicas can lag.",
+        "Use a fresh read path."
+      ],
+      "nextId": null
     },
     {
       "id": "cons-20",
+      "incidentCode": "INC-008-20",
+      "level": 8,
+      "patternId": "consistency",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
       "title": "Bounded staleness SLA",
-      "context": "A dashboard promises data no older than 5 seconds, but replica lag is 40 seconds.",
+      "brief": "A dashboard promises data no older than 5 seconds, but replica lag is 40 seconds.",
       "constraint": "The SLA is a product requirement.",
       "question": "How should the read router behave?",
-      "expectedPattern": "Reject or reroute reads when replica lag exceeds the freshness bound, falling back to a fresher replica or primary.",
-      "wrongChoices": [
-        "Serve any replica regardless of lag",
-        "Hide the lag metric",
-        "Change the SLA after the page loads"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 4000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 30,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 0,
+          "unit": "errors",
+          "tone": "neutral"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "user",
+            "kind": "users",
+            "label": "Writer"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Primary",
+            "tone": "good"
+          },
+          {
+            "id": "r1",
+            "kind": "replica",
+            "label": "Stale replica",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "user",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          },
+          {
+            "from": "app",
+            "to": "r1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "read-replicas",
+          "label": "Read replicas",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "user",
+                "kind": "users",
+                "label": "Writer"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Primary",
+                "tone": "good"
+              },
+              {
+                "id": "r1",
+                "kind": "replica",
+                "label": "Replica",
+                "tone": "neutral"
+              }
+            ],
+            "edges": [
+              {
+                "from": "user",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 16,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 53,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Reject or reroute reads when replica lag exceeds the freshness bound, falling back to a fresher replica or primary."
+        },
+        {
+          "id": "serve-any-replica",
+          "label": "Serve any replica",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 34,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 40,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "The next read still hit a lagging replica."
+        },
+        {
+          "id": "hide-lag-metric",
+          "label": "Hide lag metric",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 32,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 880,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 20,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writer sees stale",
+          "resultBody": "Hide the lag metric"
+        }
+      ],
+      "hints": [
+        "The writer expects their own update.",
+        "Replicas can lag.",
+        "Use a fresh read path."
+      ],
+      "nextId": null
     }
   ]
 }

@@ -1,267 +1,4351 @@
 {
-  "version": 1,
+  "version": 2,
   "patternId": "async-queues",
   "patternName": "Queues & Failure Handling",
-  "variants": [
+  "level": 6,
+  "phase": "Resilience",
+  "canonicalId": "queue-01",
+  "nextCanonicalId": "shard-01",
+  "incidents": [
     {
       "id": "queue-01",
+      "incidentCode": "INC-006",
+      "level": 6,
+      "patternId": "async-queues",
+      "canonical": true,
+      "severity": "P0",
+      "xp": 150,
       "title": "Payment API delays checkout",
-      "context": "The checkout endpoint calls a payment provider synchronously and waits on every call.",
+      "brief": "The checkout endpoint calls a payment provider synchronously and waits on every call.",
       "constraint": "The dependency is slow and thread-blocking.",
       "question": "What makes request latency recover?",
-      "expectedPattern": "Enqueue the payment work and return quickly to the user.",
-      "wrongChoices": [
-        "Increase request timeout",
-        "Add more servers only",
-        "Move the API code into the browser"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 2000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 8000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 15,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "API",
+            "tone": "bad",
+            "cpu": 94
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Vendor",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "use-queue",
+          "label": "Use queue",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "API",
+                "tone": "good",
+                "cpu": 28
+              },
+              {
+                "id": "q",
+                "kind": "queue",
+                "label": "Queue",
+                "tone": "good"
+              },
+              {
+                "id": "w",
+                "kind": "worker",
+                "label": "Worker",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "q"
+              },
+              {
+                "from": "q",
+                "to": "w"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 533,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Enqueue the payment work and return quickly to the user."
+        },
+        {
+          "id": "longer-timeout",
+          "label": "Longer timeout",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 10000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 55,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "The user thread is still waiting on the vendor."
+        },
+        {
+          "id": "more-servers",
+          "label": "More servers",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 8800,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 35,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "Add more servers only"
+        }
+      ],
+      "hints": [
+        "The request path is waiting on slow work.",
+        "Users only need an ack now.",
+        "Enqueue and return."
+      ],
+      "nextId": "shard-01"
     },
     {
       "id": "queue-02",
+      "incidentCode": "INC-006-02",
+      "level": 6,
+      "patternId": "async-queues",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Email sends hang the request path",
-      "context": "Emails are sent during signup and each request waits for SMTP completion.",
+      "brief": "Emails are sent during signup and each request waits for SMTP completion.",
       "constraint": "External email sending is slow and often unreliable.",
       "question": "What should happen after the user account is created?",
-      "expectedPattern": "Persist a work item and process it asynchronously.",
-      "wrongChoices": [
-        "Keep waiting on SMTP",
-        "Send from the web request",
-        "Disable email confirmation"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 2000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 8000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 15,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "API",
+            "tone": "bad",
+            "cpu": 94
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Vendor",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "use-queue",
+          "label": "Use queue",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "API",
+                "tone": "good",
+                "cpu": 28
+              },
+              {
+                "id": "q",
+                "kind": "queue",
+                "label": "Queue",
+                "tone": "good"
+              },
+              {
+                "id": "w",
+                "kind": "worker",
+                "label": "Worker",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "q"
+              },
+              {
+                "from": "q",
+                "to": "w"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 533,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Persist a work item and process it asynchronously."
+        },
+        {
+          "id": "keep-waiting-smtp",
+          "label": "Keep waiting SMTP",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 10000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 55,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "The user thread is still waiting on the vendor."
+        },
+        {
+          "id": "send-web-request",
+          "label": "Send web request",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 8800,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 35,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "Send from the web request"
+        }
+      ],
+      "hints": [
+        "The request path is waiting on slow work.",
+        "Users only need an ack now.",
+        "Enqueue and return."
+      ],
+      "nextId": null
     },
     {
       "id": "queue-03",
+      "incidentCode": "INC-006-03",
+      "level": 6,
+      "patternId": "async-queues",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Thumbnails generate too slowly",
-      "context": "Users upload photos and the app renders thumbnails inline in the request path.",
+      "brief": "Users upload photos and the app renders thumbnails inline in the request path.",
       "constraint": "Thumbnail generation is slow and deferrable.",
       "question": "What is the correct design?",
-      "expectedPattern": "Store the upload, enqueue the thumbnail job, and respond immediately.",
-      "wrongChoices": [
-        "Render thumbnails in the request thread",
-        "Cache the upload in the browser",
-        "Queue thumbnails without storing the original"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 2000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 8000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 15,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "API",
+            "tone": "bad",
+            "cpu": 94
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Vendor",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "use-queue",
+          "label": "Use queue",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "API",
+                "tone": "good",
+                "cpu": 28
+              },
+              {
+                "id": "q",
+                "kind": "queue",
+                "label": "Queue",
+                "tone": "good"
+              },
+              {
+                "id": "w",
+                "kind": "worker",
+                "label": "Worker",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "q"
+              },
+              {
+                "from": "q",
+                "to": "w"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 533,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Store the upload, enqueue the thumbnail job, and respond immediately."
+        },
+        {
+          "id": "render-thumbnails-reques",
+          "label": "Render thumbnails request",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 10000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 55,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "The user thread is still waiting on the vendor."
+        },
+        {
+          "id": "cache-upload-browser",
+          "label": "Cache upload browser",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 8800,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 35,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "Cache the upload in the browser"
+        }
+      ],
+      "hints": [
+        "The request path is waiting on slow work.",
+        "Users only need an ack now.",
+        "Enqueue and return."
+      ],
+      "nextId": null
     },
     {
       "id": "queue-04",
+      "incidentCode": "INC-006-04",
+      "level": 6,
+      "patternId": "async-queues",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Pay later crash",
-      "context": "A worker crashes after charging a card but before acknowledging the message.",
+      "brief": "A worker crashes after charging a card but before acknowledging the message.",
       "constraint": "The queue may redeliver the same job.",
       "question": "How do you avoid charging twice?",
-      "expectedPattern": "Use idempotency keys and a safe deduplication strategy.",
-      "wrongChoices": [
-        "Disable redelivery",
-        "Let the request handle the charge",
-        "Retry forever without checking state"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 2000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 8000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 15,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "API",
+            "tone": "bad",
+            "cpu": 94
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Vendor",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "idempotency-key",
+          "label": "Idempotency key",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "API",
+                "tone": "good",
+                "cpu": 28
+              },
+              {
+                "id": "q",
+                "kind": "queue",
+                "label": "Queue",
+                "tone": "good"
+              },
+              {
+                "id": "w",
+                "kind": "worker",
+                "label": "Worker",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "q"
+              },
+              {
+                "from": "q",
+                "to": "w"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 533,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Use idempotency keys and a safe deduplication strategy."
+        },
+        {
+          "id": "disable-redelivery",
+          "label": "Disable redelivery",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 10000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 55,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "The user thread is still waiting on the vendor."
+        },
+        {
+          "id": "let-request-handle",
+          "label": "Let request handle",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 8800,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 35,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "Let the request handle the charge"
+        }
+      ],
+      "hints": [
+        "The request path is waiting on slow work.",
+        "Users only need an ack now.",
+        "Enqueue and return."
+      ],
+      "nextId": null
     },
     {
       "id": "queue-05",
+      "incidentCode": "INC-006-05",
+      "level": 6,
+      "patternId": "async-queues",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Flash sale on the checkout system",
-      "context": "Payment, email, and order processing happen inside the request while the sale peaks.",
+      "brief": "Payment, email, and order processing happen inside the request while the sale peaks.",
       "constraint": "Downstream dependencies are slow and the pool is exhausting threads.",
       "question": "What is the right architectural move?",
-      "expectedPattern": "Queue the expensive downstream tasks and make the request path short.",
-      "wrongChoices": [
-        "Scale the API layer only",
-        "Increase timeout budget",
-        "Keep everything synchronous"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 2000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 8000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 15,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "API",
+            "tone": "bad",
+            "cpu": 94
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Vendor",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "use-queue",
+          "label": "Use queue",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "API",
+                "tone": "good",
+                "cpu": 28
+              },
+              {
+                "id": "q",
+                "kind": "queue",
+                "label": "Queue",
+                "tone": "good"
+              },
+              {
+                "id": "w",
+                "kind": "worker",
+                "label": "Worker",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "q"
+              },
+              {
+                "from": "q",
+                "to": "w"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 533,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Queue the expensive downstream tasks and make the request path short."
+        },
+        {
+          "id": "scale-api-layer",
+          "label": "Scale API layer",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 10000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 55,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "The user thread is still waiting on the vendor."
+        },
+        {
+          "id": "increase-timeout-budget",
+          "label": "Increase timeout budget",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 8800,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 35,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "Increase timeout budget"
+        }
+      ],
+      "hints": [
+        "The request path is waiting on slow work.",
+        "Users only need an ack now.",
+        "Enqueue and return."
+      ],
+      "nextId": null
     },
     {
       "id": "queue-06",
+      "incidentCode": "INC-006-06",
+      "level": 6,
+      "patternId": "async-queues",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Background workers back up",
-      "context": "The queue is growing and workers are falling behind under a sudden spike.",
+      "brief": "The queue is growing and workers are falling behind under a sudden spike.",
       "constraint": "Work is queueing faster than it can be processed.",
       "question": "What should be added to prevent collapse?",
-      "expectedPattern": "Backpressure, retry policies, worker parallelism, and workload prioritization.",
-      "wrongChoices": [
-        "More retries with no cap",
-        "No acknowledgement",
-        "Ignore the backlog"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 2000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 8000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 15,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "API",
+            "tone": "bad",
+            "cpu": 94
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Vendor",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "bound-queue",
+          "label": "Bound queue",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "API",
+                "tone": "good",
+                "cpu": 28
+              },
+              {
+                "id": "q",
+                "kind": "queue",
+                "label": "Queue",
+                "tone": "good"
+              },
+              {
+                "id": "w",
+                "kind": "worker",
+                "label": "Worker",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "q"
+              },
+              {
+                "from": "q",
+                "to": "w"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 533,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Backpressure, retry policies, worker parallelism, and workload prioritization."
+        },
+        {
+          "id": "more-retries-no",
+          "label": "More retries no",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 10000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 55,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "The user thread is still waiting on the vendor."
+        },
+        {
+          "id": "no-acknowledgement",
+          "label": "No acknowledgement",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 8800,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 35,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "No acknowledgement"
+        }
+      ],
+      "hints": [
+        "The request path is waiting on slow work.",
+        "Users only need an ack now.",
+        "Enqueue and return."
+      ],
+      "nextId": null
     },
     {
       "id": "queue-07",
+      "incidentCode": "INC-006-07",
+      "level": 6,
+      "patternId": "async-queues",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Complex order processing",
-      "context": "After a user places an order, the platform calculates taxes, emits notifications, and updates a ledger.",
+      "brief": "After a user places an order, the platform calculates taxes, emits notifications, and updates a ledger.",
       "constraint": "These steps do not need to complete before the user receives confirmation.",
       "question": "How should the order flow be modeled?",
-      "expectedPattern": "Acknowledge the order quickly, then process the downstream work asynchronously.",
-      "wrongChoices": [
-        "All work on the web request",
-        "A single long transaction",
-        "Manual processing by support"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 2000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 8000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 15,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "API",
+            "tone": "bad",
+            "cpu": 94
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Vendor",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "edge-cache",
+          "label": "Edge cache",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "API",
+                "tone": "good",
+                "cpu": 28
+              },
+              {
+                "id": "q",
+                "kind": "queue",
+                "label": "Queue",
+                "tone": "good"
+              },
+              {
+                "id": "w",
+                "kind": "worker",
+                "label": "Worker",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "q"
+              },
+              {
+                "from": "q",
+                "to": "w"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 533,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Acknowledge the order quickly, then process the downstream work asynchronously."
+        },
+        {
+          "id": "all-work-web",
+          "label": "All work web",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 10000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 55,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "The user thread is still waiting on the vendor."
+        },
+        {
+          "id": "a-single-long",
+          "label": "A single long",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 8800,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 35,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "A single long transaction"
+        }
+      ],
+      "hints": [
+        "The request path is waiting on slow work.",
+        "Users only need an ack now.",
+        "Enqueue and return."
+      ],
+      "nextId": null
     },
     {
       "id": "queue-08",
+      "incidentCode": "INC-006-08",
+      "level": 6,
+      "patternId": "async-queues",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Queue message duplication",
-      "context": "A message is processed twice because a worker crashes before acknowledging it.",
+      "brief": "A message is processed twice because a worker crashes before acknowledging it.",
       "constraint": "At-least-once delivery is expected.",
       "question": "What safety property must the job handler provide?",
-      "expectedPattern": "Idempotent processing so duplicate messages do not cause duplicate side effects.",
-      "wrongChoices": [
-        "No retries",
-        "No acknowledgements",
-        "No deduplication logic"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 2000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 8000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 15,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "API",
+            "tone": "bad",
+            "cpu": 94
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Vendor",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "idempotency-key",
+          "label": "Idempotency key",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "API",
+                "tone": "good",
+                "cpu": 28
+              },
+              {
+                "id": "q",
+                "kind": "queue",
+                "label": "Queue",
+                "tone": "good"
+              },
+              {
+                "id": "w",
+                "kind": "worker",
+                "label": "Worker",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "q"
+              },
+              {
+                "from": "q",
+                "to": "w"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 533,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Idempotent processing so duplicate messages do not cause duplicate side effects."
+        },
+        {
+          "id": "no-retries",
+          "label": "No retries",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 10000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 55,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "The user thread is still waiting on the vendor."
+        },
+        {
+          "id": "no-acknowledgements",
+          "label": "No acknowledgements",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 8800,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 35,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "No acknowledgements"
+        }
+      ],
+      "hints": [
+        "The request path is waiting on slow work.",
+        "Users only need an ack now.",
+        "Enqueue and return."
+      ],
+      "nextId": null
     },
     {
       "id": "queue-09",
+      "incidentCode": "INC-006-09",
+      "level": 6,
+      "patternId": "async-queues",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "User places order but waits too long",
-      "context": "The order request waits for analytics, tax calculation, and three downstream APIs before returning a response.",
+      "brief": "The order request waits for analytics, tax calculation, and three downstream APIs before returning a response.",
       "constraint": "Only the order status is needed immediately.",
       "question": "How do you improve user experience without losing correctness?",
-      "expectedPattern": "Queue non-critical follow-up work and acknowledge the order quickly.",
-      "wrongChoices": [
-        "Wait for all APIs in the request",
-        "Accept a broken order state",
-        "Skip analytics"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 2000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 8000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 15,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "API",
+            "tone": "bad",
+            "cpu": 94
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Vendor",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "edge-cache",
+          "label": "Edge cache",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "API",
+                "tone": "good",
+                "cpu": 28
+              },
+              {
+                "id": "q",
+                "kind": "queue",
+                "label": "Queue",
+                "tone": "good"
+              },
+              {
+                "id": "w",
+                "kind": "worker",
+                "label": "Worker",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "q"
+              },
+              {
+                "from": "q",
+                "to": "w"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 533,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Queue non-critical follow-up work and acknowledge the order quickly."
+        },
+        {
+          "id": "wait-all-apis",
+          "label": "Wait all APIs",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 10000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 55,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "The user thread is still waiting on the vendor."
+        },
+        {
+          "id": "accept-broken-order",
+          "label": "Accept broken order",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 8800,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 35,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "Accept a broken order state"
+        }
+      ],
+      "hints": [
+        "The request path is waiting on slow work.",
+        "Users only need an ack now.",
+        "Enqueue and return."
+      ],
+      "nextId": null
     },
     {
       "id": "queue-10",
+      "incidentCode": "INC-006-10",
+      "level": 6,
+      "patternId": "async-queues",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Crashes during message processing",
-      "context": "A worker starts processing a message, fails mid-way, and the queue redelivers it.",
+      "brief": "A worker starts processing a message, fails mid-way, and the queue redelivers it.",
       "constraint": "The side effect is not safe to repeat unless designed carefully.",
       "question": "What must you design for?",
-      "expectedPattern": "Idempotent handlers, retry limits, and observational state.",
-      "wrongChoices": [
-        "Unbounded retries",
-        "No monitoring",
-        "No check for duplicate actions"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 2000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 8000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 15,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "API",
+            "tone": "bad",
+            "cpu": 94
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Vendor",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "idempotency-key",
+          "label": "Idempotency key",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "API",
+                "tone": "good",
+                "cpu": 28
+              },
+              {
+                "id": "q",
+                "kind": "queue",
+                "label": "Queue",
+                "tone": "good"
+              },
+              {
+                "id": "w",
+                "kind": "worker",
+                "label": "Worker",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "q"
+              },
+              {
+                "from": "q",
+                "to": "w"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 533,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Idempotent handlers, retry limits, and observational state."
+        },
+        {
+          "id": "unbounded-retries",
+          "label": "Unbounded retries",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 10000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 55,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "The user thread is still waiting on the vendor."
+        },
+        {
+          "id": "no-monitoring",
+          "label": "No monitoring",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 8800,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 35,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "No monitoring"
+        }
+      ],
+      "hints": [
+        "The request path is waiting on slow work.",
+        "Users only need an ack now.",
+        "Enqueue and return."
+      ],
+      "nextId": null
     },
     {
       "id": "queue-11",
+      "incidentCode": "INC-006-11",
+      "level": 6,
+      "patternId": "async-queues",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Webhook fan-out blocks the API",
-      "context": "A billing service calls 12 partner webhooks inside the same HTTP handler.",
+      "brief": "A billing service calls 12 partner webhooks inside the same HTTP handler.",
       "constraint": "Partners are slow and sometimes unreachable.",
       "question": "How do you isolate partner latency?",
-      "expectedPattern": "Persist the event, enqueue outbound webhooks, and retry each partner independently.",
-      "wrongChoices": [
-        "Wait for every partner before returning 200",
-        "Drop webhooks when a partner is slow",
-        "Call partners from the browser"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 2000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 8000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 15,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "API",
+            "tone": "bad",
+            "cpu": 94
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Vendor",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "use-queue",
+          "label": "Use queue",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "API",
+                "tone": "good",
+                "cpu": 28
+              },
+              {
+                "id": "q",
+                "kind": "queue",
+                "label": "Queue",
+                "tone": "good"
+              },
+              {
+                "id": "w",
+                "kind": "worker",
+                "label": "Worker",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "q"
+              },
+              {
+                "from": "q",
+                "to": "w"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 533,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Persist the event, enqueue outbound webhooks, and retry each partner independently."
+        },
+        {
+          "id": "wait-every-partner",
+          "label": "Wait every partner",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 10000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 55,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "The user thread is still waiting on the vendor."
+        },
+        {
+          "id": "drop-webhooks-when",
+          "label": "Drop webhooks when",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 8800,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 35,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "Drop webhooks when a partner is slow"
+        }
+      ],
+      "hints": [
+        "The request path is waiting on slow work.",
+        "Users only need an ack now.",
+        "Enqueue and return."
+      ],
+      "nextId": null
     },
     {
       "id": "queue-12",
+      "incidentCode": "INC-006-12",
+      "level": 6,
+      "patternId": "async-queues",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Poison message stalls the queue",
-      "context": "One malformed payload crashes every worker that touches it, so the queue never drains.",
+      "brief": "One malformed payload crashes every worker that touches it, so the queue never drains.",
       "constraint": "Later valid jobs are stuck behind the bad one.",
       "question": "What failure-handling pattern unblocks the line?",
-      "expectedPattern": "After limited retries, move the poison message to a dead-letter queue and keep consuming.",
-      "wrongChoices": [
-        "Retry the same message forever on the main queue",
-        "Stop all workers until a human notices",
-        "Delete the entire queue"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 2000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 8000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 15,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "API",
+            "tone": "bad",
+            "cpu": 94
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Vendor",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "use-queue",
+          "label": "Use queue",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "API",
+                "tone": "good",
+                "cpu": 28
+              },
+              {
+                "id": "q",
+                "kind": "queue",
+                "label": "Queue",
+                "tone": "good"
+              },
+              {
+                "id": "w",
+                "kind": "worker",
+                "label": "Worker",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "q"
+              },
+              {
+                "from": "q",
+                "to": "w"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 533,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "After limited retries, move the poison message to a dead-letter queue and keep consuming."
+        },
+        {
+          "id": "retry-same-message",
+          "label": "Retry same message",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 10000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 55,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "The user thread is still waiting on the vendor."
+        },
+        {
+          "id": "stop-all-workers",
+          "label": "Stop all workers",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 8800,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 35,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "Stop all workers until a human notices"
+        }
+      ],
+      "hints": [
+        "The request path is waiting on slow work.",
+        "Users only need an ack now.",
+        "Enqueue and return."
+      ],
+      "nextId": null
     },
     {
       "id": "queue-13",
+      "incidentCode": "INC-006-13",
+      "level": 6,
+      "patternId": "async-queues",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Visibility timeout too short",
-      "context": "Video transcodes take 8 minutes, but the message becomes visible again after 30 seconds.",
+      "brief": "Video transcodes take 8 minutes, but the message becomes visible again after 30 seconds.",
       "constraint": "Multiple workers start the same job.",
       "question": "What queue setting must match the work?",
-      "expectedPattern": "Set visibility timeout (or heartbeat extend) longer than the real processing time.",
-      "wrongChoices": [
-        "Ack immediately before transcode starts",
-        "Disable acknowledgements",
-        "Process transcodes on the web request"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 2000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 8000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 15,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "API",
+            "tone": "bad",
+            "cpu": 94
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Vendor",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "use-queue",
+          "label": "Use queue",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "API",
+                "tone": "good",
+                "cpu": 28
+              },
+              {
+                "id": "q",
+                "kind": "queue",
+                "label": "Queue",
+                "tone": "good"
+              },
+              {
+                "id": "w",
+                "kind": "worker",
+                "label": "Worker",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "q"
+              },
+              {
+                "from": "q",
+                "to": "w"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 533,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Set visibility timeout (or heartbeat extend) longer than the real processing time."
+        },
+        {
+          "id": "ack-immediately-before",
+          "label": "Ack immediately before",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 10000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 55,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "The user thread is still waiting on the vendor."
+        },
+        {
+          "id": "disable-acknowledgements",
+          "label": "Disable acknowledgements",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 8800,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 35,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "Disable acknowledgements"
+        }
+      ],
+      "hints": [
+        "The request path is waiting on slow work.",
+        "Users only need an ack now.",
+        "Enqueue and return."
+      ],
+      "nextId": null
     },
     {
       "id": "queue-14",
+      "incidentCode": "INC-006-14",
+      "level": 6,
+      "patternId": "async-queues",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Signup SMS in the request",
-      "context": "Phone verification SMS is sent synchronously and the carrier API times out at peak.",
+      "brief": "Phone verification SMS is sent synchronously and the carrier API times out at peak.",
       "constraint": "Account creation can succeed without waiting on SMS.",
       "question": "What should the API do on signup?",
-      "expectedPattern": "Create the user, enqueue the SMS job, and return; workers send and retry the message.",
-      "wrongChoices": [
-        "Fail signup if SMS is slow",
-        "Increase the HTTP timeout to 2 minutes",
-        "Send SMS from a database trigger only"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 2000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 8000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 15,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "API",
+            "tone": "bad",
+            "cpu": 94
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Vendor",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "use-queue",
+          "label": "Use queue",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "API",
+                "tone": "good",
+                "cpu": 28
+              },
+              {
+                "id": "q",
+                "kind": "queue",
+                "label": "Queue",
+                "tone": "good"
+              },
+              {
+                "id": "w",
+                "kind": "worker",
+                "label": "Worker",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "q"
+              },
+              {
+                "from": "q",
+                "to": "w"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 533,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Create the user, enqueue the SMS job, and return; workers send and retry the message."
+        },
+        {
+          "id": "fail-signup-if",
+          "label": "Fail signup if",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 10000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 55,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "The user thread is still waiting on the vendor."
+        },
+        {
+          "id": "increase-http-timeout",
+          "label": "Increase HTTP timeout",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 8800,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 35,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "Increase the HTTP timeout to 2 minutes"
+        }
+      ],
+      "hints": [
+        "The request path is waiting on slow work.",
+        "Users only need an ack now.",
+        "Enqueue and return."
+      ],
+      "nextId": null
     },
     {
       "id": "queue-15",
+      "incidentCode": "INC-006-15",
+      "level": 6,
+      "patternId": "async-queues",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Retry storm after an outage",
-      "context": "A downstream API recovers and every delayed job retries at once.",
+      "brief": "A downstream API recovers and every delayed job retries at once.",
       "constraint": "The dependency cannot absorb a synchronized burst.",
       "question": "How do you retry safely?",
-      "expectedPattern": "Exponential backoff with jitter and a retry budget so jobs do not stampede.",
-      "wrongChoices": [
-        "Retry all jobs immediately with no delay",
-        "Never retry after an outage",
-        "Increase worker count without backoff"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 2000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 8000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 15,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "API",
+            "tone": "bad",
+            "cpu": 94
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Vendor",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "use-queue",
+          "label": "Use queue",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "API",
+                "tone": "good",
+                "cpu": 28
+              },
+              {
+                "id": "q",
+                "kind": "queue",
+                "label": "Queue",
+                "tone": "good"
+              },
+              {
+                "id": "w",
+                "kind": "worker",
+                "label": "Worker",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "q"
+              },
+              {
+                "from": "q",
+                "to": "w"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 533,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Exponential backoff with jitter and a retry budget so jobs do not stampede."
+        },
+        {
+          "id": "retry-all-jobs",
+          "label": "Retry all jobs",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 10000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 55,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "The user thread is still waiting on the vendor."
+        },
+        {
+          "id": "never-retry-after",
+          "label": "Never retry after",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 8800,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 35,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "Never retry after an outage"
+        }
+      ],
+      "hints": [
+        "The request path is waiting on slow work.",
+        "Users only need an ack now.",
+        "Enqueue and return."
+      ],
+      "nextId": null
     },
     {
       "id": "queue-16",
+      "incidentCode": "INC-006-16",
+      "level": 6,
+      "patternId": "async-queues",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Exactly-once assumed on Kafka",
-      "context": "A consumer increments a coupon-used counter on every message and the counter doubles after rebalance.",
+      "brief": "A consumer increments a coupon-used counter on every message and the counter doubles after rebalance.",
       "constraint": "The broker delivers at least once.",
       "question": "What must the consumer implement?",
-      "expectedPattern": "Idempotent updates keyed by message or coupon id so redelivery does not double-count.",
-      "wrongChoices": [
-        "Assume Kafka is exactly-once for side effects",
-        "Disable consumer group rebalance forever",
-        "Ack before writing the counter"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 2000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 8000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 15,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "API",
+            "tone": "bad",
+            "cpu": 94
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Vendor",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "idempotency-key",
+          "label": "Idempotency key",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "API",
+                "tone": "good",
+                "cpu": 28
+              },
+              {
+                "id": "q",
+                "kind": "queue",
+                "label": "Queue",
+                "tone": "good"
+              },
+              {
+                "id": "w",
+                "kind": "worker",
+                "label": "Worker",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "q"
+              },
+              {
+                "from": "q",
+                "to": "w"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 533,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Idempotent updates keyed by message or coupon id so redelivery does not double-count."
+        },
+        {
+          "id": "assume-kafka-exactly-onc",
+          "label": "Assume Kafka exactly-once",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 10000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 55,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "The user thread is still waiting on the vendor."
+        },
+        {
+          "id": "disable-consumer-group",
+          "label": "Disable consumer group",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 8800,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 35,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "Disable consumer group rebalance forever"
+        }
+      ],
+      "hints": [
+        "The request path is waiting on slow work.",
+        "Users only need an ack now.",
+        "Enqueue and return."
+      ],
+      "nextId": null
     },
     {
       "id": "queue-17",
+      "incidentCode": "INC-006-17",
+      "level": 6,
+      "patternId": "async-queues",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Priority work stuck behind bulk import",
-      "context": "Password-reset emails sit behind a 2-million-row CSV import on one queue.",
+      "brief": "Password-reset emails sit behind a 2-million-row CSV import on one queue.",
       "constraint": "User-facing jobs cannot wait on bulk work.",
       "question": "How should work be separated?",
-      "expectedPattern": "Use priority queues or separate worker pools for interactive versus bulk jobs.",
-      "wrongChoices": [
-        "One FIFO queue for every job type",
-        "Pause password resets during imports",
-        "Run imports on the API process"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 2000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 8000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 15,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "API",
+            "tone": "bad",
+            "cpu": 94
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Vendor",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "use-queue",
+          "label": "Use queue",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "API",
+                "tone": "good",
+                "cpu": 28
+              },
+              {
+                "id": "q",
+                "kind": "queue",
+                "label": "Queue",
+                "tone": "good"
+              },
+              {
+                "id": "w",
+                "kind": "worker",
+                "label": "Worker",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "q"
+              },
+              {
+                "from": "q",
+                "to": "w"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 533,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Use priority queues or separate worker pools for interactive versus bulk jobs."
+        },
+        {
+          "id": "one-fifo-queue",
+          "label": "One FIFO queue",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 10000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 55,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "The user thread is still waiting on the vendor."
+        },
+        {
+          "id": "pause-password-resets",
+          "label": "Pause password resets",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 8800,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 35,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "Pause password resets during imports"
+        }
+      ],
+      "hints": [
+        "The request path is waiting on slow work.",
+        "Users only need an ack now.",
+        "Enqueue and return."
+      ],
+      "nextId": null
     },
     {
       "id": "queue-18",
+      "incidentCode": "INC-006-18",
+      "level": 6,
+      "patternId": "async-queues",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Outbox missing after a crash",
-      "context": "The API writes an order row, then crashes before publishing to the queue, so fulfillment never starts.",
+      "brief": "The API writes an order row, then crashes before publishing to the queue, so fulfillment never starts.",
       "constraint": "The database write committed; the message did not.",
       "question": "What pattern keeps state and messages aligned?",
-      "expectedPattern": "Transactional outbox: write the event in the same transaction, then a relay publishes it.",
-      "wrongChoices": [
-        "Publish first and write the order later without a transaction",
-        "Rely on the user to click again",
-        "Skip fulfillment for crashed requests"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 2000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 8000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 15,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "API",
+            "tone": "bad",
+            "cpu": 94
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Vendor",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "use-outbox",
+          "label": "Use outbox",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "API",
+                "tone": "good",
+                "cpu": 28
+              },
+              {
+                "id": "q",
+                "kind": "queue",
+                "label": "Queue",
+                "tone": "good"
+              },
+              {
+                "id": "w",
+                "kind": "worker",
+                "label": "Worker",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "q"
+              },
+              {
+                "from": "q",
+                "to": "w"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 533,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Transactional outbox: write the event in the same transaction, then a relay publishes it."
+        },
+        {
+          "id": "publish-first-write",
+          "label": "Publish first write",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 10000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 55,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "The user thread is still waiting on the vendor."
+        },
+        {
+          "id": "rely-user-click",
+          "label": "Rely user click",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 8800,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 35,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "Rely on the user to click again"
+        }
+      ],
+      "hints": [
+        "The request path is waiting on slow work.",
+        "Users only need an ack now.",
+        "Enqueue and return."
+      ],
+      "nextId": null
     },
     {
       "id": "queue-19",
+      "incidentCode": "INC-006-19",
+      "level": 6,
+      "patternId": "async-queues",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Unbounded queue memory",
-      "context": "Producers keep enqueueing during a worker outage until the broker runs out of disk.",
+      "brief": "Producers keep enqueueing during a worker outage until the broker runs out of disk.",
       "constraint": "Consumers are down for hours.",
       "question": "What protects the system?",
-      "expectedPattern": "Backpressure, retention limits, and producer throttling when the queue cannot drain.",
-      "wrongChoices": [
-        "Infinite retention and no producer limits",
-        "Drop the broker and keep producing to /dev/null",
-        "Block only consumers"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 2000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 8000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 15,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "API",
+            "tone": "bad",
+            "cpu": 94
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Vendor",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "use-queue",
+          "label": "Use queue",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "API",
+                "tone": "good",
+                "cpu": 28
+              },
+              {
+                "id": "q",
+                "kind": "queue",
+                "label": "Queue",
+                "tone": "good"
+              },
+              {
+                "id": "w",
+                "kind": "worker",
+                "label": "Worker",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "q"
+              },
+              {
+                "from": "q",
+                "to": "w"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 533,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Backpressure, retention limits, and producer throttling when the queue cannot drain."
+        },
+        {
+          "id": "infinite-retention-no",
+          "label": "Infinite retention no",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 10000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 55,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "The user thread is still waiting on the vendor."
+        },
+        {
+          "id": "drop-broker-keep",
+          "label": "Drop broker keep",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 8800,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 35,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "Drop the broker and keep producing to /dev/null"
+        }
+      ],
+      "hints": [
+        "The request path is waiting on slow work.",
+        "Users only need an ack now.",
+        "Enqueue and return."
+      ],
+      "nextId": null
     },
     {
       "id": "queue-20",
+      "incidentCode": "INC-006-20",
+      "level": 6,
+      "patternId": "async-queues",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 50,
       "title": "Long saga without compensation",
-      "context": "Booking reserves a flight, then hotel reservation fails, but the flight stay reserved.",
+      "brief": "Booking reserves a flight, then hotel reservation fails, but the flight stay reserved.",
       "constraint": "Steps are async and can fail independently.",
       "question": "What failure handling is missing?",
-      "expectedPattern": "A saga with compensating actions (or a state machine) to undo completed steps on later failure.",
-      "wrongChoices": [
-        "A single distributed transaction across all vendors",
-        "Ignore partial success",
-        "Retry only the hotel forever without releasing the flight"
-      ]
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 2000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 8000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 15,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "API",
+            "tone": "bad",
+            "cpu": 94
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Vendor",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "add-saga",
+          "label": "Add saga",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "API",
+                "tone": "good",
+                "cpu": 28
+              },
+              {
+                "id": "q",
+                "kind": "queue",
+                "label": "Queue",
+                "tone": "good"
+              },
+              {
+                "id": "w",
+                "kind": "worker",
+                "label": "Worker",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "q"
+              },
+              {
+                "from": "q",
+                "to": "w"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 533,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "A saga with compensating actions (or a state machine) to undo completed steps on later failure."
+        },
+        {
+          "id": "a-single-distributed",
+          "label": "A single distributed",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 10000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 55,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "The user thread is still waiting on the vendor."
+        },
+        {
+          "id": "ignore-partial-success",
+          "label": "Ignore partial success",
+          "correct": false,
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 8800,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 35,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Request still blocked",
+          "resultBody": "Ignore partial success"
+        }
+      ],
+      "hints": [
+        "The request path is waiting on slow work.",
+        "Users only need an ack now.",
+        "Enqueue and return."
+      ],
+      "nextId": null
     }
   ]
 }
