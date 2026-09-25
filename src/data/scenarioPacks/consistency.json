@@ -1,0 +1,136 @@
+{
+  "patternId": "consistency",
+  "patternName": "Consistency & Read-Your-Own-Writes",
+  "variants": [
+    {
+      "id": "cons-01",
+      "title": "User updates profile and refreshes immediately",
+      "context": "The primary database accepts a profile update, but a read goes to a replica that is still stale.",
+      "constraint": "Replication is asynchronous and users expect freshness.",
+      "question": "What keeps the experience correct?",
+      "expectedPattern": "Read-your-own-writes logic for that user or a short freshness window on their reads.",
+      "wrongChoices": [
+        "Block all reads until replication catches up",
+        "Disable replicas",
+        "Set a long TTL"
+      ]
+    },
+    {
+      "id": "cons-02",
+      "title": "Follower lags behind leader",
+      "context": "A replica is behind and serves the old version of a post while the author refreshed the page.",
+      "constraint": "The rest of the system accepts eventual consistency.",
+      "question": "Which read behavior is appropriate?",
+      "expectedPattern": "Read the author’s writes from the primary or a fresh path.",
+      "wrongChoices": [
+        "Force all reads to wait on the leader",
+        "Use CDN caches for everything",
+        "Ignore the freshness issue"
+      ]
+    },
+    {
+      "id": "cons-03",
+      "title": "Regional failover creates stale data",
+      "context": "A user in a secondary region reads a profile while failover is happening and sees old data.",
+      "constraint": "Some replicas are behind during failover.",
+      "question": "What is the right system behavior?",
+      "expectedPattern": "Use lag-aware routing and a freshness policy for critical reads.",
+      "wrongChoices": [
+        "Always read from the zone with the most replicas",
+        "Disable the failover region",
+        "Tell users to retry"
+      ]
+    },
+    {
+      "id": "cons-04",
+      "title": "Order status appears stale after update",
+      "context": "The user updates order status, then reads the order immediately and sees an older state.",
+      "constraint": "The system is eventually consistent but needs better user experience.",
+      "question": "What is the correct tradeoff?",
+      "expectedPattern": "Provide fresh reads for the same user session or user-specific workflow.",
+      "wrongChoices": [
+        "Explain the lag to the user",
+        "Make all users wait for strong consistency",
+        "Use a read-only API"
+      ]
+    },
+    {
+      "id": "cons-05",
+      "title": "User sees stale post after comment",
+      "context": "A user submits a comment and sees a stale thread because the read route goes to a non-authoritative replica.",
+      "constraint": "The app is optimized for availability and throughputs.",
+      "question": "How do you preserve trust?",
+      "expectedPattern": "Sessions or user identity should use a fresh read path for recent writes.",
+      "wrongChoices": [
+        "No read-your-own-writes rule",
+        "Long timeouts on writes",
+        "Move all writes to the edge"
+      ]
+    },
+    {
+      "id": "cons-06",
+      "title": "Global reads feel inconsistent",
+      "context": "Users in different regions do not see the same state at the same timestamp.",
+      "constraint": "The system is distributed and sync is not instant.",
+      "question": "What is the core principle?",
+      "expectedPattern": "Eventual consistency is acceptable if the system makes freshness guarantees explicit for the active user and critical flows.",
+      "wrongChoices": [
+        "All reads must be fully global strong consistency",
+        "No consistency model is needed",
+        "All data must be in one region"
+      ]
+    },
+    {
+      "id": "cons-07",
+      "title": "User deletion reads stale content",
+      "context": "A user deletes a post and immediately reloads a page that still shows it on a follower.",
+      "constraint": "Deletion and visibility updates are asynchronous.",
+      "question": "How do you avoid the bug?",
+      "expectedPattern": "Use a freshness-aware read path and metadata-based invalidation for the actor’s own actions.",
+      "wrongChoices": [
+        "Ignore stale reads",
+        "Keep deletes in a queue only",
+        "Wait for global sync before deletion is visible"
+      ]
+    },
+    {
+      "id": "cons-08",
+      "title": "Cached profile update appears one minute later",
+      "context": "Users update profile preferences and still see the old page for a minute because the cache is serving an older value.",
+      "constraint": "The cache is valid but the user wants immediate freshness.",
+      "question": "What is the right compromise?",
+      "expectedPattern": "Invalidate or refresh the cache for that user immediately and keep a bounded TTL for others.",
+      "wrongChoices": [
+        "Never expire the cache",
+        "Always bypass the cache",
+        "Do nothing and tell users to refresh"
+      ]
+    },
+    {
+      "id": "cons-09",
+      "title": "Social feed shows outdated items",
+      "context": "An item is posted and appears on the feed of the posting user only after a delay.",
+      "constraint": "The system balances availability and replica lag.",
+      "question": "How do you handle the user expectation?",
+      "expectedPattern": "Ensure the writer sees the post immediately from a fresh source while followers accept eventual consistency.",
+      "wrongChoices": [
+        "Update all replicas before the feed is visible",
+        "Block writes until all region replicas sync",
+        "Ignore the lag as acceptable for all users"
+      ]
+    },
+    {
+      "id": "cons-10",
+      "title": "Web app modifies account settings in one region",
+      "context": "The user edits a setting, then reads the account page from another region and sees a stale value.",
+      "constraint": "Regional consistency is eventually convergent but not instant.",
+      "question": "What is the honest design answer?",
+      "expectedPattern": "Use a bounded freshness policy for the active user and explain that global equality is not guaranteed instantly.",
+      "wrongChoices": [
+        "Promise strong consistency globally",
+        "Do nothing and accept stale reads",
+        "Lock the platform on every write"
+      ]
+    }
+  ]
+}

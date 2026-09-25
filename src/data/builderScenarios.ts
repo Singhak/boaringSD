@@ -369,6 +369,132 @@ export const BUILDER_SCENARIOS: BuilderScenario[] = [
     ],
     passThreshold: 70,
   },
+  {
+    id: "boss-sharding",
+    patternId: "sharding",
+    title: "Tenant Hotspot",
+    userScale: "42,000 req/s across tenants",
+    trafficRps: 42000,
+    trafficPattern: "60% of requests hit the same tenant's orders table",
+    failureCondition: "One shard carries almost every write for the hottest tenant",
+    objective: "Spread the hotspot and keep database shards below 70% CPU",
+    winCondition: "At least two shards balanced, score ≥ 70",
+    readRatio: 0.9,
+    cacheHitRate: 0.5,
+    staticAssetShare: 0,
+    globalUsers: false,
+    slowDownstream: false,
+    killOneServer: false,
+    targets: { maxDbCpu: 70, maxServerCpu: 70 },
+    requiredComponents: ["load_balancer", "database"],
+    inheritsFrom: "boss-queue",
+    ...lbStack(
+      4,
+      [
+        { id: "db-shard-a", label: "Orders Shard A", type: "database" as const, x: 780, y: 90 },
+        { id: "db-shard-b", label: "Orders Shard B", type: "database" as const, x: 820, y: 300 },
+      ],
+      [
+        { source: "server-1", target: "db-shard-a" },
+        { source: "server-2", target: "db-shard-a" },
+        { source: "server-3", target: "db-shard-b" },
+        { source: "server-4", target: "db-shard-b" },
+      ]
+    ),
+    explain: {
+      question: "The hottest tenant still dominates one partition. What is the real design issue?",
+      options: [
+        {
+          id: "e-skew",
+          label: "The key distribution is skewed, so one shard holds most writes",
+          isCorrect: true,
+          explanation: "Even with multiple shards, data placement matters. A hot tenant or key can still saturate one partition.",
+        },
+        {
+          id: "e-mem",
+          label: "The API servers have too much memory",
+          isCorrect: false,
+          explanation: "The hotspot is at the data layer, not the app tier.",
+        },
+        {
+          id: "e-cdn",
+          label: "A CDN is serving stale orders",
+          isCorrect: false,
+          explanation: "CDN caching is not relevant to a transactional orders table.",
+        },
+      ],
+    },
+    hints: [
+      "Are writes and reads spread evenly across all database nodes?",
+      "One tenant or key can still create a hotspot inside a perfectly valid shard design.",
+      "Consider tenant-aware key routing or a more balanced partitioning scheme.",
+    ],
+    passThreshold: 70,
+  },
+  {
+    id: "boss-consistency",
+    patternId: "consistency",
+    title: "Stale After Update",
+    userScale: "25,000 req/s with author refreshes",
+    trafficRps: 25000,
+    trafficPattern: "Users update a profile and read it back immediately while replicas lag behind",
+    failureCondition: "Reads hit stale followers and the author sees the old record",
+    objective: "Keep user-visible reads fresh and all database nodes under 70% CPU",
+    winCondition: "Read-your-own-writes path configured, latency < 150ms, score ≥ 70",
+    readRatio: 0.85,
+    cacheHitRate: 0.75,
+    staticAssetShare: 0,
+    globalUsers: true,
+    slowDownstream: false,
+    killOneServer: false,
+    targets: { maxDbCpu: 70, maxServerCpu: 70, maxLatencyMs: 150 },
+    requiredComponents: ["load_balancer", "database", "replica"],
+    inheritsFrom: "boss-sharding",
+    ...lbStack(
+      4,
+      [
+        { id: "replica-async", label: "Async Replica", type: "replica" as const, x: 980, y: 100 },
+        { id: "replica-async-2", label: "Follower Replica", type: "replica" as const, x: 980, y: 300 },
+      ],
+      [
+        { source: "db", target: "replica-async" },
+        { source: "db", target: "replica-async-2" },
+        { source: "server-1", target: "db" },
+        { source: "server-2", target: "db" },
+        { source: "server-3", target: "db" },
+        { source: "server-4", target: "db" },
+      ]
+    ),
+    explain: {
+      question: "The author updates the profile but immediately sees the old record. What is the correct design fix?",
+      options: [
+        {
+          id: "e-readfresh",
+          label: "Route that user's reads to the primary or a session-aware fresh source until replication catches up",
+          isCorrect: true,
+          explanation: "Read-your-own-writes keeps the author consistent without disabling replication for everyone.",
+        },
+        {
+          id: "e-disable",
+          label: "Disable replicas so all reads are fresh",
+          isCorrect: false,
+          explanation: "That restores freshness by bringing back the original database bottleneck.",
+        },
+        {
+          id: "e-timeout",
+          label: "Increase the timeout and retry later",
+          isCorrect: false,
+          explanation: "Retries do not fix stale reads; they just delay the user experience.",
+        },
+      ],
+    },
+    hints: [
+      "The author has a freshness requirement, even when the rest of the system is eventually consistent.",
+      "Which database node should that user's reads touch first after a write?",
+      "Add a read-your-own-writes path for the active user without turning off replication.",
+    ],
+    passThreshold: 70,
+  },
 ];
 
 export function getBuilderScenarioById(id: string): BuilderScenario | undefined {
