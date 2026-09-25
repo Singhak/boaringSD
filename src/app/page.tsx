@@ -98,7 +98,7 @@ export default function RootPage() {
               </article>
 
               <p className="text-center text-xs text-slate-600">
-                Learn system design by fixing real bottlenecks — one living system, six levels.
+                Learn system design by fixing real bottlenecks — one living system, 15 levels.
               </p>
             </div>
           )}
