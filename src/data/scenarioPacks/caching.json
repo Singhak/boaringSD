@@ -84,8 +84,18 @@
       "choices": [
         {
           "id": "add-cache",
-          "label": "Add cache",
+          "label": "Deploy Redis Cache-Aside Cluster",
           "correct": true,
+          "approach": "viable_with_tradeoffs",
+          "tradeoffs": {
+            "costMonthlyDelta": 350,
+            "latencyP99DeltaMs": -1680,
+            "complexityScore": 2,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "In-memory caching slashes p95 latency to 120ms and DB CPU to 16%. Tradeoff: Key TTL expiration leaves system vulnerable to cache stampede."
+          },
+          "cascadeIncidentId": "cache-stampede-01",
+          "cascadeDelayMs": 4000,
           "graphAfter": {
             "nodes": [
               {
@@ -151,13 +161,104 @@
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Use a cache-aside layer with a TTL and invalidation on update."
+          "resultTitle": "Redis Cache Deployed",
+          "resultBody": "Hot reads now hit in-memory Redis in 2ms, reducing DB disk IOPS to safe levels."
+        },
+        {
+          "id": "add-replicas",
+          "label": "Deploy PostgreSQL Read Replicas (Read/Write Splitting)",
+          "correct": true,
+          "approach": "viable_with_tradeoffs",
+          "tradeoffs": {
+            "costMonthlyDelta": 220,
+            "latencyP99DeltaMs": -1400,
+            "complexityScore": 3,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Spreads SQL query load across read replica nodes. Tradeoff: Asynchronous replication lag creates stale reads on immediate updates."
+          },
+          "cascadeIncidentId": "replica-lag-01",
+          "cascadeDelayMs": 4000,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Primary DB",
+                "tone": "good",
+                "cpu": 28
+              },
+              {
+                "id": "replica",
+                "kind": "replica",
+                "label": "Read Replica",
+                "tone": "good",
+                "cpu": 35
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              },
+              {
+                "from": "app",
+                "to": "replica"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 28,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 180,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Read Replicas Deployed",
+          "resultBody": "Read traffic is distributed to the replica pool, stabilizing the primary database."
         },
         {
           "id": "scale-database",
-          "label": "Scale database",
+          "label": "Increase connection pool to 2,000 sockets without caching",
           "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 1400,
+            "complexityScore": 1,
+            "consistencyGuarantee": "weak",
+            "tradeoffSummary": "2,000 idle database connections consume system memory and trigger connection starvation."
+          },
           "retry": true,
           "metricsAfter": [
             {
@@ -182,45 +283,301 @@
               "tone": "bad"
             }
           ],
-          "resultTitle": "Same row, again",
-          "resultBody": "The origin still serves every repeat read."
-        },
-        {
-          "id": "all-on-primary",
-          "label": "All on primary",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 42,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 1980,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 40,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Same row, again",
-          "resultBody": "Move all reads to the primary"
+          "resultTitle": "Connection Starvation!",
+          "resultBody": "Creating more DB sockets does not add disk IOPS; the database hangs under lock contention."
         }
       ],
       "hints": [
         "The same data is fetched over and over.",
         "A short TTL is enough.",
         "Serve repeats from cache."
+      ],
+      "nextId": "cdn-01"
+    },
+    {
+      "id": "cache-stampede-01",
+      "incidentCode": "INC-004B",
+      "level": 4,
+      "patternId": "caching",
+      "canonical": false,
+      "isCascade": true,
+      "parentIncidentCode": "INC-004",
+      "severity": "P1",
+      "xp": 100,
+      "title": "⚡ Second-Order Outage: Cache Stampede",
+      "brief": "Two hours after deploying Redis, the 120-second TTL on the viral post key expired during peak evening traffic. 25,000 concurrent requests all missed simultaneously and dog-piled the primary database.",
+      "constraint": "DB CPU spiked back to 96% and DB connection pool is locked under a thundering herd.",
+      "question": "How do you mitigate the Cache Stampede (Thundering Herd)?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 150000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 96,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 3400,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 240,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          { "id": "users", "kind": "users", "label": "Users" },
+          { "id": "app", "kind": "server", "label": "App", "tone": "warn" },
+          { "id": "cache", "kind": "cache", "label": "Redis Cache", "tone": "warn", "sub": "TTL Expired!" },
+          { "id": "db", "kind": "db", "label": "Database", "tone": "bad", "cpu": 96, "sub": "Thundering Herd" }
+        ],
+        "edges": [
+          { "from": "users", "to": "app" },
+          { "from": "app", "to": "cache" },
+          { "from": "cache", "to": "db" }
+        ]
+      },
+      "choices": [
+        {
+          "id": "stampede-mutex",
+          "label": "Deploy Distributed Mutex Lock (Singleflight) on cache misses",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": -3280,
+            "complexityScore": 2,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "Exactly 1 worker queries Postgres to regenerate the key; remaining 24,999 threads await the mutex release."
+          },
+          "graphAfter": {
+            "nodes": [
+              { "id": "users", "kind": "users", "label": "Users" },
+              { "id": "app", "kind": "server", "label": "App", "tone": "good" },
+              { "id": "cache", "kind": "cache", "label": "Redis Cache", "tone": "good", "sub": "Singleflight Lock" },
+              { "id": "db", "kind": "db", "label": "Database", "tone": "good", "cpu": 18, "sub": "1 Query Served" }
+            ],
+            "edges": [
+              { "from": "users", "to": "app" },
+              { "from": "app", "to": "cache" },
+              { "from": "cache", "to": "db" }
+            ]
+          },
+          "metricsAfter": [
+            { "key": "cpu", "label": "CPU", "value": 18, "unit": "%", "tone": "good" },
+            { "key": "p95", "label": "p95 latency", "value": 115, "unit": "ms", "tone": "good" },
+            { "key": "errors", "label": "Errors", "value": 0, "unit": "errors", "tone": "good" }
+          ],
+          "resultTitle": "Thundering Herd Defeated!",
+          "resultBody": "Singleflight lock prevented 25,000 duplicate queries. The cache was repopulated with a single DB read."
+        },
+        {
+          "id": "stampede-early-refresh",
+          "label": "Deploy Probabilistic Early Expiration (XFetch algorithm)",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": -3250,
+            "complexityScore": 3,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "Asynchronous background workers refresh hot keys probabilistically before TTL expires."
+          },
+          "graphAfter": {
+            "nodes": [
+              { "id": "users", "kind": "users", "label": "Users" },
+              { "id": "app", "kind": "server", "label": "App", "tone": "good" },
+              { "id": "cache", "kind": "cache", "label": "Redis Cache", "tone": "good", "sub": "XFetch Early Warm" },
+              { "id": "db", "kind": "db", "label": "Database", "tone": "good", "cpu": 20 }
+            ],
+            "edges": [
+              { "from": "users", "to": "app" },
+              { "from": "app", "to": "cache" },
+              { "from": "cache", "to": "db" }
+            ]
+          },
+          "metricsAfter": [
+            { "key": "cpu", "label": "CPU", "value": 20, "unit": "%", "tone": "good" },
+            { "key": "p95", "label": "p95 latency", "value": 120, "unit": "ms", "tone": "good" },
+            { "key": "errors", "label": "Errors", "value": 0, "unit": "errors", "tone": "good" }
+          ],
+          "resultTitle": "Proactive Warmup Succeeded!",
+          "resultBody": "Keys were refreshed in the background before expiring, completely eliminating the thundering herd."
+        },
+        {
+          "id": "stampede-infinite-ttl",
+          "label": "Set key TTL to 30 days so it never expires during traffic",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 600,
+            "latencyP99DeltaMs": 400,
+            "complexityScore": 4,
+            "consistencyGuarantee": "weak",
+            "tradeoffSummary": "Static infinite TTL consumes Redis memory linearly and leaves stale content permanently."
+          },
+          "retry": true,
+          "metricsAfter": [
+            { "key": "cpu", "label": "CPU", "value": 85, "unit": "%", "tone": "bad" },
+            { "key": "p95", "label": "p95 latency", "value": 2800, "unit": "ms", "tone": "bad" },
+            { "key": "errors", "label": "Errors", "value": 180, "unit": "errors", "tone": "bad" }
+          ],
+          "resultTitle": "Memory Exhaustion & Stale State",
+          "resultBody": "Infinite TTL causes Redis RAM exhaustion when millions of keys accumulate, and edits to the post are never reflected."
+        }
+      ],
+      "hints": [
+        "Multiple concurrent threads are attempting to recalculate the exact same expired key.",
+        "Consider synchronizing access so only one process queries the database on a cache miss (Singleflight/Mutex).",
+        "Or consider probabilistically refreshing the key in the background before TTL expires."
+      ],
+      "nextId": "cdn-01"
+    },
+    {
+      "id": "replica-lag-01",
+      "incidentCode": "INC-004C",
+      "level": 4,
+      "patternId": "caching",
+      "canonical": false,
+      "isCascade": true,
+      "parentIncidentCode": "INC-004",
+      "severity": "P1",
+      "xp": 100,
+      "title": "⚡ Second-Order Anomaly: Replication Lag",
+      "brief": "Users writing comments or updating their profiles immediately refresh the page, but see old data because asynchronous read replicas have a 650ms replication delay.",
+      "constraint": "Users report critical data loss and duplicate submissions on recent updates.",
+      "question": "How do you achieve Read-Your-Own-Writes consistency under asynchronous replication?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 150000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 30,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 180,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "errors",
+          "label": "Stale Read Anomaly",
+          "value": 420,
+          "unit": "inconsistencies",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          { "id": "users", "kind": "users", "label": "Users" },
+          { "id": "app", "kind": "server", "label": "App", "tone": "good" },
+          { "id": "db", "kind": "db", "label": "Primary DB", "tone": "good", "cpu": 28 },
+          { "id": "replica", "kind": "replica", "label": "Read Replica", "tone": "warn", "cpu": 35, "sub": "Lag: 650ms" }
+        ],
+        "edges": [
+          { "from": "users", "to": "app" },
+          { "from": "app", "to": "db" },
+          { "from": "app", "to": "replica" }
+        ]
+      },
+      "choices": [
+        {
+          "id": "sticky-primary-read",
+          "label": "Route user's own reads to the Primary DB for 5s after a write (Sticky Token)",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 10,
+            "complexityScore": 2,
+            "consistencyGuarantee": "session",
+            "tradeoffSummary": "Guarantees read-your-own-writes for the author, while 99% of passive readers still query the replicas."
+          },
+          "graphAfter": {
+            "nodes": [
+              { "id": "users", "kind": "users", "label": "Users" },
+              { "id": "app", "kind": "server", "label": "App", "tone": "good" },
+              { "id": "db", "kind": "db", "label": "Primary DB", "tone": "good", "cpu": 32, "sub": "Sticky Writes" },
+              { "id": "replica", "kind": "replica", "label": "Read Replica", "tone": "good", "cpu": 32 }
+            ],
+            "edges": [
+              { "from": "users", "to": "app" },
+              { "from": "app", "to": "db" },
+              { "from": "app", "to": "replica" }
+            ]
+          },
+          "metricsAfter": [
+            { "key": "cpu", "label": "CPU", "value": 32, "unit": "%", "tone": "good" },
+            { "key": "p95", "label": "p95 latency", "value": 185, "unit": "ms", "tone": "good" },
+            { "key": "errors", "label": "Stale Read Anomaly", "value": 0, "unit": "inconsistencies", "tone": "good" }
+          ],
+          "resultTitle": "Session Consistency Restored!",
+          "resultBody": "The writing author immediately reads from Primary DB, completely hiding the replication lag."
+        },
+        {
+          "id": "sync-replication",
+          "label": "Convert all read replicas to fully synchronous replication",
+          "correct": true,
+          "approach": "viable_with_tradeoffs",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 280,
+            "complexityScore": 3,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "Eliminates replication lag completely, but writes now block on replica network acknowledgments (P99 write latency jumps 4x)."
+          },
+          "metricsAfter": [
+            { "key": "cpu", "label": "CPU", "value": 35, "unit": "%", "tone": "good" },
+            { "key": "p95", "label": "p95 latency", "value": 465, "unit": "ms", "tone": "warn" },
+            { "key": "errors", "label": "Stale Read Anomaly", "value": 0, "unit": "inconsistencies", "tone": "good" }
+          ],
+          "resultTitle": "Strong Consistency Achieved",
+          "resultBody": "Synchronous replication eliminates stale reads, but significantly slows down write throughput."
+        },
+        {
+          "id": "client-sleep",
+          "label": "Instruct client apps to wait 1,000ms with a spinner before fetching",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 1000,
+            "complexityScore": 1,
+            "consistencyGuarantee": "weak",
+            "tradeoffSummary": "Arbitrary client sleeps do not guarantee replication catch-up and degrade user experience."
+          },
+          "retry": true,
+          "resultTitle": "Race Condition Persists!",
+          "resultBody": "If replica lag exceeds 1,000ms under high load, the stale read bug returns. Client-side sleeps are not a distributed consistency mechanism."
+        }
+      ],
+      "hints": [
+        "Asynchronous replication always has lag. Only the author needs immediate read-your-own-writes consistency.",
+        "Consider routing the writing user to the primary for a few seconds after a write (read-your-own-writes session token)."
       ],
       "nextId": "cdn-01"
     },

@@ -507,10 +507,24 @@ export interface IncidentGraph {
   edges: IncidentEdge[];
 }
 
+export type ApproachKind = "optimal" | "viable_with_tradeoffs" | "anti_pattern";
+
+export interface TradeoffVector {
+  costMonthlyDelta?: number;
+  latencyP99DeltaMs?: number;
+  complexityScore?: 1 | 2 | 3 | 4 | 5;
+  consistencyGuarantee?: "strong" | "eventual" | "session";
+  tradeoffSummary?: string;
+}
+
 export interface IncidentChoice {
   id: string;
   label: string;
   correct: boolean;
+  approach?: ApproachKind;
+  tradeoffs?: TradeoffVector;
+  cascadeIncidentId?: string;
+  cascadeDelayMs?: number;
   retry?: boolean;
   resultTitle: string;
   resultBody: string;
@@ -525,6 +539,8 @@ export interface IncidentV2 {
   level: number;
   patternId: string;
   canonical?: boolean;
+  isCascade?: boolean;
+  parentIncidentCode?: string;
   severity: "P0" | "P1" | "P2";
   xp: number;
   title: string;

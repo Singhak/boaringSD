@@ -6,9 +6,12 @@ import {
   AlertTriangle,
   ArrowRight,
   Check,
+  Flame,
   HelpCircle,
   RotateCcw,
+  Scale,
   Sparkles,
+  Timer,
   Volume2,
   VolumeX,
   X,
@@ -58,6 +61,9 @@ export default function IncidentWarRoom({
   const [solvedIncidents, setSolvedIncidents] = useState<Record<string, number>>({});
   const [isDebrief, setIsDebrief] = useState(false);
   const [savedAs, setSavedAs] = useState<"guest" | string | null>(null);
+  const [cascadePendingId, setCascadePendingId] = useState<string | null>(null);
+  const [cascadeCountdown, setCascadeCountdown] = useState<number | null>(null);
+  const [survivedCascades, setSurvivedCascades] = useState<string[]>([]);
 
   // Synchronize when initialIncidentId prop changes across levels
   const [prevInitialIncidentId, setPrevInitialIncidentId] = useState(initialIncidentId);
@@ -93,12 +99,40 @@ export default function IncidentWarRoom({
     setSelectedChoiceId(null);
     setIsSubmitted(false);
     setHintsRevealed(0);
+    setCascadePendingId(null);
+    setCascadeCountdown(null);
   }
 
   // Play alarm sound on mount or when incidentId changes
   useEffect(() => {
     playAlarmSound();
   }, [incidentId]);
+
+  // Second-order cascade trigger handler
+  const triggerCascade = React.useCallback((targetId: string) => {
+    if (incident) {
+      setSurvivedCascades((prev) => [...prev, incident.id]);
+    }
+    setIncidentId(targetId);
+    setCascadePendingId(null);
+    setCascadeCountdown(null);
+    playAlarmSound();
+  }, [incident]);
+
+  // Fast-forward countdown timer into second-order outage
+  useEffect(() => {
+    if (!cascadePendingId || cascadeCountdown === null) return;
+    if (cascadeCountdown <= 0) {
+      const timeout = setTimeout(() => {
+        triggerCascade(cascadePendingId);
+      }, 0);
+      return () => clearTimeout(timeout);
+    }
+    const timer = setTimeout(() => {
+      setCascadeCountdown((c) => (c !== null ? c - 1 : null));
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [cascadePendingId, cascadeCountdown, triggerCascade]);
 
   const selectedChoice: IncidentChoice | undefined = incident?.choices.find(
     (c) => c.id === selectedChoiceId
@@ -130,14 +164,20 @@ export default function IncidentWarRoom({
       playDeploySound();
       setTimeout(() => playSuccessSound(), 200);
 
+      // Check if this choice triggers a second-order cascade outage!
+      if (choice.cascadeIncidentId) {
+        setCascadePendingId(choice.cascadeIncidentId);
+        setCascadeCountdown(choice.cascadeDelayMs ? Math.round(choice.cascadeDelayMs / 1000) : 5);
+      }
+
       // Record XP reward for this incident
       if (incident && !(incident.id in solvedIncidents)) {
         const outcome = recordMissionComplete(incident.id, incident.xp);
         setSolvedIncidents((prev) => ({ ...prev, [incident.id]: outcome.xpAwarded }));
       }
 
-      // If playing in campaign mode, mark pattern run completed so progress unlocks next level
-      if (pattern) {
+      // If playing in campaign mode, mark pattern run completed when not heading into cascade
+      if (pattern && !choice.cascadeIncidentId) {
         completePatternRun(pattern, {
           patternId: pattern.id,
           diagnosisFirstTry: true,
@@ -176,6 +216,8 @@ export default function IncidentWarRoom({
     setSelectedChoiceId(null);
     setIsSubmitted(false);
     setIsDebrief(false);
+    setCascadePendingId(null);
+    setCascadeCountdown(null);
     setCurrentStep(0);
   };
 
@@ -183,7 +225,20 @@ export default function IncidentWarRoom({
   const handleNextIncident = () => {
     playBlipSound();
 
+    if (cascadePendingId) {
+      triggerCascade(cascadePendingId);
+      return;
+    }
+
     if (pattern) {
+      completePatternRun(pattern, {
+        patternId: pattern.id,
+        diagnosisFirstTry: true,
+        interventionFirstTry: true,
+        transferFirstTry: true,
+        hintsUsed: hintsRevealed,
+        failureReasons: [],
+      });
       // In campaign mode, resolving the level incident completes the level and goes to debrief
       setIsDebrief(true);
       setCurrentStep(1);
@@ -343,9 +398,16 @@ export default function IncidentWarRoom({
             {/* Left: What the system is physically doing */}
             <section className="space-y-4 min-w-0" aria-label="Live System State">
               <div className="space-y-1.5">
-                <div className="flex items-center gap-2">
-                  <span className="eyebrow text-cyan-300">Live Incident</span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="eyebrow text-cyan-300">
+                    {incident.isCascade ? "⚡ Cascade Outage" : "Live Incident"}
+                  </span>
                   <span className="chip !text-[10px] !py-0">{incident.constraint}</span>
+                  {incident.isCascade && (
+                    <span className="chip chip-warn !text-[10px] !py-0">
+                      <Flame className="w-2.5 h-2.5 text-amber-400 mr-1 inline" /> Second-Order Consequence
+                    </span>
+                  )}
                 </div>
                 <h2 className="text-2xl sm:text-3xl display">{incident.title}</h2>
                 <p className="text-[14px] text-slate-300 leading-relaxed">{incident.brief}</p>
@@ -353,6 +415,77 @@ export default function IncidentWarRoom({
 
               {/* Dynamic metrics strip */}
               <StatStrip stats={statStripData} />
+
+              {/* Architectural Tradeoff Ledger (When deployed choice has tradeoffs) */}
+              {isSubmitted && selectedChoice?.tradeoffs && (
+                <div className="surface p-4 rounded-xl border border-cyan-400/25 bg-cyan-400/[0.03] space-y-3 animate-fadeIn">
+                  <div className="flex items-center justify-between">
+                    <span className="eyebrow text-cyan-300 flex items-center gap-1.5 !text-[11px]">
+                      <Scale className="w-3.5 h-3.5" /> Architectural Tradeoff Ledger
+                    </span>
+                    {selectedChoice.approach && (
+                      <span
+                        className={`chip !py-0 !text-[10px] ${
+                          selectedChoice.approach === "optimal"
+                            ? "chip-ok"
+                            : selectedChoice.approach === "viable_with_tradeoffs"
+                            ? "chip-warn"
+                            : "chip-bad"
+                        }`}
+                      >
+                        {selectedChoice.approach === "optimal"
+                          ? "Optimal Pattern"
+                          : selectedChoice.approach === "viable_with_tradeoffs"
+                          ? "Viable with Tradeoffs"
+                          : "Anti-Pattern"}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                    <div className="p-2.5 rounded-lg bg-black/25 border border-white/[0.04]">
+                      <span className="text-slate-400 block text-[10px] uppercase font-mono">Monthly Cost</span>
+                      <span
+                        className={`num font-semibold text-sm ${
+                          (selectedChoice.tradeoffs.costMonthlyDelta ?? 0) > 0 ? "text-amber-300" : "text-emerald-400"
+                        }`}
+                      >
+                        {(selectedChoice.tradeoffs.costMonthlyDelta ?? 0) > 0
+                          ? `+$${selectedChoice.tradeoffs.costMonthlyDelta}/mo`
+                          : "$0/mo"}
+                      </span>
+                    </div>
+
+                    <div className="p-2.5 rounded-lg bg-black/25 border border-white/[0.04]">
+                      <span className="text-slate-400 block text-[10px] uppercase font-mono">p99 Latency</span>
+                      <span className="num font-semibold text-sm text-cyan-300">
+                        {selectedChoice.tradeoffs.latencyP99DeltaMs ? `${selectedChoice.tradeoffs.latencyP99DeltaMs}ms` : "Neutral"}
+                      </span>
+                    </div>
+
+                    <div className="p-2.5 rounded-lg bg-black/25 border border-white/[0.04]">
+                      <span className="text-slate-400 block text-[10px] uppercase font-mono">Consistency</span>
+                      <span className="num font-semibold text-sm capitalize text-slate-200">
+                        {selectedChoice.tradeoffs.consistencyGuarantee ?? "Eventual"}
+                      </span>
+                    </div>
+
+                    <div className="p-2.5 rounded-lg bg-black/25 border border-white/[0.04]">
+                      <span className="text-slate-400 block text-[10px] uppercase font-mono">Complexity</span>
+                      <span className="num font-semibold text-sm text-slate-200">
+                        Tier {selectedChoice.tradeoffs.complexityScore ?? 2} / 5
+                      </span>
+                    </div>
+                  </div>
+
+                  {selectedChoice.tradeoffs.tradeoffSummary && (
+                    <p className="text-xs text-slate-300 leading-relaxed bg-black/20 p-2.5 rounded-lg border border-white/[0.03]">
+                      <span className="font-semibold text-cyan-300/90 font-mono">Tradeoff Analysis: </span>
+                      {selectedChoice.tradeoffs.tradeoffSummary}
+                    </p>
+                  )}
+                </div>
+              )}
 
               {/* Live topology simulation */}
               <Topology
@@ -406,30 +539,72 @@ export default function IncidentWarRoom({
                       type="button"
                       disabled={isSolved}
                       onClick={() => handleDeployChoice(choice)}
-                      className={`w-full p-4 rounded-xl border text-left transition-all duration-300 flex items-center justify-between group cursor-pointer ${stateClass}`}
+                      className={`w-full p-4 rounded-xl border text-left transition-all duration-300 flex flex-col gap-2.5 group cursor-pointer ${stateClass}`}
                     >
-                      <div className="flex items-center gap-3">
-                        <span
-                          className={`w-5 h-5 rounded-full border grid place-items-center text-[10px] font-mono shrink-0 ${
-                            isSelected && isSubmitted
-                              ? choice.correct
-                                ? "border-emerald-400 bg-emerald-400/20 text-emerald-300"
-                                : "border-rose-400 bg-rose-400/20 text-rose-300"
-                              : "border-[var(--line)] text-slate-400 group-hover:border-slate-400"
-                          }`}
-                        >
-                          {isSelected && isSubmitted ? (
-                            choice.correct ? <Check className="w-3 h-3" /> : <X className="w-3 h-3" />
-                          ) : (
-                            "▶"
-                          )}
+                      <div className="flex items-center justify-between w-full">
+                        <div className="flex items-center gap-3">
+                          <span
+                            className={`w-5 h-5 rounded-full border grid place-items-center text-[10px] font-mono shrink-0 ${
+                              isSelected && isSubmitted
+                                ? choice.correct
+                                  ? "border-emerald-400 bg-emerald-400/20 text-emerald-300"
+                                  : "border-rose-400 bg-rose-400/20 text-rose-300"
+                                : "border-[var(--line)] text-slate-400 group-hover:border-slate-400"
+                            }`}
+                          >
+                            {isSelected && isSubmitted ? (
+                              choice.correct ? <Check className="w-3 h-3" /> : <X className="w-3 h-3" />
+                            ) : (
+                              "▶"
+                            )}
+                          </span>
+                          <span className="text-[15px] font-medium leading-snug">{choice.label}</span>
+                        </div>
+
+                        <span className="text-xs text-slate-500 group-hover:text-cyan-300 transition-colors shrink-0 ml-2">
+                          Deploy
                         </span>
-                        <span className="text-[15px] font-medium leading-snug">{choice.label}</span>
                       </div>
 
-                      <span className="text-xs text-slate-500 group-hover:text-slate-300 transition-colors">
-                        Deploy
-                      </span>
+                      {/* Tradeoff Vector & Approach Micro-badges */}
+                      {(choice.approach || choice.tradeoffs) && (
+                        <div className="flex flex-wrap items-center gap-1.5 pl-8 text-[11px]">
+                          {choice.approach && (
+                            <span
+                              className={`px-1.5 py-0.5 rounded font-mono font-medium ${
+                                choice.approach === "optimal"
+                                  ? "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
+                                  : choice.approach === "viable_with_tradeoffs"
+                                  ? "bg-amber-500/15 text-amber-300 border border-amber-500/30"
+                                  : "bg-rose-500/15 text-rose-300 border border-rose-500/30"
+                              }`}
+                            >
+                              {choice.approach === "optimal"
+                                ? "Optimal"
+                                : choice.approach === "viable_with_tradeoffs"
+                                ? "Viable with Tradeoffs"
+                                : "Anti-Pattern"}
+                            </span>
+                          )}
+                          {choice.tradeoffs?.costMonthlyDelta !== undefined && (
+                            <span className="text-slate-400 font-mono bg-black/30 px-1.5 py-0.5 rounded border border-white/[0.04]">
+                              {choice.tradeoffs.costMonthlyDelta > 0
+                                ? `+$${choice.tradeoffs.costMonthlyDelta}/mo`
+                                : "$0/mo"}
+                            </span>
+                          )}
+                          {choice.tradeoffs?.consistencyGuarantee && (
+                            <span className="text-slate-400 font-mono bg-black/30 px-1.5 py-0.5 rounded border border-white/[0.04] capitalize">
+                              {choice.tradeoffs.consistencyGuarantee} consistency
+                            </span>
+                          )}
+                          {choice.cascadeIncidentId && (
+                            <span className="text-amber-400/90 font-mono bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20 flex items-center gap-1">
+                              <AlertTriangle className="w-3 h-3 text-amber-400" /> Cascade Risk
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </button>
                   );
                 })}
@@ -500,7 +675,37 @@ export default function IncidentWarRoom({
                   </p>
 
                   {/* Actions */}
-                  {isSolved ? (
+                  {cascadePendingId ? (
+                    <div className="space-y-2">
+                      <div className="p-3 rounded-lg border border-amber-500/40 bg-amber-500/10 flex items-center justify-between text-xs text-amber-200 animate-pulse">
+                        <span className="flex items-center gap-1.5 font-medium">
+                          <Timer className="w-4 h-4 text-amber-400 animate-pulse" />
+                          Second-Order Cascade Brewing in {cascadeCountdown}s...
+                        </span>
+                        <span className="font-mono text-[11px] text-amber-300/80">
+                          {cascadePendingId}
+                        </span>
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => triggerCascade(cascadePendingId)}
+                          className="btn btn-primary btn-md flex-1 justify-center bg-gradient-to-r from-amber-600 to-rose-600 border-amber-500 hover:brightness-110 group cursor-pointer"
+                        >
+                          <Flame className="w-4 h-4 mr-1 text-amber-200" />
+                          Trigger Cascade Outage Now ⏩
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleRollback}
+                          className="btn btn-secondary btn-md text-slate-300 border-slate-700 hover:bg-slate-800 cursor-pointer"
+                          title="Roll back deployment"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ) : isSolved ? (
                     <button
                       type="button"
                       onClick={handleNextIncident}
@@ -532,6 +737,7 @@ export default function IncidentWarRoom({
               incident={incident}
               selectedChoice={selectedChoice}
               totalXp={totalXp || incident.xp}
+              survivedCascades={survivedCascades}
               onReplay={handleRollback}
             />
           ) : (
@@ -572,6 +778,7 @@ function CampaignDebriefScreen({
   incident,
   selectedChoice,
   totalXp,
+  survivedCascades,
   onReplay,
 }: {
   pattern: SystemDesignPattern;
@@ -579,6 +786,7 @@ function CampaignDebriefScreen({
   incident: IncidentV2;
   selectedChoice?: IncidentChoice;
   totalXp: number;
+  survivedCascades?: string[];
   onReplay: () => void;
 }) {
   const nextPattern = getAllPatterns().find((p) => p.levelNumber === pattern.levelNumber + 1);
@@ -619,6 +827,27 @@ function CampaignDebriefScreen({
                 </p>
               </div>
             </div>
+
+            {survivedCascades && survivedCascades.length > 0 && (
+              <div className="p-3.5 rounded-lg border border-purple-500/40 bg-purple-500/10 space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <span className="w-6 h-6 rounded-full bg-purple-500/20 text-purple-300 grid place-items-center shrink-0">
+                    <Scale className="w-3.5 h-3.5" />
+                  </span>
+                  <span className="text-xs font-semibold text-purple-200">
+                    Staff Engineering Defense: Second-Order Cascades Survived
+                  </span>
+                  <span className="ml-auto text-[11px] font-mono text-purple-300/80 bg-purple-900/40 px-2 py-0.5 rounded border border-purple-500/30">
+                    +{survivedCascades.length * 150} Bonus XP
+                  </span>
+                </div>
+                <p className="text-xs text-purple-200/80 leading-relaxed pl-8">
+                  You successfully navigated multi-attribute trade-offs and arrested downstream cascade failure{" "}
+                  <code className="text-purple-300 font-mono">({survivedCascades.join(", ")})</code> triggered by initial mitigation.
+                </p>
+              </div>
+            )}
+
             {pattern.nextHook && (
               <p className="text-xs text-amber-200/80 pt-2 border-t border-[var(--line)]">
                 {pattern.nextHook}

@@ -100,11 +100,29 @@ export default function CampaignChapterPage({
           <LockedLevel pattern={pattern} />
         ) : mode === "review" ? (
           <ReviewRun chapter={chapter} pattern={pattern} stats={stats} />
-        ) : mode === "incident" ? (
+        ) : mode === "guided" ? (
+          <div className="space-y-4">
+            <div className="surface p-4 rounded-xl border border-cyan-400/20 bg-cyan-400/[0.03] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="space-y-0.5">
+                <span className="eyebrow !text-[11px] text-cyan-300">Guided Study Mode · Level {pattern.levelNumber}</span>
+                <p className="text-xs text-slate-300">
+                  Step-by-step conceptual walkthrough. Want real topology simulation and wrong-answer physics instead?
+                </p>
+              </div>
+              <Link
+                href={`/campaign/${chapter.id}`}
+                className="btn btn-primary text-xs shrink-0 self-start sm:self-auto"
+              >
+                <Play className="w-3.5 h-3.5" /> Launch Live Incident War Room
+              </Link>
+            </div>
+            <PatternRun chapter={chapter} pattern={pattern} stats={stats} />
+          </div>
+        ) : (
           <div className="space-y-4">
             <div className="flex items-center justify-between pb-2">
               <span className="eyebrow text-cyan-300">Live Incident War Room · Level {pattern.levelNumber}</span>
-              <Link href={`/campaign/${chapter.id}`} className="btn btn-ghost text-xs">
+              <Link href={`/campaign/${chapter.id}?mode=guided`} className="btn btn-ghost text-xs">
                 Switch to Guided Mode
               </Link>
             </div>
@@ -114,24 +132,6 @@ export default function CampaignChapterPage({
               chapter={chapter}
               initialIncidentId={getCanonicalIncident(pattern.levelNumber)?.id || "hs-01"}
             />
-          </div>
-        ) : (
-          <div className="space-y-4">
-            <div className="surface p-4 rounded-xl border border-cyan-400/20 bg-cyan-400/[0.03] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div className="space-y-0.5">
-                <span className="eyebrow !text-[11px] text-cyan-300">Simulation Physics Ready</span>
-                <p className="text-xs text-slate-300">
-                  Prefer real topology feedback and wrong-answer physics over reading questions?
-                </p>
-              </div>
-              <Link
-                href={`/campaign/${chapter.id}?mode=incident`}
-                className="btn btn-primary text-xs shrink-0 self-start sm:self-auto"
-              >
-                <Play className="w-3.5 h-3.5" /> Launch Live Incident (v2)
-              </Link>
-            </div>
-            <PatternRun chapter={chapter} pattern={pattern} stats={stats} />
           </div>
         )}
 
