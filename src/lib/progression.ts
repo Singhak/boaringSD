@@ -485,8 +485,14 @@ export const STAGE_LABELS: Record<RunStage, string> = {
 
 export function hasFinishedOnboarding(stats: UserStats): boolean {
   const missions = stats.completedMissions ?? [];
-  return missions.includes("mission-1") && missions.includes("mission-2");
+  const solved = stats.incidentsSolved ?? 0;
+  return (
+    solved >= 2 ||
+    (missions.includes("mission-1") && missions.includes("mission-2")) ||
+    (missions.includes("hs-01") && missions.includes("lb-01"))
+  );
 }
+
 
 export function selectNextAction(
   stats: UserStats,

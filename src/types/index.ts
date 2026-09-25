@@ -461,3 +461,101 @@ export interface RunProgress {
   failureReasons: string[];
   updatedAt: string;
 }
+
+// ============================================================================
+// Incident Schema v2 Types (Playable, Simulation-driven Game Loop)
+// ============================================================================
+
+export type SystemTone = "good" | "bad" | "warn" | "neutral";
+
+export type ComponentKind =
+  | "users"
+  | "server"
+  | "lb"
+  | "cache"
+  | "db"
+  | "replica"
+  | "cdn"
+  | "queue"
+  | "worker"
+  | "gpu";
+
+export interface IncidentMetric {
+  key: "rps" | "cpu" | "p95" | "errors" | string;
+  label?: string;
+  value: number;
+  unit?: string;
+  tone: SystemTone;
+}
+
+export interface IncidentNode {
+  id: string;
+  kind: ComponentKind;
+  label: string;
+  tone?: SystemTone;
+  cpu?: number;
+  sub?: string;
+}
+
+export interface IncidentEdge {
+  from: string;
+  to: string;
+}
+
+export interface IncidentGraph {
+  nodes: IncidentNode[];
+  edges: IncidentEdge[];
+}
+
+export interface IncidentChoice {
+  id: string;
+  label: string;
+  correct: boolean;
+  retry?: boolean;
+  resultTitle: string;
+  resultBody: string;
+  nextId?: string;
+  metricsAfter?: IncidentMetric[];
+  graphAfter?: IncidentGraph;
+}
+
+export interface IncidentV2 {
+  id: string;
+  incidentCode: string;
+  level: number;
+  patternId: string;
+  canonical?: boolean;
+  severity: "P0" | "P1" | "P2";
+  xp: number;
+  title: string;
+  brief: string;
+  constraint: string;
+  question: string;
+  metricsBefore: IncidentMetric[];
+  graphBefore: IncidentGraph;
+  choices: IncidentChoice[];
+  hints: string[];
+  nextId?: string;
+}
+
+export interface IncidentPackV2 {
+  version: number;
+  patternId: string;
+  patternName: string;
+  level: number;
+  phase: "Foundation" | "Resilience" | "Mastery";
+  canonicalId: string;
+  nextCanonicalId?: string | null;
+  incidents: IncidentV2[];
+  variants: {
+    id: string;
+    title: string;
+    context: string;
+    constraint: string;
+    question: string;
+    expectedPattern: string;
+    wrongChoices: string[];
+  }[];
+}
+
+
