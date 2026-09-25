@@ -21,6 +21,7 @@ import {
 const STORAGE_KEY = "sd_quest_user_stats_v1"; // key kept for backward compatibility; shape is versioned inside
 const RUNS_KEY = "sd_quest_run_progress_v1";
 const DESIGNS_KEY = "sd_quest_builder_designs_v1";
+const ROTATION_KEY = "sd_quest_rotation_state_v1";
 export const STATS_EVENT = "sd_quest_stats_updated";
 
 type Result = { stats: UserStats; leveledUp: boolean };
@@ -249,6 +250,15 @@ export function saveScenarioDesign(scenarioId: string, kind: keyof ScenarioDesig
   const all = readJson<Record<string, ScenarioDesigns>>(DESIGNS_KEY, {});
   all[scenarioId] = { ...(all[scenarioId] ?? {}), [kind]: design };
   writeJson(DESIGNS_KEY, all);
+}
+
+export function readScenarioRotationState(): Record<string, number> {
+  return readJson<Record<string, number>>(ROTATION_KEY, {});
+}
+
+export function saveScenarioRotationState(key: string, value: number): void {
+  const next = { ...readScenarioRotationState(), [key]: value };
+  writeJson(ROTATION_KEY, next);
 }
 
 // ---------------------------------------------------------------------------

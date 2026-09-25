@@ -232,6 +232,14 @@ const TOPOLOGIES: Record<PatternId, { before: Tier[]; after: Tier[] }> = {
     before: [[T("Users")], [T("Servers", "hot", "threads blocked")], [T("Payment API", "hot", "slow"), T("Email API", "hot", "slow")]],
     after: [[T("Users")], [T("Servers", "ok", "respond fast")], [T("Queue", "new")], [T("Workers", "new"), T("Payment / Email")]],
   },
+  sharding: {
+    before: [[T("Users")], [T("Load Balancer")], [T("Servers")], [T("Shard A", "hot", "80% of traffic"), T("Shard B", "warn", "20%")]],
+    after: [[T("Users")], [T("Load Balancer")], [T("Servers")], [T("Shard A", "ok", "balanced"), T("Shard B", "ok", "balanced"), T("Shard C", "new", "hot key split")]],
+  },
+  consistency: {
+    before: [[T("Users")], [T("Load Balancer")], [T("Servers")], [T("Primary", "hot", "writes"), T("Replica", "warn", "laggy")]],
+    after: [[T("Users")], [T("Load Balancer")], [T("Servers")], [T("Primary", "ok", "writes"), T("Replica", "ok", "reads"), T("Read-your-own-writes", "new", "fresh path")]],
+  },
 };
 
 const HEALTH_STYLES: Record<Health, string> = {

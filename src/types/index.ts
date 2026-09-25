@@ -283,13 +283,23 @@ export interface InterviewProblem {
 // Pattern Mastery Game Types
 // ============================================================================
 
+export interface ReplayVariant {
+  variantId: string;
+  label: string;
+  scenario: string;
+  constraint: string;
+  expectedFix: string;
+}
+
 export type PatternId =
   | "horizontal-scaling"
   | "load-balancing"
   | "read-replicas"
   | "caching"
   | "cdn-edge"
-  | "async-queues";
+  | "async-queues"
+  | "sharding"
+  | "consistency";
 
 /**
  * Honest progress labels. A pattern is never "mastered" after one activity:
@@ -347,6 +357,7 @@ export interface SystemDesignPattern {
     reviewXp: number;
   };
   nextHook: string;
+  replayFamily?: ReplayVariant[];
 }
 
 export interface PatternEvidence {
