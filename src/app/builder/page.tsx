@@ -2,6 +2,7 @@
 
 import React, { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   ReactFlow,
   Controls,
@@ -55,7 +56,9 @@ import { getAllPatterns, getPatternById } from "@/data/patterns";
 import {
   SavedDesign,
   getScenarioDesigns,
+  readScenarioRotationState,
   saveScenarioDesign,
+  saveScenarioRotationState,
   submitBuilderResult,
 } from "@/lib/storage";
 import { ProgressionOutcome, getEvidence, isPatternCleared } from "@/lib/progression";
@@ -155,8 +158,11 @@ type SearchParams = Promise<{ [key: string]: string | string[] | undefined }>;
 
 export default function BuilderPage({ searchParams }: { searchParams: SearchParams }) {
   const sp = use(searchParams);
+  const allBosses = getAllBuilderScenarios();
   const scenarioId = typeof sp.scenario === "string" ? sp.scenario : undefined;
-  const scenario = scenarioId ? getBuilderScenarioById(scenarioId) : undefined;
+  const savedBossId = readScenarioRotationState()["builder:boss"] !== undefined ? allBosses[readScenarioRotationState()["builder:boss"] % allBosses.length]?.id : undefined;
+  const resolvedScenarioId = scenarioId ?? savedBossId;
+  const scenario = resolvedScenarioId ? getBuilderScenarioById(resolvedScenarioId) : undefined;
   const stats = useUserStats();
 
   return (
@@ -238,6 +244,7 @@ function loadInitialDesign(scenario: BuilderScenario): InitialDesign {
 }
 
 function Workspace({ scenario, stats }: { scenario?: BuilderScenario; stats: UserStats | null }) {
+  const router = useRouter();
   const isBoss = scenario !== undefined;
   const pattern = scenario ? getPatternById(scenario.patternId) : undefined;
   const [initial] = useState<InitialDesign>(() =>
@@ -429,7 +436,20 @@ function Workspace({ scenario, stats }: { scenario?: BuilderScenario; stats: Use
   return (
     <>
       {scenario && pattern ? (
-        <ScenarioBrief scenario={scenario} levelNumber={pattern.levelNumber} source={initial.source} alreadyPassed={alreadyPassed} />
+        <ScenarioBrief
+          scenario={scenario}
+          levelNumber={pattern.levelNumber}
+          source={initial.source}
+          alreadyPassed={alreadyPassed}
+          onNextScenario={() => {
+            const all = getAllBuilderScenarios();
+            const index = all.findIndex((s) => s.id === scenario.id);
+            const nextIndex = (index + 1 + all.length) % all.length;
+            const next = all[nextIndex];
+            saveScenarioRotationState("builder:boss", nextIndex);
+            router.push(`/builder?scenario=${next.id}`);
+          }}
+        />
       ) : (
         <SandboxHeader
           trafficRps={trafficRps}
@@ -657,11 +677,13 @@ function ScenarioBrief({
   levelNumber,
   source,
   alreadyPassed,
+  onNextScenario,
 }: {
   scenario: BuilderScenario;
   levelNumber: number;
   source: InitialDesign["source"];
   alreadyPassed: boolean;
+  onNextScenario: () => void;
 }) {
   const facts = [
     { label: "Scale", value: scenario.userScale },
@@ -682,6 +704,9 @@ function ScenarioBrief({
         )}
         {source === "draft" && <span className="chip chip-accent">Resumed your saved draft.</span>}
         {source === "inherited" && <span className="chip chip-accent">Starting from the design you passed last level.</span>}
+        <button type="button" onClick={onNextScenario} className="btn btn-ghost !px-2 !py-1 text-[11px]">
+          Next boss
+        </button>
       </div>
       <h1 className="space-y-1">
         <span className="block eyebrow">{scenario.title}</span>

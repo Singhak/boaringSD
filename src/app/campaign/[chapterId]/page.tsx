@@ -1,6 +1,6 @@
 "use client";
 
-import React, { use, useState } from "react";
+import React, { use, useEffect, useState } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import {
@@ -23,6 +23,7 @@ import PostMortemCard from "@/components/run/PostMortemCard";
 import { MetricsStrip, RunStepper, RunTopology } from "@/components/run/RunVisuals";
 import { getAllCampaignChapters, getCampaignChapterById } from "@/data/campaign";
 import { getPatternByChapterId, getPatternById, getAllPatterns } from "@/data/patterns";
+import { getPatternReplayVariant } from "@/data/scenarioPacks";
 import {
   clearRunProgress,
   completePatternRun,
@@ -30,7 +31,9 @@ import {
   markFixApplied,
   markRunStarted,
   markTransferMiss,
+  readScenarioRotationState,
   saveRunProgress,
+  saveScenarioRotationState,
   submitReview,
 } from "@/lib/storage";
 import {
@@ -182,6 +185,26 @@ function freshRun(chapterId: string): RunProgress {
   };
 }
 
+function toReplayQuestion(variant: ReturnType<typeof getPatternReplayVariant>): PatternQuestion {
+  return {
+    question: variant.question,
+    options: [
+      {
+        id: `${variant.id}-expected`,
+        label: variant.expectedPattern,
+        isCorrect: true,
+        explanation: "This matches the architecture pattern the scenario is testing.",
+      },
+      ...variant.wrongChoices.map((label, index) => ({
+        id: `${variant.id}-wrong-${index}`,
+        label,
+        isCorrect: false,
+        explanation: "This does not address the scenario's main constraint.",
+      })),
+    ],
+  };
+}
+
 function celebrate() {
   try {
     confetti({ particleCount: 70, spread: 70, origin: { y: 0.6 }, colors: ["#22d3ee", "#10b981", "#f59e0b"] });
@@ -208,9 +231,16 @@ function PatternRun({
   const [fixDeployed, setFixDeployed] = useState(false);
   const [outcome, setOutcome] = useState<ProgressionOutcome | null>(null);
   const [levelUp, setLevelUp] = useState<number | null>(null);
+  const [rotationOffset, setRotationOffset] = useState<number>(() => readScenarioRotationState()[`pattern:${pattern.id}`] ?? 0);
 
   const cleared = isPatternCleared(stats, pattern);
   const reward = cleared ? `Replay: +${pattern.rewards.replayXp} XP (once a day)` : `+${pattern.rewards.firstClearXp} XP first clear`;
+  const replayVariant = getPatternReplayVariant(pattern.id, rotationOffset);
+  const replayQuestion = toReplayQuestion(replayVariant);
+
+  useEffect(() => {
+    saveScenarioRotationState(`pattern:${pattern.id}`, rotationOffset);
+  }, [pattern.id, rotationOffset]);
 
   const update = (patch: Partial<RunProgress>) => {
     const next = { ...run, ...patch, updatedAt: new Date().toISOString() };
@@ -233,7 +263,20 @@ function PatternRun({
     setResumed(false);
     setFixDeployed(false);
     setOutcome(null);
+    setRotationOffset((current) => {
+      const next = current + 1;
+      saveScenarioRotationState(`pattern:${pattern.id}`, next);
+      return next;
+    });
     setRun(freshRun(chapter.id));
+  };
+
+  const nextScenario = () => {
+    setRotationOffset((current) => {
+      const next = current + 1;
+      saveScenarioRotationState(`pattern:${pattern.id}`, next);
+      return next;
+    });
   };
 
   const objective = pattern.objectives.find((o) => o.stage === run.stage);
@@ -288,6 +331,18 @@ function PatternRun({
                 <p className="text-[13px] text-slate-400">
                   New constraint this level: <span className="text-slate-200">{pattern.newConstraint}</span>
                 </p>
+                <div className="rounded-xl border border-cyan-400/20 bg-cyan-400/[0.04] p-3.5">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="eyebrow text-cyan-300/80">Fresh replay variant</p>
+                    <button type="button" onClick={nextScenario} className="btn btn-ghost !px-2 !py-1 text-[11px]">
+                      Next scenario
+                    </button>
+                  </div>
+                  <h3 className="mt-2 text-base font-semibold text-white">{replayVariant.title}</h3>
+                  <p className="mt-1 text-sm text-slate-300">{replayVariant.context}</p>
+                  <p className="mt-2 text-[12px] text-slate-400">Constraint: {replayVariant.constraint}</p>
+                  <p className="mt-2 text-[12px] text-emerald-200">Expected fix: {replayVariant.expectedPattern}</p>
+                </div>
                 {cleared && (
                   <p className="text-[13px] text-emerald-200/90 px-3 py-2.5 rounded-lg bg-emerald-400/[0.06] border border-emerald-400/20">
                     You have cleared this level before. Replaying is good practice; it pays +{pattern.rewards.replayXp} XP once a day.
@@ -311,7 +366,8 @@ function PatternRun({
               <QuestionCard
                 key="diagnose"
                 eyebrow="Diagnose"
-                question={pattern.diagnosis}
+                context={replayVariant.context}
+                question={replayQuestion}
                 submitLabel="Lock in diagnosis"
                 continueLabel="Choose a fix"
                 onAnswer={(opt, attempt) =>
