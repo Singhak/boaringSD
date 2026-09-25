@@ -42,53 +42,60 @@ npm test
 
 ---
 
-## 🎯 Pattern Mastery Game
+## 🎯 15-Level Pattern Mastery Campaign
 
-The campaign is played as six cumulative levels (`src/data/patterns.ts`), each linked to an existing campaign chapter:
+The core curriculum is structured into 15 cumulative distributed systems patterns across 3 tiers:
 
-1. **Level run** (`/campaign/[chapterId]`): observe → diagnose → deploy a fix → tradeoff counter-strike → transfer question → post-mortem. Runs resume after a refresh.
-2. **Builder boss** (`/builder?scenario=<id>`): a scenario from `src/data/builderScenarios.ts` starts broken; the player builds, stress-tests, explains, and submits. `evaluateScenario` in `src/lib/builderScore.ts` is the only scoring authority.
-3. **Review** (`/campaign/[chapterId]?mode=review`): spaced recall at 1, 3, 7, then 30 days.
+- **Tier 1: Foundation (Levels 01–05)**: Horizontal Scaling, Load Balancing, Read Replicas, In-Memory Caching, CDN & Edge Delivery.
+- **Tier 2: Resilience (Levels 06–10)**: Asynchronous Queues, Database Sharding, Distributed Consistency, Rate Limiting, Circuit Breakers.
+- **Tier 3: Mastery (Levels 11–15)**: Connection Pooling, Backpressure & Throttling, Idempotency & Outbox, Multi-Region DR, Health Checks & Eviction.
 
-Progress is evidence, not a percentage: `Unseen → Introduced → Applied once → Passed transfer → Reliable` (plus `Needs review` when a review is overdue). Reliable requires a builder pass and a successful later review. Reward, streak, mastery, and next-action rules live in `src/lib/progression.ts` as pure, tested functions.
+### The Learning & Evidence Loop:
+1. **Level Run** (`/campaign/[chapterId]`):
+   - **Simulation War Room Mode (`?mode=incident`)**: Live SVG topology, real-time telemetry deltas, and physical wrong-answer degradation.
+   - **Structured Pattern Run Mode**: 6-stage evidence loop: Observe → Diagnose → Deploy fix → Tradeoff counter-strike → Transfer question → Post-mortem.
+2. **Builder Boss** (`/builder?scenario=<id>`): 15 predefined broken systems (`src/data/builderScenarios.ts`). The player builds, stress-tests, defends tradeoffs, and submits. `evaluateScenario` in `src/lib/builderScore.ts` is the single scoring authority.
+3. **Spaced Review** (`/campaign/[chapterId]?mode=review`): Scheduled spaced recall at 1, 3, 7, and 30 days.
 
-**Persistence:** progress lives in the browser (`localStorage`, versioned with a v1 → v2 migration). `/api/progress` is a best-effort mirror to a single demo user with no authentication or merging, so there is no cross-device sync yet.
+**Evidence Progression Model**:
+Progress is tracked as verified evidence, not superficial completion percentages:
+`Unseen → Introduced → Applied Once → Passed Transfer → Reliable` (or `Needs Review`). Achieving `Reliable` requires passing the pattern run, a transfer question, a builder boss challenge, and a subsequent spaced review.
+
+**Persistence**:
+Browser `localStorage` with versioned v1 → v2 migration. `/api/progress` mirrors completions to PostgreSQL.
 
 ---
 
-## 🕹️ Features Implemented
+## 🕹️ Core Modules & Features
 
-### 1. Landing Page (`/`)
-- Hero section: *"Learn System Design Visually. Build Instagram. Scale Netflix. Fix Crashes."*
-- Interactive hero micro-simulation (test traffic spikes and observe instant CPU/latency reactions)
-- Feature cards showcasing visual simulations, architecture builder, and outage triage challenges
+### 1. First-Run "No Thinking" Outage Onboarding (`/`)
+- Zero friction entry: first-time visitors are paged with an urgent P0 live production outage (*"The feed is down — 100,000 req/s, 98% CPU, 4,200ms latency, 504 errors"*).
+- Resolving the canonical incidents (`hs-01` Horizontal Scaling $\rightarrow$ `lb-01` Load Balancing) awards +150 XP, unlocks Level 1, and reveals the dynamic Next Action dashboard.
 
-### 2. Dashboard (`/dashboard`)
-- User Level, Rank Title (*Novice Architect* -> *Principal Infrastructure Lead*)
-- Real-time XP meter, daily learning streak, and curriculum progress tracker
-- Quest roadmap for:
-  - **Level 1**: Load Balancer
-  - **Level 2**: Cache (Redis)
-  - **Level 3**: Database Scaling & Read Replicas
-- Badges & achievements showcase (*Traffic Controller*, *Speed Demon*, *Cluster Engineer*, *Outage Hero*, *System Design Ace*)
+### 2. Campaign Map & Level Hub (`/campaign`)
+- 15-level visual map grouped by Foundation, Resilience, and Mastery tiers.
+- Matrix view and tier view with real-time mastery badges and prerequisite locking.
 
-### 3. Interactive Guided Lessons (`/learn/[lessonId]`)
-- Real-time interactive architecture stage with live packet flow animations
-- Dynamically deploy components (e.g. Load Balancer, Redis Cache, Read Replicas)
-- Live metric gauges (CPU Load %, Latency ms, Database Hits, Error Rate)
-- Level-up celebration modal with confetti and Web Audio sound chimes
+### 3. Incident War Room Engine (`/campaign/[chapterId]?mode=incident`)
+- 15 data-driven scenario packs (`src/data/scenarioPacks/*.json`) powered by Incident Schema v2.
+- Dynamic SVG network topologies with animated packet flows and node status tones (`good`, `bad`, `warn`, `neutral`).
+- Wrong-answer physics: incorrect deployments visibly spike node CPU, trigger 504 gateway timeouts, and cascade failure states.
 
-### 4. Incident Triage Challenges (`/challenge/[challengeId]`)
-- Real-world production crisis scenarios (e.g. *Your Website Crashed!*, *Database Disk I/O Saturation*, *The 95/5 Read-Write Ratio*)
-- Instant choice feedback with detailed architectural explanations and XP rewards
+### 4. Interactive Architecture Builder & Boss Loop (`/builder`)
+- React Flow drag-and-drop design canvas supporting Clients, Load Balancers, Servers, Caches, Databases, Read Replicas, CDNs, and Queues.
+- Real-time traffic load stress slider (1,000 to 50,000 req/s) with live bottleneck diagnostics.
+- 15 scenario boss challenges (`boss-scale`, `boss-lb`, `boss-replicas`, ..., `boss-health-checks`).
 
-### 5. Architecture Builder Playground (`/builder`)
-- Drag-and-drop React Flow canvas with custom styled nodes:
-  - Client / Users Fleet
-  - Load Balancer (Reverse Proxy)
-  - Web & API Servers
-  - Redis Cache
-  - PostgreSQL Master Database
-  - Read Replicas
-  - Cloudflare CDN
-- Live traffic load slider (1,000 to 50,000 req/s) with real-time bottleneck diagnostics engine!
+### 5. System Design Interview Arena (`/interview`)
+- Timed real-world mock interview challenges (TinyURL, Twitter Feed, Uber Dispatch, Global E-Commerce).
+- Interactive component assembly with real-time SPOF and capacity grading.
+- Staff-level follow-up interview questions testing race conditions, failovers, and architectural tradeoff defenses.
+
+### 6. Engineering Dashboard & Profile (`/dashboard`)
+- Dynamic Next Action recommender (`selectNextAction()`) directing users to the highest-priority action (Onboarding $\rightarrow$ Next Run $\rightarrow$ Builder Boss $\rightarrow$ Spaced Review).
+- Daily learning streak tracker, XP leveling meter, and unlocked achievement badges.
+
+### 7. Auxiliary Engineering Labs
+- **Architecture Evolution** (`/evolution`): 5-stage scaling simulation from 1 to 10M users.
+- **Guided Challenge Lab** (`/guided`): Methodical breakdown (Requirements $\rightarrow$ Entities $\rightarrow$ APIs $\rightarrow$ Architecture).
+- **Concept Lessons** (`/learn/[lessonId]`): Interactive concept deep-dives.

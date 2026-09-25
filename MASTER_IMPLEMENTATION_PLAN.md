@@ -70,10 +70,9 @@ This section documents all features, engines, data models, and UI surfaces that 
 * **Capabilities**:
   * **Zero Friction Entry**: Unauthenticated users opening `/` bypass marketing fluff and are paged with a live P0 outage: *"The feed is down — 100,000 req/s, 98% CPU, 4,200ms latency, 504 errors"*.
   * **Interactive War Room Simulation**:
-    * **Step 1 (Horizontal Scaling)**: App CPU saturated at 98% $\rightarrow$ Deploy Load Balancer and scale stateless application server pool $\rightarrow$ CPU drops to 38%.
-    * **Step 2 (Caching)**: Database disk I/O saturated at 95% $\rightarrow$ Deploy in-memory Redis Cache $\rightarrow$ Cache hit rate rises to 92%, DB disk load normalizes.
-    * **Step 3 (Read Replicas)**: Read query spike saturates primary database $\rightarrow$ Deploy Read Replicas with read/write splitting $\rightarrow$ Primary DB write latency stabilizes.
-  * **Completion & Transition**: Awards +150 XP, unlocks Level 1 on the campaign map, and prompts guest progress retention or demo sign-in.
+    * **Incident 1 (`hs-01` / INC-001 Horizontal Scaling)**: App CPU saturated at 98% under 100,000 req/s $\rightarrow$ Deploy stateless application server fleet $\rightarrow$ CPU normalizes.
+    * **Incident 2 (`lb-01` / INC-002 Load Balancing)**: Severe traffic skew with Server 1 overloaded at 90% while other servers sit idle $\rightarrow$ Deploy Load Balancer reverse proxy with round-robin distribution $\rightarrow$ Traffic balanced evenly.
+  * **Completion & Transition**: Fulfills `hasFinishedOnboarding()`, awards +150 XP, unlocks Level 1 on the campaign map, and transitions `/` to the dynamic next-action dashboard.
 
 ---
 
