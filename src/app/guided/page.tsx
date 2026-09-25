@@ -23,10 +23,13 @@ const STEPS = [
 ];
 
 const COMPONENTS: { type: ArchitectureNodeType; label: string; desc: string }[] = [
-  { type: "load_balancer", label: "Load balancer", desc: "Spreads requests across servers" },
-  { type: "server", label: "Stateless app servers", desc: "Run the API; add more to scale" },
-  { type: "cache", label: "In-memory cache", desc: "Answers repeated reads from RAM" },
-  { type: "database", label: "Relational database", desc: "Durable source of truth" },
+  { type: "cdn", label: "Edge CDN", desc: "Caches video chunks, images, and static assets globally" },
+  { type: "load_balancer", label: "Load balancer", desc: "Spreads HTTP/TCP requests across app servers" },
+  { type: "server", label: "Stateless app servers", desc: "Executes API business logic and socket sessions" },
+  { type: "cache", label: "In-memory cache", desc: "Answers repeated reads from RAM (Redis / Memcached)" },
+  { type: "queue", label: "Message queue", desc: "Decouples async jobs, fan-out, and transcoding" },
+  { type: "database", label: "Primary database", desc: "Durable ACID source of truth for persistent data" },
+  { type: "replica", label: "Read replicas", desc: "Offloads read queries horizontally from primary DB" },
 ];
 
 const stripStep = (s: string) => s.replace(/^Step \d+:\s*/i, "");
@@ -372,15 +375,27 @@ function ArchitectureStep({ scenario, onPass, done }: { scenario: GuidedScenario
           const has = (t: ArchitectureNodeType) => selected.includes(t);
           const slot = (t: ArchitectureNodeType, label: string, note?: string) =>
             has(t) ? T(label, "new", note) : T(label, "idle", "not added");
+
+          const tiers = [[T("Users")]];
+          if (has("cdn")) {
+            tiers.push([T("Edge CDN", "new", "global POPs")]);
+          }
+          tiers.push([slot("load_balancer", "Load balancer")]);
+          tiers.push([slot("server", "App servers", "stateless fleet")]);
+
+          const asyncRow = [];
+          if (has("cache")) asyncRow.push(T("In-Memory Cache", "new", "RAM"));
+          if (has("queue")) asyncRow.push(T("Message Queue", "new", "async"));
+          if (asyncRow.length > 0) tiers.push(asyncRow);
+
+          const storageRow = [slot("database", "Database", "primary")];
+          if (has("replica")) storageRow.push(T("Read Replicas", "new", "read pool"));
+          tiers.push(storageRow);
+
           return (
             <Topology
-              caption={<span className="eyebrow">Your design</span>}
-              tiers={[
-                [T("Users")],
-                [slot("load_balancer", "Load balancer")],
-                [slot("server", "App servers", "stateless")],
-                [slot("cache", "Cache"), slot("database", "Database")],
-              ]}
+              caption={<span className="eyebrow">Your architectural topology</span>}
+              tiers={tiers}
             />
           );
         }}

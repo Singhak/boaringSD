@@ -254,11 +254,22 @@ export interface EvolutionStage {
   metrics: SystemMetrics;
 }
 
-// Mini Interview Mode Types
+export interface InterviewFollowUp {
+  id: string;
+  interviewerPrompt: string;
+  options: {
+    id: string;
+    text: string;
+    isCorrect: boolean;
+    feedback: string;
+  }[];
+}
+
 export interface InterviewProblem {
   id: string;
   title: string;
-  difficulty: "Medium" | "Hard";
+  tier: "Tier 1: Beginner" | "Tier 2: Intermediate" | "Tier 3: Advanced" | "Tier 4: Staff";
+  difficulty: "Beginner" | "Intermediate" | "Advanced" | "Staff" | "Medium" | "Hard";
   durationMinutes: number;
   rewardXp: number;
   scenario: string;
@@ -275,6 +286,17 @@ export interface InterviewProblem {
     nodes: { id: string; label: string; type: ArchitectureNodeType }[];
     summary: string;
     spofVulnerabilitiesWithout: string[];
+  };
+  followUpQuestions?: InterviewFollowUp[];
+  requiredDesign?: {
+    needsLB?: boolean;
+    minServers?: number;
+    needsCache?: boolean;
+    needsDatabase?: boolean;
+    needsReplica?: boolean;
+    needsCDN?: boolean;
+    needsQueue?: boolean;
+    rationale?: Record<string, string>;
   };
 }
 
