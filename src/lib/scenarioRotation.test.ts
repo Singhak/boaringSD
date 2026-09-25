@@ -74,6 +74,7 @@ test("deterministic shuffle distributes options without losing correct answer", 
   const shuffled2 = deterministicShuffle(options, "variant-b");
 
   assert.equal(shuffled1.length, 4);
+  assert.equal(shuffled2.length, 4);
   assert.ok(shuffled1.some((o) => o.isCorrect));
 
   // Verify same seed yields identical order

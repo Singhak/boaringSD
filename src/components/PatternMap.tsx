@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import Link from "next/link";
 import {
   ArrowRight,
@@ -222,10 +222,11 @@ export default function PatternMap({
   }, [highlightId, patterns]);
 
   const [page, setPage] = useState(initialPage);
-
-  useEffect(() => {
+  const [prevInitialPage, setPrevInitialPage] = useState(initialPage);
+  if (prevInitialPage !== initialPage) {
+    setPrevInitialPage(initialPage);
     setPage(initialPage);
-  }, [initialPage]);
+  }
 
   const currentStart = page * ITEMS_PER_PAGE + 1;
   const currentEnd = Math.min((page + 1) * ITEMS_PER_PAGE, patterns.length);

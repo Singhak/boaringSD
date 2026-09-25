@@ -2,16 +2,12 @@
 
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
   ArrowRight,
   Award,
   Check,
-  ChevronRight,
-  HelpCircle,
   Lightbulb,
-  MessageSquare,
   Minus,
   Plus,
   RotateCcw,
@@ -28,8 +24,8 @@ import { T, Topology } from "@/components/run/RunVisuals";
 import type { Tier } from "@/components/run/RunVisuals";
 import { INTERVIEW_PROBLEMS } from "@/data/interview";
 import { completeInterview } from "@/lib/storage";
-import { playBlipSound, playErrorSound, playLevelUpSound, playSuccessSound } from "@/lib/sound";
-import type { InterviewFollowUp, InterviewProblem } from "@/types";
+import { playBlipSound, playErrorSound, playLevelUpSound } from "@/lib/sound";
+import type { InterviewProblem } from "@/types";
 
 const MAX_SERVERS = 4;
 
@@ -180,7 +176,6 @@ function toTiers(d: Design): Tier[] {
 }
 
 export default function InterviewPage() {
-  const router = useRouter();
   const [problemId, setProblemId] = useState(INTERVIEW_PROBLEMS[0].id);
   const problem = INTERVIEW_PROBLEMS.find((p) => p.id === problemId) ?? INTERVIEW_PROBLEMS[0];
 

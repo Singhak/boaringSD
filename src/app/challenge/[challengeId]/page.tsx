@@ -10,13 +10,8 @@ import {
   XCircle,
   Zap,
   ArrowRight,
-  Sparkles,
-  ShieldCheck,
   RotateCcw,
   Lightbulb,
-  ChevronDown,
-  Activity,
-  Flame,
 } from "lucide-react";
 import Navbar from "@/components/Navbar";
 import LevelUpModal from "@/components/LevelUpModal";

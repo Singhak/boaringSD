@@ -108,7 +108,12 @@ export default function CampaignChapterPage({
                 Switch to Guided Mode
               </Link>
             </div>
-            <IncidentWarRoom initialIncidentId={getCanonicalIncident(pattern.levelNumber)?.id || "hs-01"} />
+            <IncidentWarRoom
+              key={`warroom-${pattern.id}`}
+              pattern={pattern}
+              chapter={chapter}
+              initialIncidentId={getCanonicalIncident(pattern.levelNumber)?.id || "hs-01"}
+            />
           </div>
         ) : (
           <div className="space-y-4">

@@ -6,7 +6,6 @@ import {
   AlertTriangle,
   ArrowRight,
   Check,
-  Flame,
   HelpCircle,
   RotateCcw,
   Sparkles,
@@ -19,6 +18,7 @@ import confetti from "canvas-confetti";
 import { StatStrip, Stepper, Topology } from "@/components/run/RunVisuals";
 import type { Stat } from "@/components/run/RunVisuals";
 import { getCanonicalIncident, getIncidentById, graphToTiers } from "@/data/scenarioPacks";
+import { getAllPatterns } from "@/data/patterns";
 import {
   playAlarmSound,
   playBlipSound,
@@ -27,12 +27,14 @@ import {
   playLevelUpSound,
   playSuccessSound,
 } from "@/lib/sound";
-import { getUserStats, loginUser, recordMissionComplete, saveUserStats } from "@/lib/storage";
+import { completePatternRun, getUserStats, loginUser, recordMissionComplete, saveUserStats } from "@/lib/storage";
 import { useUserStats } from "@/lib/useUserStats";
-import type { IncidentChoice, IncidentGraph, IncidentMetric, IncidentV2 } from "@/types";
+import type { CampaignChapter, IncidentChoice, IncidentGraph, IncidentMetric, IncidentV2, SystemDesignPattern } from "@/types";
 
 interface IncidentWarRoomProps {
   initialIncidentId?: string;
+  pattern?: SystemDesignPattern;
+  chapter?: CampaignChapter;
   onClose?: () => void;
   onAllClear?: () => void;
   standalone?: boolean;
@@ -42,6 +44,8 @@ const ONBOARDING_FLOW_IDS = ["hs-01", "lb-01"];
 
 export default function IncidentWarRoom({
   initialIncidentId = "hs-01",
+  pattern,
+  chapter,
   onClose,
   onAllClear,
 }: IncidentWarRoomProps) {
@@ -55,9 +59,18 @@ export default function IncidentWarRoom({
   const [isDebrief, setIsDebrief] = useState(false);
   const [savedAs, setSavedAs] = useState<"guest" | string | null>(null);
 
+  // Synchronize when initialIncidentId prop changes across levels
+  const [prevInitialIncidentId, setPrevInitialIncidentId] = useState(initialIncidentId);
+  if (prevInitialIncidentId !== initialIncidentId) {
+    setPrevInitialIncidentId(initialIncidentId);
+    setIncidentId(initialIncidentId);
+    setCurrentStep(0);
+    setIsDebrief(false);
+  }
+
   // Active incident state
   const incident: IncidentV2 | undefined =
-    getIncidentById(incidentId) || getCanonicalIncident(1);
+    getIncidentById(incidentId) || getCanonicalIncident(pattern?.levelNumber || 1);
 
   const [activeGraph, setActiveGraph] = useState<IncidentGraph | null>(
     incident ? incident.graphBefore : null
@@ -69,14 +82,21 @@ export default function IncidentWarRoom({
   const [isSubmitted, setIsSubmitted] = useState<boolean>(false);
   const [hintsRevealed, setHintsRevealed] = useState<number>(0);
 
-  // Reset when incidentId changes
-  useEffect(() => {
-    if (!incident) return;
-    setActiveGraph(incident.graphBefore);
-    setActiveMetrics(incident.metricsBefore);
+  // Synchronize graph and metrics during render when incidentId changes
+  const [prevIncidentId, setPrevIncidentId] = useState(incidentId);
+  if (prevIncidentId !== incidentId) {
+    setPrevIncidentId(incidentId);
+    if (incident) {
+      setActiveGraph(incident.graphBefore);
+      setActiveMetrics(incident.metricsBefore);
+    }
     setSelectedChoiceId(null);
     setIsSubmitted(false);
     setHintsRevealed(0);
+  }
+
+  // Play alarm sound on mount or when incidentId changes
+  useEffect(() => {
     playAlarmSound();
   }, [incidentId]);
 
@@ -110,10 +130,22 @@ export default function IncidentWarRoom({
       playDeploySound();
       setTimeout(() => playSuccessSound(), 200);
 
-      // Record XP reward
+      // Record XP reward for this incident
       if (incident && !(incident.id in solvedIncidents)) {
         const outcome = recordMissionComplete(incident.id, incident.xp);
         setSolvedIncidents((prev) => ({ ...prev, [incident.id]: outcome.xpAwarded }));
+      }
+
+      // If playing in campaign mode, mark pattern run completed so progress unlocks next level
+      if (pattern) {
+        completePatternRun(pattern, {
+          patternId: pattern.id,
+          diagnosisFirstTry: true,
+          interventionFirstTry: !isWrong,
+          transferFirstTry: true,
+          hintsUsed: hintsRevealed,
+          failureReasons: isWrong ? ["intervention"] : [],
+        });
       }
     } else {
       // WRONG ANSWER PHYSICS: Physically impact the live system!
@@ -143,20 +175,42 @@ export default function IncidentWarRoom({
     setActiveMetrics(incident.metricsBefore);
     setSelectedChoiceId(null);
     setIsSubmitted(false);
+    setIsDebrief(false);
+    setCurrentStep(0);
   };
 
-  // Advance to next incident
+  // Advance to next incident or debrief
   const handleNextIncident = () => {
     playBlipSound();
+
+    if (pattern) {
+      // In campaign mode, resolving the level incident completes the level and goes to debrief
+      setIsDebrief(true);
+      setCurrentStep(1);
+      playLevelUpSound();
+      try {
+        confetti({
+          particleCount: 100,
+          spread: 80,
+          origin: { y: 0.6 },
+          colors: ["#38d6e8", "#34d399", "#fbbf24"],
+        });
+      } catch {}
+      onAllClear?.();
+      return;
+    }
+
+    // Onboarding flow: only traverse within ONBOARDING_FLOW_IDS
     if (selectedChoice?.nextId) {
       setIncidentId(selectedChoice.nextId);
       setCurrentStep((s) => s + 1);
-    } else if (incident?.nextId) {
+    } else if (incident?.nextId && currentStep < ONBOARDING_FLOW_IDS.length - 1) {
       setIncidentId(incident.nextId);
       setCurrentStep((s) => s + 1);
     } else {
       // Debrief reached
       setIsDebrief(true);
+      setCurrentStep(stepsList.length - 1);
       playLevelUpSound();
       try {
         confetti({
@@ -205,10 +259,15 @@ export default function IncidentWarRoom({
     };
   });
 
-  const stepsList = ONBOARDING_FLOW_IDS.map((id, idx) => ({
-    id,
-    label: `Incident 0${idx + 1}`,
-  })).concat([{ id: "debrief", label: "Debrief" }]);
+  const stepsList = pattern
+    ? [
+        { id: incident.id, label: incident.incidentCode ? `${incident.incidentCode} · Incident` : "Incident 01" },
+        { id: "debrief", label: "Level Cleared" },
+      ]
+    : ONBOARDING_FLOW_IDS.map((id, idx) => ({
+        id,
+        label: `Incident 0${idx + 1}`,
+      })).concat([{ id: "debrief", label: "Debrief" }]);
 
   const totalXp = Object.values(solvedIncidents).reduce((a, b) => a + b, 0);
 
@@ -447,7 +506,7 @@ export default function IncidentWarRoom({
                       onClick={handleNextIncident}
                       className="btn btn-primary btn-md w-full justify-center group"
                     >
-                      Deploy next fix
+                      {pattern ? "View debrief & complete level" : "Deploy next fix"}
                       <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-0.5" />
                     </button>
                   ) : (
@@ -466,11 +525,22 @@ export default function IncidentWarRoom({
           </div>
         ) : (
           /* ================= DEBRIEF SCREEN ================= */
-          <DebriefScreen
-            totalXp={totalXp}
-            savedAs={savedAs}
-            onSave={setSavedAs}
-          />
+          pattern ? (
+            <CampaignDebriefScreen
+              pattern={pattern}
+              chapter={chapter}
+              incident={incident}
+              selectedChoice={selectedChoice}
+              totalXp={totalXp || incident.xp}
+              onReplay={handleRollback}
+            />
+          ) : (
+            <DebriefScreen
+              totalXp={totalXp}
+              savedAs={savedAs}
+              onSave={setSavedAs}
+            />
+          )
         )}
       </div>
     </article>
@@ -491,6 +561,122 @@ function applyMetricUpdates(
     const updated = updateMap.get(b.key);
     return updated ? { ...b, ...updated } : b;
   });
+}
+
+// ---------------------------------------------------------------------------
+// Campaign Debrief Screen: Level Cleared & Next Level Navigation
+// ---------------------------------------------------------------------------
+
+function CampaignDebriefScreen({
+  pattern,
+  incident,
+  selectedChoice,
+  totalXp,
+  onReplay,
+}: {
+  pattern: SystemDesignPattern;
+  chapter?: CampaignChapter;
+  incident: IncidentV2;
+  selectedChoice?: IncidentChoice;
+  totalXp: number;
+  onReplay: () => void;
+}) {
+  const nextPattern = getAllPatterns().find((p) => p.levelNumber === pattern.levelNumber + 1);
+
+  return (
+    <div className="space-y-6 animate-fadeIn py-2">
+      <div className="space-y-2 max-w-2xl">
+        <span className="eyebrow text-emerald-300 flex items-center gap-1.5">
+          <Sparkles className="w-3.5 h-3.5" /> Level {pattern.levelNumber} Stabilized & Cleared
+        </span>
+        <h2 className="text-3xl sm:text-4xl display">{pattern.levelGoal}</h2>
+        <p className="text-[15px] text-slate-300 leading-relaxed">
+          {selectedChoice?.resultBody || `You resolved the bottleneck for ${pattern.title} under live outage conditions.`}
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-[1.4fr_1fr] gap-4">
+        {/* Architecture accomplishments */}
+        <section className="surface !rounded-xl overflow-hidden" aria-label="Architecture Upgrades">
+          <header className="px-5 py-3 border-b border-[var(--line)] flex items-center justify-between gap-2">
+            <span className="eyebrow">Stabilized Component</span>
+            <span className="num text-xs text-amber-200/90">+{totalXp || incident.xp} XP</span>
+          </header>
+          <div className="p-5 space-y-3">
+            <div className="flex items-start gap-3">
+              <span className="w-7 h-7 rounded-full grid place-items-center shrink-0 border border-emerald-400/40 bg-emerald-400/10 text-emerald-300">
+                <Check className="w-4 h-4" />
+              </span>
+              <div className="space-y-1">
+                <p className="text-[14px] text-slate-200 font-medium">
+                  Level {pattern.levelNumber}: {pattern.title}
+                </p>
+                <p className="text-xs text-slate-400">
+                  <span className="text-slate-300 font-mono">Incident:</span> {incident.incidentCode} · {incident.title}
+                </p>
+                <p className="text-xs text-emerald-300/90">
+                  <span className="text-slate-400">Fix deployed:</span> {selectedChoice?.label || "Stateless scaling"}
+                </p>
+              </div>
+            </div>
+            {pattern.nextHook && (
+              <p className="text-xs text-amber-200/80 pt-2 border-t border-[var(--line)]">
+                {pattern.nextHook}
+              </p>
+            )}
+          </div>
+        </section>
+
+        {/* Practice and Progression */}
+        <section className="surface !rounded-xl p-5 space-y-4" aria-label="Next Actions">
+          <div className="space-y-1">
+            <h3 className="text-[15px] font-semibold text-white">Mastery Verified</h3>
+            <p className="text-[13px] text-slate-400 leading-relaxed">
+              Progress saved. You can advance directly to the next level or stress-test your design in the architecture sandbox.
+            </p>
+          </div>
+          <div className="flex flex-col gap-2 pt-1">
+            <button
+              type="button"
+              onClick={onReplay}
+              className="btn btn-secondary text-xs flex items-center justify-center gap-1.5"
+            >
+              <RotateCcw className="w-3.5 h-3.5" /> Replay Incident
+            </button>
+            <Link
+              href={`/builder?scenario=${pattern.id}`}
+              className="btn btn-ghost border border-[var(--line)] text-xs flex items-center justify-center gap-1.5"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-cyan-300" /> Test in Architecture Sandbox
+            </Link>
+          </div>
+        </section>
+      </div>
+
+      {/* Campaign Navigation CTAs */}
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3 pt-2">
+        {nextPattern ? (
+          <Link
+            href={`/campaign/${nextPattern.chapterId}?mode=incident`}
+            className="btn btn-primary btn-lg group"
+          >
+            Proceed to Level {nextPattern.levelNumber}: {nextPattern.title}
+            <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-0.5" />
+          </Link>
+        ) : (
+          <Link href="/campaign" className="btn btn-primary btn-lg">
+            All Levels Completed! Explore Map
+          </Link>
+        )}
+        <Link href={`/campaign/${pattern.chapterId}`} className="btn btn-ghost">
+          Guided Mode
+        </Link>
+        <Link href="/campaign" className="btn btn-ghost">
+          Return to Level Map
+        </Link>
+      </div>
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -537,7 +723,7 @@ function DebriefScreen({
               </span>
               <div className="space-y-0.5">
                 <p className="text-[13px] text-slate-200 font-medium">Horizontal Scaling (Level 01)</p>
-                <p className="text-xs text-slate-400">1 server $\rightarrow$ 3 identical stateless servers. Single-point-of-failure eliminated.</p>
+                <p className="text-xs text-slate-400">1 server → 3 identical stateless servers. Single-point-of-failure eliminated.</p>
               </div>
             </li>
             <li className="px-5 py-3.5 flex items-start gap-3">

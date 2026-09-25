@@ -1,14 +1,12 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import Link from "next/link";
 import {
-  Activity,
   ArrowRight,
   ArrowUpRight,
   CheckCircle2,
   ChevronRight,
-  Cpu,
   Flame,
   Grid3X3,
   Layers,
@@ -16,8 +14,6 @@ import {
   Lock,
   Play,
   RotateCcw,
-  ShieldCheck,
-  Sparkles,
 } from "lucide-react";
 import Navbar from "@/components/Navbar";
 import PatternMap from "@/components/PatternMap";
@@ -83,13 +79,14 @@ export default function CampaignPage() {
   const [viewMode, setViewMode] = useState<"tiers" | "matrix">("tiers");
   const [selectedMatrixId, setSelectedMatrixId] = useState<string>(() => patterns[activeIndex]?.id || patterns[0]?.id);
 
-  useEffect(() => {
-    const tierIdx = Math.floor(activeIndex / 5);
-    setActiveTier(tierIdx);
+  const [prevActiveIndex, setPrevActiveIndex] = useState(activeIndex);
+  if (prevActiveIndex !== activeIndex) {
+    setPrevActiveIndex(activeIndex);
+    setActiveTier(Math.floor(activeIndex / 5));
     if (patterns[activeIndex]) {
       setSelectedMatrixId(patterns[activeIndex].id);
     }
-  }, [activeIndex, patterns]);
+  }
 
   const currentTier = TIERS[activeTier] || TIERS[0];
   const tierPatterns = patterns.slice(currentTier.start, currentTier.end);
