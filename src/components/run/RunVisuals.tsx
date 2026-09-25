@@ -240,6 +240,34 @@ const TOPOLOGIES: Record<PatternId, { before: Tier[]; after: Tier[] }> = {
     before: [[T("Users")], [T("Load Balancer")], [T("Servers")], [T("Primary", "hot", "writes"), T("Replica", "warn", "laggy")]],
     after: [[T("Users")], [T("Load Balancer")], [T("Servers")], [T("Primary", "ok", "writes"), T("Replica", "ok", "reads"), T("Read-your-own-writes", "new", "fresh path")]],
   },
+  "rate-limiting": {
+    before: [[T("Clients")], [T("Gateway", "hot", "flood: 20k req/s")], [T("App Servers", "hot", "saturated")]],
+    after: [[T("Clients")], [T("Rate Limiter", "new", "token bucket")], [T("App Servers", "ok", "protected")]],
+  },
+  "circuit-breaker": {
+    before: [[T("App Servers", "hot", "threads hung on timeout")], [T("Payment API", "hot", "down/unresponsive")]],
+    after: [[T("App Servers", "ok", "fails fast")], [T("Circuit Breaker", "new", "Half-Open probe")], [T("Payment API")]],
+  },
+  "connection-pooling": {
+    before: [[T("App Containers ×40")], [T("Direct Sockets", "hot", "2,500 connections")], [T("Postgres DB", "hot", "too many clients")]],
+    after: [[T("App Containers ×40")], [T("Connection Pool", "new", "bounded warm pool")], [T("Postgres DB", "ok", "stable memory")]],
+  },
+  backpressure: {
+    before: [[T("Producers")], [T("Unbounded Buffer", "hot", "memory spike → OOM")], [T("Slow Workers")]],
+    after: [[T("Producers")], [T("Bounded Queue", "new", "HTTP 429 throttle")], [T("Workers", "ok", "steady drain")]],
+  },
+  idempotency: {
+    before: [[T("Mobile Retries ×3")], [T("Order API")], [T("Billing DB", "hot", "duplicate charges")]],
+    after: [[T("Mobile Retries ×3")], [T("Idempotency Filter", "new", "dedupe key")], [T("Billing DB", "ok", "single charge")]],
+  },
+  "multi-region": {
+    before: [[T("Global Users")], [T("Region us-east-1", "hot", "power blackout")], [T("Total Outage", "hot")]],
+    after: [[T("Global Users")], [T("Anycast / GeoDNS", "new")], [T("Region us-east-1"), T("Region eu-west-1", "new", "failover active")]],
+  },
+  "health-checks": {
+    before: [[T("Load Balancer")], [T("Node 1", "ok"), T("Node 2", "hot", "zombie 500 error"), T("Node 3", "ok")]],
+    after: [[T("Load Balancer")], [T("Health Probes", "new", "evict failed node")], [T("Node 1", "ok"), T("Node 3", "ok")]],
+  },
 };
 
 const HEALTH_STYLES: Record<Health, string> = {
