@@ -1,4 +1,5 @@
 {
+  "version": 1,
   "patternId": "caching",
   "patternName": "Caching",
   "variants": [
@@ -130,6 +131,136 @@
         "Retry without a cache",
         "Increase DB timeouts",
         "Use CDN only for dynamic content"
+      ]
+    },
+    {
+      "id": "cache-11",
+      "title": "Config flags hit the database",
+      "context": "Every request loads feature flags from SQL, adding 15ms even though flags change hourly.",
+      "constraint": "Flags are tiny, shared, and rarely written.",
+      "question": "Where should flags live at request time?",
+      "expectedPattern": "Cache flags in memory or Redis with invalidation when an admin publishes a change.",
+      "wrongChoices": [
+        "Join flags into every user query",
+        "Store flags only in client localStorage",
+        "Recompute flags from logs on each request"
+      ]
+    },
+    {
+      "id": "cache-12",
+      "title": "Negative caching missing",
+      "context": "Bots request missing product IDs and each 404 still queries the primary.",
+      "constraint": "Most of those IDs will never exist.",
+      "question": "What cache behavior stops the waste?",
+      "expectedPattern": "Cache negative lookups (short TTL) so repeated misses do not hit the database.",
+      "wrongChoices": [
+        "Return 200 with empty HTML from the origin every time",
+        "Disable 404s",
+        "Increase primary connections"
+      ]
+    },
+    {
+      "id": "cache-13",
+      "title": "Write-through vs stampede on prices",
+      "context": "Price updates land in SQL, but readers still miss cache for 30s after each change.",
+      "constraint": "Readers must see new prices quickly without a thundering herd.",
+      "question": "What write path keeps the cache coherent?",
+      "expectedPattern": "Invalidate or write-through the cache on price update so the next read is cheap and fresh.",
+      "wrongChoices": [
+        "Wait for TTL only",
+        "Flush the entire cache on one price change",
+        "Write prices only to cache and never to SQL"
+      ]
+    },
+    {
+      "id": "cache-14",
+      "title": "Session cache as source of truth",
+      "context": "A Redis cache is treated as durable session storage and a node restart logs everyone out.",
+      "constraint": "Sessions must survive cache eviction.",
+      "question": "What is the correct cache role?",
+      "expectedPattern": "Use cache as a fast layer in front of durable session storage, not as the only copy.",
+      "wrongChoices": [
+        "Increase Redis maxmemory and skip persistence",
+        "Store sessions only in browser cookies without a server record",
+        "Disable eviction and hope memory never fills"
+      ]
+    },
+    {
+      "id": "cache-15",
+      "title": "Multi-key assemble on every page",
+      "context": "A homepage fans out to 40 independent DB keys that almost never change together.",
+      "constraint": "The assembled page is identical for anonymous users for minutes.",
+      "question": "What should be cached?",
+      "expectedPattern": "Cache the assembled homepage fragment, not only the individual keys.",
+      "wrongChoices": [
+        "Cache nothing because keys are small",
+        "Query all 40 keys on every request",
+        "Move the 40 keys into one giant unindexed table"
+      ]
+    },
+    {
+      "id": "cache-16",
+      "title": "Hot key eviction loop",
+      "context": "A tiny Redis instance evicts the hottest key, which is immediately reloaded and evicted again.",
+      "constraint": "Working set is larger than cache RAM.",
+      "question": "What stops the thrash?",
+      "expectedPattern": "Size the cache for the hot working set or split hot keys so they are not constantly evicted.",
+      "wrongChoices": [
+        "Set TTL to zero on everything",
+        "Disable eviction and OOM the cache",
+        "Cache only cold keys"
+      ]
+    },
+    {
+      "id": "cache-17",
+      "title": "Personalized feed over-cached",
+      "context": "User A sees User B’s feed because a shared cache key ignored user id.",
+      "constraint": "Feeds are private per user.",
+      "question": "What is the cache-key rule?",
+      "expectedPattern": "Include user identity (and auth scope) in the cache key for personalized data.",
+      "wrongChoices": [
+        "One global feed key for everyone",
+        "Cache HTML without Vary on cookie",
+        "Disable authentication"
+      ]
+    },
+    {
+      "id": "cache-18",
+      "title": "Computed report on every dashboard open",
+      "context": "A 12-second aggregation runs on each dashboard load even when filters are unchanged.",
+      "constraint": "The report can be a few minutes stale.",
+      "question": "How do you cut dashboard latency?",
+      "expectedPattern": "Cache the computed result keyed by filters, with a TTL or refresh job.",
+      "wrongChoices": [
+        "Run the aggregation in the browser",
+        "Lock the dashboard until the query finishes every time",
+        "Increase DB parallelism for identical queries"
+      ]
+    },
+    {
+      "id": "cache-19",
+      "title": "Dogpile after deploy",
+      "context": "A deploy flushes Redis and the primary instantly takes the full read load.",
+      "constraint": "The working set is large and popular.",
+      "question": "How should deploys treat the cache?",
+      "expectedPattern": "Avoid full flush; warm or version keys so the origin is not stampeded.",
+      "wrongChoices": [
+        "FLUSHALL on every release",
+        "Turn the cache off during deploys",
+        "Restart the database instead"
+      ]
+    },
+    {
+      "id": "cache-20",
+      "title": "Local in-process cache drifts",
+      "context": "Each app instance caches config in memory and instances disagree for 10 minutes after a change.",
+      "constraint": "All instances must converge quickly.",
+      "question": "What cache design fixes drift?",
+      "expectedPattern": "Use a shared cache or pub/sub invalidation so every instance drops the stale entry.",
+      "wrongChoices": [
+        "Longer in-process TTL",
+        "Different TTLs per instance",
+        "Never notify instances of updates"
       ]
     }
   ]

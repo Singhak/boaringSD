@@ -1,4 +1,5 @@
 {
+  "version": 1,
   "patternId": "sharding",
   "patternName": "Sharding",
   "variants": [
@@ -130,6 +131,136 @@
         "Hot regions should never be used",
         "No sharding is needed",
         "Use only a cache"
+      ]
+    },
+    {
+      "id": "shard-11",
+      "title": "Sharding by created_at",
+      "context": "New rows all land in this month’s partition while older partitions sit idle.",
+      "constraint": "Write load follows time, not a hash of the entity.",
+      "question": "Why is time a risky primary shard key?",
+      "expectedPattern": "Monotonic keys concentrate writes on the newest shard; hash or mix another high-cardinality key.",
+      "wrongChoices": [
+        "Time-based keys always spread writes evenly",
+        "Add more old partitions to absorb new writes",
+        "Disable indexes on the new partition only"
+      ]
+    },
+    {
+      "id": "shard-12",
+      "title": "Lookup without the shard key",
+      "context": "Support search is by email, but the table is sharded by user_id, so every query fans out.",
+      "constraint": "Email lookups are frequent.",
+      "question": "What restores single-shard lookups?",
+      "expectedPattern": "A lookup table or secondary index that maps email to the shard key.",
+      "wrongChoices": [
+        "Scatter-gather every email search forever",
+        "Store all emails on shard 0",
+        "Stop supporting email search"
+      ]
+    },
+    {
+      "id": "shard-13",
+      "title": "Resharding with downtime",
+      "context": "Moving 8 TB to new shards requires an 11-hour write freeze.",
+      "constraint": "The product cannot take that outage.",
+      "question": "What operational pattern splits data live?",
+      "expectedPattern": "Dual-write or consistent-hash migration with incremental copy and cutover, not a long freeze.",
+      "wrongChoices": [
+        "mysqldump and restore during business hours",
+        "Delete old shards first",
+        "Change the shard count without moving data"
+      ]
+    },
+    {
+      "id": "shard-14",
+      "title": "UUID v1 hotspot",
+      "context": "Shard key is a time-ordered UUID and inserts hammer one range.",
+      "constraint": "IDs look random but are sequential in practice.",
+      "question": "What key property do you need?",
+      "expectedPattern": "High-cardinality keys that hash uniformly, not monotonically increasing identifiers.",
+      "wrongChoices": [
+        "Auto-increment integers as the shard key",
+        "One shard for recent UUIDs",
+        "Lower the UUID version only"
+      ]
+    },
+    {
+      "id": "shard-15",
+      "title": "Multi-tenant report across shards",
+      "context": "A global admin report joins every tenant’s orders by scanning all shards.",
+      "constraint": "The report is rare; tenant dashboards are the hot path.",
+      "question": "How do you keep tenant traffic fast?",
+      "expectedPattern": "Keep tenant queries single-shard; run global reports asynchronously on a warehouse or scatter-gather off the hot path.",
+      "wrongChoices": [
+        "Make every tenant query scan all shards",
+        "Put all tenants back on one node for reports",
+        "Lock all shards during the admin report"
+      ]
+    },
+    {
+      "id": "shard-16",
+      "title": "Chat rooms on one partition",
+      "context": "Messages are sharded by room_id and a viral room saturates one disk.",
+      "constraint": "A single room can exceed one shard’s write capacity.",
+      "question": "How do you split a hot room?",
+      "expectedPattern": "Sub-partition the hot key (room plus time or hash buckets) so one room can span shards.",
+      "wrongChoices": [
+        "Keep the whole room on one shard forever",
+        "Cache writes without persisting them",
+        "Move only reads to another shard"
+      ]
+    },
+    {
+      "id": "shard-17",
+      "title": "Foreign keys across shards",
+      "context": "Orders live on shard A and users on shard B, so a foreign key cannot be enforced by the database.",
+      "constraint": "Referential integrity is now an application concern.",
+      "question": "What design follows from sharding?",
+      "expectedPattern": "Drop cross-shard FKs; enforce relationships in the app or keep related data on the same shard.",
+      "wrongChoices": [
+        "Expect the database to enforce cross-shard FKs",
+        "Duplicate every user onto every order shard without a key",
+        "Use a single global lock for all inserts"
+      ]
+    },
+    {
+      "id": "shard-18",
+      "title": "Modulo N and adding a shard",
+      "context": "Keys are user_id % 4; adding a fifth shard would remap almost every row.",
+      "constraint": "Resharding must move as little data as possible.",
+      "question": "Which mapping reduces churn?",
+      "expectedPattern": "Consistent hashing (or range maps) so most keys stay put when capacity is added.",
+      "wrongChoices": [
+        "user_id % N with N changing freely",
+        "Random reassignment of every user",
+        "One new shard that receives all old data"
+      ]
+    },
+    {
+      "id": "shard-19",
+      "title": "Secondary index imbalance",
+      "context": "Data is well sharded by user_id, but a global unique username index still lives on one node.",
+      "constraint": "Username checks are write-heavy at signup.",
+      "question": "Where is the remaining hotspot?",
+      "expectedPattern": "The global unique index must also be partitioned or moved to a dedicated lookup service.",
+      "wrongChoices": [
+        "Ignore the index because the table is sharded",
+        "Put usernames in app memory only",
+        "Disable uniqueness"
+      ]
+    },
+    {
+      "id": "shard-20",
+      "title": "Directory service stale map",
+      "context": "A shard map says user 42 is on shard 3, but the row was migrated to shard 7.",
+      "constraint": "Clients cache the directory for 10 minutes.",
+      "question": "What keeps routing correct during moves?",
+      "expectedPattern": "Versioned shard maps, short cache, and a forwarding hint from the old shard.",
+      "wrongChoices": [
+        "Never invalidate the directory",
+        "Let clients guess the shard",
+        "Delete the row from both shards during migration"
       ]
     }
   ]

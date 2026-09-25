@@ -1,4 +1,5 @@
 {
+  "version": 1,
   "patternId": "read-replicas",
   "patternName": "Read Replicas",
   "variants": [
@@ -130,6 +131,136 @@
         "Substantially more app servers",
         "A larger single machine",
         "Moving to edge delivery only"
+      ]
+    },
+    {
+      "id": "rr-11",
+      "title": "Search suggestions hammer Postgres",
+      "context": "Typeahead queries hit the primary 40,000 times per minute and write latency doubles.",
+      "constraint": "Suggestions can be a few seconds behind.",
+      "question": "Where should typeahead reads go?",
+      "expectedPattern": "Serve suggestion queries from read replicas, leaving the primary for writes.",
+      "wrongChoices": [
+        "Run typeahead inside the payment transaction",
+        "Block typeahead during writes",
+        "Add more app servers that still query the primary"
+      ]
+    },
+    {
+      "id": "rr-12",
+      "title": "BI warehouse on the OLTP primary",
+      "context": "Nightly ETL still runs SELECT * joins on the production primary at 09:00.",
+      "constraint": "Analysts can tolerate minutes of lag.",
+      "question": "What isolates production from analytics?",
+      "expectedPattern": "Point ETL and warehouse extracts at a dedicated replica.",
+      "wrongChoices": [
+        "Raise primary IOPS and keep ETL there",
+        "Export through the public API only",
+        "Disable indexes during ETL"
+      ]
+    },
+    {
+      "id": "rr-13",
+      "title": "Replica used for writes by mistake",
+      "context": "A misconfigured ORM sends INSERT traffic to a replica and errors spike.",
+      "constraint": "Replicas are read-only.",
+      "question": "What routing rule is required?",
+      "expectedPattern": "Send all writes to the primary and only reads to replicas.",
+      "wrongChoices": [
+        "Make every replica writable",
+        "Retry writes on the replica",
+        "Turn off replication"
+      ]
+    },
+    {
+      "id": "rr-14",
+      "title": "Mobile app polls the primary",
+      "context": "A status screen polls every 2 seconds from millions of devices against one SQL primary.",
+      "constraint": "Status data is eventually consistent.",
+      "question": "How do you protect the write node?",
+      "expectedPattern": "Shift polling reads onto replicas (and cache if needed) so the primary is not the poll target.",
+      "wrongChoices": [
+        "Increase poll frequency",
+        "Open more connections to the primary",
+        "Store poll results in local app memory only"
+      ]
+    },
+    {
+      "id": "rr-15",
+      "title": "Failover replica was never used for reads",
+      "context": "A standby replica sits idle until disaster, while the primary is CPU-bound on SELECTs.",
+      "constraint": "The standby is already receiving the WAL stream.",
+      "question": "How do you get value from it before a disaster?",
+      "expectedPattern": "Promote it as a serving read replica for non-critical queries.",
+      "wrongChoices": [
+        "Keep it offline until failover day",
+        "Run backups from the primary only",
+        "Duplicate writes to a second primary without replicas"
+      ]
+    },
+    {
+      "id": "rr-16",
+      "title": "Catalog browse vs inventory writes",
+      "context": "Browse traffic is 98% of QPS; stock updates are rare but must be correct.",
+      "constraint": "Browse pages can lag slightly; checkout cannot.",
+      "question": "How should database roles be split?",
+      "expectedPattern": "Replicas for catalog reads; primary for inventory writes and checkout-critical reads.",
+      "wrongChoices": [
+        "One node for every query type",
+        "Replicas for writes and primary for reads",
+        "Stop stock updates during browse peaks"
+      ]
+    },
+    {
+      "id": "rr-17",
+      "title": "Geographically distant readers",
+      "context": "APAC users read from a US primary and p95 is 240ms even on tiny SELECTs.",
+      "constraint": "Writes stay in the US; APAC reads can lag.",
+      "question": "What reduces read latency?",
+      "expectedPattern": "Place a read replica in APAC and route regional reads to it.",
+      "wrongChoices": [
+        "Move all writes to APAC immediately",
+        "Add more US app servers only",
+        "Increase statement timeout"
+      ]
+    },
+    {
+      "id": "rr-18",
+      "title": "Long transactions on replica",
+      "context": "A reporting replica falls hours behind because one dashboard holds an open transaction.",
+      "constraint": "Replication apply is blocked by that snapshot.",
+      "question": "What operational pattern keeps replicas useful?",
+      "expectedPattern": "Bound replica queries, isolate heavy reports, and monitor replication lag.",
+      "wrongChoices": [
+        "Let dashboards hold locks forever",
+        "Stop replication to speed reports",
+        "Move those reports onto the primary"
+      ]
+    },
+    {
+      "id": "rr-19",
+      "title": "Session store on the same primary",
+      "context": "Session lookups are 70% of primary QPS and crowd out order writes.",
+      "constraint": "Sessions are read-mostly and lossy within a short window.",
+      "question": "What is the least disruptive database split?",
+      "expectedPattern": "Read sessions from replicas (or a dedicated session store) and keep writes on the primary.",
+      "wrongChoices": [
+        "Put session writes on every replica independently",
+        "Block checkouts to protect sessions",
+        "Increase primary max_connections only"
+      ]
+    },
+    {
+      "id": "rr-20",
+      "title": "Schema migration locks the only node",
+      "context": "An ALTER TABLE on the primary stalls both reads and writes for minutes.",
+      "constraint": "Most traffic during the window is reads.",
+      "question": "How do replicas help the user-facing path?",
+      "expectedPattern": "Keep serving reads from replicas while the primary applies the migration, then catch up.",
+      "wrongChoices": [
+        "Run the same ALTER on every replica first with writes still on them",
+        "Take the whole site down for every DDL",
+        "Ignore locks and add more app threads"
       ]
     }
   ]

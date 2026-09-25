@@ -1,4 +1,5 @@
 {
+  "version": 1,
   "patternId": "async-queues",
   "patternName": "Queues & Failure Handling",
   "variants": [
@@ -130,6 +131,136 @@
         "Unbounded retries",
         "No monitoring",
         "No check for duplicate actions"
+      ]
+    },
+    {
+      "id": "queue-11",
+      "title": "Webhook fan-out blocks the API",
+      "context": "A billing service calls 12 partner webhooks inside the same HTTP handler.",
+      "constraint": "Partners are slow and sometimes unreachable.",
+      "question": "How do you isolate partner latency?",
+      "expectedPattern": "Persist the event, enqueue outbound webhooks, and retry each partner independently.",
+      "wrongChoices": [
+        "Wait for every partner before returning 200",
+        "Drop webhooks when a partner is slow",
+        "Call partners from the browser"
+      ]
+    },
+    {
+      "id": "queue-12",
+      "title": "Poison message stalls the queue",
+      "context": "One malformed payload crashes every worker that touches it, so the queue never drains.",
+      "constraint": "Later valid jobs are stuck behind the bad one.",
+      "question": "What failure-handling pattern unblocks the line?",
+      "expectedPattern": "After limited retries, move the poison message to a dead-letter queue and keep consuming.",
+      "wrongChoices": [
+        "Retry the same message forever on the main queue",
+        "Stop all workers until a human notices",
+        "Delete the entire queue"
+      ]
+    },
+    {
+      "id": "queue-13",
+      "title": "Visibility timeout too short",
+      "context": "Video transcodes take 8 minutes, but the message becomes visible again after 30 seconds.",
+      "constraint": "Multiple workers start the same job.",
+      "question": "What queue setting must match the work?",
+      "expectedPattern": "Set visibility timeout (or heartbeat extend) longer than the real processing time.",
+      "wrongChoices": [
+        "Ack immediately before transcode starts",
+        "Disable acknowledgements",
+        "Process transcodes on the web request"
+      ]
+    },
+    {
+      "id": "queue-14",
+      "title": "Signup SMS in the request",
+      "context": "Phone verification SMS is sent synchronously and the carrier API times out at peak.",
+      "constraint": "Account creation can succeed without waiting on SMS.",
+      "question": "What should the API do on signup?",
+      "expectedPattern": "Create the user, enqueue the SMS job, and return; workers send and retry the message.",
+      "wrongChoices": [
+        "Fail signup if SMS is slow",
+        "Increase the HTTP timeout to 2 minutes",
+        "Send SMS from a database trigger only"
+      ]
+    },
+    {
+      "id": "queue-15",
+      "title": "Retry storm after an outage",
+      "context": "A downstream API recovers and every delayed job retries at once.",
+      "constraint": "The dependency cannot absorb a synchronized burst.",
+      "question": "How do you retry safely?",
+      "expectedPattern": "Exponential backoff with jitter and a retry budget so jobs do not stampede.",
+      "wrongChoices": [
+        "Retry all jobs immediately with no delay",
+        "Never retry after an outage",
+        "Increase worker count without backoff"
+      ]
+    },
+    {
+      "id": "queue-16",
+      "title": "Exactly-once assumed on Kafka",
+      "context": "A consumer increments a coupon-used counter on every message and the counter doubles after rebalance.",
+      "constraint": "The broker delivers at least once.",
+      "question": "What must the consumer implement?",
+      "expectedPattern": "Idempotent updates keyed by message or coupon id so redelivery does not double-count.",
+      "wrongChoices": [
+        "Assume Kafka is exactly-once for side effects",
+        "Disable consumer group rebalance forever",
+        "Ack before writing the counter"
+      ]
+    },
+    {
+      "id": "queue-17",
+      "title": "Priority work stuck behind bulk import",
+      "context": "Password-reset emails sit behind a 2-million-row CSV import on one queue.",
+      "constraint": "User-facing jobs cannot wait on bulk work.",
+      "question": "How should work be separated?",
+      "expectedPattern": "Use priority queues or separate worker pools for interactive versus bulk jobs.",
+      "wrongChoices": [
+        "One FIFO queue for every job type",
+        "Pause password resets during imports",
+        "Run imports on the API process"
+      ]
+    },
+    {
+      "id": "queue-18",
+      "title": "Outbox missing after a crash",
+      "context": "The API writes an order row, then crashes before publishing to the queue, so fulfillment never starts.",
+      "constraint": "The database write committed; the message did not.",
+      "question": "What pattern keeps state and messages aligned?",
+      "expectedPattern": "Transactional outbox: write the event in the same transaction, then a relay publishes it.",
+      "wrongChoices": [
+        "Publish first and write the order later without a transaction",
+        "Rely on the user to click again",
+        "Skip fulfillment for crashed requests"
+      ]
+    },
+    {
+      "id": "queue-19",
+      "title": "Unbounded queue memory",
+      "context": "Producers keep enqueueing during a worker outage until the broker runs out of disk.",
+      "constraint": "Consumers are down for hours.",
+      "question": "What protects the system?",
+      "expectedPattern": "Backpressure, retention limits, and producer throttling when the queue cannot drain.",
+      "wrongChoices": [
+        "Infinite retention and no producer limits",
+        "Drop the broker and keep producing to /dev/null",
+        "Block only consumers"
+      ]
+    },
+    {
+      "id": "queue-20",
+      "title": "Long saga without compensation",
+      "context": "Booking reserves a flight, then hotel reservation fails, but the flight stay reserved.",
+      "constraint": "Steps are async and can fail independently.",
+      "question": "What failure handling is missing?",
+      "expectedPattern": "A saga with compensating actions (or a state machine) to undo completed steps on later failure.",
+      "wrongChoices": [
+        "A single distributed transaction across all vendors",
+        "Ignore partial success",
+        "Retry only the hotel forever without releasing the flight"
       ]
     }
   ]

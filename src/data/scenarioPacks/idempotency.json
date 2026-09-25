@@ -1,0 +1,202 @@
+{
+  "version": 1,
+  "patternId": "idempotency",
+  "patternName": "Idempotency",
+  "variants": [
+    {
+      "id": "idemp-01",
+      "title": "Double-click checkout",
+      "context": "A shopper double-clicks Pay and two POSTs create two orders and two charges.",
+      "constraint": "The client may retry; the user meant one purchase.",
+      "question": "What API property prevents duplicate charges?",
+      "expectedPattern": "An idempotency key so the second POST returns the original order instead of a new charge.",
+      "wrongChoices": [
+        "Disable the button only, with no server key",
+        "Accept both POSTs as separate orders",
+        "Increase the timeout so users click more"
+      ]
+    },
+    {
+      "id": "idemp-02",
+      "title": "Webhook delivered twice",
+      "context": "A payment provider sends the same paid event twice after a timeout.",
+      "constraint": "At-least-once delivery is documented.",
+      "question": "How should the webhook handler behave?",
+      "expectedPattern": "Dedupe on event id and treat a second delivery as a no-op success.",
+      "wrongChoices": [
+        "Credit the wallet twice",
+        "Return 500 so the provider retries again",
+        "Ignore event ids"
+      ]
+    },
+    {
+      "id": "idemp-03",
+      "title": "PUT vs POST for updates",
+      "context": "Clients retry a POST that increments a counter and the counter drifts.",
+      "constraint": "Retries are inevitable on mobile.",
+      "question": "Which HTTP model is safer?",
+      "expectedPattern": "Make the operation idempotent (PUT/UPSERT or key-protected POST), not a bare increment.",
+      "wrongChoices": [
+        "POST increment with no key",
+        "GET that mutates state",
+        "Client-only retry without server dedupe"
+      ]
+    },
+    {
+      "id": "idemp-04",
+      "title": "Key reused for a different body",
+      "context": "The same idempotency key is sent with a different cart total.",
+      "constraint": "Keys must bind to one request payload.",
+      "question": "What should the server return?",
+      "expectedPattern": "Reject the mismatch (e.g. 409) rather than silently applying a new charge under the old key.",
+      "wrongChoices": [
+        "Overwrite the first charge",
+        "Ignore the body and always 200",
+        "Create a third order"
+      ]
+    },
+    {
+      "id": "idemp-05",
+      "title": "In-flight duplicate",
+      "context": "A retry arrives while the first charge is still processing.",
+      "constraint": "Two workers must not both call the card network.",
+      "question": "What coordination is required?",
+      "expectedPattern": "Lock or record the key as in-progress so the second request waits or returns the same outcome.",
+      "wrongChoices": [
+        "Start a second charge in parallel",
+        "Drop the first request",
+        "No row for the key until after the network call"
+      ]
+    },
+    {
+      "id": "idemp-06",
+      "title": "Email send on retry",
+      "context": "A welcome email job retries after SMTP success but before ack, and the user gets two emails.",
+      "constraint": "SMTP is not transactional with the queue.",
+      "question": "How do you make the job safe?",
+      "expectedPattern": "Record a sent token for that user/email type before or atomically with send, and skip if already sent.",
+      "wrongChoices": [
+        "Send every time the job runs",
+        "Ack before send and lose the email",
+        "Disable retries entirely as the only control"
+      ]
+    },
+    {
+      "id": "idemp-07",
+      "title": "Client-generated IDs",
+      "context": "Mobile creates order IDs offline and replays them after reconnect.",
+      "constraint": "The same ID may arrive hours later.",
+      "question": "What uniqueness model fits?",
+      "expectedPattern": "Treat client order IDs as idempotency keys with a unique constraint on persist.",
+      "wrongChoices": [
+        "Server always assigns a new ID on every replay",
+        "No unique index on client order ID",
+        "Delete old orders when a replay arrives"
+      ]
+    },
+    {
+      "id": "idemp-08",
+      "title": "Partial failure after side effect",
+      "context": "The card is charged, then the DB write fails, then a retry charges again.",
+      "constraint": "The side effect happened outside your database.",
+      "question": "What must be stored first?",
+      "expectedPattern": "Persist the idempotency key and intended charge before calling the network, then complete or reconcile.",
+      "wrongChoices": [
+        "Call the network first with no local key",
+        "Retry charges without checking provider references",
+        "Trust only the HTTP 200 from the first attempt"
+      ]
+    },
+    {
+      "id": "idemp-09",
+      "title": "Idempotency store expires too soon",
+      "context": "Keys live 60 seconds, but mobile retries after 3 minutes and a second order is created.",
+      "constraint": "Retry windows are longer than the TTL.",
+      "question": "How long should keys live?",
+      "expectedPattern": "Keep idempotency records at least as long as realistic client retry windows.",
+      "wrongChoices": [
+        "60-second TTL for money moves",
+        "No persistence of keys",
+        "Expire keys on first response even if the client never saw it"
+      ]
+    },
+    {
+      "id": "idemp-10",
+      "title": "DELETE is retried",
+      "context": "A client retries DELETE /item/9 and the second call returns 404, which the app treats as failure.",
+      "constraint": "The item is already gone.",
+      "question": "What is the idempotent DELETE contract?",
+      "expectedPattern": "Treat a second DELETE as success (200/204) because the desired state is already absent.",
+      "wrongChoices": [
+        "404 as a hard error on every extra DELETE",
+        "Recreate the item so DELETE can run again",
+        "POST to delete"
+      ]
+    },
+    {
+      "id": "idemp-11",
+      "title": "GraphQL mutation without a key",
+      "context": "placeOrder is retried by Apollo after a timeout and two orders appear.",
+      "constraint": "Mutations are not automatically idempotent.",
+      "question": "What belongs on the mutation?",
+      "expectedPattern": "A client mutation id stored uniquely so retries return the first order.",
+      "wrongChoices": [
+        "Retries with no mutation id",
+        "Idempotency only on queries",
+        "Disable the network cache and hope"
+      ]
+    },
+    {
+      "id": "idemp-12",
+      "title": "Exactly-once as a slogan",
+      "context": "A team claims Kafka exactly-once, then a downstream HTTP call still fires twice.",
+      "constraint": "External side effects are outside the broker’s EOS.",
+      "question": "What still has to be designed?",
+      "expectedPattern": "Idempotent handlers at every side-effect boundary, not only broker EOS.",
+      "wrongChoices": [
+        "Assume Kafka EOS covers HTTP charges",
+        "No outbound idempotency keys",
+        "Disable acks"
+      ]
+    },
+    {
+      "id": "idemp-13",
+      "title": "Refund applied twice",
+      "context": "Support clicks Refund, the page times out, they click again, and the customer is paid twice.",
+      "constraint": "Refunds are irreversible money movement.",
+      "question": "What should the refund API require?",
+      "expectedPattern": "A unique refund key per payment so a second click returns the original refund.",
+      "wrongChoices": [
+        "Refund as a bare increment of a balance",
+        "No unique constraint on refund ids",
+        "Client-side disable button only"
+      ]
+    },
+    {
+      "id": "idemp-14",
+      "title": "Natural key already exists",
+      "context": "Creating a user by email retries and the unique index conflicts.",
+      "constraint": "The first request may have succeeded.",
+      "question": "How should the API treat the conflict?",
+      "expectedPattern": "Map the unique conflict to the existing user when the request is a retry of the same create.",
+      "wrongChoices": [
+        "Always 500 on unique violation",
+        "Create a second user with a suffix",
+        "Delete the first user"
+      ]
+    },
+    {
+      "id": "idemp-15",
+      "title": "Non-idempotent PATCH merge",
+      "context": "PATCH adds +1 to quantity on each retry because it sends a delta, not the desired quantity.",
+      "constraint": "Retries replay the same body.",
+      "question": "What payload is idempotent?",
+      "expectedPattern": "Send the desired absolute state (quantity = 3), not a relative increment.",
+      "wrongChoices": [
+        "PATCH { \"add\": 1 } on every retry",
+        "No version field and relative updates",
+        "Apply deltas twice to be sure"
+      ]
+    }
+  ]
+}

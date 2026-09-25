@@ -1,4 +1,5 @@
 {
+  "version": 1,
   "patternId": "consistency",
   "patternName": "Consistency & Read-Your-Own-Writes",
   "variants": [
@@ -130,6 +131,136 @@
         "Promise strong consistency globally",
         "Do nothing and accept stale reads",
         "Lock the platform on every write"
+      ]
+    },
+    {
+      "id": "cons-11",
+      "title": "Cart item vanishes after add",
+      "context": "A shopper adds an item, then the cart widget reads from a replica and shows zero items.",
+      "constraint": "The add already committed on the primary.",
+      "question": "What read policy belongs on the cart?",
+      "expectedPattern": "Sticky or primary reads for the shopper’s recent cart writes.",
+      "wrongChoices": [
+        "Always read carts from the farthest replica",
+        "Delay the add until every replica acknowledges",
+        "Hide the cart until the next day"
+      ]
+    },
+    {
+      "id": "cons-12",
+      "title": "Password change then login fails",
+      "context": "The user changes a password, is redirected to login, and authentication still checks a stale replica.",
+      "constraint": "Auth cannot accept a lag window for that user.",
+      "question": "Where must the login read go?",
+      "expectedPattern": "Read credentials from the primary (or a synchronously confirmed replica) after a password write.",
+      "wrongChoices": [
+        "Authenticate against any replica immediately",
+        "Cache the old password hash at the edge",
+        "Ask the user to wait five minutes without a fresh path"
+      ]
+    },
+    {
+      "id": "cons-13",
+      "title": "Monotonic reads broken on mobile",
+      "context": "A timeline first shows a new tweet, then an older timeline after a replica switch.",
+      "constraint": "Users notice time going backwards.",
+      "question": "Which session guarantee is missing?",
+      "expectedPattern": "Monotonic reads: once a client has seen version N, later reads in that session must not go backwards.",
+      "wrongChoices": [
+        "Random replica on every scroll",
+        "Global linearizability for every follower",
+        "No version tokens on the client"
+      ]
+    },
+    {
+      "id": "cons-14",
+      "title": "Like count jumps then drops",
+      "context": "The author sees 101 likes from the primary, then 97 from a replica on refresh.",
+      "constraint": "Counters are eventually consistent.",
+      "question": "How do you keep the author’s view stable?",
+      "expectedPattern": "Pin the author’s reads to a fresh source or show a monotonic client-side count until replicas catch up.",
+      "wrongChoices": [
+        "Show replica counts immediately after a write",
+        "Stop counting likes",
+        "Lock the entire likes table globally"
+      ]
+    },
+    {
+      "id": "cons-15",
+      "title": "Multi-tab edit conflict",
+      "context": "Two browser tabs load the same document from different replicas and last-write-wins silently drops a paragraph.",
+      "constraint": "Collaborative edits need conflict detection.",
+      "question": "What consistency tool belongs here?",
+      "expectedPattern": "Version tokens or optimistic concurrency so stale writes are rejected or merged.",
+      "wrongChoices": [
+        "Last write always wins with no version check",
+        "Force all edits through one replica without versions",
+        "Disable saving"
+      ]
+    },
+    {
+      "id": "cons-16",
+      "title": "Causal order of comments",
+      "context": "A reply appears before the parent comment because replicas apply writes out of order.",
+      "constraint": "Conversation threads need happens-before order.",
+      "question": "What ordering guarantee is required?",
+      "expectedPattern": "Causal consistency so a reply is not visible before its parent in the same thread.",
+      "wrongChoices": [
+        "Any replica apply order is fine",
+        "Strong global order for unrelated posts",
+        "Hide all comments until world-wide sync"
+      ]
+    },
+    {
+      "id": "cons-17",
+      "title": "Inventory decrement vs browse",
+      "context": "Checkout decrements stock on the primary; the product page still shows “in stock” from a replica.",
+      "constraint": "Overselling is worse than a slightly empty-looking page.",
+      "question": "Which path needs stronger reads?",
+      "expectedPattern": "Critical stock checks at checkout read from the primary; browse can stay eventually consistent.",
+      "wrongChoices": [
+        "Both browse and checkout always use the most lagged replica",
+        "Strong consistency on every marketing page",
+        "Never decrement stock"
+      ]
+    },
+    {
+      "id": "cons-18",
+      "title": "Session token after logout",
+      "context": "Logout invalidates a token on the primary, but a replica still accepts it for 20 seconds.",
+      "constraint": "Security-sensitive reads cannot be stale.",
+      "question": "What is the right invalidation model?",
+      "expectedPattern": "Synchronous invalidation or primary reads for authz checks, plus short-lived tokens.",
+      "wrongChoices": [
+        "Eventual logout is acceptable for session tokens",
+        "Cache valid tokens at the CDN for an hour",
+        "Only delete the cookie in the browser"
+      ]
+    },
+    {
+      "id": "cons-19",
+      "title": "Leader election split brain",
+      "context": "Two primaries accept writes during a network partition and later diverge.",
+      "constraint": "The cluster must choose one history.",
+      "question": "What consistency property was violated?",
+      "expectedPattern": "Single-leader (or consensus) so only one primary can accept writes in a partition.",
+      "wrongChoices": [
+        "Allow two writable primaries and merge later blindly",
+        "Turn off health checks",
+        "Read from any node as if it were primary"
+      ]
+    },
+    {
+      "id": "cons-20",
+      "title": "Bounded staleness SLA",
+      "context": "A dashboard promises data no older than 5 seconds, but replica lag is 40 seconds.",
+      "constraint": "The SLA is a product requirement.",
+      "question": "How should the read router behave?",
+      "expectedPattern": "Reject or reroute reads when replica lag exceeds the freshness bound, falling back to a fresher replica or primary.",
+      "wrongChoices": [
+        "Serve any replica regardless of lag",
+        "Hide the lag metric",
+        "Change the SLA after the page loads"
       ]
     }
   ]

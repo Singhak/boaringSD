@@ -1,0 +1,202 @@
+{
+  "version": 1,
+  "patternId": "multi-region",
+  "patternName": "Multi-Region",
+  "variants": [
+    {
+      "id": "mr-01",
+      "title": "Single-region blast radius",
+      "context": "An availability-zone storm takes the only region offline and the product is unreachable worldwide.",
+      "constraint": "RTO is 15 minutes; RPO is near-zero for orders.",
+      "question": "What architecture reduces that blast radius?",
+      "expectedPattern": "Run a second region with failover (or active-active) rather than one regional stack.",
+      "wrongChoices": [
+        "A bigger VM in the same region",
+        "More disks in the failed AZ only",
+        "Client-side retries to the dead region"
+      ]
+    },
+    {
+      "id": "mr-02",
+      "title": "DNS failover too slow",
+      "context": "The primary region dies, but clients cache the old IP for 30 minutes.",
+      "constraint": "TTL is 1800 seconds and there is no health-based routing.",
+      "question": "What makes regional failover actually work?",
+      "expectedPattern": "Health-checked global routing with short TTLs or Anycast, not static DNS alone.",
+      "wrongChoices": [
+        "Hope users flush DNS",
+        "Keep a 1-hour TTL for easier caching",
+        "Failover by emailing a new URL"
+      ]
+    },
+    {
+      "id": "mr-03",
+      "title": "Active-passive database lag",
+      "context": "Failover to the secondary region loses 12 minutes of orders because replication was asynchronous and unmonitored.",
+      "constraint": "Finance requires a small RPO.",
+      "question": "What must you design and measure?",
+      "expectedPattern": "Replication lag SLOs, and a failover policy that matches acceptable data loss.",
+      "wrongChoices": [
+        "Failover without checking lag",
+        "Synchronous cross-region commits for every analytics event",
+        "No replica in the standby region"
+      ]
+    },
+    {
+      "id": "mr-04",
+      "title": "Users pinned to a distant region",
+      "context": "APAC users always hit US-East even though an APAC stack exists.",
+      "constraint": "Latency is 220ms on tiny GETs.",
+      "question": "How should traffic be steered?",
+      "expectedPattern": "Route users to the nearest healthy region, with failover if that region is down.",
+      "wrongChoices": [
+        "One global origin for every user",
+        "Manual country files on each laptop",
+        "Force APAC through US to simplify ops"
+      ]
+    },
+    {
+      "id": "mr-05",
+      "title": "Config deployed to one region",
+      "context": "A feature flag is on in EU and off in US, so checkout rules disagree.",
+      "constraint": "Flags must be consistent for a given user.",
+      "question": "What multi-region concern is this?",
+      "expectedPattern": "Replicate control-plane config with a defined consistency model, or pin a user to one region’s flags.",
+      "wrongChoices": [
+        "Independent flags with no user affinity",
+        "Change flags only in the region that happens to be awake",
+        "Store flags in each pod’s local disk only"
+      ]
+    },
+    {
+      "id": "mr-06",
+      "title": "Stateful sessions in one region",
+      "context": "Sessions live in regional memory, so a failover logs everyone out.",
+      "constraint": "Users must survive a region loss.",
+      "question": "Where should session state live?",
+      "expectedPattern": "Replicated or globally reachable session storage, not process memory in one region.",
+      "wrongChoices": [
+        "Sticky sessions to a single region forever",
+        "No session store",
+        "Rebuild sessions only after a support ticket"
+      ]
+    },
+    {
+      "id": "mr-07",
+      "title": "Split-brain writes",
+      "context": "Both regions accept order writes during a partition and two inventories diverge.",
+      "constraint": "Orders cannot be merged blindly.",
+      "question": "What write policy avoids split brain?",
+      "expectedPattern": "A single-writer region or consensus so only one side accepts conflicting writes during a partition.",
+      "wrongChoices": [
+        "Active-active writes with no conflict resolution",
+        "Last timestamp wins on money",
+        "Both regions as unconstrained primaries"
+      ]
+    },
+    {
+      "id": "mr-08",
+      "title": "Warm standby is too cold",
+      "context": "The DR region has no running app instances; boot plus image pull takes 40 minutes.",
+      "constraint": "RTO is 15 minutes.",
+      "question": "What readiness level is required?",
+      "expectedPattern": "A warm or hot standby with scaled-out instances already running, not a cold start.",
+      "wrongChoices": [
+        "Document-only DR",
+        "One tiny VM that cannot take full load",
+        "Build AMIs after the outage starts"
+      ]
+    },
+    {
+      "id": "mr-09",
+      "title": "Data residency vs latency",
+      "context": "EU user data must stay in the EU, but the only search cluster is in the US.",
+      "constraint": "Regulation forbids unrestricted copies.",
+      "question": "How do you place the system?",
+      "expectedPattern": "Keep regulated data and its serving path in-region; do not replicate restricted fields globally.",
+      "wrongChoices": [
+        "Copy all PII to the US for simpler search",
+        "Ignore residency because latency is worse",
+        "One global unsharded PII table"
+      ]
+    },
+    {
+      "id": "mr-10",
+      "title": "Cron in every region",
+      "context": "A billing cron runs in US and EU and double-charges customers.",
+      "constraint": "Jobs are not region-aware.",
+      "question": "How should scheduled work be coordinated?",
+      "expectedPattern": "Elect a single region (or a lock) for globally unique jobs; run regional jobs only on regional data.",
+      "wrongChoices": [
+        "Every region runs every global job",
+        "Disable clocks",
+        "Charge twice and refund later as the design"
+      ]
+    },
+    {
+      "id": "mr-11",
+      "title": "Object storage is regional",
+      "context": "Images live in one bucket; failover region 404s every avatar.",
+      "constraint": "The app is multi-region; the bucket is not.",
+      "question": "What must be replicated?",
+      "expectedPattern": "Replicate or dual-write blobs (or use a global namespace) so both regions can read media.",
+      "wrongChoices": [
+        "Assume S3 in one region is globally durable for reads",
+        "Store images only on the app disk",
+        "Hotlink production from a laptop"
+      ]
+    },
+    {
+      "id": "mr-12",
+      "title": "Secret rotation in one region",
+      "context": "API keys rotate in US and EU pods still use the old key, then auth fails after failover.",
+      "constraint": "Secrets must be available everywhere you might run.",
+      "question": "What operational pattern is required?",
+      "expectedPattern": "Replicate secrets and rotate with overlap so every region can authenticate during failover.",
+      "wrongChoices": [
+        "Rotate in one region and fail over immediately",
+        "Hardcode keys in AMIs",
+        "Different prod keys with no mapping"
+      ]
+    },
+    {
+      "id": "mr-13",
+      "title": "Follow-the-sun on-call vs follow-the-traffic",
+      "context": "Traffic is global 24/7 but only one region is staffed, so overnight incidents wait.",
+      "constraint": "This is an operations design issue tied to multi-region.",
+      "question": "What must match the architecture?",
+      "expectedPattern": "Runbooks, paging, and dashboards that work for every serving region, not only HQ hours.",
+      "wrongChoices": [
+        "Multi-region serving with single-region observability",
+        "No paging outside HQ",
+        "Ignore secondary-region metrics"
+      ]
+    },
+    {
+      "id": "mr-14",
+      "title": "Schema migration not dual-region",
+      "context": "EU is on schema v12 and US is on v11 when traffic shifts.",
+      "constraint": "The app cannot read the new column in the old region.",
+      "question": "How do you migrate a multi-region fleet?",
+      "expectedPattern": "Expand-contract migrations that are compatible across versions, applied in every region before cutover.",
+      "wrongChoices": [
+        "Break the schema in one region first",
+        "Different schemas as a long-term state",
+        "Failover during a one-sided DDL"
+      ]
+    },
+    {
+      "id": "mr-15",
+      "title": "Global secondary indexes lag",
+      "context": "A user writes in Tokyo and immediately queries a global index that is 8 seconds behind.",
+      "constraint": "The user expects their own write.",
+      "question": "What consistency rule still applies across regions?",
+      "expectedPattern": "Read-your-own-writes or a local index for the writer; do not pretend a lagging global index is immediate.",
+      "wrongChoices": [
+        "Treat global indexes as strongly consistent everywhere",
+        "Force every read to wait for world-wide replication",
+        "Disable indexes"
+      ]
+    }
+  ]
+}

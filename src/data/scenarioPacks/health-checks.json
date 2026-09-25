@@ -1,0 +1,202 @@
+{
+  "version": 1,
+  "patternId": "health-checks",
+  "patternName": "Health Checks",
+  "variants": [
+    {
+      "id": "hc-01",
+      "title": "Liveness equals readiness",
+      "context": "A pod is killed because /health fails while the process is only warming a cache.",
+      "constraint": "The process is alive but not ready for traffic.",
+      "question": "How should probes be split?",
+      "expectedPattern": "Liveness means the process should be restarted; readiness means it can receive traffic.",
+      "wrongChoices": [
+        "One probe that kills the pod during warmup",
+        "No readiness gate",
+        "Liveness that hits a slow dependency"
+      ]
+    },
+    {
+      "id": "hc-02",
+      "title": "Health hits the primary database",
+      "context": "Every 2s probe runs SELECT 1 on the only primary from 300 pods.",
+      "constraint": "Probes become a real workload.",
+      "question": "What should a cheap check do?",
+      "expectedPattern": "Check local process health (and maybe a pool ping) without amplifying load on the primary.",
+      "wrongChoices": [
+        "Full table scan on every probe",
+        "Open a new DB connection per probe with no reuse",
+        "Probe every dependency on the user path"
+      ]
+    },
+    {
+      "id": "hc-03",
+      "title": "Always-200 health endpoint",
+      "context": " /health returns 200 even when the app cannot serve requests because a required dependency is down.",
+      "constraint": "The load balancer keeps sending traffic.",
+      "question": "What should readiness reflect?",
+      "expectedPattern": "Fail readiness when the instance cannot do useful work, so traffic shifts away.",
+      "wrongChoices": [
+        "200 regardless of dependency state",
+        "Crash the process on every blip",
+        "No probe at all"
+      ]
+    },
+    {
+      "id": "hc-04",
+      "title": "Deep health causes a cascade",
+      "context": "Readiness checks the payment vendor; the vendor blips and every pod goes unready at once.",
+      "constraint": "The site could still serve catalog traffic.",
+      "question": "How deep should default readiness be?",
+      "expectedPattern": "Check local critical dependencies, not every optional vendor, or isolate optional features.",
+      "wrongChoices": [
+        "Tie readiness to every third-party ping",
+        "Mark the whole site unready on an optional widget",
+        "No distinction between critical and optional"
+      ]
+    },
+    {
+      "id": "hc-05",
+      "title": "Startup probe missing",
+      "context": "A JVM app takes 90s to start, and liveness kills it at 30s in a loop.",
+      "constraint": "Slow start is expected.",
+      "question": "Which probe covers boot?",
+      "expectedPattern": "A startup probe (or delayed liveness) so slow boot is not treated as a crash loop.",
+      "wrongChoices": [
+        "Aggressive liveness during boot",
+        "No grace period",
+        "Kill on first failed TCP connect"
+      ]
+    },
+    {
+      "id": "hc-06",
+      "title": "Health on the public internet",
+      "context": " /health exposes internal versions, hostnames, and dependency errors to the world.",
+      "constraint": "Attackers scrape it.",
+      "question": "What belongs on a public probe?",
+      "expectedPattern": "A minimal authenticated or internal-only check; do not leak internals on a public URL.",
+      "wrongChoices": [
+        "Full stack traces on /health",
+        "Database credentials in the health JSON",
+        "Unauthenticated debug dumps"
+      ]
+    },
+    {
+      "id": "hc-07",
+      "title": "Stale success from a sidecar",
+      "context": "The sidecar answers 200 while the app process is dead.",
+      "constraint": "Traffic still reaches the pod IP.",
+      "question": "What must the probe actually test?",
+      "expectedPattern": "The serving process (or a port that fails when the app is down), not only the sidecar.",
+      "wrongChoices": [
+        "TCP to the sidecar admin port only",
+        "Always-ready as long as the pod exists",
+        "Kubelet ping of pause container only"
+      ]
+    },
+    {
+      "id": "hc-08",
+      "title": "Flapping readiness",
+      "context": "A dependency times out every other probe, so the instance flaps in and out of rotation.",
+      "constraint": "Users see a spray of 502s.",
+      "question": "How do you stabilize probes?",
+      "expectedPattern": "Thresholds (failure/success counts) and timeouts that ignore brief blips.",
+      "wrongChoices": [
+        "Unready on a single timeout",
+        "No failureThreshold",
+        "Probe interval of 50ms"
+      ]
+    },
+    {
+      "id": "hc-09",
+      "title": "Exec probe saturates CPU",
+      "context": "An exec health script forks a shell and a Python interpreter every second on each pod.",
+      "constraint": "The check is heavier than the app.",
+      "question": "What probe type is appropriate?",
+      "expectedPattern": "A cheap HTTP or TCP check in-process, not a heavy exec on every interval.",
+      "wrongChoices": [
+        "shell out to a large script every second",
+        "Compile code on each probe",
+        "Run integration tests as liveness"
+      ]
+    },
+    {
+      "id": "hc-10",
+      "title": "Drain ignored",
+      "context": "A deploy SIGKILLs pods while they are still in the load balancer pool.",
+      "constraint": "In-flight requests are cut.",
+      "question": "What sequence should health enable?",
+      "expectedPattern": "Fail readiness, wait for drain, then stop the process.",
+      "wrongChoices": [
+        "Kill before removing from rotation",
+        "No preStop delay",
+        "Readiness true until SIGKILL"
+      ]
+    },
+    {
+      "id": "hc-11",
+      "title": "Synthetic check vs real path",
+      "context": "Health returns 200, but the only real endpoint needs a missing config file and 500s.",
+      "constraint": "The probe does not exercise the serving path.",
+      "question": "What is the gap?",
+      "expectedPattern": "Readiness should verify the process can serve its critical path, not a dummy string.",
+      "wrongChoices": [
+        "return \"ok\" with no checks",
+        "Ignore config load failures",
+        "Health on a different binary"
+      ]
+    },
+    {
+      "id": "hc-12",
+      "title": "Multi-port service",
+      "context": "Metrics port is up, HTTP API port is down, and the balancer uses the metrics port as health.",
+      "constraint": "Users hit the API port.",
+      "question": "Which port should readiness use?",
+      "expectedPattern": "Probe the user-facing port and protocol, not a side port that can be healthy independently.",
+      "wrongChoices": [
+        "Health on metrics only",
+        "TCP 22 as the app check",
+        "Assume all ports fail together"
+      ]
+    },
+    {
+      "id": "hc-13",
+      "title": "Health check storm after deploy",
+      "context": "A mesh retries probes from every sidecar at once and the new pods never become ready.",
+      "constraint": "Probe concurrency is unbounded.",
+      "question": "How do you keep probes from becoming load?",
+      "expectedPattern": "Bound probe rate and cost so health traffic cannot prevent readiness.",
+      "wrongChoices": [
+        "Unbounded parallel deep checks",
+        "Probe the production database with heavy queries at deploy",
+        "No timeout on probes"
+      ]
+    },
+    {
+      "id": "hc-14",
+      "title": "Dependency timeout longer than probe timeout",
+      "context": "Readiness waits 10s on a 30s downstream timeout and probes overlap until threads exhaust.",
+      "constraint": "Probes pile up.",
+      "question": "What timeout rule applies?",
+      "expectedPattern": "Health checks must use short timeouts and bounded concurrency, shorter than the probe period.",
+      "wrongChoices": [
+        "Downstream 30s timeout on every probe",
+        "Overlapping probes with no cap",
+        "No deadline on health"
+      ]
+    },
+    {
+      "id": "hc-15",
+      "title": "False healthy during deadlock",
+      "context": "The health thread is separate and still answers 200 while request threads are deadlocked.",
+      "constraint": "Users are stuck; probes are green.",
+      "question": "What should liveness detect?",
+      "expectedPattern": "A check that fails if the request path cannot make progress (watchdog), not only a side thread.",
+      "wrongChoices": [
+        "A dedicated thread that always returns 200",
+        "No deadlock detection",
+        "Health in a process that never serves traffic"
+      ]
+    }
+  ]
+}

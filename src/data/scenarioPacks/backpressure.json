@@ -1,0 +1,202 @@
+{
+  "version": 1,
+  "patternId": "backpressure",
+  "patternName": "Backpressure",
+  "variants": [
+    {
+      "id": "bp-01",
+      "title": "Unbounded in-memory queue",
+      "context": "Producers keep appending jobs in RAM while workers are stuck, and the process OOMs.",
+      "constraint": "Work arrives faster than it completes.",
+      "question": "What should producers see?",
+      "expectedPattern": "A bounded queue that blocks, drops, or returns 429 when full instead of growing forever.",
+      "wrongChoices": [
+        "An infinite in-memory list",
+        "Ignore worker lag",
+        "Disable memory limits"
+      ]
+    },
+    {
+      "id": "bp-02",
+      "title": "Accept then collapse",
+      "context": "The API returns 200 for every upload even though transcode workers are 6 hours behind.",
+      "constraint": "Users believe work is done.",
+      "question": "What signal is missing?",
+      "expectedPattern": "Apply backpressure at ingest (slow down or reject) when downstream capacity is exceeded.",
+      "wrongChoices": [
+        "Always 200 regardless of backlog",
+        "Hide queue depth",
+        "Accept all uploads into memory"
+      ]
+    },
+    {
+      "id": "bp-03",
+      "title": "TCP buffer hides overload",
+      "context": "A client keeps sending because the kernel buffer is large, then the server dies at once.",
+      "constraint": "The application never signals slowdown.",
+      "question": "Where should pressure propagate?",
+      "expectedPattern": "Stop reading or send a full/busy signal so senders slow down before collapse.",
+      "wrongChoices": [
+        "Larger kernel buffers as the only defense",
+        "No read pauses",
+        "Drop the connection after OOM"
+      ]
+    },
+    {
+      "id": "bp-04",
+      "title": "Stream without demand",
+      "context": "A reactive pipeline requests unbounded data from Kafka and blows the heap.",
+      "constraint": "Consumers can process 500/s; brokers deliver 20,000/s.",
+      "question": "What is the streaming rule?",
+      "expectedPattern": "Request only as many records as you can process (consumer lag + pause, or reactive demand).",
+      "wrongChoices": [
+        "max.poll.records at millions",
+        "Disable consumer pause",
+        "Buffer the topic in the app"
+      ]
+    },
+    {
+      "id": "bp-05",
+      "title": "Autoscaling too late",
+      "context": "CPU hits 100% and the queue is 2 million deep before scale-out starts.",
+      "constraint": "Scale-out takes 5 minutes.",
+      "question": "How does backpressure help in the meantime?",
+      "expectedPattern": "Reject or delay new work at the edge while scaling, instead of accepting an unbounded backlog.",
+      "wrongChoices": [
+        "Keep accepting until disk is full",
+        "Scale only after OOM",
+        "Disable load shedding"
+      ]
+    },
+    {
+      "id": "bp-06",
+      "title": "Downstream 429 ignored",
+      "context": "A payment API returns 429 and the worker retries immediately in a tight loop.",
+      "constraint": "The vendor asked you to slow down.",
+      "question": "How do you honor backpressure?",
+      "expectedPattern": "Backoff on 429/Retry-After and pause producers, not hammer the dependency.",
+      "wrongChoices": [
+        "Retry immediately forever",
+        "Open more worker threads on 429",
+        "Convert 429 to 200"
+      ]
+    },
+    {
+      "id": "bp-07",
+      "title": "UI spinner as backpressure",
+      "context": "The browser fires 30 search keystrokes as 30 HTTP calls with no debounce.",
+      "constraint": "The search cluster is small.",
+      "question": "Where can pressure start?",
+      "expectedPattern": "Client-side debounce plus server limits so the origin is not flooded with in-flight searches.",
+      "wrongChoices": [
+        "One HTTP call per keypress with no cap",
+        "Server-side only after collapse",
+        "Disable search"
+      ]
+    },
+    {
+      "id": "bp-08",
+      "title": "Priority inversion in the buffer",
+      "context": "Interactive clicks sit behind 10GB of bulk import in one socket buffer.",
+      "constraint": "Both share one accept path.",
+      "question": "How do you apply pressure fairly?",
+      "expectedPattern": "Separate queues or admission control so bulk work is slowed first, not user traffic.",
+      "wrongChoices": [
+        "One FIFO buffer for bulk and interactive",
+        "Drop interactive first",
+        "No isolation"
+      ]
+    },
+    {
+      "id": "bp-09",
+      "title": "Disk-backed queue as infinite sink",
+      "context": "A broker retains everything for 14 days and producers never slow down during a 3-day worker outage.",
+      "constraint": "Disk will fill.",
+      "question": "What is still required?",
+      "expectedPattern": "Retention limits and producer quotas so the log cannot grow without bound.",
+      "wrongChoices": [
+        "Infinite retention as a design goal",
+        "No producer quotas",
+        "Delete consumer groups instead of limiting produce"
+      ]
+    },
+    {
+      "id": "bp-10",
+      "title": "gRPC without flow control awareness",
+      "context": "A server writes responses as fast as it can while the client is paused, until memory blows.",
+      "constraint": "HTTP/2 has windowing if you use it.",
+      "question": "What should the server respect?",
+      "expectedPattern": "Honor stream flow-control windows; stop sending when the client cannot receive.",
+      "wrongChoices": [
+        "Buffer entire responses in memory always",
+        "Ignore HTTP/2 windows",
+        "Increase message size only"
+      ]
+    },
+    {
+      "id": "bp-11",
+      "title": "Load shed vs random timeouts",
+      "context": "Under overload, every request times out after 30s, including cheap ones.",
+      "constraint": "Some work is more valuable.",
+      "question": "What is a better overload policy?",
+      "expectedPattern": "Shed low-priority or new work quickly so remaining capacity serves high-value requests.",
+      "wrongChoices": [
+        "Let all requests time out together",
+        "No admission control",
+        "Longer timeouts under load"
+      ]
+    },
+    {
+      "id": "bp-12",
+      "title": "N+1 fan-out without a budget",
+      "context": "One user request fans out to 400 internal RPCs and the mesh saturates.",
+      "constraint": "The fan-out is unbounded per request.",
+      "question": "How do you apply backpressure internally?",
+      "expectedPattern": "Cap concurrency per request and fail or batch when the budget is exceeded.",
+      "wrongChoices": [
+        "Unbounded parallel RPCs",
+        "No timeout on fan-out",
+        "Retry each of the 400 calls three times"
+      ]
+    },
+    {
+      "id": "bp-13",
+      "title": "Mobile sync backlog",
+      "context": "A device was offline for a week and tries to upload 50,000 events at once.",
+      "constraint": "The ingest API cannot take that burst from every device.",
+      "question": "How should the client behave?",
+      "expectedPattern": "Chunk uploads and respect server 429/backpressure so sync is paced.",
+      "wrongChoices": [
+        "POST the entire week in one body repeatedly",
+        "Ignore 429",
+        "Open 100 parallel sockets"
+      ]
+    },
+    {
+      "id": "bp-14",
+      "title": "Thread pool rejection ignored",
+      "context": "The executor rejects tasks but the HTTP layer still reads the full body into RAM.",
+      "constraint": "Rejection happens too late.",
+      "question": "When should you apply pressure?",
+      "expectedPattern": "Refuse work at the earliest gate (accept, auth, or queue) before allocating heavy buffers.",
+      "wrongChoices": [
+        "Read unbounded bodies then reject",
+        "Reject only after OOM",
+        "Catch RejectedExecution and retry inline forever"
+      ]
+    },
+    {
+      "id": "bp-15",
+      "title": "Happy eyeballs on a melting origin",
+      "context": "Clients open extra connections when slow, which adds more load to a sick origin.",
+      "constraint": "Retries amplify overload.",
+      "question": "What is the backpressure-friendly client policy?",
+      "expectedPattern": "Retry budgets and hedged requests only when the system is healthy, not under 5xx storms.",
+      "wrongChoices": [
+        "Hedge every slow call during an outage",
+        "Unlimited parallel connections",
+        "No retry budget"
+      ]
+    }
+  ]
+}

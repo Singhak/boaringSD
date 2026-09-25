@@ -1,0 +1,267 @@
+{
+  "version": 1,
+  "patternId": "rate-limiting",
+  "patternName": "Rate Limiting",
+  "variants": [
+    {
+      "id": "rl-01",
+      "title": "One client floods the public API",
+      "context": "A single API key sends 20,000 req/s and the shared cluster’s p99 jumps from 80ms to 4s.",
+      "constraint": "Other tenants are healthy but share the same edge.",
+      "question": "What protects the majority of clients?",
+      "expectedPattern": "Per-key rate limits at the edge so one caller cannot consume the whole fleet.",
+      "wrongChoices": [
+        "Add more app servers only",
+        "Increase timeouts for everyone",
+        "Disable authentication"
+      ]
+    },
+    {
+      "id": "rl-02",
+      "title": "Login brute force",
+      "context": "Password guesses hit /login from many IPs against one account.",
+      "constraint": "You must slow attackers without locking out the real user forever.",
+      "question": "Where should the limit sit?",
+      "expectedPattern": "Rate-limit by account and IP on the auth path, with backoff rather than a silent 200.",
+      "wrongChoices": [
+        "No limit on login because it is a small JSON body",
+        "Block the entire country",
+        "Store passwords in a cache with no attempt counter"
+      ]
+    },
+    {
+      "id": "rl-03",
+      "title": "Burst vs sustained traffic",
+      "context": "A mobile app retries a page load and 40 requests arrive in 200ms, then traffic is quiet.",
+      "constraint": "Short bursts are normal; sustained abuse is not.",
+      "question": "Which limiter shape fits?",
+      "expectedPattern": "Token bucket or leaky bucket that allows bursts but caps sustained rate.",
+      "wrongChoices": [
+        "Hard 1 request per minute with no burst",
+        "Unlimited retries",
+        "A global mutex on all mobile traffic"
+      ]
+    },
+    {
+      "id": "rl-04",
+      "title": "Expensive search endpoint",
+      "context": "Full-text search costs 50x a simple GET, and a few users monopolize the search cluster.",
+      "constraint": "Cheap endpoints should stay fast.",
+      "question": "How should limits differ?",
+      "expectedPattern": "Cost-based or endpoint-specific limits so expensive routes have a lower quota.",
+      "wrongChoices": [
+        "The same QPS cap on health checks and search",
+        "No limit because search is important",
+        "Queue search inside the web thread with no cap"
+      ]
+    },
+    {
+      "id": "rl-05",
+      "title": "Distributed counters disagree",
+      "context": "Each app instance counts locally and the true rate is 8x the intended limit.",
+      "constraint": "Instances do not share limiter state.",
+      "question": "What makes the limit correct?",
+      "expectedPattern": "A shared rate-limit store or a gateway that enforces the quota centrally.",
+      "wrongChoices": [
+        "Per-process counters with no coordination",
+        "Random 429s",
+        "Limits only in the client SDK"
+      ]
+    },
+    {
+      "id": "rl-06",
+      "title": "429 with no Retry-After",
+      "context": "Clients retry immediately after 429 and the limiter never cools down.",
+      "constraint": "Honest clients will follow standard headers.",
+      "question": "What should the API return?",
+      "expectedPattern": "429 plus Retry-After (or equivalent) so clients back off predictably.",
+      "wrongChoices": [
+        "200 with an empty body",
+        "Connection reset with no status",
+        "500 so clients retry faster"
+      ]
+    },
+    {
+      "id": "rl-07",
+      "title": "Partner SLA vs noisy neighbor",
+      "context": "A gold partner is starved because a free-tier integration shares one global QPS bucket.",
+      "constraint": "Tiers have different contracts.",
+      "question": "How should quotas be modeled?",
+      "expectedPattern": "Separate limit buckets per tenant and plan, not one global counter.",
+      "wrongChoices": [
+        "One cluster-wide QPS for all keys",
+        "Unlimited gold traffic with no isolation",
+        "Fairness by IP only"
+      ]
+    },
+    {
+      "id": "rl-08",
+      "title": "GraphQL alias explosion",
+      "context": "A query uses 200 aliases to bypass a 100 req/min HTTP limit.",
+      "constraint": "HTTP QPS looks fine; resolver work does not.",
+      "question": "What must be limited?",
+      "expectedPattern": "Limit by query cost or resolver work, not only HTTP requests.",
+      "wrongChoices": [
+        "Count only HTTP connections",
+        "Disable GraphQL complexity analysis",
+        "Cache the attack query as a public object"
+      ]
+    },
+    {
+      "id": "rl-09",
+      "title": "Webhooks retry us to death",
+      "context": "A partner retries failed webhooks at 100/s while we are already degraded.",
+      "constraint": "Inbound webhooks share the public edge.",
+      "question": "What stops the amplification?",
+      "expectedPattern": "Per-source webhook rate limits and a 429 that partners honor, plus a dedicated ingest path.",
+      "wrongChoices": [
+        "Process every retry on the checkout thread",
+        "Return 500 to encourage more retries",
+        "Block all webhooks forever"
+      ]
+    },
+    {
+      "id": "rl-10",
+      "title": "Internal job stampedes the API",
+      "context": "A nightly backfill uses the public API without a quota and knocks over interactive traffic.",
+      "constraint": "The job is legitimate but unbounded.",
+      "question": "How do you isolate it?",
+      "expectedPattern": "A separate rate-limited (or internal) path with its own quota, not the interactive bucket.",
+      "wrongChoices": [
+        "Run the backfill as anonymous public traffic",
+        "Disable rate limits at night",
+        "Give the job the admin cookie"
+      ]
+    },
+    {
+      "id": "rl-11",
+      "title": "Clock skew on sliding windows",
+      "context": "Two gateways use local time for a 1-minute window and a client slips through both.",
+      "constraint": "Enforcement must be approximately correct globally.",
+      "question": "What keeps windows aligned?",
+      "expectedPattern": "A shared counter or synchronized window key, not independent local clocks as the only source of truth.",
+      "wrongChoices": [
+        "Trust each node’s wall clock independently",
+        "Disable NTP",
+        "Count only successful responses"
+      ]
+    },
+    {
+      "id": "rl-12",
+      "title": "Limit on success hides failures",
+      "context": "Failed logins do not count toward the limit, so attackers iterate for free.",
+      "constraint": "Abuse is in the attempt, not the 200.",
+      "question": "What should increment the counter?",
+      "expectedPattern": "Count attempts (especially failures) on sensitive endpoints, not only successful calls.",
+      "wrongChoices": [
+        "Count only HTTP 200",
+        "Reset the counter on every 401",
+        "Unlimited failures from one IP"
+      ]
+    },
+    {
+      "id": "rl-13",
+      "title": "CDN caches 429 for everyone",
+      "context": "One user is limited and the CDN caches that 429 as a public response.",
+      "constraint": "Limits are per client.",
+      "question": "How should 429s be cached?",
+      "expectedPattern": "Do not share per-user 429s as public cache objects; vary by identity or skip cache.",
+      "wrongChoices": [
+        "Cache 429 HTML for all users for 24 hours",
+        "Convert 429 to 200 at the edge",
+        "Strip rate-limit headers"
+      ]
+    },
+    {
+      "id": "rl-14",
+      "title": "Websocket message flood",
+      "context": "HTTP is limited, but a socket sends 10,000 chat messages per second.",
+      "constraint": "The connection stays below HTTP QPS limits.",
+      "question": "Where else must limits apply?",
+      "expectedPattern": "Rate-limit messages per connection and per user on the socket path.",
+      "wrongChoices": [
+        "Only limit HTTP POST",
+        "Trust the client to throttle",
+        "Close sockets only after the database melts"
+      ]
+    },
+    {
+      "id": "rl-15",
+      "title": "Fairness inside a bursty game server",
+      "context": "Matchmaking accepts all packets until CPU is 100%, then everyone times out.",
+      "constraint": "Need isolation before collapse.",
+      "question": "What is the first control?",
+      "expectedPattern": "Admit traffic only up to a safe rate and reject or delay the rest with a clear signal.",
+      "wrongChoices": [
+        "Unbounded accept queue",
+        "Longer client timeouts as the only fix",
+        "One giant mutex around matchmaking"
+      ]
+    },
+    {
+      "id": "rl-16",
+      "title": "Shared NAT looks like one user",
+      "context": "A university NAT makes 4,000 students share one IP, so an IP limit blocks the campus.",
+      "constraint": "Abuse still exists, but IP is a coarse key.",
+      "question": "What identity should you prefer?",
+      "expectedPattern": "Limit by user or API key first; treat IP as a secondary signal.",
+      "wrongChoices": [
+        "IP-only limits as the sole control",
+        "No limits on campus ranges",
+        "Ban the NAT prefix permanently"
+      ]
+    },
+    {
+      "id": "rl-17",
+      "title": "Write amplification on comments",
+      "context": "Comment POST is cheap to receive but fans out to millions of notification writes.",
+      "constraint": "Ingress QPS understates real cost.",
+      "question": "How do you cap the damage?",
+      "expectedPattern": "Limit writes by user and by downstream fan-out cost, not raw POST count alone.",
+      "wrongChoices": [
+        "Unlimited POSTs because bodies are small",
+        "Fan out synchronously with no cap",
+        "Disable notifications only after the queue is full"
+      ]
+    },
+    {
+      "id": "rl-18",
+      "title": "Health checks counted as user traffic",
+      "context": "A load balancer probe hits / every second from 200 nodes and trips the global limiter.",
+      "constraint": "Probes must keep succeeding.",
+      "question": "How should probes be treated?",
+      "expectedPattern": "Exempt or separately bucket health checks so they do not consume user quota.",
+      "wrongChoices": [
+        "429 the load balancer probes",
+        "Remove health checks",
+        "Count probes as the noisiest tenant"
+      ]
+    },
+    {
+      "id": "rl-19",
+      "title": "Soft limit then hard shed",
+      "context": "At 80% of quota the API still accepts work; at 100% it dies instead of degrading.",
+      "constraint": "Need a warning band before hard reject.",
+      "question": "What policy is missing?",
+      "expectedPattern": "Soft limits (slowdown or 429 with remaining budget) before hard shedding.",
+      "wrongChoices": [
+        "Fail closed only after OOM",
+        "No remaining-quota headers",
+        "Silent drops with 200"
+      ]
+    },
+    {
+      "id": "rl-20",
+      "title": "Cron from every pod",
+      "context": "Each replica runs the same cron and 30 instances hit a partner API at 00:00.",
+      "constraint": "The partner’s rate limit is per account.",
+      "question": "What prevents the stampede?",
+      "expectedPattern": "Leader-elected or queued cron so only one producer runs, plus a client-side rate limiter.",
+      "wrongChoices": [
+        "Every pod fires the same job",
+        "Disable the partner API",
+        "Sleep a random 0ms"
+      ]
+    }
+  ]
+}

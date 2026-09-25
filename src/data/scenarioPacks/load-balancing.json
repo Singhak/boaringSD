@@ -1,4 +1,5 @@
 {
+  "version": 1,
   "patternId": "load-balancing",
   "patternName": "Load Balancing",
   "variants": [
@@ -130,6 +131,136 @@
         "Round robin without health",
         "Manual region mapping only",
         "One database per region"
+      ]
+    },
+    {
+      "id": "lb-11",
+      "title": "gRPC clients pin to one pod",
+      "context": "A gRPC client pool opens long-lived connections and 80% of RPCs stay on the first pod.",
+      "constraint": "The balancer only sees connection count, not RPC rate.",
+      "question": "What restores even RPC distribution?",
+      "expectedPattern": "Balance at request level or refresh backends so long-lived connections do not pin load.",
+      "wrongChoices": [
+        "Add more database indexes",
+        "Increase HTTP timeouts",
+        "Cache every RPC response forever"
+      ]
+    },
+    {
+      "id": "lb-12",
+      "title": "Health checks pass on a dying node",
+      "context": "A node answers /health in 5ms but its request queue is 12 seconds deep.",
+      "constraint": "The probe does not measure real work capacity.",
+      "question": "What should the balancer use instead?",
+      "expectedPattern": "Health checks that include queue depth, error rate, or dependency readiness.",
+      "wrongChoices": [
+        "Ping only the operating system",
+        "Disable health checks",
+        "Route extra traffic to that node to test it"
+      ]
+    },
+    {
+      "id": "lb-13",
+      "title": "Canary takes all production traffic",
+      "context": "A 5% canary is deployed, but weighted routing is misconfigured and the canary receives 100%.",
+      "constraint": "The canary has far less capacity than the stable pool.",
+      "question": "What did the balancing layer fail to do?",
+      "expectedPattern": "Honor traffic weights so only a small share reaches the canary.",
+      "wrongChoices": [
+        "Delete the stable pool",
+        "Increase canary CPU after the spike",
+        "Use DNS round robin as the only control"
+      ]
+    },
+    {
+      "id": "lb-14",
+      "title": "Least-connections prefers a slow node",
+      "context": "A slow instance holds connections longer, so least-connections keeps sending it more work.",
+      "constraint": "Connection count is a poor proxy for remaining capacity.",
+      "question": "How should routing adapt?",
+      "expectedPattern": "Use latency-aware or utilization-aware balancing, not connection count alone.",
+      "wrongChoices": [
+        "Always use source-IP hash",
+        "Turn off the fast nodes",
+        "Increase keep-alive forever"
+      ]
+    },
+    {
+      "id": "lb-15",
+      "title": "Internal services skip the mesh",
+      "context": "Public traffic is balanced, but service-to-service calls go to hardcoded IPs.",
+      "constraint": "One internal host becomes a hidden hotspot.",
+      "question": "What completes the architecture?",
+      "expectedPattern": "Send east-west traffic through a balancer or service mesh with health-aware routing.",
+      "wrongChoices": [
+        "Hardcode a second IP in every client",
+        "Add a CDN in front of internal RPCs",
+        "Increase the hotspot’s disk size"
+      ]
+    },
+    {
+      "id": "lb-16",
+      "title": "Draining a node still receives writes",
+      "context": "An instance is marked for deploy, but new requests keep landing on it until it is killed.",
+      "constraint": "The balancer has no connection-drain or weight-zero path.",
+      "question": "What should happen before shutdown?",
+      "expectedPattern": "Take the node out of rotation, drain in-flight work, then stop the process.",
+      "wrongChoices": [
+        "Kill the process immediately",
+        "Lower DNS TTL only",
+        "Wait for users to stop clicking"
+      ]
+    },
+    {
+      "id": "lb-17",
+      "title": "Layer-4 balancer hides HTTP errors",
+      "context": "TCP health checks stay green while the app returns 503 on every request.",
+      "constraint": "The balancer only knows the port is open.",
+      "question": "What check is missing?",
+      "expectedPattern": "Application-level health checks that fail when the service cannot serve correctly.",
+      "wrongChoices": [
+        "More TCP connections",
+        "A larger SYN backlog",
+        "Client-side exponential backoff only"
+      ]
+    },
+    {
+      "id": "lb-18",
+      "title": "Sticky sessions after node loss",
+      "context": "A node dies and users bound to it get errors until their sticky cookie expires.",
+      "constraint": "Affinity outlives the backend.",
+      "question": "How should the balancer behave?",
+      "expectedPattern": "Drop affinity for dead targets and reassign those users to healthy nodes.",
+      "wrongChoices": [
+        "Keep sending them to the dead node",
+        "Force all users onto one remaining node forever",
+        "Disable HTTPS"
+      ]
+    },
+    {
+      "id": "lb-19",
+      "title": "Burst of retries overwhelms survivors",
+      "context": "Clients retry failed calls and the remaining two nodes receive 3x traffic instantly.",
+      "constraint": "The balancer has no retry budget or overload shed.",
+      "question": "What protection belongs at the distribution layer?",
+      "expectedPattern": "Shed load, cap retries, and keep enough healthy capacity before amplifying traffic.",
+      "wrongChoices": [
+        "Retry every failure immediately with no cap",
+        "Disable the remaining nodes",
+        "Increase idle timeouts only"
+      ]
+    },
+    {
+      "id": "lb-20",
+      "title": "Anycast edge sends all packets to one PoP",
+      "context": "An Anycast VIP is announced from three PoPs, but one PoP attracts almost all users.",
+      "constraint": "Routing is based on BGP, not backend health.",
+      "question": "What should you add behind the VIP?",
+      "expectedPattern": "Local load balancing with health checks inside each PoP, plus withdraw unhealthy announcements.",
+      "wrongChoices": [
+        "A single origin database in that PoP",
+        "Manual user assignment by country code only",
+        "Longer TCP timeouts at the busy PoP"
       ]
     }
   ]

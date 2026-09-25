@@ -1,0 +1,202 @@
+{
+  "version": 1,
+  "patternId": "circuit-breaker",
+  "patternName": "Circuit Breaker",
+  "variants": [
+    {
+      "id": "cb-01",
+      "title": "Payments hang every checkout",
+      "context": "The payment provider is down and every checkout thread waits 30 seconds.",
+      "constraint": "The rest of the site could still browse.",
+      "question": "What stops the thread pileup?",
+      "expectedPattern": "Open a circuit after consecutive failures and fail fast instead of waiting on the timeout.",
+      "wrongChoices": [
+        "Increase the payment timeout",
+        "Retry every call immediately",
+        "Block the homepage too"
+      ]
+    },
+    {
+      "id": "cb-02",
+      "title": "Retrying a dead dependency",
+      "context": "An inventory service returns 503 and callers retry three times, tripling load.",
+      "constraint": "The dependency needs time to recover.",
+      "question": "What should happen after the error budget is spent?",
+      "expectedPattern": "Trip the breaker, stop calling for a cooldown, then probe with limited traffic.",
+      "wrongChoices": [
+        "Retry harder",
+        "Remove timeouts",
+        "Cache 503 as success"
+      ]
+    },
+    {
+      "id": "cb-03",
+      "title": "Partial outage looks healthy",
+      "context": "1 in 3 calls fail, but the breaker never opens because it only trips on 100% failure.",
+      "constraint": "Users already see errors.",
+      "question": "What trip condition is better?",
+      "expectedPattern": "Open on error rate or latency SLO breach, not only total blackout.",
+      "wrongChoices": [
+        "Trip only if every call fails",
+        "Never trip in production",
+        "Count only TCP resets"
+      ]
+    },
+    {
+      "id": "cb-04",
+      "title": "Breaker never half-opens",
+      "context": "A circuit opened at 02:00 and still rejects all calls at noon even though the dependency recovered at 02:10.",
+      "constraint": "There is no probe interval.",
+      "question": "What state is missing?",
+      "expectedPattern": "Half-open: allow a small probe, then close the circuit if the dependency is healthy.",
+      "wrongChoices": [
+        "Stay open forever until a restart",
+        "Close immediately on the first timeout",
+        "Page a human for every recovery"
+      ]
+    },
+    {
+      "id": "cb-05",
+      "title": "One slow endpoint poisons the client",
+      "context": "A shared HTTP client trips for all routes because /reports is slow.",
+      "constraint": " /checkout is still healthy.",
+      "question": "How should breakers be scoped?",
+      "expectedPattern": "Per-dependency and per-endpoint circuits, not one breaker for the whole host.",
+      "wrongChoices": [
+        "One global breaker for every outbound call",
+        "No isolation between routes",
+        "Disable the healthy endpoint"
+      ]
+    },
+    {
+      "id": "cb-06",
+      "title": "Fallback to stale catalog",
+      "context": "The recommendations service is down and the homepage waits on it.",
+      "constraint": "A slightly stale list is acceptable.",
+      "question": "What should the open circuit return?",
+      "expectedPattern": "A fallback: cached or default recommendations instead of blocking the page.",
+      "wrongChoices": [
+        "Blank 500 for the whole homepage",
+        "Hang until recommendations return",
+        "Write a full outage banner for unrelated pages"
+      ]
+    },
+    {
+      "id": "cb-07",
+      "title": "Breaker on the database",
+      "context": "Postgres is slow and every request still opens a new query.",
+      "constraint": "Holding more connections makes recovery worse.",
+      "question": "What does a circuit do here?",
+      "expectedPattern": "Fail fast when the database error rate is high so the pool can recover.",
+      "wrongChoices": [
+        "Raise max_connections during the incident",
+        "Retry every query with no delay",
+        "Disable health checks"
+      ]
+    },
+    {
+      "id": "cb-08",
+      "title": "Flapping circuit",
+      "context": "The breaker opens and closes every few seconds as one probe succeeds then fails.",
+      "constraint": "Oscillation confuses clients.",
+      "question": "How do you stabilize it?",
+      "expectedPattern": "Require a streak of successful probes and a minimum open duration before closing.",
+      "wrongChoices": [
+        "Close on a single success",
+        "Randomize open/closed every request",
+        "Remove metrics"
+      ]
+    },
+    {
+      "id": "cb-09",
+      "title": "Timeout longer than user patience",
+      "context": "The user abandons at 3s, but the service waits 30s on a vendor API.",
+      "constraint": "Resources stay occupied after the user is gone.",
+      "question": "What bound belongs with the breaker?",
+      "expectedPattern": "Timeouts shorter than the user SLA, then trip if those timeouts become common.",
+      "wrongChoices": [
+        "Vendor timeout of 30s on the user path",
+        "No timeout",
+        "Client-side spinner only"
+      ]
+    },
+    {
+      "id": "cb-10",
+      "title": "Bulkhead missing next to the breaker",
+      "context": "A circuit opens on search, but search still occupies the only thread pool.",
+      "constraint": "Checkout shares that pool.",
+      "question": "What complementary pattern is needed?",
+      "expectedPattern": "Isolate thread pools (bulkhead) so a broken dependency cannot starve others, then break the circuit.",
+      "wrongChoices": [
+        "One thread pool for every outbound call",
+        "Larger heap only",
+        "Disable search logs"
+      ]
+    },
+    {
+      "id": "cb-11",
+      "title": "Error budget vs pager",
+      "context": "On-call is paged for every 500, but the circuit already sheds 99% of calls cleanly.",
+      "constraint": "The dependency is known-down.",
+      "question": "What should alerting follow?",
+      "expectedPattern": "Alert on customer impact and breaker state, not every expected fail-fast 503.",
+      "wrongChoices": [
+        "Page on each rejected call",
+        "Silence all dependency alerts",
+        "Treat fail-fast as an unknown outage every time"
+      ]
+    },
+    {
+      "id": "cb-12",
+      "title": "Idempotent probe in half-open",
+      "context": "Half-open sends a real purchase to see if payments are back.",
+      "constraint": "Probes must not create side effects.",
+      "question": "What kind of probe is safe?",
+      "expectedPattern": "A health or dry-run call, not a live mutating request, while half-open.",
+      "wrongChoices": [
+        "Charge a real card as the probe",
+        "Send production writes with no idempotency key",
+        "Skip probes and close blindly"
+      ]
+    },
+    {
+      "id": "cb-13",
+      "title": "Shared library default is closed-never",
+      "context": "The HTTP wrapper has retries but no circuit, so a brownout lasts all afternoon.",
+      "constraint": "Defaults are used by 40 services.",
+      "question": "What default should the platform provide?",
+      "expectedPattern": "Timeouts, limited retries, and a circuit breaker as the standard client policy.",
+      "wrongChoices": [
+        "Infinite retries as the SDK default",
+        "No timeouts in the shared client",
+        "Each team invents a different policy with no breaker"
+      ]
+    },
+    {
+      "id": "cb-14",
+      "title": "gRPC deadline ignored",
+      "context": "Downstream ignores deadlines and the caller’s breaker never sees failures, only hung RPCs.",
+      "constraint": "Threads stay blocked.",
+      "question": "What failure signal should trip the circuit?",
+      "expectedPattern": "Treat deadline exceeded and hung RPCs as failures that count toward opening the circuit.",
+      "wrongChoices": [
+        "Only count explicit 500s",
+        "Wait forever for gRPC",
+        "Disable deadlines"
+      ]
+    },
+    {
+      "id": "cb-15",
+      "title": "Regional dependency, global breaker",
+      "context": "EU payments fail, so the breaker opens for US traffic too.",
+      "constraint": "Failures are regional.",
+      "question": "How should circuits be partitioned?",
+      "expectedPattern": "Per-region or per-cluster breakers so a local outage does not fail other regions.",
+      "wrongChoices": [
+        "One global circuit for all geos",
+        "Close EU and US together always",
+        "Route EU users to a dead US dependency without a breaker"
+      ]
+    }
+  ]
+}
