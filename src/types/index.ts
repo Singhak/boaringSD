@@ -321,7 +321,14 @@ export type PatternId =
   | "cdn-edge"
   | "async-queues"
   | "sharding"
-  | "consistency";
+  | "consistency"
+  | "rate-limiting"
+  | "circuit-breaker"
+  | "connection-pooling"
+  | "backpressure"
+  | "idempotency"
+  | "multi-region"
+  | "health-checks";
 
 /**
  * Honest progress labels. A pattern is never "mastered" after one activity:
