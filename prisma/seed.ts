@@ -1,4 +1,4 @@
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 import lessonsData from "../src/data/lessons.json";
 
 const prisma = new PrismaClient();
@@ -25,14 +25,14 @@ async function main() {
         title: lesson.title,
         description: lesson.description,
         level: lesson.level,
-        content: lesson as any,
+        content: lesson as unknown as Prisma.InputJsonValue,
       },
       create: {
         id: lesson.id,
         title: lesson.title,
         description: lesson.description,
         level: lesson.level,
-        content: lesson as any,
+        content: lesson as unknown as Prisma.InputJsonValue,
       },
     });
 
@@ -41,14 +41,14 @@ async function main() {
         where: { id: lesson.challenge.id },
         update: {
           question: lesson.challenge.question,
-          options: lesson.challenge.options as any,
+          options: lesson.challenge.options as unknown as Prisma.InputJsonValue,
           answer: lesson.challenge.options.find((o) => o.isCorrect)?.label || "",
           lessonId: upsertedLesson.id,
         },
         create: {
           id: lesson.challenge.id,
           question: lesson.challenge.question,
-          options: lesson.challenge.options as any,
+          options: lesson.challenge.options as unknown as Prisma.InputJsonValue,
           answer: lesson.challenge.options.find((o) => o.isCorrect)?.label || "",
           lessonId: upsertedLesson.id,
         },
