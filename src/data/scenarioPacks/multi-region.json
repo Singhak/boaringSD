@@ -170,8 +170,8 @@
               "tone": "bad"
             }
           ],
-          "resultTitle": "Blast radius intact",
-          "resultBody": "All users still depend on one region."
+          "resultTitle": "Bigger box, same dead region",
+          "resultBody": "A larger VM still lives inside US-East, the region that is down, so all 15,000 req/s keep failing until the whole region recovers."
         },
         {
           "id": "more-disks",
@@ -201,8 +201,8 @@
               "tone": "bad"
             }
           ],
-          "resultTitle": "Blast radius intact",
-          "resultBody": "More disks in the failed AZ only"
+          "resultTitle": "Storage was never the failure",
+          "resultBody": "The extra disks attach in the same offline region; errors stay above 5,000 and the 15-minute RTO is blown while you wait for the provider."
         }
       ],
       "hints": [
@@ -425,37 +425,37 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Active-passive database lag",
-      "brief": "Failover to the secondary region loses 12 minutes of orders because replication was asynchronous and unmonitored.",
-      "constraint": "Finance requires a small RPO.",
-      "question": "What must you design and measure?",
+      "title": "Failover drops 12 minutes of orders",
+      "brief": "ShopNorth failed over from us-east to us-west. Async replication had silently fallen 12 minutes behind, so about 9,400 orders (13 orders/s) never reached the promoted replica.",
+      "constraint": "Finance caps RPO at 5 seconds, and checkout p95 cannot absorb a 70 ms cross-region commit.",
+      "question": "What keeps the next failover inside the 5-second RPO?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 15000,
+          "value": 4000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 10,
+          "value": 55,
           "unit": "%",
           "tone": "warn"
         },
         {
-          "key": "p95",
-          "label": "p95 latency",
-          "value": 220,
-          "unit": "ms",
-          "tone": "warn"
+          "key": "lag",
+          "label": "Replica lag",
+          "value": 720,
+          "unit": "s",
+          "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 5000,
-          "unit": "errors",
+          "label": "Orders at risk",
+          "value": 9400,
+          "unit": "orders",
           "tone": "bad"
         }
       ],
@@ -467,160 +467,176 @@
             "label": "Users"
           },
           {
-            "id": "us",
+            "id": "lb",
+            "kind": "lb",
+            "label": "Global LB",
+            "tone": "warn"
+          },
+          {
+            "id": "east",
             "kind": "server",
-            "label": "US-East (down)",
+            "label": "us-east app (down)",
             "tone": "bad"
+          },
+          {
+            "id": "west",
+            "kind": "server",
+            "label": "us-west app",
+            "tone": "warn",
+            "cpu": 55
+          },
+          {
+            "id": "pdb",
+            "kind": "db",
+            "label": "us-east primary (down)",
+            "tone": "bad"
+          },
+          {
+            "id": "rdb",
+            "kind": "replica",
+            "label": "us-west replica (12 min behind)",
+            "tone": "bad",
+            "cpu": 40
           }
         ],
         "edges": [
           {
             "from": "users",
-            "to": "us"
+            "to": "lb"
+          },
+          {
+            "from": "lb",
+            "to": "east"
+          },
+          {
+            "from": "lb",
+            "to": "west"
+          },
+          {
+            "from": "east",
+            "to": "pdb"
+          },
+          {
+            "from": "west",
+            "to": "rdb"
+          },
+          {
+            "from": "pdb",
+            "to": "rdb"
           }
         ]
       },
       "choices": [
         {
-          "id": "read-replicas",
-          "label": "Read replicas",
+          "id": "lag-slo",
+          "label": "Lag SLO: page at 2 s, throttle writes past 5 s",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "dns",
-                "kind": "lb",
-                "label": "Geo DNS",
-                "tone": "good"
-              },
-              {
-                "id": "us",
-                "kind": "server",
-                "label": "US-East",
-                "tone": "good"
-              },
-              {
-                "id": "eu",
-                "kind": "server",
-                "label": "EU-West",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "dns"
-              },
-              {
-                "from": "dns",
-                "to": "us"
-              },
-              {
-                "from": "dns",
-                "to": "eu"
-              }
-            ]
-          },
+          "approach": "optimal",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 57,
               "unit": "%",
               "tone": "good"
             },
             {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 40,
-              "unit": "ms",
+              "key": "lag",
+              "label": "Replica lag",
+              "value": 1.8,
+              "unit": "s",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Orders at risk",
+              "value": 24,
+              "unit": "orders",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Replication lag is now a budget",
+          "resultBody": "Lag is a paged metric: 2 s wakes on-call and 5 s applies write backpressure at checkout. Worst-case loss drops from 9,400 orders to about 65, at the price of occasional checkout throttling when the WAN link degrades."
+        },
+        {
+          "id": "sync-commit",
+          "label": "Synchronous cross-region commit on every order write",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 48,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 460,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "lag",
+              "label": "Replica lag",
               "value": 0,
-              "unit": "errors",
+              "unit": "s",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Orders at risk",
+              "value": 0,
+              "unit": "orders",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Replication lag SLOs, and a failover policy that matches acceptable data loss."
+          "resultTitle": "RPO zero, checkout too slow",
+          "resultBody": "Nothing is lost now, but each commit waits a 70 ms round trip and checkout makes four writes; p95 climbs from 180 to 460 ms, far past the latency budget."
         },
         {
-          "id": "failover-checking-lag",
-          "label": "Failover checking lag",
+          "id": "fast-dns",
+          "label": "Automate DNS failover so promotion takes under a minute",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 14,
+              "value": 55,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 275,
-              "unit": "ms",
+              "key": "lag",
+              "label": "Replica lag",
+              "value": 720,
+              "unit": "s",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 5040,
-              "unit": "errors",
+              "label": "Orders at risk",
+              "value": 9400,
+              "unit": "orders",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Blast radius intact",
-          "resultBody": "All users still depend on one region."
-        },
-        {
-          "id": "synchronous-cross-region",
-          "label": "Synchronous cross-region commits",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 12,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 242,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 5020,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Blast radius intact",
-          "resultBody": "Synchronous cross-region commits for every analytics event"
+          "resultTitle": "Faster failover, same data loss",
+          "resultBody": "Promotion now takes 50 seconds instead of 20 minutes, which fixes RTO. The replica is still 12 minutes behind with nobody watching, so the next failover drops the same 9,400 orders."
         }
       ],
       "hints": [
-        "One region is the blast radius.",
-        "Failover must already have capacity.",
-        "Serve from a second region."
+        "RTO and RPO are different numbers, and this outage broke the second one.",
+        "Async replication is acceptable only if you know how far behind it is.",
+        "Treat replica lag as a budget you measure, alert on, and enforce at write time."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "mr-04",
@@ -960,7 +976,7 @@
             }
           ],
           "resultTitle": "Incident solved",
-          "resultBody": "Replicate control-plane config with a defined consistency model, or pin a user to one region\u2019s flags."
+          "resultBody": "Replicate control-plane config with a defined consistency model, or pin a user to one region’s flags."
         },
         {
           "id": "independent-flags-no",
@@ -1245,37 +1261,37 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Split-brain writes",
-      "brief": "Both regions accept order writes during a partition and two inventories diverge.",
-      "constraint": "Orders cannot be merged blindly.",
-      "question": "What write policy avoids split brain?",
+      "title": "Both regions sold the last 300 consoles",
+      "brief": "During a 4-minute transatlantic partition, GameVault's US and EU databases each promoted themselves and kept taking inventory writes at 9k req/s per region. 300 consoles were sold twice.",
+      "constraint": "Inventory decrements cannot be merged afterwards; a brief write outage beats overselling.",
+      "question": "What stops both sides accepting writes during a partition?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 15000,
+          "value": 18000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 10,
+          "value": 62,
           "unit": "%",
           "tone": "warn"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 220,
+          "value": 140,
           "unit": "ms",
           "tone": "warn"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 5000,
-          "unit": "errors",
+          "label": "Oversold units",
+          "value": 300,
+          "unit": "units",
           "tone": "bad"
         }
       ],
@@ -1287,24 +1303,64 @@
             "label": "Users"
           },
           {
+            "id": "dns",
+            "kind": "lb",
+            "label": "Geo DNS"
+          },
+          {
             "id": "us",
             "kind": "server",
-            "label": "US-East (down)",
-            "tone": "bad"
+            "label": "US-East app"
+          },
+          {
+            "id": "eu",
+            "kind": "server",
+            "label": "EU-West app"
+          },
+          {
+            "id": "usdb",
+            "kind": "db",
+            "label": "US primary",
+            "tone": "bad",
+            "cpu": 62
+          },
+          {
+            "id": "eudb",
+            "kind": "db",
+            "label": "EU primary (self-promoted)",
+            "tone": "bad",
+            "cpu": 58
           }
         ],
         "edges": [
           {
             "from": "users",
+            "to": "dns"
+          },
+          {
+            "from": "dns",
             "to": "us"
+          },
+          {
+            "from": "dns",
+            "to": "eu"
+          },
+          {
+            "from": "us",
+            "to": "usdb"
+          },
+          {
+            "from": "eu",
+            "to": "eudb"
           }
         ]
       },
       "choices": [
         {
-          "id": "reshard-data",
-          "label": "Reshard data",
+          "id": "quorum-witness",
+          "label": "Majority quorum with a third-region witness and fencing tokens",
           "correct": true,
+          "approach": "optimal",
           "graphAfter": {
             "nodes": [
               {
@@ -1321,13 +1377,33 @@
               {
                 "id": "us",
                 "kind": "server",
-                "label": "US-East",
+                "label": "US-East app",
                 "tone": "good"
               },
               {
                 "id": "eu",
                 "kind": "server",
-                "label": "EU-West",
+                "label": "EU-West app",
+                "tone": "warn"
+              },
+              {
+                "id": "usdb",
+                "kind": "db",
+                "label": "US leader (lease)",
+                "tone": "good",
+                "cpu": 60
+              },
+              {
+                "id": "eudb",
+                "kind": "db",
+                "label": "EU follower (read-only)",
+                "tone": "warn",
+                "cpu": 30
+              },
+              {
+                "id": "wit",
+                "kind": "server",
+                "label": "Witness us-west-2",
                 "tone": "good"
               }
             ],
@@ -1343,6 +1419,22 @@
               {
                 "from": "dns",
                 "to": "eu"
+              },
+              {
+                "from": "us",
+                "to": "usdb"
+              },
+              {
+                "from": "eu",
+                "to": "eudb"
+              },
+              {
+                "from": "usdb",
+                "to": "wit"
+              },
+              {
+                "from": "eudb",
+                "to": "wit"
               }
             ]
           },
@@ -1350,97 +1442,100 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 60,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 40,
+              "value": 150,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Oversold units",
               "value": 0,
-              "unit": "errors",
+              "unit": "units",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "A single-writer region or consensus so only one side accepts conflicting writes during a partition."
+          "resultTitle": "Only the majority side writes",
+          "resultBody": "When the Atlantic link drops, US plus the witness hold 2 of 3 votes and keep writing; EU loses its lease and fencing tokens reject its stale writes. Oversells fall to 0, at the price of EU checkout failing during the 4-minute partition."
         },
         {
-          "id": "active-active-writes-no",
-          "label": "Active-active writes no",
+          "id": "lww",
+          "label": "Last-writer-wins on inventory rows by wall-clock timestamp",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 14,
+              "value": 61,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 142,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Oversold units",
+              "value": 300,
+              "unit": "units",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Oversell hidden, not prevented",
+          "resultBody": "LWW keeps one of the two decrements and silently drops the other, so the stock count looks sane while 300 customers still hold orders for consoles that do not exist. 40 ms of clock skew also reorders writes."
+        },
+        {
+          "id": "short-heartbeat",
+          "label": "Cut heartbeat timeout to 2 s for faster self-promotion",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 66,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 275,
+              "value": 160,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 5040,
-              "unit": "errors",
+              "label": "Oversold units",
+              "value": 520,
+              "unit": "units",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Blast radius intact",
-          "resultBody": "All users still depend on one region."
-        },
-        {
-          "id": "last-timestamp-wins",
-          "label": "Last timestamp wins",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 12,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 242,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 5020,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Blast radius intact",
-          "resultBody": "Last timestamp wins on money"
+          "resultTitle": "Split brain now triggers in 2 s",
+          "resultBody": "On an 80 ms link, routine packet loss now looks like a dead peer. Both sides self-promote three times a day instead of once a quarter, and oversold units climb to 520."
         }
       ],
       "hints": [
-        "One region is the blast radius.",
-        "Failover must already have capacity.",
-        "Serve from a second region."
+        "Both regions believed they were the primary at the same time.",
+        "Two voters can never break a tie during a partition.",
+        "Leadership should require a majority vote, and an ex-leader's writes must be rejectable."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "mr-08",
@@ -1655,104 +1750,135 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Data residency vs latency",
-      "brief": "EU user data must stay in the EU, but the only search cluster is in the US.",
-      "constraint": "Regulation forbids unrestricted copies.",
-      "question": "How do you place the system?",
+      "title": "EU profiles indexed in a US cluster",
+      "brief": "Legal found 2.1M EU user profiles indexed in LinkUp's only search cluster, in us-east. EU searches also pay the Atlantic round trip: p95 is 340 ms at 6k req/s.",
+      "constraint": "EU personal data may not be stored outside the EU; the US cluster stays for US users.",
+      "question": "Where should EU profiles be indexed and served from?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 15000,
+          "value": 6000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 10,
+          "value": 78,
           "unit": "%",
           "tone": "warn"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 220,
+          "value": 340,
           "unit": "ms",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 5000,
-          "unit": "errors",
+          "label": "EU profiles outside EU",
+          "value": 2100000,
+          "unit": "profiles",
           "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "users",
+            "id": "eu-users",
             "kind": "users",
-            "label": "Users"
+            "label": "EU users"
           },
           {
-            "id": "us",
+            "id": "us-users",
+            "kind": "users",
+            "label": "US users"
+          },
+          {
+            "id": "api",
             "kind": "server",
-            "label": "US-East (down)",
-            "tone": "bad"
+            "label": "Search API"
+          },
+          {
+            "id": "search",
+            "kind": "db",
+            "label": "us-east search (all users)",
+            "tone": "bad",
+            "cpu": 78
           }
         ],
         "edges": [
           {
-            "from": "users",
-            "to": "us"
+            "from": "eu-users",
+            "to": "api"
+          },
+          {
+            "from": "us-users",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "search"
           }
         ]
       },
       "choices": [
         {
-          "id": "read-replicas",
-          "label": "Read replicas",
+          "id": "eu-cluster",
+          "label": "EU-resident search cluster, routed by the user's home region",
           "correct": true,
+          "approach": "optimal",
           "graphAfter": {
             "nodes": [
               {
-                "id": "users",
+                "id": "eu-users",
                 "kind": "users",
-                "label": "Users"
+                "label": "EU users"
               },
               {
-                "id": "dns",
+                "id": "us-users",
+                "kind": "users",
+                "label": "US users"
+              },
+              {
+                "id": "router",
                 "kind": "lb",
-                "label": "Geo DNS",
+                "label": "Home-region router",
                 "tone": "good"
               },
               {
-                "id": "us",
-                "kind": "server",
-                "label": "US-East",
-                "tone": "good"
+                "id": "eus",
+                "kind": "db",
+                "label": "eu-central search",
+                "tone": "good",
+                "cpu": 45
               },
               {
-                "id": "eu",
-                "kind": "server",
-                "label": "EU-West",
-                "tone": "good"
+                "id": "uss",
+                "kind": "db",
+                "label": "us-east search",
+                "tone": "good",
+                "cpu": 52
               }
             ],
             "edges": [
               {
-                "from": "users",
-                "to": "dns"
+                "from": "eu-users",
+                "to": "router"
               },
               {
-                "from": "dns",
-                "to": "us"
+                "from": "us-users",
+                "to": "router"
               },
               {
-                "from": "dns",
-                "to": "eu"
+                "from": "router",
+                "to": "eus"
+              },
+              {
+                "from": "router",
+                "to": "uss"
               }
             ]
           },
@@ -1760,97 +1886,100 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 52,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 40,
+              "value": 45,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "EU profiles outside EU",
               "value": 0,
-              "unit": "errors",
+              "unit": "profiles",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Keep regulated data and its serving path in-region; do not replicate restricted fields globally."
+          "resultTitle": "Residency and latency both fixed",
+          "resultBody": "EU profiles are re-indexed in eu-central and deleted from us-east; EU search skips the ~90 ms Atlantic hop and p95 falls from 340 to 45 ms. Cost: a second cluster (~$6k/month), and global admin search must federate over non-PII fields."
         },
         {
-          "id": "copy-all-pii",
-          "label": "Copy all PII",
+          "id": "encrypt",
+          "label": "Encrypt EU documents in the US cluster with EU-held keys",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 14,
+              "value": 88,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 275,
+              "value": 410,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 5040,
-              "unit": "errors",
+              "label": "EU profiles outside EU",
+              "value": 2100000,
+              "unit": "profiles",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Blast radius intact",
-          "resultBody": "All users still depend on one region."
+          "resultTitle": "Ciphertext is still US storage",
+          "resultBody": "Counsel rejects it: the 2.1M profiles still live in us-east, just encrypted. Encrypted fields also cannot be tokenized for full-text search, so relevance collapses and decrypt-on-read pushes p95 to 410 ms."
         },
         {
-          "id": "ignore-residency-because",
-          "label": "Ignore residency because",
+          "id": "cdn-cache",
+          "label": "Cache EU search responses at Frankfurt CDN edge nodes",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 12,
+              "value": 70,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 242,
+              "value": 210,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 5020,
-              "unit": "errors",
+              "label": "EU profiles outside EU",
+              "value": 2100000,
+              "unit": "profiles",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Blast radius intact",
-          "resultBody": "Ignore residency because latency is worse"
+          "resultTitle": "Faster, and now PII is in two places",
+          "resultBody": "About 40% of repeat queries hit the edge, so p95 dips to 210 ms, but the index is still in us-east and search results containing personal data are now cached at edge PoPs too."
         }
       ],
       "hints": [
-        "One region is the blast radius.",
-        "Failover must already have capacity.",
-        "Serve from a second region."
+        "This is a legal constraint first and a latency problem second.",
+        "Encrypting or caching data does not change where it is stored.",
+        "Partition the data by where each user legally belongs, and route requests the same way."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "mr-10",
@@ -2270,37 +2399,37 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Secret rotation in one region",
-      "brief": "API keys rotate in US and EU pods still use the old key, then auth fails after failover.",
-      "constraint": "Secrets must be available everywhere you might run.",
-      "question": "What operational pattern is required?",
+      "title": "EU logins 401 after key rotation",
+      "brief": "PayLink rotated its JWT signing key in the us-east vault only. After traffic failed over to eu-west, EU pods verified with the stale key and 4,200 logins/s returned 401.",
+      "constraint": "Keys rotate every 30 days, and either region must be able to take 100% of traffic at any time.",
+      "question": "How should the key rotation roll out across regions?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 15000,
+          "value": 11000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 10,
+          "value": 35,
           "unit": "%",
           "tone": "warn"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 220,
+          "value": 95,
           "unit": "ms",
-          "tone": "warn"
+          "tone": "neutral"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 5000,
-          "unit": "errors",
+          "label": "401s",
+          "value": 4200,
+          "unit": "errors/s",
           "tone": "bad"
         }
       ],
@@ -2312,24 +2441,51 @@
             "label": "Users"
           },
           {
-            "id": "us",
+            "id": "lb",
+            "kind": "lb",
+            "label": "Geo LB"
+          },
+          {
+            "id": "eu",
             "kind": "server",
-            "label": "US-East (down)",
+            "label": "eu-west pods (old key)",
+            "tone": "bad",
+            "cpu": 35
+          },
+          {
+            "id": "euv",
+            "kind": "db",
+            "label": "eu-west vault (stale)",
             "tone": "bad"
+          },
+          {
+            "id": "usv",
+            "kind": "db",
+            "label": "us-east vault (new key)",
+            "tone": "good"
           }
         ],
         "edges": [
           {
             "from": "users",
-            "to": "us"
+            "to": "lb"
+          },
+          {
+            "from": "lb",
+            "to": "eu"
+          },
+          {
+            "from": "eu",
+            "to": "euv"
           }
         ]
       },
       "choices": [
         {
-          "id": "read-replicas",
-          "label": "Read replicas",
+          "id": "two-phase",
+          "label": "Two-phase rotation: replicate new key everywhere, then sign",
           "correct": true,
+          "approach": "optimal",
           "graphAfter": {
             "nodes": [
               {
@@ -2338,36 +2494,47 @@
                 "label": "Users"
               },
               {
-                "id": "dns",
+                "id": "lb",
                 "kind": "lb",
-                "label": "Geo DNS",
-                "tone": "good"
-              },
-              {
-                "id": "us",
-                "kind": "server",
-                "label": "US-East",
+                "label": "Geo LB",
                 "tone": "good"
               },
               {
                 "id": "eu",
                 "kind": "server",
-                "label": "EU-West",
+                "label": "eu-west pods (old+new)",
+                "tone": "good",
+                "cpu": 36
+              },
+              {
+                "id": "euv",
+                "kind": "db",
+                "label": "eu-west vault",
+                "tone": "good"
+              },
+              {
+                "id": "usv",
+                "kind": "db",
+                "label": "us-east vault",
                 "tone": "good"
               }
             ],
             "edges": [
               {
                 "from": "users",
-                "to": "dns"
+                "to": "lb"
               },
               {
-                "from": "dns",
-                "to": "us"
-              },
-              {
-                "from": "dns",
+                "from": "lb",
                 "to": "eu"
+              },
+              {
+                "from": "eu",
+                "to": "euv"
+              },
+              {
+                "from": "usv",
+                "to": "euv"
               }
             ]
           },
@@ -2375,97 +2542,100 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 36,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 40,
+              "value": 96,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "401s",
               "value": 0,
-              "unit": "errors",
+              "unit": "errors/s",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Replicate secrets and rotate with overlap so every region can authenticate during failover."
+          "resultTitle": "Both regions trust both keys",
+          "resultBody": "The new key reaches both vaults and the JWKS first; pods accept old and new keys for one 60-minute token lifetime, and only then does signing switch. 401s fall from 4,200/s to 0. Cost: each rotation takes an hour and needs a vault replication-lag alert."
         },
         {
-          "id": "rotate-one-region",
-          "label": "Rotate one region",
+          "id": "remote-vault",
+          "label": "Point EU pods at the us-east vault over the WAN",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 14,
+              "value": 34,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 180,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "401s",
+              "value": 0,
+              "unit": "errors/s",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "EU auth now depends on us-east",
+          "resultBody": "Verification works today, but every key-cache miss crosses an 85 ms WAN hop, p95 rises to 180 ms, and the next us-east outage takes EU logins down with it, which is the failover this incident was about."
+        },
+        {
+          "id": "restart-pods",
+          "label": "Rolling restart of EU pods after every key rotation",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 48,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 275,
+              "value": 110,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 5040,
-              "unit": "errors",
+              "label": "401s",
+              "value": 3900,
+              "unit": "errors/s",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Blast radius intact",
-          "resultBody": "All users still depend on one region."
-        },
-        {
-          "id": "hardcode-keys-amis",
-          "label": "Hardcode keys AMIs",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 12,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 242,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 5020,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Blast radius intact",
-          "resultBody": "Hardcode keys in AMIs"
+          "resultTitle": "Restart reloads the same stale key",
+          "resultBody": "Pods reload from the EU vault replica, which never received the new key, so they come back verifying with the old one. 401s stay near 3,900/s and the 20-minute rollout removes capacity mid-incident."
         }
       ],
       "hints": [
-        "One region is the blast radius.",
-        "Failover must already have capacity.",
-        "Serve from a second region."
+        "The failover region was running, but it did not have everything it needed.",
+        "A new key must be trusted everywhere before anything signs with it.",
+        "Split rotation into distribute-and-accept, then switch-signing, with an overlap window."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "mr-13",
@@ -3079,6 +3249,221 @@
         "One region is the blast radius.",
         "Failover must already have capacity.",
         "Serve from a second region."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "mr-new-01",
+      "incidentCode": "INC-012-16",
+      "level": 12,
+      "patternId": "multi-region",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 50,
+      "title": "Carts drop items after a region hop",
+      "brief": "CartNest runs active-active in us-east and ap-south. When a phone and a laptop edit one cart through different regions, 3.2% of carts silently lose items at 24k req/s.",
+      "constraint": "Both regions must keep accepting cart writes locally; a 150 ms cross-region write is not allowed.",
+      "question": "How should concurrent cart edits from two regions merge?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 24000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 48,
+          "unit": "%",
+          "tone": "neutral"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 60,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "errors",
+          "label": "Carts losing items",
+          "value": 3.2,
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Shoppers"
+          },
+          {
+            "id": "dns",
+            "kind": "lb",
+            "label": "Latency DNS"
+          },
+          {
+            "id": "us",
+            "kind": "server",
+            "label": "us-east app"
+          },
+          {
+            "id": "ap",
+            "kind": "server",
+            "label": "ap-south app"
+          },
+          {
+            "id": "usdb",
+            "kind": "db",
+            "label": "us-east carts (LWW)",
+            "tone": "bad",
+            "cpu": 48
+          },
+          {
+            "id": "apdb",
+            "kind": "db",
+            "label": "ap-south carts (LWW)",
+            "tone": "bad",
+            "cpu": 44
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "dns"
+          },
+          {
+            "from": "dns",
+            "to": "us"
+          },
+          {
+            "from": "dns",
+            "to": "ap"
+          },
+          {
+            "from": "us",
+            "to": "usdb"
+          },
+          {
+            "from": "ap",
+            "to": "apdb"
+          },
+          {
+            "from": "usdb",
+            "to": "apdb"
+          },
+          {
+            "from": "apdb",
+            "to": "usdb"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "or-set",
+          "label": "Merge carts as an add-wins OR-Set CRDT per item",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 53,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 62,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Carts losing items",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Concurrent adds now union",
+          "resultBody": "Adds from both regions merge per item instead of one whole cart overwriting the other, so lost items fall from 3.2% of carts to 0. Cost: tombstones grow cart documents ~18% until compaction, and a remove racing an add keeps the item."
+        },
+        {
+          "id": "ntp",
+          "label": "Tighten NTP to 1 ms so last-writer-wins orders edits",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 48,
+              "unit": "%",
+              "tone": "neutral"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 60,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Carts losing items",
+              "value": 3.1,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Clocks agree, edits still collide",
+          "resultBody": "Clocks now agree within 1 ms, but the phone and laptop edits are truly concurrent. LWW still keeps one whole cart and discards the other, so 3.1% of carts keep losing items."
+        },
+        {
+          "id": "home-region",
+          "label": "Pin every cart's writes to one home region",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 46,
+              "unit": "%",
+              "tone": "neutral"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 210,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Carts losing items",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "No conflicts, but 150 ms writes",
+          "resultBody": "A single writer per cart ends conflicts, but ap-south shoppers homed in us-east now write across a 150 ms round trip; cart p95 rises from 60 to 210 ms, breaking the stated constraint."
+        }
+      ],
+      "hints": [
+        "The edits are not wrong; they are concurrent.",
+        "Picking one winner by time always throws the other edit away.",
+        "Use a data type whose merge is commutative, so both regions converge on the union."
       ],
       "nextId": null
     }

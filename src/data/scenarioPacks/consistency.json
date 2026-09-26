@@ -185,8 +185,8 @@
               "tone": "bad"
             }
           ],
-          "resultTitle": "Writer sees stale",
-          "resultBody": "The next read still hit a lagging replica."
+          "resultTitle": "Everyone loses their reads",
+          "resultBody": "Blocking reads until replication catches up stalls all 4,000 req/s, not just the writer's refresh; p95 climbs to 1 s and 40 requests error out."
         },
         {
           "id": "disable-replicas",
@@ -216,8 +216,8 @@
               "tone": "bad"
             }
           ],
-          "resultTitle": "Writer sees stale",
-          "resultBody": "Disable replicas"
+          "resultTitle": "Primary absorbs every read",
+          "resultBody": "The writer now sees fresh data, but all 4,000 req/s land on the primary; p95 stays near 880 ms and 20 requests error while its connection pool queues."
         }
       ],
       "hints": [
@@ -375,7 +375,7 @@
             }
           ],
           "resultTitle": "Incident solved",
-          "resultBody": "Read the author\u2019s writes from the primary or a fresh path."
+          "resultBody": "Read the author’s writes from the primary or a fresh path."
         },
         {
           "id": "force-all-reads",
@@ -1475,7 +1475,7 @@
             }
           ],
           "resultTitle": "Incident solved",
-          "resultBody": "Use a freshness-aware read path and metadata-based invalidation for the actor\u2019s own actions."
+          "resultBody": "Use a freshness-aware read path and metadata-based invalidation for the actor’s own actions."
         },
         {
           "id": "ignore-stale-reads",
@@ -2355,7 +2355,7 @@
             }
           ],
           "resultTitle": "Incident solved",
-          "resultBody": "Sticky or primary reads for the shopper\u2019s recent cart writes."
+          "resultBody": "Sticky or primary reads for the shopper’s recent cart writes."
         },
         {
           "id": "always-read-carts",
@@ -2655,217 +2655,232 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Monotonic reads broken on mobile",
-      "brief": "A timeline first shows a new tweet, then an older timeline after a replica switch.",
-      "constraint": "Users notice time going backwards.",
-      "question": "Which session guarantee is missing?",
+      "title": "Comment count goes 41, 38, 41 on refresh",
+      "brief": "Threadly's mobile app spreads each GET across 3 replicas lagging 0.2 s, 1.5 s and 9 s. On hot threads, replies appear, vanish and reappear as users refresh.",
+      "constraint": "Replicas must keep serving 60k reads/s; the primary cannot absorb them.",
+      "question": "What stops one user's view from going backwards in time?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 4000,
+          "label": "Read traffic",
+          "value": 60000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 30,
+          "value": 58,
           "unit": "%",
-          "tone": "warn"
+          "tone": "good"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 800,
+          "value": 45,
           "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "lag",
+          "label": "Worst replica lag",
+          "value": 9,
+          "unit": "s",
           "tone": "bad"
         },
         {
-          "key": "errors",
-          "label": "Errors",
-          "value": 0,
-          "unit": "errors",
-          "tone": "neutral"
+          "key": "regress",
+          "label": "Sessions seeing time rewind",
+          "value": 7,
+          "unit": "%",
+          "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "user",
+            "id": "users",
             "kind": "users",
-            "label": "Writer"
+            "label": "Mobile readers"
           },
           {
-            "id": "app",
-            "kind": "server",
-            "label": "App"
+            "id": "lb",
+            "kind": "lb",
+            "label": "Read router",
+            "tone": "warn"
           },
           {
             "id": "db",
             "kind": "db",
             "label": "Primary",
-            "tone": "good"
+            "cpu": 44
           },
           {
             "id": "r1",
             "kind": "replica",
-            "label": "Stale replica",
+            "label": "Replica A",
+            "cpu": 55,
+            "sub": "lag 0.2 s"
+          },
+          {
+            "id": "r2",
+            "kind": "replica",
+            "label": "Replica B",
+            "cpu": 56,
+            "sub": "lag 1.5 s",
+            "tone": "warn"
+          },
+          {
+            "id": "r3",
+            "kind": "replica",
+            "label": "Replica C",
+            "cpu": 58,
+            "sub": "lag 9 s",
             "tone": "bad"
           }
         ],
         "edges": [
           {
-            "from": "user",
-            "to": "app"
+            "from": "users",
+            "to": "lb"
           },
           {
-            "from": "app",
-            "to": "db"
-          },
-          {
-            "from": "app",
+            "from": "lb",
             "to": "r1"
+          },
+          {
+            "from": "lb",
+            "to": "r2"
+          },
+          {
+            "from": "lb",
+            "to": "r3"
+          },
+          {
+            "from": "db",
+            "to": "r1"
+          },
+          {
+            "from": "db",
+            "to": "r2"
+          },
+          {
+            "from": "db",
+            "to": "r3"
           }
         ]
       },
       "choices": [
         {
-          "id": "hash-urls",
-          "label": "Hash URLs",
+          "id": "pin-session-replica",
+          "label": "Pin each session to one replica via consistent hash",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "user",
-                "kind": "users",
-                "label": "Writer"
-              },
-              {
-                "id": "app",
-                "kind": "server",
-                "label": "App",
-                "tone": "good"
-              },
-              {
-                "id": "db",
-                "kind": "db",
-                "label": "Primary",
-                "tone": "good"
-              },
-              {
-                "id": "r1",
-                "kind": "replica",
-                "label": "Replica",
-                "tone": "neutral"
-              }
-            ],
-            "edges": [
-              {
-                "from": "user",
-                "to": "app"
-              },
-              {
-                "from": "app",
-                "to": "db"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 1,
+            "complexityScore": 2,
+            "consistencyGuarantee": "session",
+            "tradeoffSummary": "Monotonic reads per session; staleness itself is unchanged."
           },
+          "resultTitle": "Timelines stop rewinding",
+          "resultBody": "Each session now hashes to one replica, so successive reads never jump to an older snapshot; rewinds fall from 7% to about 0.1%, mostly during replica failover. Cost: load spreads less evenly, and users pinned to the 9 s replica still see older, though monotonic, data.",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 61,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 53,
+              "value": 46,
               "unit": "ms",
               "tone": "good"
             },
             {
-              "key": "errors",
-              "label": "Errors",
+              "key": "regress",
+              "label": "Sessions seeing time rewind",
+              "value": 0.1,
+              "unit": "%",
+              "tone": "good"
+            }
+          ]
+        },
+        {
+          "id": "all-reads-primary",
+          "label": "Route every read to the primary database",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "resultTitle": "Primary melts at 60k reads/s",
+          "resultBody": "The primary was sized for writes plus replication, not 60k reads/s. Its CPU pegs at 98%, p95 jumps to 1.4 s, and write latency degrades for every user.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 98,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1400,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "regress",
+              "label": "Sessions seeing time rewind",
               "value": 0,
-              "unit": "errors",
+              "unit": "%",
               "tone": "good"
             }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Monotonic reads: once a client has seen version N, later reads in that session must not go backwards."
+          ]
         },
         {
-          "id": "random-replica-every",
-          "label": "Random replica every",
+          "id": "cdn-30s",
+          "label": "Put a 30-second CDN cache in front of reads",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
+          "resultTitle": "Rewinds now happen every 30 s",
+          "resultBody": "The cache hides churn between refreshes, but each 30 s refill pulls from a random replica; when a refill lands on the 9 s-lag one, the count still jumps backwards for every user on that POP.",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 34,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 1000,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
               "value": 40,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Writer sees stale",
-          "resultBody": "The next read still hit a lagging replica."
-        },
-        {
-          "id": "global-linearizability-e",
-          "label": "Global linearizability every",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 32,
               "unit": "%",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 880,
+              "value": 20,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "good"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 20,
-              "unit": "errors",
+              "key": "regress",
+              "label": "Sessions seeing time rewind",
+              "value": 4,
+              "unit": "%",
               "tone": "bad"
             }
-          ],
-          "resultTitle": "Writer sees stale",
-          "resultBody": "Global linearizability for every follower"
+          ]
         }
       ],
       "hints": [
-        "The writer expects their own update.",
-        "Replicas can lag.",
-        "Use a fresh read path."
+        "The data eventually converges; the problem is the order users see it in.",
+        "Consecutive refreshes can land on replicas with very different lag.",
+        "What if one user's reads always followed the same replication stream?"
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "cons-14",
@@ -2878,7 +2893,7 @@
       "title": "Like count jumps then drops",
       "brief": "The author sees 101 likes from the primary, then 97 from a replica on refresh.",
       "constraint": "Counters are eventually consistent.",
-      "question": "How do you keep the author\u2019s view stable?",
+      "question": "How do you keep the author’s view stable?",
       "metricsBefore": [
         {
           "key": "rps",
@@ -3015,7 +3030,7 @@
             }
           ],
           "resultTitle": "Incident solved",
-          "resultBody": "Pin the author\u2019s reads to a fresh source or show a monotonic client-side count until replicas catch up."
+          "resultBody": "Pin the author’s reads to a fresh source or show a monotonic client-side count until replicas catch up."
         },
         {
           "id": "show-replica-counts",
@@ -3095,217 +3110,184 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Multi-tab edit conflict",
-      "brief": "Two browser tabs load the same document from different replicas and last-write-wins silently drops a paragraph.",
-      "constraint": "Collaborative edits need conflict detection.",
-      "question": "What consistency tool belongs here?",
+      "title": "Two tabs save, one edit silently vanishes",
+      "brief": "On Wikidocs, 3% of page saves overwrite a concurrent edit. Both tabs read version 17, edit, and write the whole page back; the later write wins and nobody is warned.",
+      "constraint": "Editing sessions last up to 10 minutes, so holding locks while a page is open is not acceptable.",
+      "question": "What makes the second save notice it is based on stale data?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 4000,
+          "label": "Page saves",
+          "value": 2400,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 30,
+          "value": 41,
           "unit": "%",
-          "tone": "warn"
+          "tone": "good"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 800,
+          "value": 180,
           "unit": "ms",
-          "tone": "bad"
+          "tone": "good"
         },
         {
-          "key": "errors",
-          "label": "Errors",
-          "value": 0,
-          "unit": "errors",
-          "tone": "neutral"
+          "key": "lost",
+          "label": "Silently lost edits",
+          "value": 3,
+          "unit": "%",
+          "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "user",
+            "id": "tabs",
             "kind": "users",
-            "label": "Writer"
+            "label": "Two editor tabs"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "App"
+            "label": "Docs API",
+            "cpu": 36
           },
           {
             "id": "db",
             "kind": "db",
-            "label": "Primary",
-            "tone": "good"
-          },
-          {
-            "id": "r1",
-            "kind": "replica",
-            "label": "Stale replica",
-            "tone": "bad"
+            "label": "Pages DB",
+            "cpu": 41,
+            "sub": "page v17",
+            "tone": "warn"
           }
         ],
         "edges": [
           {
-            "from": "user",
+            "from": "tabs",
             "to": "app"
           },
           {
             "from": "app",
             "to": "db"
-          },
-          {
-            "from": "app",
-            "to": "r1"
           }
         ]
       },
       "choices": [
         {
-          "id": "hash-urls",
-          "label": "Hash URLs",
+          "id": "cas-version",
+          "label": "Compare-and-set on the version number, 409 on mismatch",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "user",
-                "kind": "users",
-                "label": "Writer"
-              },
-              {
-                "id": "app",
-                "kind": "server",
-                "label": "App",
-                "tone": "good"
-              },
-              {
-                "id": "db",
-                "kind": "db",
-                "label": "Primary",
-                "tone": "good"
-              },
-              {
-                "id": "r1",
-                "kind": "replica",
-                "label": "Replica",
-                "tone": "neutral"
-              }
-            ],
-            "edges": [
-              {
-                "from": "user",
-                "to": "app"
-              },
-              {
-                "from": "app",
-                "to": "db"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 2,
+            "complexityScore": 2,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "Optimistic concurrency: no locks, but conflicts surface to users."
           },
+          "resultTitle": "Stale saves bounce with 409",
+          "resultBody": "The second save's UPDATE ... WHERE version = 17 now matches zero rows, so the API returns 409 and shows a merge view; lost edits drop from 3% to 0. Cost: about 3% of saves need a manual merge, and every client must send the version it read.",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 42,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 53,
+              "value": 185,
               "unit": "ms",
               "tone": "good"
             },
             {
-              "key": "errors",
-              "label": "Errors",
+              "key": "lost",
+              "label": "Silently lost edits",
               "value": 0,
-              "unit": "errors",
+              "unit": "%",
               "tone": "good"
             }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Version tokens or optimistic concurrency so stale writes are rejected or merged."
+          ]
         },
         {
-          "id": "last-write-always",
-          "label": "Last write always",
+          "id": "lock-while-open",
+          "label": "Pessimistic row lock held while the page is open",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
+          "resultTitle": "Locks outlive the editors",
+          "resultBody": "Locks held through 10-minute editing sessions pile up; 18% of page opens now wait or time out, and abandoned tabs keep pages locked until the 15-minute lease expires.",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 34,
+              "value": 45,
               "unit": "%",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 1000,
+              "value": 9000,
               "unit": "ms",
               "tone": "bad"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 40,
-              "unit": "errors",
-              "tone": "bad"
+              "key": "lost",
+              "label": "Silently lost edits",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
             }
-          ],
-          "resultTitle": "Writer sees stale",
-          "resultBody": "The next read still hit a lagging replica."
+          ]
         },
         {
-          "id": "force-all-edits",
-          "label": "Force all edits",
+          "id": "lww-timestamps",
+          "label": "Last-write-wins using tightly synchronized server timestamps",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
+          "resultTitle": "Newest timestamp still clobbers",
+          "resultBody": "Tighter clocks only make it more predictable which save wins; the losing tab's changes are still discarded without a warning, so 3% of saves keep vanishing.",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 32,
+              "value": 41,
               "unit": "%",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 880,
+              "value": 180,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "good"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 20,
-              "unit": "errors",
+              "key": "lost",
+              "label": "Silently lost edits",
+              "value": 3,
+              "unit": "%",
               "tone": "bad"
             }
-          ],
-          "resultTitle": "Writer sees stale",
-          "resultBody": "Force all edits through one replica without versions"
+          ]
         }
       ],
       "hints": [
-        "The writer expects their own update.",
-        "Replicas can lag.",
-        "Use a fresh read path."
+        "Nothing crashed; one write simply replaced another.",
+        "Both writers based their change on version 17.",
+        "Make the write succeed only if the row is still what the writer read."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "cons-16",
@@ -3536,7 +3518,7 @@
       "severity": "P1",
       "xp": 50,
       "title": "Inventory decrement vs browse",
-      "brief": "Checkout decrements stock on the primary; the product page still shows \u201cin stock\u201d from a replica.",
+      "brief": "Checkout decrements stock on the primary; the product page still shows “in stock” from a replica.",
       "constraint": "Overselling is worse than a slightly empty-looking page.",
       "question": "Which path needs stronger reads?",
       "metricsBefore": [
@@ -3975,217 +3957,199 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Leader election split brain",
-      "brief": "Two primaries accept writes during a network partition and later diverge.",
-      "constraint": "The cluster must choose one history.",
-      "question": "What consistency property was violated?",
+      "title": "Two workers both think they own the ledger lock",
+      "brief": "Ledgerly's billing worker froze 14 s in a GC pause. Its 10 s lease expired, a second worker took over, then the first woke up and kept writing. 212 invoices double-posted.",
+      "constraint": "Leases stay; the ledger database is the only place both writers meet.",
+      "question": "What stops the stale lock holder's writes from landing?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 4000,
+          "label": "Ledger writes",
+          "value": 900,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 30,
+          "value": 38,
           "unit": "%",
-          "tone": "warn"
+          "tone": "good"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 800,
+          "value": 120,
           "unit": "ms",
-          "tone": "bad"
+          "tone": "good"
         },
         {
-          "key": "errors",
-          "label": "Errors",
-          "value": 0,
-          "unit": "errors",
-          "tone": "neutral"
+          "key": "dupes",
+          "label": "Double-posted invoices",
+          "value": 212,
+          "unit": "invoices",
+          "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "user",
-            "kind": "users",
-            "label": "Writer"
+            "id": "lease",
+            "kind": "server",
+            "label": "Lease service (etcd)",
+            "cpu": 12
           },
           {
-            "id": "app",
-            "kind": "server",
-            "label": "App"
+            "id": "wa",
+            "kind": "worker",
+            "label": "Worker A (woke from GC)",
+            "cpu": 38,
+            "tone": "bad"
+          },
+          {
+            "id": "wb",
+            "kind": "worker",
+            "label": "Worker B (new holder)",
+            "cpu": 35
           },
           {
             "id": "db",
             "kind": "db",
-            "label": "Primary",
-            "tone": "good"
-          },
-          {
-            "id": "r1",
-            "kind": "replica",
-            "label": "Stale replica",
-            "tone": "bad"
+            "label": "Ledger DB",
+            "cpu": 30,
+            "tone": "warn"
           }
         ],
         "edges": [
           {
-            "from": "user",
-            "to": "app"
+            "from": "wa",
+            "to": "lease"
           },
           {
-            "from": "app",
+            "from": "wb",
+            "to": "lease"
+          },
+          {
+            "from": "wa",
             "to": "db"
           },
           {
-            "from": "app",
-            "to": "r1"
+            "from": "wb",
+            "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "reshard-data",
-          "label": "Reshard data",
+          "id": "fencing-token",
+          "label": "Fencing token per lease; ledger rejects lower tokens",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "user",
-                "kind": "users",
-                "label": "Writer"
-              },
-              {
-                "id": "app",
-                "kind": "server",
-                "label": "App",
-                "tone": "good"
-              },
-              {
-                "id": "db",
-                "kind": "db",
-                "label": "Primary",
-                "tone": "good"
-              },
-              {
-                "id": "r1",
-                "kind": "replica",
-                "label": "Replica",
-                "tone": "neutral"
-              }
-            ],
-            "edges": [
-              {
-                "from": "user",
-                "to": "app"
-              },
-              {
-                "from": "app",
-                "to": "db"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 3,
+            "complexityScore": 3,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "Safety moves to the storage layer; clients must propagate tokens."
           },
+          "resultTitle": "Zombie writes rejected",
+          "resultBody": "Each lease grant carries an increasing token (33, then 34), and the ledger refuses any write tagged lower than the highest it has seen, so Worker A's post-pause writes fail. Cost: every write path must carry the token, and storage needs a conditional-write check.",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 36,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 53,
+              "value": 124,
               "unit": "ms",
               "tone": "good"
             },
             {
-              "key": "errors",
-              "label": "Errors",
+              "key": "dupes",
+              "label": "Double-posted invoices",
               "value": 0,
-              "unit": "errors",
+              "unit": "invoices",
               "tone": "good"
             }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Single-leader (or consensus) so only one primary can accept writes in a partition."
+          ]
         },
         {
-          "id": "allow-two-writable",
-          "label": "Allow two writable",
+          "id": "short-lease",
+          "label": "Shorten the lease TTL from 10 s to 3 s",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
+          "resultTitle": "Shorter lease, same zombie",
+          "resultBody": "A 14 s GC pause still outlives a 3 s lease, and ordinary network blips now trigger spurious failovers; double-posts only drop to 150 while leader churn triples.",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 34,
+              "value": 44,
               "unit": "%",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 1000,
+              "value": 160,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "good"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 40,
-              "unit": "errors",
+              "key": "dupes",
+              "label": "Double-posted invoices",
+              "value": 150,
+              "unit": "invoices",
               "tone": "bad"
             }
-          ],
-          "resultTitle": "Writer sees stale",
-          "resultBody": "The next read still hit a lagging replica."
+          ]
         },
         {
-          "id": "turn-off-health",
-          "label": "Turn off health",
+          "id": "check-lease-first",
+          "label": "Have each worker recheck its lease before writing",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
+          "resultTitle": "Check passed, then it paused",
+          "resultBody": "Worker A checks, sees a valid lease, then stalls before its write lands; the check-then-act gap still lets 180 invoices double-post, because the ledger has no idea the lease moved.",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 32,
+              "value": 39,
               "unit": "%",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 880,
+              "value": 135,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "good"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 20,
-              "unit": "errors",
+              "key": "dupes",
+              "label": "Double-posted invoices",
+              "value": 180,
+              "unit": "invoices",
               "tone": "bad"
             }
-          ],
-          "resultTitle": "Writer sees stale",
-          "resultBody": "Turn off health checks"
+          ]
         }
       ],
       "hints": [
-        "The writer expects their own update.",
-        "Replicas can lag.",
-        "Use a fresh read path."
+        "The first worker never learned it had been replaced.",
+        "Any check the worker makes itself can go stale during a pause.",
+        "The ledger needs a way to tell an old lock holder from a new one."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "cons-20",
@@ -4195,215 +4159,444 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Bounded staleness SLA",
-      "brief": "A dashboard promises data no older than 5 seconds, but replica lag is 40 seconds.",
-      "constraint": "The SLA is a product requirement.",
-      "question": "How should the read router behave?",
+      "title": "Quote screens show prices up to 40 s old",
+      "brief": "TradeLite serves 120k quote reads/s from 6 async replicas. Lag is usually 300 ms, but during a bulk import two replicas fall 40 s behind and customers trade on stale prices.",
+      "constraint": "The contract caps quote staleness at 2 s, and the primary cannot serve 120k reads/s.",
+      "question": "How do you enforce the 2 s bound without moving reads to the primary?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 4000,
+          "label": "Quote reads",
+          "value": 120000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 30,
+          "value": 71,
           "unit": "%",
           "tone": "warn"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 800,
+          "value": 18,
           "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "lag",
+          "label": "Worst replica lag",
+          "value": 40,
+          "unit": "s",
           "tone": "bad"
         },
         {
-          "key": "errors",
-          "label": "Errors",
-          "value": 0,
-          "unit": "errors",
-          "tone": "neutral"
+          "key": "breach",
+          "label": "Reads over 2 s stale",
+          "value": 31,
+          "unit": "%",
+          "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "user",
+            "id": "users",
             "kind": "users",
-            "label": "Writer"
+            "label": "Traders"
           },
           {
-            "id": "app",
-            "kind": "server",
-            "label": "App"
+            "id": "lb",
+            "kind": "lb",
+            "label": "Quote router"
           },
           {
             "id": "db",
             "kind": "db",
             "label": "Primary",
-            "tone": "good"
+            "cpu": 64,
+            "sub": "bulk import"
           },
           {
             "id": "r1",
             "kind": "replica",
-            "label": "Stale replica",
+            "label": "Replicas 1-4",
+            "cpu": 68,
+            "sub": "lag 0.3 s"
+          },
+          {
+            "id": "r2",
+            "kind": "replica",
+            "label": "Replica 5",
+            "cpu": 71,
+            "sub": "lag 40 s",
+            "tone": "bad"
+          },
+          {
+            "id": "r3",
+            "kind": "replica",
+            "label": "Replica 6",
+            "cpu": 70,
+            "sub": "lag 38 s",
             "tone": "bad"
           }
         ],
         "edges": [
           {
-            "from": "user",
-            "to": "app"
+            "from": "users",
+            "to": "lb"
           },
           {
-            "from": "app",
-            "to": "db"
-          },
-          {
-            "from": "app",
+            "from": "lb",
             "to": "r1"
+          },
+          {
+            "from": "lb",
+            "to": "r2"
+          },
+          {
+            "from": "lb",
+            "to": "r3"
+          },
+          {
+            "from": "db",
+            "to": "r1"
+          },
+          {
+            "from": "db",
+            "to": "r2"
+          },
+          {
+            "from": "db",
+            "to": "r3"
           }
         ]
       },
       "choices": [
         {
-          "id": "read-replicas",
-          "label": "Read replicas",
+          "id": "lag-aware-routing",
+          "label": "Pull replicas lagging more than 2 s out of routing",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "user",
-                "kind": "users",
-                "label": "Writer"
-              },
-              {
-                "id": "app",
-                "kind": "server",
-                "label": "App",
-                "tone": "good"
-              },
-              {
-                "id": "db",
-                "kind": "db",
-                "label": "Primary",
-                "tone": "good"
-              },
-              {
-                "id": "r1",
-                "kind": "replica",
-                "label": "Replica",
-                "tone": "neutral"
-              }
-            ],
-            "edges": [
-              {
-                "from": "user",
-                "to": "app"
-              },
-              {
-                "from": "app",
-                "to": "db"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 900,
+            "latencyP99DeltaMs": 6,
+            "complexityScore": 2,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Bounded staleness by exclusion; capacity drops while replicas catch up."
           },
+          "resultTitle": "Lagging replicas drained",
+          "resultBody": "The router polls replication lag every 250 ms and drains any replica past 2 s; stale-quote reads fall from 31% to about 0.3%. Cost: four replicas now carry all 120k reads/s at 86% CPU, so you need headroom or a seventh replica.",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
+              "value": 86,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 24,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "breach",
+              "label": "Reads over 2 s stale",
+              "value": 0.3,
+              "unit": "%",
+              "tone": "good"
+            }
+          ]
+        },
+        {
+          "id": "add-replicas",
+          "label": "Add two more async replicas to spread load",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "retry": true,
+          "resultTitle": "More replicas, same lag",
+          "resultBody": "The two new replicas replay the same bulk import and fall 35 s behind as well; the router still sends them a share of traffic, so 30% of reads remain over the 2 s bound.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 58,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
               "value": 16,
-              "unit": "%",
-              "tone": "good"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 53,
               "unit": "ms",
               "tone": "good"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
-              "tone": "good"
+              "key": "breach",
+              "label": "Reads over 2 s stale",
+              "value": 30,
+              "unit": "%",
+              "tone": "bad"
             }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Reject or reroute reads when replica lag exceeds the freshness bound, falling back to a fresher replica or primary."
+          ]
         },
         {
-          "id": "serve-any-replica",
-          "label": "Serve any replica",
+          "id": "redis-5s",
+          "label": "Cache quotes in Redis with a 5-second TTL",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
+          "resultTitle": "The cache breaks the SLA by itself",
+          "resultBody": "A 5 s TTL alone can serve quotes older than the 2 s bound, and cache fills from the 40 s-behind replicas lock stale prices in; over-bound reads rise to 38%.",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 34,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 1000,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
               "value": 40,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Writer sees stale",
-          "resultBody": "The next read still hit a lagging replica."
-        },
-        {
-          "id": "hide-lag-metric",
-          "label": "Hide lag metric",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 32,
               "unit": "%",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 880,
+              "value": 4,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "good"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 20,
-              "unit": "errors",
+              "key": "breach",
+              "label": "Reads over 2 s stale",
+              "value": 38,
+              "unit": "%",
               "tone": "bad"
             }
-          ],
-          "resultTitle": "Writer sees stale",
-          "resultBody": "Hide the lag metric"
+          ]
         }
       ],
       "hints": [
-        "The writer expects their own update.",
-        "Replicas can lag.",
-        "Use a fresh read path."
+        "Most replicas are fine; a couple are far behind.",
+        "The SLA is about the age of the data, not the speed of the response.",
+        "Decide per replica, based on how far behind it currently is."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "cons-new-01",
+      "incidentCode": "INC-008-21",
+      "level": 8,
+      "patternId": "consistency",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 50,
+      "title": "Cart forgets the item added seconds ago",
+      "brief": "ShopNest's cart store keeps N=3 replicas with W=1 writes and R=1 reads for speed. After a node blip, 4% of cart reads miss an item added seconds earlier.",
+      "constraint": "Reads and writes must both keep working with one replica down; there is no single leader.",
+      "question": "Which quorum setting guarantees a read sees the latest acknowledged write?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Cart ops",
+          "value": 45000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 52,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 12,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "miss",
+          "label": "Reads missing last write",
+          "value": 4,
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Shoppers"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Cart API",
+            "cpu": 44
+          },
+          {
+            "id": "n1",
+            "kind": "db",
+            "label": "Replica A",
+            "cpu": 52
+          },
+          {
+            "id": "n2",
+            "kind": "db",
+            "label": "Replica B",
+            "cpu": 48,
+            "tone": "warn",
+            "sub": "rejoined"
+          },
+          {
+            "id": "n3",
+            "kind": "db",
+            "label": "Replica C",
+            "cpu": 50
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "n1"
+          },
+          {
+            "from": "app",
+            "to": "n2"
+          },
+          {
+            "from": "app",
+            "to": "n3"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "quorum-2-2",
+          "label": "Write quorum W=2 and read quorum R=2 with N=3",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 7,
+            "complexityScore": 2,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "Overlapping quorums trade a few ms of latency for read-after-write."
+          },
+          "resultTitle": "Every read overlaps a write",
+          "resultBody": "With R + W = 4 > N = 3 on strict (not sloppy) quorums, every read set shares at least one replica with the last acknowledged write, and one node can still fail. Missing items drop to about 0; cost: p95 rises from 12 ms to 19 ms waiting for the second replica.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 58,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 19,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "miss",
+              "label": "Reads missing last write",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            }
+          ]
+        },
+        {
+          "id": "write-all",
+          "label": "Write W=3 to all replicas, keep reads at R=1",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "retry": true,
+          "resultTitle": "Writes fail whenever a node dips",
+          "resultBody": "R=1 plus W=3 does overlap, but every write now needs all three replicas; during the next 90 s node restart every add-to-cart fails, breaking the one-node-down requirement.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 50,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 22,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "miss",
+              "label": "Reads missing last write",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Failed writes (node down)",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ]
+        },
+        {
+          "id": "retry-empty",
+          "label": "Keep R=1, W=1 and retry reads that look empty",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "resultTitle": "Retries still read one replica",
+          "resultBody": "A cart missing one item is not empty, so the retry rarely fires; when it does, it asks another single replica that may also be behind. Misses only fall from 4% to 3.5%.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 53,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 13,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "miss",
+              "label": "Reads missing last write",
+              "value": 3.5,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ]
+        }
+      ],
+      "hints": [
+        "Each write is acknowledged after reaching just one of three replicas.",
+        "A single-replica read may pick a different node than the write did.",
+        "Make the nodes you read from always intersect the nodes you wrote to."
       ],
       "nextId": null
     }

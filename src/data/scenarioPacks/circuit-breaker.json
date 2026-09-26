@@ -182,8 +182,8 @@
               "tone": "bad"
             }
           ],
-          "resultTitle": "Threads still stuck",
-          "resultBody": "Calls keep waiting on the dead dependency."
+          "resultTitle": "Threads wait even longer",
+          "resultBody": "A longer timeout parks each checkout thread even longer on a provider that is down; p95 climbs to 37 s and 240 errors pile up as the pool exhausts."
         },
         {
           "id": "retry-harder",
@@ -213,8 +213,8 @@
               "tone": "bad"
             }
           ],
-          "resultTitle": "Threads still stuck",
-          "resultBody": "Retry every call immediately"
+          "resultTitle": "Retries multiply the pileup",
+          "resultBody": "Every failed payment call is retried immediately, doubling the threads parked on the dead provider; CPU stays at 97% and even browsing starts to slow."
         }
       ],
       "hints": [
@@ -232,37 +232,37 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Retrying a dead dependency",
-      "brief": "An inventory service returns 503 and callers retry three times, tripling load.",
-      "constraint": "The dependency needs time to recover.",
-      "question": "What should happen after the error budget is spent?",
+      "title": "Inventory blip becomes a 27x traffic storm",
+      "brief": "Web, cart and the inventory client each make up to 3 attempts on failure. When inventory slowed at 2k req/s, it received 54k req/s of attempts and fell over completely.",
+      "constraint": "Inventory serves at most 6k req/s, and product pages must keep rendering.",
+      "question": "What stops retries from multiplying at every layer?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 503,
+          "label": "Load on inventory",
+          "value": 54000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 95,
+          "value": 99,
           "unit": "%",
           "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 30000,
+          "value": 8000,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 200,
-          "unit": "errors",
+          "label": "Failed calls",
+          "value": 81,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -271,175 +271,167 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Shoppers"
           },
           {
-            "id": "app",
+            "id": "web",
             "kind": "server",
-            "label": "Checkout",
+            "label": "Web tier",
+            "cpu": 60,
+            "sub": "3 attempts"
+          },
+          {
+            "id": "cart",
+            "kind": "server",
+            "label": "Cart service",
+            "cpu": 72,
+            "sub": "3 attempts"
+          },
+          {
+            "id": "inv",
+            "kind": "server",
+            "label": "Inventory",
+            "cpu": 99,
             "tone": "bad",
-            "cpu": 97
+            "sub": "3 attempts in client"
           },
           {
-            "id": "pay",
-            "kind": "server",
-            "label": "Payments (down)",
-            "tone": "bad"
+            "id": "db",
+            "kind": "db",
+            "label": "Inventory DB",
+            "cpu": 80
           }
         ],
         "edges": [
           {
             "from": "users",
-            "to": "app"
+            "to": "web"
           },
           {
-            "from": "app",
-            "to": "pay"
+            "from": "web",
+            "to": "cart"
+          },
+          {
+            "from": "cart",
+            "to": "inv"
+          },
+          {
+            "from": "inv",
+            "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "trip-breaker",
-          "label": "Trip breaker",
+          "id": "breaker-single-retry",
+          "label": "Breaker at the inventory client, retries at one layer",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "app",
-                "kind": "server",
-                "label": "Checkout",
-                "tone": "good",
-                "cpu": 30
-              },
-              {
-                "id": "cb",
-                "kind": "lb",
-                "label": "Breaker open",
-                "tone": "good"
-              },
-              {
-                "id": "fb",
-                "kind": "cache",
-                "label": "Fallback",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "app"
-              },
-              {
-                "from": "app",
-                "to": "cb"
-              },
-              {
-                "from": "cb",
-                "to": "fb"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 3,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Bounded load under failure; fewer transient errors are hidden."
           },
+          "resultTitle": "Storm collapses to real demand",
+          "resultBody": "Inner layers now fail fast, only the web tier retries once with jitter, and the inventory breaker opens past 50% errors, so load falls from 54k to about 2.4k req/s. Cost: users see a quick 'try again' on calls that still fail instead of silent retries.",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 31,
+              "value": 45,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2000,
+              "value": 120,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
+              "label": "Failed calls",
+              "value": 1,
+              "unit": "%",
               "tone": "good"
             }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Trip the breaker, stop calling for a cooldown, then probe with limited traffic."
+          ]
         },
         {
-          "id": "retry-harder",
-          "label": "Retry harder",
+          "id": "scale-inventory",
+          "label": "Scale inventory out to 20 nodes to absorb it",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
+          "resultTitle": "Autoscaling can't outrun 27x",
+          "resultBody": "New nodes take 4 minutes to warm up, 54k req/s is nine times current capacity, and once they arrive the shared inventory DB becomes the bottleneck at 100% CPU.",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 99,
+              "value": 100,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 37500,
+              "value": 6000,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 240,
-              "unit": "errors",
+              "label": "Failed calls",
+              "value": 60,
+              "unit": "%",
               "tone": "bad"
             }
-          ],
-          "resultTitle": "Threads still stuck",
-          "resultBody": "Calls keep waiting on the dead dependency."
+          ]
         },
         {
-          "id": "remove-timeouts",
-          "label": "Remove timeouts",
+          "id": "backoff-everywhere",
+          "label": "Add exponential backoff to all three layers",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
+          "resultTitle": "Slower storm, still 27 attempts",
+          "resultBody": "Backoff spreads attempts over time, but each user request can still become 27 inventory calls; load drops to 30k req/s, five times capacity, and failures stay at 64%.",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 97,
+              "value": 98,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 33000,
+              "value": 7000,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 220,
-              "unit": "errors",
+              "label": "Failed calls",
+              "value": 64,
+              "unit": "%",
               "tone": "bad"
             }
-          ],
-          "resultTitle": "Threads still stuck",
-          "resultBody": "Remove timeouts"
+          ]
         }
       ],
       "hints": [
-        "Waiting on a dead dependency burns threads.",
-        "Retries make it worse.",
-        "Fail fast, then probe."
+        "Inventory isn't getting more users, just more attempts per user.",
+        "3 attempts times 3 attempts times 3 attempts.",
+        "Pick one place allowed to retry, and fail fast everywhere else."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "cb-03",
@@ -666,37 +658,37 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Breaker never half-opens",
-      "brief": "A circuit opened at 02:00 and still rejects all calls at noon even though the dependency recovered at 02:10.",
-      "constraint": "There is no probe interval.",
-      "question": "What state is missing?",
+      "title": "Search stays dark after the cluster recovers",
+      "brief": "Findr's breaker to the search cluster opened during a 3-minute outage. The cluster has been healthy for 20 minutes, but the breaker is still open and every search fails fast.",
+      "constraint": "The just-recovered cluster cannot take the full 9k req/s herd in a single instant.",
+      "question": "How should the breaker discover the dependency is healthy again?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 3000,
+          "label": "Search requests",
+          "value": 9000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 95,
+          "value": 35,
           "unit": "%",
-          "tone": "bad"
+          "tone": "good"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 30000,
+          "value": 4,
           "unit": "ms",
-          "tone": "bad"
+          "tone": "good"
         },
         {
-          "key": "errors",
-          "label": "Errors",
-          "value": 200,
-          "unit": "errors",
+          "key": "failfast",
+          "label": "Searches failing fast",
+          "value": 100,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -705,20 +697,23 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Shoppers"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "Checkout",
-            "tone": "bad",
-            "cpu": 97
+            "label": "Web app",
+            "cpu": 35,
+            "sub": "breaker: OPEN",
+            "tone": "bad"
           },
           {
-            "id": "pay",
+            "id": "search",
             "kind": "server",
-            "label": "Payments (down)",
-            "tone": "bad"
+            "label": "Search cluster",
+            "cpu": 12,
+            "tone": "good",
+            "sub": "healthy"
           }
         ],
         "edges": [
@@ -728,152 +723,121 @@
           },
           {
             "from": "app",
-            "to": "pay"
+            "to": "search"
           }
         ]
       },
       "choices": [
         {
-          "id": "trip-breaker",
-          "label": "Trip breaker",
+          "id": "half-open-probes",
+          "label": "Half-open after 30 s, letting 5 trial calls through",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "app",
-                "kind": "server",
-                "label": "Checkout",
-                "tone": "good",
-                "cpu": 30
-              },
-              {
-                "id": "cb",
-                "kind": "lb",
-                "label": "Breaker open",
-                "tone": "good"
-              },
-              {
-                "id": "fb",
-                "kind": "cache",
-                "label": "Fallback",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "app"
-              },
-              {
-                "from": "app",
-                "to": "cb"
-              },
-              {
-                "from": "cb",
-                "to": "fb"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 2,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Automatic recovery, paid for by a handful of probe requests."
           },
+          "resultTitle": "Trial calls close the circuit",
+          "resultBody": "After 30 s open, the breaker lets 5 probe searches through; all succeed, so it closes and traffic ramps back within a minute. Cost: when the cluster is still sick, those few probe users each cycle get a slow failure.",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 31,
+              "value": 52,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2000,
+              "value": 60,
               "unit": "ms",
               "tone": "good"
             },
             {
-              "key": "errors",
-              "label": "Errors",
+              "key": "failfast",
+              "label": "Searches failing fast",
               "value": 0,
-              "unit": "errors",
+              "unit": "%",
               "tone": "good"
             }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Half-open: allow a small probe, then close the circuit if the dependency is healthy."
+          ]
         },
         {
-          "id": "stay-open-forever",
-          "label": "Stay open forever",
+          "id": "manual-reset",
+          "label": "Have the on-call engineer reset it via a runbook",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
+          "resultTitle": "Recovery waits on a human",
+          "resultBody": "It works once someone is paged, but every outage now stays dark until on-call notices; this one lasted another 25 minutes before the reset, with 100% of searches failing.",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 99,
+              "value": 35,
               "unit": "%",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 37500,
+              "value": 4,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "good"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 240,
-              "unit": "errors",
+              "key": "failfast",
+              "label": "Searches failing fast",
+              "value": 100,
+              "unit": "%",
               "tone": "bad"
             }
-          ],
-          "resultTitle": "Threads still stuck",
-          "resultBody": "Calls keep waiting on the dead dependency."
+          ]
         },
         {
-          "id": "close-immediately-first",
-          "label": "Close immediately first",
+          "id": "timer-close",
+          "label": "Fully close the breaker on a fixed 60 s timer",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
+          "resultTitle": "Herd slams the cluster",
+          "resultBody": "The timer closes the circuit and all 9k req/s rush in at once; the cold cluster's p95 hits 3 s, 30% of searches time out, and the breaker reopens, repeating the cycle every minute.",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 97,
+              "value": 70,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 33000,
+              "value": 3000,
               "unit": "ms",
               "tone": "bad"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 220,
-              "unit": "errors",
+              "key": "failfast",
+              "label": "Searches failing fast",
+              "value": 30,
+              "unit": "%",
               "tone": "bad"
             }
-          ],
-          "resultTitle": "Threads still stuck",
-          "resultBody": "Close immediately on the first timeout"
+          ]
         }
       ],
       "hints": [
-        "Waiting on a dead dependency burns threads.",
-        "Retries make it worse.",
-        "Fail fast, then probe."
+        "The dependency is fine; the breaker doesn't know it.",
+        "An open breaker sends no traffic, so it never sees a success.",
+        "Let a small amount of traffic test the water before fully closing."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "cb-05",
@@ -1100,37 +1064,37 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Fallback to stale catalog",
-      "brief": "The recommendations service is down and the homepage waits on it.",
-      "constraint": "A slightly stale list is acceptable.",
-      "question": "What should the open circuit return?",
+      "title": "Recommendations outage blanks the home page",
+      "brief": "ShopLane's home page calls a recommendations service. It is down; the breaker opened correctly, but the page returns 500 because the code treats 'circuit open' as fatal. 15k req/s affected.",
+      "constraint": "Recommendations are optional, and the home page must render in under 300 ms.",
+      "question": "What should the page do while the circuit is open?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 3000,
+          "label": "Home page views",
+          "value": 15000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 95,
+          "value": 40,
           "unit": "%",
-          "tone": "bad"
+          "tone": "good"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 30000,
+          "value": 15,
           "unit": "ms",
-          "tone": "bad"
+          "tone": "good"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 200,
-          "unit": "errors",
+          "label": "Home page 500s",
+          "value": 100,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -1139,175 +1103,163 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Visitors"
+          },
+          {
+            "id": "cdn",
+            "kind": "cdn",
+            "label": "CDN"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "Checkout",
-            "tone": "bad",
-            "cpu": 97
+            "label": "Home page service",
+            "cpu": 40,
+            "sub": "breaker: OPEN"
           },
           {
-            "id": "pay",
+            "id": "recs",
             "kind": "server",
-            "label": "Payments (down)",
-            "tone": "bad"
+            "label": "Recommendations",
+            "tone": "bad",
+            "sub": "down"
+          },
+          {
+            "id": "cache",
+            "kind": "cache",
+            "label": "Redis"
           }
         ],
         "edges": [
           {
             "from": "users",
+            "to": "cdn"
+          },
+          {
+            "from": "cdn",
             "to": "app"
           },
           {
             "from": "app",
-            "to": "pay"
+            "to": "recs"
+          },
+          {
+            "from": "app",
+            "to": "cache"
           }
         ]
       },
       "choices": [
         {
-          "id": "add-cache",
-          "label": "Add cache",
+          "id": "cached-fallback",
+          "label": "Serve cached popular items as a fallback while open",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "app",
-                "kind": "server",
-                "label": "Checkout",
-                "tone": "good",
-                "cpu": 30
-              },
-              {
-                "id": "cb",
-                "kind": "lb",
-                "label": "Breaker open",
-                "tone": "good"
-              },
-              {
-                "id": "fb",
-                "kind": "cache",
-                "label": "Fallback",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "app"
-              },
-              {
-                "from": "app",
-                "to": "cb"
-              },
-              {
-                "from": "cb",
-                "to": "fb"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 2,
+            "consistencyGuarantee": "weak",
+            "tradeoffSummary": "Degraded but available; stale, generic content during outages."
           },
+          "resultTitle": "Page renders, slightly generic",
+          "resultBody": "While the breaker is open, the page pulls yesterday's top-50 list from Redis and renders in 140 ms; 500s drop from 100% to 0. Cost: everyone sees non-personalized picks, and module click-through falls about 20% until recommendations return.",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 31,
+              "value": 38,
               "unit": "%",
               "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 140,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Home page 500s",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            }
+          ]
+        },
+        {
+          "id": "longer-timeout",
+          "label": "Raise the recommendations timeout from 2 s to 10 s",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "resultTitle": "Timeout was never the problem",
+          "resultBody": "With the breaker open no call is made, so the timeout never applies and 500s stay at 100%; worse, each half-open probe now hangs 10 s, pushing unlucky users' page loads to 10 s.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 42,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 10000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Home page 500s",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ]
+        },
+        {
+          "id": "disable-breaker",
+          "label": "Disable the breaker so every page calls live",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "resultTitle": "Every page waits on a dead service",
+          "resultBody": "Each page view now waits the full 2 s timeout for a service that is down; threads pile up, app CPU hits 92%, and every page still ends in a 500 after the wait.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
               "value": 2000,
               "unit": "ms",
-              "tone": "good"
+              "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
-              "tone": "good"
-            }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "A fallback: cached or default recommendations instead of blocking the page."
-        },
-        {
-          "id": "blank-500-whole",
-          "label": "Blank 500 whole",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 99,
+              "label": "Home page 500s",
+              "value": 100,
               "unit": "%",
               "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 37500,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 240,
-              "unit": "errors",
-              "tone": "bad"
             }
-          ],
-          "resultTitle": "Threads still stuck",
-          "resultBody": "Calls keep waiting on the dead dependency."
-        },
-        {
-          "id": "hang-until-recommendatio",
-          "label": "Hang until recommendations",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 97,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 33000,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 220,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Threads still stuck",
-          "resultBody": "Hang until recommendations return"
+          ]
         }
       ],
       "hints": [
-        "Waiting on a dead dependency burns threads.",
-        "Retries make it worse.",
-        "Fail fast, then probe."
+        "The breaker did its job; the page didn't.",
+        "Recommendations are optional content.",
+        "Decide what to render when the call is skipped."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "cb-07",
@@ -1968,37 +1920,37 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Bulkhead missing next to the breaker",
-      "brief": "A circuit opens on search, but search still occupies the only thread pool.",
-      "constraint": "Checkout shares that pool.",
-      "question": "What complementary pattern is needed?",
+      "title": "Slow PDF vendor takes down login and checkout",
+      "brief": "Billio's app servers share one 200-thread pool for all outbound calls. The PDF-invoice vendor slowed to 20 s responses; its calls hold 196 threads and login p95 hits 9 s.",
+      "constraint": "PDF calls eventually succeed, so the error-rate breaker never trips; login must stay under 500 ms.",
+      "question": "What stops one slow dependency from starving everyone else?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 3000,
+          "value": 6000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 95,
+          "value": 34,
           "unit": "%",
-          "tone": "bad"
+          "tone": "good"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 30000,
+          "value": 9000,
           "unit": "ms",
           "tone": "bad"
         },
         {
-          "key": "errors",
-          "label": "Errors",
-          "value": 200,
-          "unit": "errors",
+          "key": "threads",
+          "label": "Shared threads busy",
+          "value": 98,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -2007,20 +1959,34 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Customers"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "Checkout",
+            "label": "App server",
+            "cpu": 34,
             "tone": "bad",
-            "cpu": 97
+            "sub": "196/200 threads on PDF"
+          },
+          {
+            "id": "pdf",
+            "kind": "server",
+            "label": "PDF vendor",
+            "tone": "bad",
+            "sub": "20 s responses"
+          },
+          {
+            "id": "auth",
+            "kind": "server",
+            "label": "Auth service",
+            "cpu": 20
           },
           {
             "id": "pay",
             "kind": "server",
-            "label": "Payments (down)",
-            "tone": "bad"
+            "label": "Payments",
+            "cpu": 25
           }
         ],
         "edges": [
@@ -2030,152 +1996,129 @@
           },
           {
             "from": "app",
+            "to": "pdf"
+          },
+          {
+            "from": "app",
+            "to": "auth"
+          },
+          {
+            "from": "app",
             "to": "pay"
           }
         ]
       },
       "choices": [
         {
-          "id": "trip-breaker",
-          "label": "Trip breaker",
+          "id": "bulkhead-pools",
+          "label": "Per-dependency thread pools, PDF capped at 20 threads",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "app",
-                "kind": "server",
-                "label": "Checkout",
-                "tone": "good",
-                "cpu": 30
-              },
-              {
-                "id": "cb",
-                "kind": "lb",
-                "label": "Breaker open",
-                "tone": "good"
-              },
-              {
-                "id": "fb",
-                "kind": "cache",
-                "label": "Fallback",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "app"
-              },
-              {
-                "from": "app",
-                "to": "cb"
-              },
-              {
-                "from": "cb",
-                "to": "fb"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 3,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Isolation per dependency; idle capacity sits reserved in each pool."
           },
+          "resultTitle": "PDF slows alone",
+          "resultBody": "PDF calls now run in their own 20-thread pool and are rejected once it is full, so login and checkout keep 180 threads and login p95 returns to 120 ms. Cost: invoices are generated late or queued for retry, and each pool size must be tuned.",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 31,
+              "value": 33,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2000,
+              "value": 120,
               "unit": "ms",
               "tone": "good"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
+              "key": "threads",
+              "label": "Shared threads busy",
+              "value": 35,
+              "unit": "%",
               "tone": "good"
             }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Isolate thread pools (bulkhead) so a broken dependency cannot starve others, then break the circuit."
+          ]
         },
         {
-          "id": "one-thread-pool",
-          "label": "One thread pool",
+          "id": "bigger-pool",
+          "label": "Double the shared pool from 200 to 400 threads",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
+          "resultTitle": "PDF fills 400 threads too",
+          "resultBody": "At 20 s per call, PDF traffic consumes whatever threads exist; within 40 s it holds 390 of 400, stacks add 200 MB of memory, and login p95 is back at 8 s.",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 99,
+              "value": 38,
               "unit": "%",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 37500,
+              "value": 8000,
               "unit": "ms",
               "tone": "bad"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 240,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Threads still stuck",
-          "resultBody": "Calls keep waiting on the dead dependency."
-        },
-        {
-          "id": "larger-heap",
-          "label": "Larger heap",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
+              "key": "threads",
+              "label": "Shared threads busy",
               "value": 97,
               "unit": "%",
               "tone": "bad"
+            }
+          ]
+        },
+        {
+          "id": "async-shared",
+          "label": "Run PDF calls asynchronously on the shared executor",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "retry": true,
+          "resultTitle": "Async, but the same starving pool",
+          "resultBody": "Request threads no longer block directly, but the PDF tasks run on the same shared executor, which still fills with 20 s calls; login p95 improves only to 6 s.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 36,
+              "unit": "%",
+              "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 33000,
+              "value": 6000,
               "unit": "ms",
               "tone": "bad"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 220,
-              "unit": "errors",
+              "key": "threads",
+              "label": "Shared threads busy",
+              "value": 92,
+              "unit": "%",
               "tone": "bad"
             }
-          ],
-          "resultTitle": "Threads still stuck",
-          "resultBody": "Larger heap only"
+          ]
         }
       ],
       "hints": [
-        "Waiting on a dead dependency burns threads.",
-        "Retries make it worse.",
-        "Fail fast, then probe."
+        "Nothing is failing; one vendor is just slow.",
+        "All outbound calls draw from the same 200 threads.",
+        "Limit how much of the server any single dependency can occupy."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "cb-11",
@@ -2837,7 +2780,7 @@
       "severity": "P0",
       "xp": 50,
       "title": "gRPC deadline ignored",
-      "brief": "Downstream ignores deadlines and the caller\u2019s breaker never sees failures, only hung RPCs.",
+      "brief": "Downstream ignores deadlines and the caller’s breaker never sees failures, only hung RPCs.",
       "constraint": "Threads stay blocked.",
       "question": "What failure signal should trip the circuit?",
       "metricsBefore": [
@@ -3259,6 +3202,222 @@
         "Waiting on a dead dependency burns threads.",
         "Retries make it worse.",
         "Fail fast, then probe."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "cb-new-01",
+      "incidentCode": "INC-010-16",
+      "level": 10,
+      "patternId": "circuit-breaker",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 50,
+      "title": "Fraud-check breaker flips open and shut all night",
+      "brief": "At 3 a.m. RiskCheck sees 4 req/s. Its breaker opens on 2 failures in the last 5 calls, so two random timeouts trip it: 140 flips overnight, failing 12% of payments.",
+      "constraint": "Real outages must still trip within seconds during the 3k req/s daytime peak.",
+      "question": "What makes the breaker ignore low-traffic noise without dulling real trips?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 4,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 22,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 260,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "trips",
+          "label": "Breaker trips per hour",
+          "value": 18,
+          "unit": "trips",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Payments failed",
+          "value": 12,
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Night shoppers"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Payments service",
+            "cpu": 22,
+            "sub": "breaker flapping",
+            "tone": "warn"
+          },
+          {
+            "id": "fraud",
+            "kind": "server",
+            "label": "Fraud check",
+            "cpu": 15,
+            "sub": "0.5% timeouts"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "fraud"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "rate-window-min-volume",
+          "label": "50% error rate over 30 s, minimum 50 calls",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 2,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Statistically meaningful trips; slower detection at very low volume."
+          },
+          "resultTitle": "Noise ignored, outages still trip",
+          "resultBody": "The breaker now needs at least 50 calls in a 30 s window and a 50% error rate; two stray timeouts never qualify, so trips fall from 18/hour to 0 and payment failures to 0.3%. Cost: at night a real outage can take up to 30 s to detect.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 21,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 240,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "trips",
+              "label": "Breaker trips per hour",
+              "value": 0,
+              "unit": "trips",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Payments failed",
+              "value": 0.3,
+              "unit": "%",
+              "tone": "good"
+            }
+          ]
+        },
+        {
+          "id": "five-in-a-row",
+          "label": "Trip only after 5 consecutive failures",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "retry": true,
+          "resultTitle": "Now it misses partial outages",
+          "resultBody": "Night flapping stops, but in a partial outage failing 60% of calls, five straight failures are rare, so the breaker stays closed while 1,800 req/s of daytime payments hang on timeouts.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 60,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "trips",
+              "label": "Breaker trips per hour",
+              "value": 1,
+              "unit": "trips",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Payments failed",
+              "value": 60,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ]
+        },
+        {
+          "id": "long-open",
+          "label": "Keep the breaker open 10 minutes per trip",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "resultTitle": "Fewer flips, longer blackouts",
+          "resultBody": "Each stray double timeout now blocks fraud checks for 10 minutes, so payments get declined for the whole window; trips fall to 4/hour, but 35% of night payments fail.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 20,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 30,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "trips",
+              "label": "Breaker trips per hour",
+              "value": 4,
+              "unit": "trips",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Payments failed",
+              "value": 35,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ]
+        }
+      ],
+      "hints": [
+        "The dependency isn't down; it's just quiet.",
+        "At 4 req/s, two timeouts in five calls is bad luck, not an outage.",
+        "Require enough samples before a failure rate means anything."
       ],
       "nextId": null
     }

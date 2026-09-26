@@ -171,8 +171,8 @@
               "tone": "bad"
             }
           ],
-          "resultTitle": "Dead node in pool",
-          "resultBody": "The balancer still routes to an unready instance."
+          "resultTitle": "Restart loop during warmup",
+          "resultBody": "Every restart throws away the half-built cache, so the pod never finishes warming and errors stay at 120 while the pool shrinks."
         },
         {
           "id": "no-readiness",
@@ -202,8 +202,8 @@
               "tone": "bad"
             }
           ],
-          "resultTitle": "Dead node in pool",
-          "resultBody": "No readiness gate"
+          "resultTitle": "Cold pod served live traffic",
+          "resultBody": "Without a readiness gate the balancer sends requests to the warming pod immediately; its cache misses push p95 past 200 ms and errors climb."
         }
       ],
       "hints": [
@@ -633,37 +633,37 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Deep health causes a cascade",
-      "brief": "Readiness checks the payment vendor; the vendor blips and every pod goes unready at once.",
-      "constraint": "The site could still serve catalog traffic.",
-      "question": "How deep should default readiness be?",
+      "title": "Vendor blip empties the whole pool",
+      "brief": "ShopRail's readiness probe calls the payment vendor. A 40-second vendor blip marked all 60 pods unready at once, so the balancer returned 503 for catalog pages too, at 30k req/s.",
+      "constraint": "Catalog and search must keep serving even when payments are down.",
+      "question": "What should the readiness probe actually check?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 1000,
+          "value": 30000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 15,
+          "value": 10,
           "unit": "%",
           "tone": "warn"
         },
         {
-          "key": "p95",
-          "label": "p95 latency",
-          "value": 200,
-          "unit": "ms",
-          "tone": "warn"
+          "key": "ready",
+          "label": "Ready pods",
+          "value": 0,
+          "unit": "/60",
+          "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 120,
-          "unit": "errors",
+          "label": "503s",
+          "value": 30000,
+          "unit": "errors/s",
           "tone": "bad"
         }
       ],
@@ -672,164 +672,138 @@
           {
             "id": "lb",
             "kind": "lb",
-            "label": "Balancer"
-          },
-          {
-            "id": "p1",
-            "kind": "server",
-            "label": "Pod (dead)",
+            "label": "Balancer (no targets)",
             "tone": "bad"
           },
           {
-            "id": "p2",
+            "id": "pods",
             "kind": "server",
-            "label": "Pod (ready)",
-            "tone": "good"
+            "label": "60 pods (unready)",
+            "tone": "bad",
+            "cpu": 10
+          },
+          {
+            "id": "vendor",
+            "kind": "server",
+            "label": "Payment vendor (blip)",
+            "tone": "bad"
           }
         ],
         "edges": [
           {
             "from": "lb",
-            "to": "p1"
+            "to": "pods"
           },
           {
-            "from": "lb",
-            "to": "p2"
+            "from": "pods",
+            "to": "vendor"
           }
         ]
       },
       "choices": [
         {
-          "id": "fix-probes",
-          "label": "Fix probes",
+          "id": "local-ready",
+          "label": "Readiness checks local state; vendor call behind a circuit breaker",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "lb",
-                "kind": "lb",
-                "label": "Balancer",
-                "tone": "good"
-              },
-              {
-                "id": "p2",
-                "kind": "server",
-                "label": "Pod (ready)",
-                "tone": "good"
-              },
-              {
-                "id": "p3",
-                "kind": "server",
-                "label": "Pod (ready)",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "lb",
-                "to": "p2"
-              },
-              {
-                "from": "lb",
-                "to": "p3"
-              }
-            ]
-          },
+          "approach": "optimal",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 55,
               "unit": "%",
               "tone": "good"
             },
             {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 40,
-              "unit": "ms",
+              "key": "ready",
+              "label": "Ready pods",
+              "value": 60,
+              "unit": "/60",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "503s",
+              "value": 450,
+              "unit": "errors/s",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Catalog survives payment outages",
+          "resultBody": "Pods stay ready while the vendor is down; the breaker fails checkout fast with a \"try again shortly\" page. 503s drop from 30,000/s to ~450/s (checkout only). Cost: vendor health now needs its own alert."
+        },
+        {
+          "id": "threshold-10",
+          "label": "Raise readiness failureThreshold from 3 to 10 probes",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 12,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "ready",
+              "label": "Ready pods",
               "value": 0,
-              "unit": "errors",
-              "tone": "good"
+              "unit": "/60",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "503s",
+              "value": 28500,
+              "unit": "errors/s",
+              "tone": "bad"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Check local critical dependencies, not every optional vendor, or isolate optional features."
+          "resultTitle": "Cascade delayed, not prevented",
+          "resultBody": "The pool now drains 100 s into an outage instead of 30 s. This 40 s blip would pass, but the next 3-minute vendor outage still takes all 60 pods out and 28,500 catalog req/s fail."
         },
         {
-          "id": "tie-readiness-every",
-          "label": "Tie readiness every",
+          "id": "cache-check",
+          "label": "Cache the vendor health result in each pod for 60 s",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 19,
+              "value": 14,
               "unit": "%",
               "tone": "bad"
             },
             {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 250,
-              "unit": "ms",
+              "key": "ready",
+              "label": "Ready pods",
+              "value": 4,
+              "unit": "/60",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 160,
-              "unit": "errors",
+              "label": "503s",
+              "value": 28000,
+              "unit": "errors/s",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Dead node in pool",
-          "resultBody": "The balancer still routes to an unready instance."
-        },
-        {
-          "id": "mark-whole-site",
-          "label": "Mark whole site",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 17,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 220,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 140,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Dead node in pool",
-          "resultBody": "Mark the whole site unready on an optional widget"
+          "resultTitle": "Pods now fail in lockstep",
+          "resultBody": "All 60 pods cache the same vendor answer, so they expire and flip within the same minute. During a 3-minute outage ready pods still hit 4 of 60 and catalog 503s return."
         }
       ],
       "hints": [
-        "The balancer still thinks this node is fine.",
-        "Alive is not the same as ready.",
-        "Probe the serving path."
+        "Every pod failed for the same external reason at the same moment.",
+        "Readiness should answer \"can this pod serve?\", not \"is every vendor healthy?\".",
+        "Keep shared dependencies out of per-pod probes and degrade the one feature that needs them."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "hc-05",
@@ -839,37 +813,44 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Startup probe missing",
-      "brief": "A JVM app takes 90s to start, and liveness kills it at 30s in a loop.",
-      "constraint": "Slow start is expected.",
-      "question": "Which probe covers boot?",
+      "title": "JVM pods restart forever during boot",
+      "brief": "LedgerCore's JVM needs 90 s to load 2 GB of reference data, but liveness kills it at 30 s. All 24 new pods crash-loop and the deploy is stuck at 0 ready.",
+      "constraint": "Once running, a hung pod must still be restarted within 30 seconds.",
+      "question": "Which probe setup survives a 90-second boot?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 1000,
+          "value": 8000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 90,
+          "value": 96,
           "unit": "%",
           "tone": "bad"
         },
         {
-          "key": "p95",
-          "label": "p95 latency",
-          "value": 200,
-          "unit": "ms",
-          "tone": "warn"
+          "key": "ready",
+          "label": "Ready pods",
+          "value": 0,
+          "unit": "/24",
+          "tone": "bad"
+        },
+        {
+          "key": "restarts",
+          "label": "Restarts",
+          "value": 72,
+          "unit": "in 10 min",
+          "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 120,
-          "unit": "errors",
+          "label": "5xx",
+          "value": 900,
+          "unit": "errors/s",
           "tone": "bad"
         }
       ],
@@ -881,161 +862,156 @@
             "label": "Balancer"
           },
           {
-            "id": "p1",
+            "id": "old",
             "kind": "server",
-            "label": "Pod (dead)",
-            "tone": "bad"
+            "label": "Old pods (overloaded)",
+            "tone": "warn",
+            "cpu": 88
           },
           {
-            "id": "p2",
+            "id": "new",
             "kind": "server",
-            "label": "Pod (ready)",
-            "tone": "good"
+            "label": "24 new pods (CrashLoop)",
+            "tone": "bad",
+            "cpu": 96
           }
         ],
         "edges": [
           {
             "from": "lb",
-            "to": "p1"
+            "to": "old"
           },
           {
             "from": "lb",
-            "to": "p2"
+            "to": "new"
           }
         ]
       },
       "choices": [
         {
-          "id": "fix-probes",
-          "label": "Fix probes",
+          "id": "startup-probe",
+          "label": "startupProbe with a 120 s budget, then 30 s liveness",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "lb",
-                "kind": "lb",
-                "label": "Balancer",
-                "tone": "good"
-              },
-              {
-                "id": "p2",
-                "kind": "server",
-                "label": "Pod (ready)",
-                "tone": "good"
-              },
-              {
-                "id": "p3",
-                "kind": "server",
-                "label": "Pod (ready)",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "lb",
-                "to": "p2"
-              },
-              {
-                "from": "lb",
-                "to": "p3"
-              }
-            ]
-          },
+          "approach": "optimal",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 30,
+              "value": 58,
               "unit": "%",
               "tone": "good"
             },
             {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 40,
-              "unit": "ms",
+              "key": "ready",
+              "label": "Ready pods",
+              "value": 24,
+              "unit": "/24",
               "tone": "good"
             },
             {
-              "key": "errors",
-              "label": "Errors",
+              "key": "restarts",
+              "label": "Restarts",
               "value": 0,
-              "unit": "errors",
+              "unit": "in 10 min",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "5xx",
+              "value": 10,
+              "unit": "errors/s",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "A startup probe (or delayed liveness) so slow boot is not treated as a crash loop."
+          "resultTitle": "Boot finishes, hangs still caught",
+          "resultBody": "Liveness is suspended until the startup probe passes (every 10 s, up to 12 failures), so pods finish their 90 s boot and all 24 go ready; a hung pod is still killed in 30 s. Cost: a pod stuck during boot lingers up to 120 s."
         },
         {
-          "id": "aggressive-liveness-duri",
-          "label": "Aggressive liveness during",
+          "id": "long-liveness",
+          "label": "Stretch the liveness failure window to 120 seconds",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 94,
+              "value": 60,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 250,
-              "unit": "ms",
-              "tone": "bad"
+              "key": "ready",
+              "label": "Ready pods",
+              "value": 24,
+              "unit": "/24",
+              "tone": "good"
+            },
+            {
+              "key": "restarts",
+              "label": "Restarts",
+              "value": 0,
+              "unit": "in 10 min",
+              "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 160,
-              "unit": "errors",
+              "label": "5xx",
+              "value": 1800,
+              "unit": "errors/s",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Dead node in pool",
-          "resultBody": "The balancer still routes to an unready instance."
+          "resultTitle": "Boot works, hangs now last 2 minutes",
+          "resultBody": "The crash loop ends, but the 120 s window applies forever. The next deadlocked pod served 500s for two minutes before anything restarted it, breaking the 30-second rule."
         },
         {
-          "id": "no-grace-period",
-          "label": "No grace period",
+          "id": "no-liveness",
+          "label": "Drop liveness and let readiness gate slow pods",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 92,
+              "value": 74,
               "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "ready",
+              "label": "Ready pods",
+              "value": 18,
+              "unit": "/24",
               "tone": "bad"
             },
             {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 220,
-              "unit": "ms",
-              "tone": "bad"
+              "key": "restarts",
+              "label": "Restarts",
+              "value": 0,
+              "unit": "in 10 min",
+              "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 140,
-              "unit": "errors",
+              "label": "5xx",
+              "value": 350,
+              "unit": "errors/s",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Dead node in pool",
-          "resultBody": "No grace period"
+          "resultTitle": "Hung pods are never restarted",
+          "resultBody": "Pods boot, but a pod that deadlocks now just goes unready and stays that way. By morning 6 of 24 pods were stuck, cutting capacity 25% with nothing restarting them."
         }
       ],
       "hints": [
-        "The balancer still thinks this node is fine.",
-        "Alive is not the same as ready.",
-        "Probe the serving path."
+        "The process is not broken; it is still booting when it gets killed.",
+        "Boot needs a long timeout and steady state needs a short one.",
+        "Kubernetes has a separate probe that holds off liveness until the first success."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "hc-06",
@@ -1457,37 +1433,44 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Flapping readiness",
-      "brief": "A dependency times out every other probe, so the instance flaps in and out of rotation.",
-      "constraint": "Users see a spray of 502s.",
-      "question": "How do you stabilize probes?",
+      "title": "Pods flap in and out every 10 s",
+      "brief": "Streamly's readiness probe has a 1 s timeout on a dependency whose p99 is 1.2 s. 40% of 80 pods flip unready every other probe, and the balancer sprays 502s at 45k req/s.",
+      "constraint": "Genuinely broken pods must still leave rotation within 30 seconds.",
+      "question": "How do you stop the flapping without hiding real failures?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 502,
+          "value": 45000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 15,
+          "value": 72,
           "unit": "%",
           "tone": "warn"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 200,
+          "value": 900,
           "unit": "ms",
-          "tone": "warn"
+          "tone": "bad"
+        },
+        {
+          "key": "flaps",
+          "label": "Rotation changes",
+          "value": 190,
+          "unit": "/min",
+          "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 120,
-          "unit": "errors",
+          "label": "502s",
+          "value": 2600,
+          "unit": "errors/s",
           "tone": "bad"
         }
       ],
@@ -1496,164 +1479,159 @@
           {
             "id": "lb",
             "kind": "lb",
-            "label": "Balancer"
-          },
-          {
-            "id": "p1",
-            "kind": "server",
-            "label": "Pod (dead)",
+            "label": "Balancer (churning)",
             "tone": "bad"
           },
           {
-            "id": "p2",
+            "id": "pods",
             "kind": "server",
-            "label": "Pod (ready)",
-            "tone": "good"
+            "label": "80 pods (40% flapping)",
+            "tone": "warn",
+            "cpu": 72
+          },
+          {
+            "id": "dep",
+            "kind": "db",
+            "label": "Profile service p99 1.2 s",
+            "tone": "warn"
           }
         ],
         "edges": [
           {
             "from": "lb",
-            "to": "p1"
+            "to": "pods"
           },
           {
-            "from": "lb",
-            "to": "p2"
+            "from": "pods",
+            "to": "dep"
           }
         ]
       },
       "choices": [
         {
-          "id": "fix-probes",
-          "label": "Fix probes",
+          "id": "hysteresis",
+          "label": "Hysteresis: eject after 3 failed probes, re-admit after 2",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "lb",
-                "kind": "lb",
-                "label": "Balancer",
-                "tone": "good"
-              },
-              {
-                "id": "p2",
-                "kind": "server",
-                "label": "Pod (ready)",
-                "tone": "good"
-              },
-              {
-                "id": "p3",
-                "kind": "server",
-                "label": "Pod (ready)",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "lb",
-                "to": "p2"
-              },
-              {
-                "from": "lb",
-                "to": "p3"
-              }
-            ]
-          },
+          "approach": "optimal",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 64,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
+              "value": 210,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "flaps",
+              "label": "Rotation changes",
+              "value": 3,
+              "unit": "/min",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "502s",
               "value": 40,
-              "unit": "ms",
+              "unit": "errors/s",
               "tone": "good"
+            }
+          ],
+          "resultTitle": "One slow probe no longer ejects",
+          "resultBody": "A single 1.2 s probe no longer ejects a pod; three misses in a row (30 s) do, and two passes re-admit it. Rotation changes fall from 190/min to 3 and 502s from 2,600/s to 40. Cost: a dead pod can linger 30 s, so LB retries must cover it."
+        },
+        {
+          "id": "probe-1s",
+          "label": "Probe every 1 second so recovery is detected faster",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 80,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1100,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "flaps",
+              "label": "Rotation changes",
+              "value": 1100,
+              "unit": "/min",
+              "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "502s",
+              "value": 3400,
+              "unit": "errors/s",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Ten times the coin flips",
+          "resultBody": "Ten times more probes means ten times more chances to hit the 1.2 s tail. Rotation changes jump to 1,100/min, probe traffic adds 8 points of CPU, and 502s rise to 3,400/s."
+        },
+        {
+          "id": "no-readiness",
+          "label": "Remove the readiness probe and rely on LB passive retries",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 66,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 380,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "flaps",
+              "label": "Rotation changes",
               "value": 0,
-              "unit": "errors",
+              "unit": "/min",
               "tone": "good"
-            }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Thresholds (failure/success counts) and timeouts that ignore brief blips."
-        },
-        {
-          "id": "unready-single-timeout",
-          "label": "Unready single timeout",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 19,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 250,
-              "unit": "ms",
-              "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 160,
-              "unit": "errors",
+              "label": "502s",
+              "value": 1500,
+              "unit": "errors/s",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Dead node in pool",
-          "resultBody": "The balancer still routes to an unready instance."
-        },
-        {
-          "id": "no-failurethreshold",
-          "label": "No failureThreshold",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 17,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 220,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 140,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Dead node in pool",
-          "resultBody": "No failureThreshold"
+          "resultTitle": "Blind balancer during deploys",
+          "resultBody": "Flapping stops, but new and crashed pods now get traffic until the balancer sees real errors. Each rollout sprays about 1,500 502s/s for 20 seconds."
         }
       ],
       "hints": [
-        "The balancer still thinks this node is fine.",
-        "Alive is not the same as ready.",
-        "Probe the serving path."
+        "The pods are not failing; the probe is measuring a 1.2 s tail with a 1 s ruler.",
+        "A single sample should not flip a binary decision back and forth.",
+        "Use different thresholds for leaving and rejoining rotation."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "hc-09",
@@ -2075,203 +2053,177 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Synthetic check vs real path",
-      "brief": "Health returns 200, but the only real endpoint needs a missing config file and 500s.",
-      "constraint": "The probe does not exercise the serving path.",
-      "question": "What is the gap?",
+      "title": "Green probe, one pod failing 38%",
+      "brief": "One of 12 Ridely dispatch pods has a corrupted local model file. /healthz returns 200, but 38% of that pod's requests 500, about 600 errors/s at 20k req/s.",
+      "constraint": "The probe must stay cheap; it cannot replay a full dispatch request every 5 seconds.",
+      "question": "What removes a pod that passes probes but fails real traffic?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 200,
+          "value": 20000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 15,
+          "value": 44,
           "unit": "%",
-          "tone": "warn"
+          "tone": "neutral"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 500,
+          "value": 180,
           "unit": "ms",
-          "tone": "bad"
+          "tone": "warn"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 120,
-          "unit": "errors",
+          "label": "5xx",
+          "value": 600,
+          "unit": "errors/s",
           "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "lb",
+            "id": "mesh",
             "kind": "lb",
-            "label": "Balancer"
+            "label": "Service mesh"
           },
           {
-            "id": "p1",
+            "id": "pods",
             "kind": "server",
-            "label": "Pod (dead)",
-            "tone": "bad"
+            "label": "11 healthy pods",
+            "tone": "good",
+            "cpu": 44
           },
           {
-            "id": "p2",
+            "id": "p7",
             "kind": "server",
-            "label": "Pod (ready)",
-            "tone": "good"
+            "label": "pod-7 (38% 5xx, probe green)",
+            "tone": "bad",
+            "cpu": 41
           }
         ],
         "edges": [
           {
-            "from": "lb",
-            "to": "p1"
+            "from": "mesh",
+            "to": "pods"
           },
           {
-            "from": "lb",
-            "to": "p2"
+            "from": "mesh",
+            "to": "p7"
           }
         ]
       },
       "choices": [
         {
-          "id": "fix-probes",
-          "label": "Fix probes",
+          "id": "outlier",
+          "label": "Passive outlier ejection after 5 consecutive real 5xx responses",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "lb",
-                "kind": "lb",
-                "label": "Balancer",
-                "tone": "good"
-              },
-              {
-                "id": "p2",
-                "kind": "server",
-                "label": "Pod (ready)",
-                "tone": "good"
-              },
-              {
-                "id": "p3",
-                "kind": "server",
-                "label": "Pod (ready)",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "lb",
-                "to": "p2"
-              },
-              {
-                "from": "lb",
-                "to": "p3"
-              }
-            ]
-          },
+          "approach": "optimal",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 47,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 40,
+              "value": 150,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
+              "label": "5xx",
+              "value": 5,
+              "unit": "errors/s",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Readiness should verify the process can serve its critical path, not a dummy string."
+          "resultTitle": "Real traffic ejects the bad pod",
+          "resultBody": "The mesh sees pod-7's run of 5xx on live requests and ejects it within about 2 s for a 30 s back-off; 5xx fall from 600/s to 5/s. Cost: cap ejection at 10% of the pool, or a fleet-wide bug would eject everyone."
         },
         {
-          "id": "return-ok-no",
-          "label": "return ok no",
+          "id": "deep-probe",
+          "label": "Make /healthz replay a full synthetic dispatch request",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 19,
+              "value": 62,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 625,
+              "value": 260,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 160,
-              "unit": "errors",
-              "tone": "bad"
+              "label": "5xx",
+              "value": 120,
+              "unit": "errors/s",
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Dead node in pool",
-          "resultBody": "The balancer still routes to an unready instance."
+          "resultTitle": "Probes now eat 18 points of CPU",
+          "resultBody": "Each probe runs a 150 ms dispatch on all 12 pods every 5 s. It catches pod-7 eventually, but under load the heavy probe times out and starts ejecting healthy pods too."
         },
         {
-          "id": "ignore-config-load",
-          "label": "Ignore config load",
+          "id": "retry",
+          "label": "Retry each failed dispatch once on a different pod",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 17,
+              "value": 52,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 550,
+              "value": 320,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 140,
-              "unit": "errors",
-              "tone": "bad"
+              "label": "5xx",
+              "value": 90,
+              "unit": "errors/s",
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Dead node in pool",
-          "resultBody": "Ignore config load failures"
+          "resultTitle": "Errors masked, pod-7 still serving",
+          "resultBody": "Most failures succeed on retry, but pod-7 stays in rotation, each failure costs a second request, and p95 climbs from 180 to 320 ms while the corrupted model is never removed."
         }
       ],
       "hints": [
-        "The balancer still thinks this node is fine.",
-        "Alive is not the same as ready.",
-        "Probe the serving path."
+        "The probe and the real request take different code paths.",
+        "You already have thousands of real requests per second telling you which pod is bad.",
+        "Let the proxy judge each backend by its observed error streak."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "hc-12",
@@ -3094,6 +3046,224 @@
         "The balancer still thinks this node is fine.",
         "Alive is not the same as ready.",
         "Probe the serving path."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "hc-new-01",
+      "incidentCode": "INC-015-16",
+      "level": 15,
+      "patternId": "health-checks",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 50,
+      "title": "Redis failover restarts every pod",
+      "brief": "Bookly's liveness probe pings Redis. A 25-second Redis primary failover failed liveness on all 48 pods; Kubernetes restarted them together and cold JVMs took 4 minutes to serve 18k req/s again.",
+      "constraint": "Redis is only a cache; the app can serve from Postgres, more slowly, while Redis is away.",
+      "question": "What should the liveness probe depend on?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 18000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 97,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 2400,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "restarts",
+          "label": "Restarts",
+          "value": 48,
+          "unit": "pods",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "5xx",
+          "value": 11000,
+          "unit": "errors/s",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "lb",
+            "kind": "lb",
+            "label": "Balancer"
+          },
+          {
+            "id": "pods",
+            "kind": "server",
+            "label": "48 pods (cold restart)",
+            "tone": "bad",
+            "cpu": 97
+          },
+          {
+            "id": "redis",
+            "kind": "cache",
+            "label": "Redis (failing over)",
+            "tone": "warn"
+          },
+          {
+            "id": "pg",
+            "kind": "db",
+            "label": "Postgres",
+            "tone": "neutral",
+            "cpu": 35
+          }
+        ],
+        "edges": [
+          {
+            "from": "lb",
+            "to": "pods"
+          },
+          {
+            "from": "pods",
+            "to": "redis"
+          },
+          {
+            "from": "pods",
+            "to": "pg"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "process-liveness",
+          "label": "Liveness checks only the process; Redis loss degrades to Postgres",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 68,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 140,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "restarts",
+              "label": "Restarts",
+              "value": 0,
+              "unit": "pods",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "5xx",
+              "value": 20,
+              "unit": "errors/s",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Pods ride out the Redis failover",
+          "resultBody": "Next Redis failover, pods stay alive and read through to Postgres; p95 rises to about 140 ms for 25 s instead of a 4-minute outage. Cost: Postgres takes ~3x reads in that window, so its connection pool must be capped."
+        },
+        {
+          "id": "long-timeout",
+          "label": "Raise the liveness timeout so Redis failover finishes first",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 95,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2200,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "restarts",
+              "label": "Restarts",
+              "value": 48,
+              "unit": "pods",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "5xx",
+              "value": 10500,
+              "unit": "errors/s",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Survives 25 s, not 60 s",
+          "resultBody": "This failover would pass, but next week's 60-second failover still restarted all 48 pods at once, and genuinely hung pods now take 40 s longer to be caught."
+        },
+        {
+          "id": "ready-redis",
+          "label": "Move the Redis ping from liveness into readiness",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 8,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 5,
+              "unit": "ms",
+              "tone": "neutral"
+            },
+            {
+              "key": "restarts",
+              "label": "Restarts",
+              "value": 0,
+              "unit": "pods",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "5xx",
+              "value": 18000,
+              "unit": "errors/s",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "No restarts, but zero targets",
+          "resultBody": "Nothing restarts now, but all 48 pods go unready together while Redis fails over. The balancer has no targets and returns 18,000 503s/s for 25 s even though Postgres could have served."
+        }
+      ],
+      "hints": [
+        "Restarting a pod cannot fix Redis, but it can throw away warm JVMs.",
+        "A shared dependency in any per-pod probe fails every pod at once.",
+        "Ask whether this pod would be healthier after a restart; if not, the check does not belong in liveness."
       ],
       "nextId": null
     }

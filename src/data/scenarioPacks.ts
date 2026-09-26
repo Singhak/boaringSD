@@ -16,6 +16,7 @@ import healthChecksPack from "@/data/scenarioPacks/health-checks.json";
 import indexData from "@/data/scenarioPacks/index.json";
 import type { IncidentGraph, IncidentNode, IncidentPackV2, IncidentV2 } from "@/types";
 import type { Health, Tier } from "@/components/run/RunVisuals";
+import { getPlayableIncidents } from "@/data/incidentQuality";
 
 // Backward compatibility interfaces
 export interface ScenarioVariant {
@@ -26,6 +27,34 @@ export interface ScenarioVariant {
   question: string;
   expectedPattern: string;
   wrongChoices: string[];
+  /** The incident's own choices, with the pack's result text as the explanation. */
+  choices: ScenarioVariantChoice[];
+}
+
+export interface ScenarioVariantChoice {
+  id: string;
+  label: string;
+  correct: boolean;
+  explanation: string;
+}
+
+function toVariant(inc: IncidentV2, patternName: string): ScenarioVariant {
+  const choices = inc.choices || [];
+  return {
+    id: inc.id,
+    title: inc.title,
+    context: inc.brief,
+    constraint: inc.constraint,
+    question: inc.question,
+    expectedPattern: patternName,
+    wrongChoices: choices.filter((c) => !c.correct).map((c) => c.label),
+    choices: choices.map((c) => ({
+      id: c.id,
+      label: c.label,
+      correct: c.correct,
+      explanation: [c.resultTitle, c.resultBody].filter(Boolean).join(": "),
+    })),
+  };
 }
 
 export interface ScenarioPack {
@@ -61,16 +90,9 @@ const PACKS_BY_PATTERN: Record<string, ScenarioPackV2> = {};
 for (const raw of RAW_PACKS) {
   const pack = {
     ...raw,
+    /** Replay variants: only incidents that pass the content-quality gate. */
     get variants(): ScenarioVariant[] {
-      return (raw.incidents || []).map((inc) => ({
-        id: inc.id,
-        title: inc.title,
-        context: inc.brief,
-        constraint: inc.constraint,
-        question: inc.question,
-        expectedPattern: raw.patternName,
-        wrongChoices: (inc.choices || []).filter((c) => !c.correct).map((c) => c.label),
-      }));
+      return getPlayableIncidents(raw).map((inc) => toVariant(inc, raw.patternName));
     },
   };
   PACKS_BY_PATTERN[raw.patternId] = pack as ScenarioPackV2;
@@ -105,6 +127,23 @@ export function getCanonicalIncident(levelOrPatternId: number | string): Inciden
 
   if (!pack) return undefined;
   return pack.incidents.find((i) => i.canonical || i.id === pack.canonicalId) || pack.incidents[0];
+}
+
+/**
+ * Incident for the Nth War Room run of a level: the canonical incident first,
+ * then a rotation through the other playable, non-cascade incidents. Cascades
+ * are reached from a parent incident's choice, so they are not started directly.
+ */
+export function getWarRoomIncident(patternId: string, runIndex: number): IncidentV2 | undefined {
+  const pack = getScenarioPackByPatternId(patternId);
+  if (!pack) return undefined;
+  const canonical = getCanonicalIncident(patternId);
+  const rotation = [
+    ...(canonical ? [canonical] : []),
+    ...getPlayableIncidents(pack).filter((inc) => !inc.isCascade && inc.id !== canonical?.id),
+  ];
+  if (rotation.length === 0) return undefined;
+  return rotation[Math.abs(runIndex) % rotation.length];
 }
 
 export function getIncidentById(incidentId: string): IncidentV2 | undefined {
@@ -181,18 +220,9 @@ export function getScenarioVariantForPattern(patternId: string, rotationIndex: n
     throw new Error(`No scenario pack found for pattern: ${patternId}`);
   }
 
-  const safeIndex = Math.abs(rotationIndex) % pack.incidents.length;
-  const inc = pack.incidents[safeIndex];
-
-  return {
-    id: inc.id,
-    title: inc.title,
-    context: inc.brief,
-    constraint: inc.constraint,
-    question: inc.question,
-    expectedPattern: pack.patternName,
-    wrongChoices: inc.choices.filter((c) => !c.correct).map((c) => c.label),
-  };
+  const playable = getPlayableIncidents(pack);
+  const safeIndex = Math.abs(rotationIndex) % playable.length;
+  return toVariant(playable[safeIndex], pack.patternName);
 }
 
 export function getPatternReplayVariant(patternId: string, runsStarted: number): ScenarioVariant {

@@ -172,8 +172,8 @@
               "tone": "bad"
             }
           ],
-          "resultTitle": "Buffer grew",
-          "resultBody": "Producers were not told to slow down."
+          "resultTitle": "Heap grows until OOM",
+          "resultBody": "An infinite buffer absorbs 4,000 jobs/s while workers are stuck, so memory climbs until the process is killed and every queued job in RAM is lost."
         },
         {
           "id": "ignore-lag",
@@ -203,8 +203,8 @@
               "tone": "bad"
             }
           ],
-          "resultTitle": "Buffer grew",
-          "resultBody": "Ignore worker lag"
+          "resultTitle": "Lag becomes the outage",
+          "resultBody": "Ignoring worker lag lets the queue grow silently; by the time anyone looks, jobs are 50 minutes stale and the process runs out of memory anyway."
         }
       ],
       "hints": [
@@ -220,204 +220,272 @@
       "level": 13,
       "patternId": "backpressure",
       "canonical": false,
+      "reviewed": true,
       "severity": "P0",
       "xp": 50,
-      "title": "Accept then collapse",
-      "brief": "The API returns 200 for every upload even though transcode workers are 6 hours behind.",
-      "constraint": "Users believe work is done.",
-      "question": "What signal is missing?",
+      "title": "Uploads say done, videos appear 6 hours later",
+      "brief": "Clipstream's upload API returns 200 for every video. 7,200 uploads/min arrive, transcoders clear 5,000/min, and the queue holds 1.8 million jobs: a 6-hour wait users never see.",
+      "constraint": "Transcode capacity is fixed until next quarter's GPU order.",
+      "question": "What should the API tell uploaders once the backlog is too deep?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 200,
-          "unit": "req/s",
+          "label": "Uploads",
+          "value": 7200,
+          "unit": "/min",
           "tone": "neutral"
         },
         {
           "key": "cpu",
-          "label": "CPU",
-          "value": 99,
+          "label": "GPU utilization",
+          "value": 98,
           "unit": "%",
           "tone": "bad"
         },
         {
-          "key": "p95",
-          "label": "p95 latency",
-          "value": 0,
-          "unit": "ms",
-          "tone": "warn"
+          "key": "depth",
+          "label": "Queue depth",
+          "value": 1800000,
+          "unit": "jobs",
+          "tone": "bad"
+        },
+        {
+          "key": "lag",
+          "label": "Time to playable",
+          "value": 360,
+          "unit": "min",
+          "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 0,
-          "unit": "errors",
-          "tone": "neutral"
+          "label": "Support tickets",
+          "value": 120,
+          "unit": "/h",
+          "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "prod",
+            "id": "users",
             "kind": "users",
-            "label": "Producers",
-            "tone": "bad"
+            "label": "Uploaders"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Upload API",
+            "tone": "warn",
+            "cpu": 30,
+            "sub": "always 200"
           },
           {
             "id": "q",
             "kind": "queue",
-            "label": "Unbounded queue",
-            "tone": "bad"
+            "label": "Transcode queue",
+            "tone": "bad",
+            "sub": "1.8M jobs"
           },
           {
-            "id": "w",
-            "kind": "worker",
-            "label": "Worker",
-            "tone": "warn"
+            "id": "gpu",
+            "kind": "gpu",
+            "label": "Transcoders",
+            "tone": "bad",
+            "cpu": 98,
+            "sub": "5,000 jobs/min"
           }
         ],
         "edges": [
           {
-            "from": "prod",
+            "from": "users",
+            "to": "api"
+          },
+          {
+            "from": "api",
             "to": "q"
           },
           {
             "from": "q",
-            "to": "w"
+            "to": "gpu"
           }
         ]
       },
       "choices": [
         {
-          "id": "bound-queue",
-          "label": "Bound queue",
+          "id": "cap-and-503",
+          "label": "Cap the queue and return 503 with Retry-After",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "prod",
-                "kind": "users",
-                "label": "Producers",
-                "tone": "good"
-              },
-              {
-                "id": "q",
-                "kind": "queue",
-                "label": "Bounded queue",
-                "tone": "good"
-              },
-              {
-                "id": "w",
-                "kind": "worker",
-                "label": "Worker",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "prod",
-                "to": "q"
-              },
-              {
-                "from": "q",
-                "to": "w"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 2,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Honest, bounded wait; about 30% of peak uploads are deferred to off-peak."
           },
           "metricsAfter": [
             {
               "key": "cpu",
-              "label": "CPU",
-              "value": 33,
+              "label": "GPU utilization",
+              "value": 97,
               "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "depth",
+              "label": "Queue depth",
+              "value": 150000,
+              "unit": "jobs",
               "tone": "good"
             },
             {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 80,
-              "unit": "ms",
+              "key": "lag",
+              "label": "Time to playable",
+              "value": 30,
+              "unit": "min",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
+              "label": "Support tickets",
+              "value": 10,
+              "unit": "/h",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Apply backpressure at ingest (slow down or reject) when downstream capacity is exceeded."
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Uploaders",
+                "tone": "good"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Upload API",
+                "tone": "good",
+                "cpu": 30,
+                "sub": "202 or 503 + Retry-After"
+              },
+              {
+                "id": "q",
+                "kind": "queue",
+                "label": "Transcode queue",
+                "tone": "good",
+                "sub": "cap 150k jobs"
+              },
+              {
+                "id": "gpu",
+                "kind": "gpu",
+                "label": "Transcoders",
+                "tone": "good",
+                "cpu": 97,
+                "sub": "5,000 jobs/min"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "api"
+              },
+              {
+                "from": "api",
+                "to": "q"
+              },
+              {
+                "from": "q",
+                "to": "gpu"
+              }
+            ]
+          },
+          "resultTitle": "Uploaders told the truth",
+          "resultBody": "The queue is capped at 150,000 jobs (~30 min of work); accepted uploads get 202 with a status URL, and the rest get 503 with Retry-After: 120, which the client retries with jitter. Cost: at peak ~30% of uploads are deferred, and clients must implement the retry."
         },
         {
-          "id": "always-200-regardless",
-          "label": "Always 200 regardless",
+          "id": "scale-api",
+          "label": "Autoscale the upload API to accept more videos",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
-              "label": "CPU",
-              "value": 100,
+              "label": "GPU utilization",
+              "value": 98,
               "unit": "%",
               "tone": "bad"
             },
             {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 3000,
-              "unit": "ms",
+              "key": "depth",
+              "label": "Queue depth",
+              "value": 1900000,
+              "unit": "jobs",
+              "tone": "bad"
+            },
+            {
+              "key": "lag",
+              "label": "Time to playable",
+              "value": 380,
+              "unit": "min",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 40,
-              "unit": "errors",
+              "label": "Support tickets",
+              "value": 130,
+              "unit": "/h",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Buffer grew",
-          "resultBody": "Producers were not told to slow down."
+          "resultTitle": "More doors, same GPUs",
+          "resultBody": "The API was never the bottleneck: with transcoders fixed at 5,000 jobs/min and 7,200 arriving, the queue still grows by 2,200 a minute and the wait passes 6.3 hours."
         },
         {
-          "id": "hide-queue-depth",
-          "label": "Hide queue depth",
+          "id": "fake-progress",
+          "label": "Show a progress bar and hide queue depth",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
-              "label": "CPU",
-              "value": 100,
+              "label": "GPU utilization",
+              "value": 98,
               "unit": "%",
               "tone": "bad"
             },
             {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 2500,
-              "unit": "ms",
+              "key": "depth",
+              "label": "Queue depth",
+              "value": 2100000,
+              "unit": "jobs",
+              "tone": "bad"
+            },
+            {
+              "key": "lag",
+              "label": "Time to playable",
+              "value": 420,
+              "unit": "min",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 20,
-              "unit": "errors",
+              "label": "Support tickets",
+              "value": 260,
+              "unit": "/h",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Buffer grew",
-          "resultBody": "Hide queue depth"
+          "resultTitle": "Re-uploads flood the queue",
+          "resultBody": "The bar stalls at 99%, users assume failure and upload again, and the duplicates push the backlog to 2.1 million jobs while tickets double to 260 an hour."
         }
       ],
       "hints": [
-        "Work arrives faster than it completes.",
-        "Unbounded buffers hide the fire.",
-        "Slow or reject producers."
+        "The transcoders are doing their best; the promise at the front door is wrong.",
+        "An unbounded backlog turns a fast failure into a slow, invisible one.",
+        "HTTP status codes can carry a 'come back later' time."
       ],
       "nextId": null
     },
@@ -634,204 +702,244 @@
       "level": 13,
       "patternId": "backpressure",
       "canonical": false,
+      "reviewed": true,
       "severity": "P0",
       "xp": 50,
-      "title": "Stream without demand",
-      "brief": "A reactive pipeline requests unbounded data from Kafka and blows the heap.",
-      "constraint": "Consumers can process 500/s; brokers deliver 20,000/s.",
-      "question": "What is the streaming rule?",
+      "title": "Order-events consumer blows its heap every 12 minutes",
+      "brief": "Shipwise's reactive consumer fetches 20,000 records/s from Kafka into memory, but its enrichment step can only do 500/s. The in-memory buffer passes 6 GB and the JVM OOMs every 12 minutes.",
+      "constraint": "Enrichment calls a partner API hard-capped at 500 req/s across all consumers.",
+      "question": "How should the consumer signal how much it can take?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 500,
-          "unit": "req/s",
-          "tone": "neutral"
+          "label": "Fetch rate",
+          "value": 20000,
+          "unit": "rec/s",
+          "tone": "bad"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 99,
+          "value": 96,
           "unit": "%",
           "tone": "bad"
         },
         {
-          "key": "p95",
-          "label": "p95 latency",
-          "value": 20000,
-          "unit": "ms",
+          "key": "heap",
+          "label": "Heap used",
+          "value": 6.2,
+          "unit": "GB",
           "tone": "bad"
         },
         {
           "key": "errors",
           "label": "Errors",
-          "value": 0,
-          "unit": "errors",
-          "tone": "neutral"
+          "value": 40,
+          "unit": "err/s",
+          "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "prod",
-            "kind": "users",
-            "label": "Producers",
-            "tone": "bad"
-          },
-          {
-            "id": "q",
+            "id": "topic",
             "kind": "queue",
-            "label": "Unbounded queue",
-            "tone": "bad"
+            "label": "Kafka orders topic",
+            "tone": "neutral",
+            "sub": "20,000 rec/s fetched"
           },
           {
-            "id": "w",
+            "id": "c",
             "kind": "worker",
-            "label": "Worker",
-            "tone": "warn"
+            "label": "Reactive consumer",
+            "tone": "bad",
+            "cpu": 96,
+            "sub": "6 GB buffer"
+          },
+          {
+            "id": "partner",
+            "kind": "server",
+            "label": "Partner enrich API",
+            "tone": "warn",
+            "sub": "500 req/s cap"
           }
         ],
         "edges": [
           {
-            "from": "prod",
-            "to": "q"
+            "from": "topic",
+            "to": "c"
           },
           {
-            "from": "q",
-            "to": "w"
+            "from": "c",
+            "to": "partner"
           }
         ]
       },
       "choices": [
         {
-          "id": "bound-queue",
-          "label": "Bound queue",
+          "id": "pause-partitions",
+          "label": "Pause partitions when in-flight records exceed 2,000",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "prod",
-                "kind": "users",
-                "label": "Producers",
-                "tone": "good"
-              },
-              {
-                "id": "q",
-                "kind": "queue",
-                "label": "Bounded queue",
-                "tone": "good"
-              },
-              {
-                "id": "w",
-                "kind": "worker",
-                "label": "Worker",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "prod",
-                "to": "q"
-              },
-              {
-                "from": "q",
-                "to": "w"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 2,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Memory bounded; the backlog moves into Kafka as consumer lag."
           },
           "metricsAfter": [
             {
+              "key": "rps",
+              "label": "Fetch rate",
+              "value": 500,
+              "unit": "rec/s",
+              "tone": "good"
+            },
+            {
               "key": "cpu",
               "label": "CPU",
-              "value": 33,
+              "value": 40,
               "unit": "%",
               "tone": "good"
             },
             {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 1333,
-              "unit": "ms",
+              "key": "heap",
+              "label": "Heap used",
+              "value": 0.7,
+              "unit": "GB",
               "tone": "good"
             },
             {
               "key": "errors",
               "label": "Errors",
               "value": 0,
-              "unit": "errors",
+              "unit": "err/s",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Request only as many records as you can process (consumer lag + pause, or reactive demand)."
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "topic",
+                "kind": "queue",
+                "label": "Kafka orders topic",
+                "tone": "warn",
+                "sub": "lag held in Kafka"
+              },
+              {
+                "id": "c",
+                "kind": "worker",
+                "label": "Reactive consumer",
+                "tone": "good",
+                "cpu": 40,
+                "sub": "<=2,000 in flight"
+              },
+              {
+                "id": "partner",
+                "kind": "server",
+                "label": "Partner enrich API",
+                "tone": "good",
+                "sub": "500 req/s"
+              }
+            ],
+            "edges": [
+              {
+                "from": "topic",
+                "to": "c"
+              },
+              {
+                "from": "c",
+                "to": "partner"
+              }
+            ]
+          },
+          "resultTitle": "Kafka holds the backlog",
+          "resultBody": "The consumer calls pause() at 2,000 in-flight records and resume() below 500, still polling so it keeps its group membership; fetches match the 500/s partner cap and heap settles at 700 MB. Cost: the backlog now shows up as consumer lag, so topic retention must cover it and lag alerts replace OOM alerts."
         },
         {
-          "id": "max-poll-records",
-          "label": "max poll records",
+          "id": "bigger-heap",
+          "label": "Raise the consumer heap from 8 GB to 32 GB",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
+              "key": "rps",
+              "label": "Fetch rate",
+              "value": 20000,
+              "unit": "rec/s",
+              "tone": "bad"
+            },
+            {
               "key": "cpu",
               "label": "CPU",
-              "value": 100,
+              "value": 99,
               "unit": "%",
               "tone": "bad"
             },
             {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 25000,
-              "unit": "ms",
+              "key": "heap",
+              "label": "Heap used",
+              "value": 24,
+              "unit": "GB",
               "tone": "bad"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 40,
-              "unit": "errors",
+              "value": 30,
+              "unit": "err/s",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Buffer grew",
-          "resultBody": "Producers were not told to slow down."
+          "resultTitle": "OOM every 50 minutes instead",
+          "resultBody": "The buffer still grows by 19,500 records/s, so 32 GB only delays the crash, and multi-second full-GC pauses now trigger consumer-group rebalances on top."
         },
         {
-          "id": "disable-consumer-pause",
-          "label": "Disable consumer pause",
+          "id": "more-consumers",
+          "label": "Add partitions and scale out to 40 consumer pods",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
+              "key": "rps",
+              "label": "Fetch rate",
+              "value": 20000,
+              "unit": "rec/s",
+              "tone": "bad"
+            },
+            {
               "key": "cpu",
               "label": "CPU",
-              "value": 100,
+              "value": 90,
               "unit": "%",
               "tone": "bad"
             },
             {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 22000,
-              "unit": "ms",
+              "key": "heap",
+              "label": "Heap used",
+              "value": 5.5,
+              "unit": "GB",
               "tone": "bad"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 20,
-              "unit": "errors",
+              "value": 900,
+              "unit": "err/s",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Buffer grew",
-          "resultBody": "Disable consumer pause"
+          "resultTitle": "Partner API answers 429",
+          "resultBody": "40 pods fetch in parallel, but the partner cap is still 500 req/s in total; each pod buffers its share, the partner starts returning 429s, and the pods' retries push errors to 900/s."
         }
       ],
       "hints": [
-        "Work arrives faster than it completes.",
-        "Unbounded buffers hide the fire.",
-        "Slow or reject producers."
+        "Kafka is pull-based: who decides how much gets pulled?",
+        "The slow step's rate is fixed, so the buffer in front of it must be bounded.",
+        "The consumer API can stop fetching from partitions without leaving the group."
       ],
       "nextId": null
     },
@@ -1876,204 +1984,251 @@
       "level": 13,
       "patternId": "backpressure",
       "canonical": false,
+      "reviewed": true,
       "severity": "P0",
       "xp": 50,
-      "title": "gRPC without flow control awareness",
-      "brief": "A server writes responses as fast as it can while the client is paused, until memory blows.",
-      "constraint": "HTTP/2 has windowing if you use it.",
-      "question": "What should the server respect?",
+      "title": "gRPC stream server fills its heap with unsent frames",
+      "brief": "Tracefeed streams 40 MB/s of telemetry per client over gRPC. Slow mobile dashboards drain 2 MB/s, yet the server keeps calling onNext(), and 3 GB of queued frames pile up in memory.",
+      "constraint": "HTTP/2 already enforces per-stream flow-control windows between client and server.",
+      "question": "How should the server react to a slow reader?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 4000,
-          "unit": "req/s",
+          "label": "Active streams",
+          "value": 1200,
+          "unit": "streams",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 99,
+          "value": 94,
           "unit": "%",
           "tone": "bad"
         },
         {
-          "key": "p95",
-          "label": "p95 latency",
-          "value": 0,
+          "key": "buf",
+          "label": "Buffered frames",
+          "value": 3000,
+          "unit": "MB",
+          "tone": "bad"
+        },
+        {
+          "key": "lag",
+          "label": "Event delay",
+          "value": 45000,
           "unit": "ms",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 0,
-          "unit": "errors",
-          "tone": "neutral"
+          "label": "Stream resets",
+          "value": 80,
+          "unit": "/min",
+          "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "prod",
-            "kind": "users",
-            "label": "Producers",
-            "tone": "bad"
-          },
-          {
-            "id": "q",
+            "id": "src",
             "kind": "queue",
-            "label": "Unbounded queue",
-            "tone": "bad"
+            "label": "Telemetry bus",
+            "tone": "neutral",
+            "sub": "40 MB/s per client"
           },
           {
-            "id": "w",
-            "kind": "worker",
-            "label": "Worker",
-            "tone": "warn"
+            "id": "srv",
+            "kind": "server",
+            "label": "gRPC stream server",
+            "tone": "bad",
+            "cpu": 94,
+            "sub": "3 GB queued frames"
+          },
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Mobile dashboards",
+            "tone": "warn",
+            "sub": "read 2 MB/s"
           }
         ],
         "edges": [
           {
-            "from": "prod",
-            "to": "q"
+            "from": "src",
+            "to": "srv"
           },
           {
-            "from": "q",
-            "to": "w"
+            "from": "srv",
+            "to": "users"
           }
         ]
       },
       "choices": [
         {
-          "id": "bound-queue",
-          "label": "Bound queue",
+          "id": "honor-isready",
+          "label": "Send only when isReady(), resume in the onReady handler",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "prod",
-                "kind": "users",
-                "label": "Producers",
-                "tone": "good"
-              },
-              {
-                "id": "q",
-                "kind": "queue",
-                "label": "Bounded queue",
-                "tone": "good"
-              },
-              {
-                "id": "w",
-                "kind": "worker",
-                "label": "Worker",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "prod",
-                "to": "q"
-              },
-              {
-                "from": "q",
-                "to": "w"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 3,
+            "consistencyGuarantee": "weak",
+            "tradeoffSummary": "Memory bounded by the window; slow clients must receive sampled data."
           },
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 33,
+              "value": 45,
               "unit": "%",
               "tone": "good"
             },
             {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 80,
-              "unit": "ms",
-              "tone": "good"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
-              "tone": "good"
-            }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Honor stream flow-control windows; stop sending when the client cannot receive."
-        },
-        {
-          "id": "buffer-entire-responses",
-          "label": "Buffer entire responses",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 100,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 3000,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
+              "key": "buf",
+              "label": "Buffered frames",
               "value": 40,
-              "unit": "errors",
-              "tone": "bad"
+              "unit": "MB",
+              "tone": "good"
+            },
+            {
+              "key": "lag",
+              "label": "Event delay",
+              "value": 800,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Stream resets",
+              "value": 2,
+              "unit": "/min",
+              "tone": "good"
             }
           ],
-          "resultTitle": "Buffer grew",
-          "resultBody": "Producers were not told to slow down."
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "src",
+                "kind": "queue",
+                "label": "Telemetry bus",
+                "tone": "good",
+                "sub": "40 MB/s per client"
+              },
+              {
+                "id": "srv",
+                "kind": "server",
+                "label": "gRPC stream server",
+                "tone": "good",
+                "cpu": 45,
+                "sub": "writes follow window"
+              },
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Mobile dashboards",
+                "tone": "good",
+                "sub": "sampled at 2 MB/s"
+              }
+            ],
+            "edges": [
+              {
+                "from": "src",
+                "to": "srv"
+              },
+              {
+                "from": "srv",
+                "to": "users"
+              }
+            ]
+          },
+          "resultTitle": "The window sets the pace",
+          "resultBody": "The server checks isReady() before each onNext() and parks the stream until the onReady handler fires, so writes follow the client's HTTP/2 window and queued frames drop to 40 MB. Cost: a 2 MB/s client can't get 40 MB/s, so the server now samples or drops stale telemetry for slow streams."
         },
         {
-          "id": "ignore-http-2",
-          "label": "Ignore HTTP 2",
+          "id": "bigger-window",
+          "label": "Raise the HTTP/2 stream window to 64 MB",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 100,
+              "value": 97,
               "unit": "%",
               "tone": "bad"
             },
             {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 2500,
+              "key": "buf",
+              "label": "Buffered frames",
+              "value": 5000,
+              "unit": "MB",
+              "tone": "bad"
+            },
+            {
+              "key": "lag",
+              "label": "Event delay",
+              "value": 60000,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 20,
-              "unit": "errors",
+              "label": "Stream resets",
+              "value": 120,
+              "unit": "/min",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Buffer grew",
-          "resultBody": "Ignore HTTP/2 windows"
+          "resultTitle": "Bigger window, bigger buffers",
+          "resultBody": "A larger window lets the server push more before blocking, but the phone still reads 2 MB/s; buffers swell on both ends and delay grows to 60 s."
+        },
+        {
+          "id": "spill-to-disk",
+          "label": "Spill each stream's pending frames to local disk",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 80,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "buf",
+              "label": "Buffered frames",
+              "value": 800,
+              "unit": "MB",
+              "tone": "warn"
+            },
+            {
+              "key": "lag",
+              "label": "Event delay",
+              "value": 600000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Stream resets",
+              "value": 40,
+              "unit": "/min",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Disk becomes the leak",
+          "resultBody": "The heap OOM turns into ~130 GB/hour of disk writes; dashboards fall 10 minutes behind live data and the volume fills before the evening peak."
         }
       ],
       "hints": [
-        "Work arrives faster than it completes.",
-        "Unbounded buffers hide the fire.",
-        "Slow or reject producers."
+        "The protocol is already saying 'slow down'; the application isn't listening.",
+        "Flow-control windows only help if the sender waits when they close.",
+        "Look at the stream observer's readiness signal."
       ],
       "nextId": null
     },
@@ -2083,19 +2238,20 @@
       "level": 13,
       "patternId": "backpressure",
       "canonical": false,
+      "reviewed": true,
       "severity": "P0",
       "xp": 50,
-      "title": "Load shed vs random timeouts",
-      "brief": "Under overload, every request times out after 30s, including cheap ones.",
-      "constraint": "Some work is more valuable.",
-      "question": "What is a better overload policy?",
+      "title": "Checkout times out behind bulk CSV exports",
+      "brief": "At 11:00 Tallybook's API receives 14,000 req/s against 9,000 req/s of capacity. Checkout, bulk CSV exports and health checks share one queue, and every class times out after 30 s.",
+      "constraint": "Checkout revenue must be protected; exports can wait several minutes.",
+      "question": "Which requests should fail first, and where?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 4000,
+          "value": 14000,
           "unit": "req/s",
-          "tone": "neutral"
+          "tone": "bad"
         },
         {
           "key": "cpu",
@@ -2106,181 +2262,238 @@
         },
         {
           "key": "p95",
-          "label": "p95 latency",
-          "value": 0,
+          "label": "Checkout p95",
+          "value": 30000,
           "unit": "ms",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 0,
-          "unit": "errors",
-          "tone": "neutral"
+          "label": "Checkout errors",
+          "value": 1800,
+          "unit": "err/s",
+          "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "prod",
+            "id": "users",
             "kind": "users",
-            "label": "Producers",
-            "tone": "bad"
+            "label": "Shoppers + exporters"
           },
           {
-            "id": "q",
-            "kind": "queue",
-            "label": "Unbounded queue",
-            "tone": "bad"
-          },
-          {
-            "id": "w",
-            "kind": "worker",
-            "label": "Worker",
+            "id": "gw",
+            "kind": "lb",
+            "label": "Gateway",
             "tone": "warn"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "API pool",
+            "tone": "bad",
+            "cpu": 99,
+            "sub": "one FIFO queue"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres",
+            "tone": "warn",
+            "cpu": 80
           }
         ],
         "edges": [
           {
-            "from": "prod",
-            "to": "q"
+            "from": "users",
+            "to": "gw"
           },
           {
-            "from": "q",
-            "to": "w"
+            "from": "gw",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "bound-queue",
-          "label": "Bound queue",
+          "id": "priority-shed",
+          "label": "Shed exports first via priority admission at the gateway",
           "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": -29800,
+            "complexityScore": 3,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "Critical traffic protected; low-priority work is deferred and the priority map needs upkeep."
+          },
+          "metricsAfter": [
+            {
+              "key": "rps",
+              "label": "Traffic",
+              "value": 9000,
+              "unit": "req/s",
+              "tone": "good"
+            },
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 88,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "Checkout p95",
+              "value": 180,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Checkout errors",
+              "value": 5,
+              "unit": "err/s",
+              "tone": "good"
+            }
+          ],
           "graphAfter": {
             "nodes": [
               {
-                "id": "prod",
+                "id": "users",
                 "kind": "users",
-                "label": "Producers",
+                "label": "Shoppers + exporters",
                 "tone": "good"
               },
               {
-                "id": "q",
-                "kind": "queue",
-                "label": "Bounded queue",
-                "tone": "good"
+                "id": "gw",
+                "kind": "lb",
+                "label": "Gateway",
+                "tone": "good",
+                "sub": "sheds exports first"
               },
               {
-                "id": "w",
-                "kind": "worker",
-                "label": "Worker",
-                "tone": "good"
+                "id": "api",
+                "kind": "server",
+                "label": "API pool",
+                "tone": "good",
+                "cpu": 88,
+                "sub": "critical first"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres",
+                "tone": "good",
+                "cpu": 70
               }
             ],
             "edges": [
               {
-                "from": "prod",
-                "to": "q"
+                "from": "users",
+                "to": "gw"
               },
               {
-                "from": "q",
-                "to": "w"
+                "from": "gw",
+                "to": "api"
+              },
+              {
+                "from": "api",
+                "to": "db"
               }
             ]
           },
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 33,
-              "unit": "%",
-              "tone": "good"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 80,
-              "unit": "ms",
-              "tone": "good"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
-              "tone": "good"
-            }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Shed low-priority or new work quickly so remaining capacity serves high-value requests."
+          "resultTitle": "Checkout keeps its lane",
+          "resultBody": "The gateway tags requests critical, default or sheddable; above the concurrency limit it rejects exports with 503 + Retry-After before they use any API capacity, and checkout p95 returns to 180 ms. Cost: exports stall for ~20 minutes at peak, and the priority map must be kept current as endpoints change."
         },
         {
-          "id": "let-all-requests",
-          "label": "Let all requests",
+          "id": "shorter-timeouts",
+          "label": "Lower every request timeout from 30 s to 5 s",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
+              "key": "rps",
+              "label": "Traffic",
+              "value": 14000,
+              "unit": "req/s",
+              "tone": "bad"
+            },
+            {
               "key": "cpu",
               "label": "CPU",
-              "value": 100,
+              "value": 99,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
-              "label": "p95 latency",
-              "value": 3000,
+              "label": "Checkout p95",
+              "value": 5000,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 40,
-              "unit": "errors",
+              "label": "Checkout errors",
+              "value": 1500,
+              "unit": "err/s",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Buffer grew",
-          "resultBody": "Producers were not told to slow down."
+          "resultTitle": "Failing faster, still failing",
+          "resultBody": "Requests now die at 5 s instead of 30 s, but checkout still waits in the same queue behind exports, so about a third of checkouts keep timing out."
         },
         {
-          "id": "no-admission-control",
-          "label": "No admission control",
+          "id": "random-drop",
+          "label": "Randomly drop 35% of requests at the load balancer",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
+              "key": "rps",
+              "label": "Traffic",
+              "value": 9100,
+              "unit": "req/s",
+              "tone": "warn"
+            },
+            {
               "key": "cpu",
               "label": "CPU",
-              "value": 100,
+              "value": 92,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
-              "label": "p95 latency",
-              "value": 2500,
+              "label": "Checkout p95",
+              "value": 400,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 20,
-              "unit": "errors",
+              "label": "Checkout errors",
+              "value": 1400,
+              "unit": "err/s",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Buffer grew",
-          "resultBody": "No admission control"
+          "resultTitle": "Paying customers dropped too",
+          "resultBody": "Random drop brings load under 9,000 req/s, but it rejects checkouts as readily as exports: 35% of paying shoppers are turned away while exports keep their share."
         }
       ],
       "hints": [
-        "Work arrives faster than it completes.",
-        "Unbounded buffers hide the fire.",
-        "Slow or reject producers."
+        "Not all 14,000 requests are worth the same.",
+        "Shedding is cheapest before a request consumes any capacity.",
+        "Classify at the edge and reject the class you can most afford to lose."
       ],
       "nextId": null
     },
@@ -3109,6 +3322,281 @@
         "Work arrives faster than it completes.",
         "Unbounded buffers hide the fire.",
         "Slow or reject producers."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "bp-new-01",
+      "incidentCode": "INC-013-16",
+      "level": 13,
+      "patternId": "backpressure",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 50,
+      "title": "Fixed rate limit lets a slow database melt the API",
+      "brief": "Parcelly's gateway admits a fixed 8,000 req/s. When a Postgres vacuum raises query time from 5 ms to 40 ms, the same 8,000 req/s means 320 in-flight requests instead of 40, and p95 hits 9 s.",
+      "constraint": "Database latency swings every hour; no single fixed limit suits both 5 ms and 40 ms.",
+      "question": "What limit adapts to how fast the backend is actually draining?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 8000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 97,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "inflight",
+          "label": "In-flight requests",
+          "value": 320,
+          "unit": "req",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 9000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 600,
+          "unit": "err/s",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Parcel apps"
+          },
+          {
+            "id": "gw",
+            "kind": "lb",
+            "label": "Gateway",
+            "tone": "warn",
+            "sub": "fixed 8,000 req/s"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Orders API",
+            "tone": "bad",
+            "cpu": 97,
+            "sub": "320 in flight"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres",
+            "tone": "warn",
+            "cpu": 90,
+            "sub": "vacuum: 40 ms queries"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "gw"
+          },
+          {
+            "from": "gw",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "adaptive-concurrency",
+          "label": "Adaptive concurrency limit driven by measured latency",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": -8800,
+            "complexityScore": 3,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "Tracks real capacity; throughput drops during slow periods and the limiter needs tuning."
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 80,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "inflight",
+              "label": "In-flight requests",
+              "value": 60,
+              "unit": "req",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 150,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 200,
+              "unit": "err/s",
+              "tone": "warn"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Parcel apps",
+                "tone": "good"
+              },
+              {
+                "id": "gw",
+                "kind": "lb",
+                "label": "Gateway",
+                "tone": "good",
+                "sub": "limit follows latency"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Orders API",
+                "tone": "good",
+                "cpu": 80,
+                "sub": "~60 in flight"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres",
+                "tone": "warn",
+                "cpu": 75,
+                "sub": "vacuum running"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "gw"
+              },
+              {
+                "from": "gw",
+                "to": "api"
+              },
+              {
+                "from": "api",
+                "to": "db"
+              }
+            ]
+          },
+          "resultTitle": "Limit tracks the drain rate",
+          "resultBody": "The gateway compares live latency to its no-load baseline and cuts the concurrency cap multiplicatively when it rises, growing it additively when it falls; in-flight settles near 60, excess gets fast 503s, and p95 drops to 150 ms. Cost: throughput falls to ~1,500 req/s while vacuum runs, and the limiter needs tuning to avoid oscillation."
+        },
+        {
+          "id": "lower-fixed-limit",
+          "label": "Lower the fixed rate limit to 4,000 req/s",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "inflight",
+              "label": "In-flight requests",
+              "value": 160,
+              "unit": "req",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 4000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 400,
+              "unit": "err/s",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Wrong at both speeds",
+          "resultBody": "At 40 ms, 4,000 req/s is still 160 in flight and p95 stays near 4 s; once the vacuum ends, the limit rejects half the traffic a 5 ms database could have served."
+        },
+        {
+          "id": "retry-with-backoff",
+          "label": "Retry timed-out requests twice with exponential backoff",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "inflight",
+              "label": "In-flight requests",
+              "value": 520,
+              "unit": "req",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 15000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1500,
+              "unit": "err/s",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Retries amplify the overload",
+          "resultBody": "Each timeout now costs up to three attempts, pushing effective load toward 14,000 req/s; in-flight passes 500 and API pods start OOM-restarting."
+        }
+      ],
+      "hints": [
+        "The request rate didn't change; something else multiplied the in-flight work.",
+        "In-flight = rate x latency, and latency is the variable here.",
+        "Let the limit move with a latency signal instead of a constant."
       ],
       "nextId": null
     }

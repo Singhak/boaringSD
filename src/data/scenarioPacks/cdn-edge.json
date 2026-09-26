@@ -130,7 +130,7 @@
             }
           ],
           "resultTitle": "Incident solved",
-          "resultBody": "Serve static assets and media from a CDN close to users."
+          "resultBody": "Static assets and media are now served from PoPs a few ms from users, and origin CPU drops from 35% to 16%. Cost: a CDN bill and a cache-invalidation strategy for every deploy."
         },
         {
           "id": "bigger-database",
@@ -160,8 +160,8 @@
               "tone": "bad"
             }
           ],
-          "resultTitle": "Ocean still in path",
-          "resultBody": "Static bytes still cross the origin region."
+          "resultTitle": "The database wasn't the bottleneck",
+          "resultBody": "A larger database adds cost, but the 500 ms comes from static bytes crossing an ocean on every request; p95 even rises to 625 ms during the migration."
         },
         {
           "id": "move-users",
@@ -191,8 +191,8 @@
               "tone": "bad"
             }
           ],
-          "resultTitle": "Ocean still in path",
-          "resultBody": "Move users to the origin"
+          "resultTitle": "Customers can't be relocated",
+          "resultBody": "Pointing users at a single US endpoint doesn't move them; their packets still travel over 100 ms each way and p95 stays at 550 ms."
         }
       ],
       "hints": [
@@ -990,36 +990,36 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Origin not handling burst load",
-      "brief": "A product launch causes huge bursts of static asset requests and the origin service is saturated.",
-      "constraint": "Static content is failing under popular demand.",
-      "question": "What absorbs the pressure?",
+      "title": "Origin melts whenever a new trailer drops",
+      "brief": "FlixNow posts a 40 MB trailer. Within a minute, cache servers across 280 CDN PoPs miss and each downloads it from origin, about 2,200 fetches. Origin CPU hits 94%; p95 is 6 s.",
+      "constraint": "TTLs are already 24 hours and hit ratio is 97% once warm; only the cold-start fan-out hurts.",
+      "question": "How do you stop every PoP hitting origin on the same miss?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 20000,
+          "value": 30000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 35,
+          "value": 94,
           "unit": "%",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 500,
+          "value": 6000,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
           "label": "Errors",
-          "value": 10,
+          "value": 180,
           "unit": "errors",
           "tone": "bad"
         }
@@ -1029,45 +1029,67 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Viewers"
+          },
+          {
+            "id": "cdn",
+            "kind": "cdn",
+            "label": "280 PoPs",
+            "tone": "warn",
+            "sub": "cold miss"
           },
           {
             "id": "origin",
             "kind": "server",
             "label": "Origin",
-            "tone": "bad"
+            "tone": "bad",
+            "cpu": 94,
+            "sub": "~12 Gbps egress"
           }
         ],
         "edges": [
           {
             "from": "users",
+            "to": "cdn"
+          },
+          {
+            "from": "cdn",
             "to": "origin"
           }
         ]
       },
       "choices": [
         {
-          "id": "add-cache",
-          "label": "Add cache",
+          "id": "shield",
+          "label": "Enable a tiered origin shield in one region near origin",
           "correct": true,
+          "approach": "optimal",
           "graphAfter": {
             "nodes": [
               {
                 "id": "users",
                 "kind": "users",
-                "label": "Users"
+                "label": "Viewers"
               },
               {
                 "id": "cdn",
                 "kind": "cdn",
-                "label": "CDN edge",
+                "label": "280 PoPs",
                 "tone": "good"
+              },
+              {
+                "id": "shield",
+                "kind": "cdn",
+                "label": "Origin shield",
+                "tone": "good",
+                "sub": "coalesces misses"
               },
               {
                 "id": "origin",
                 "kind": "server",
                 "label": "Origin",
-                "tone": "good"
+                "tone": "good",
+                "cpu": 25
               }
             ],
             "edges": [
@@ -1077,6 +1099,10 @@
               },
               {
                 "from": "cdn",
+                "to": "shield"
+              },
+              {
+                "from": "shield",
                 "to": "origin"
               }
             ]
@@ -1085,14 +1111,14 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 25,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 40,
+              "value": 180,
               "unit": "ms",
               "tone": "good"
             },
@@ -1104,78 +1130,81 @@
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "A CDN edge layer that caches and serves static content near the user."
+          "resultTitle": "One fetch per trailer reaches origin",
+          "resultBody": "PoPs now miss to a shield tier that coalesces concurrent requests, so origin serves each trailer once or twice instead of ~2,200 times, and its CPU drops to 25%. Cost: an extra hop of roughly 20-80 ms on cold misses from distant PoPs, plus a shield fee on the CDN bill."
         },
         {
-          "id": "more-origin-instances",
-          "label": "More origin instances",
+          "id": "prewarm",
+          "label": "Script a pre-warm request to all 280 PoPs at publish",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 39,
+              "value": 92,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 625,
+              "value": 5200,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 50,
+              "value": 150,
               "unit": "errors",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Ocean still in path",
-          "resultBody": "Static bytes still cross the origin region."
+          "resultTitle": "The warm-up became the stampede",
+          "resultBody": "The script requests the trailer from all 280 PoPs at once, generating the same ~2,200 origin downloads five minutes earlier; origin CPU still peaks at 92%."
         },
         {
-          "id": "longer-ttls-everywhere",
-          "label": "Longer TTLs everywhere",
+          "id": "autoscale",
+          "label": "Autoscale origin from 4 to 16 instances during launches",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 37,
+              "value": 60,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 550,
+              "value": 1400,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
               "label": "Errors",
               "value": 30,
               "unit": "errors",
-              "tone": "bad"
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Ocean still in path",
-          "resultBody": "Longer TTLs everywhere"
+          "resultTitle": "Bigger origin, bigger bill",
+          "resultBody": "Sixteen instances survive the burst at 60% CPU, but you pay for 12 extra servers that idle most of the day, and ~12 Gbps of origin egress still leaves on every drop."
         }
       ],
       "hints": [
-        "The bottleneck is distance, not CPU.",
-        "Heavy files are static.",
-        "Move assets to the edge."
+        "Hit ratio is fine once warm; the problem is the first minute.",
+        "Count how many separate caches ask origin for the same new file.",
+        "A layer between the PoPs and origin could collapse those misses first."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "cdn-07",
@@ -2550,37 +2579,44 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Cookie-busted cache",
-      "brief": "A session cookie is sent on image URLs, so the CDN treats each user as a unique object.",
-      "constraint": "Images are public and identical.",
-      "question": "What restores hit ratio?",
+      "title": "Product images drop to a 4% edge hit ratio",
+      "brief": "ShopNest's CDN hit ratio for /img/* fell from 95% to 4% after analytics set a per-visitor cookie site-wide. The CDN keys on Cookie, so origin now serves 18,000 image req/s.",
+      "constraint": "Images are public and identical for everyone; the analytics cookie must stay on HTML pages.",
+      "question": "What restores the edge hit ratio for images?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 20000,
+          "value": 18000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 35,
+          "value": 88,
           "unit": "%",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 500,
+          "value": 900,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
           "label": "Errors",
-          "value": 10,
+          "value": 60,
           "unit": "errors",
+          "tone": "bad"
+        },
+        {
+          "key": "hit",
+          "label": "Edge hit ratio",
+          "value": 4,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -2589,70 +2625,52 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Shoppers"
+          },
+          {
+            "id": "cdn",
+            "kind": "cdn",
+            "label": "CDN",
+            "tone": "bad",
+            "sub": "key includes Cookie"
           },
           {
             "id": "origin",
             "kind": "server",
-            "label": "Origin",
-            "tone": "bad"
+            "label": "Image origin",
+            "tone": "bad",
+            "cpu": 88
           }
         ],
         "edges": [
           {
             "from": "users",
+            "to": "cdn"
+          },
+          {
+            "from": "cdn",
             "to": "origin"
           }
         ]
       },
       "choices": [
         {
-          "id": "add-cache",
-          "label": "Add cache",
+          "id": "strip-cookie",
+          "label": "Strip cookies from the /img/* cache key and request at the edge",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "cdn",
-                "kind": "cdn",
-                "label": "CDN edge",
-                "tone": "good"
-              },
-              {
-                "id": "origin",
-                "kind": "server",
-                "label": "Origin",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "cdn"
-              },
-              {
-                "from": "cdn",
-                "to": "origin"
-              }
-            ]
-          },
+          "approach": "optimal",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 18,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 40,
+              "value": 60,
               "unit": "ms",
               "tone": "good"
             },
@@ -2662,80 +2680,104 @@
               "value": 0,
               "unit": "errors",
               "tone": "good"
+            },
+            {
+              "key": "hit",
+              "label": "Edge hit ratio",
+              "value": 95,
+              "unit": "%",
+              "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Strip cookies from static asset requests and cache them as public objects."
+          "resultTitle": "Images shared across visitors again",
+          "resultBody": "The edge now ignores and removes Cookie for /img/*, so one cached copy serves every visitor; hit ratio returns to 95% and origin drops to about 900 req/s. Cost: nothing under /img/* can use cookies for per-user logic, and the edge rule must track origin route changes."
         },
         {
-          "id": "add-more-cookies",
-          "label": "Add more cookies",
+          "id": "long-ttl",
+          "label": "Raise image TTL from 1 day to 30 days",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 39,
+              "value": 86,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 625,
+              "value": 880,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
               "label": "Errors",
+              "value": 55,
+              "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "hit",
+              "label": "Edge hit ratio",
+              "value": 5,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Longer TTL, still one copy per visitor",
+          "resultBody": "Each visitor's cookie still creates a unique cache entry, so entries live longer but are never reused; hit ratio stays near 5% while edge storage churns."
+        },
+        {
+          "id": "scale-origin",
+          "label": "Double origin image servers and add a Redis thumbnail cache",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
               "value": 50,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Ocean still in path",
-          "resultBody": "Static bytes still cross the origin region."
-        },
-        {
-          "id": "move-images-behind",
-          "label": "Move images behind",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 37,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 550,
+              "value": 600,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 30,
+              "value": 20,
               "unit": "errors",
+              "tone": "warn"
+            },
+            {
+              "key": "hit",
+              "label": "Edge hit ratio",
+              "value": 4,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Ocean still in path",
-          "resultBody": "Move images behind login on origin"
+          "resultTitle": "Origin propped up, edge still bypassed",
+          "resultBody": "Origin copes at 50% CPU, but every image still travels from origin with ~150 ms extra latency, egress costs climb, and the edge hit ratio stays at 4%."
         }
       ],
       "hints": [
-        "The bottleneck is distance, not CPU.",
-        "Heavy files are static.",
-        "Move assets to the edge."
+        "Hit ratio fell on the day a new cookie appeared.",
+        "Look at what the CDN uses to decide whether two requests are the same object.",
+        "Public images don't need anything per-visitor in their cache key."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "cdn-15",
@@ -2745,38 +2787,45 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Purge storm after a typo",
-      "brief": "Ops purges the entire CDN after fixing one CSS typo and origin CPU spikes globally.",
-      "constraint": "Only one file changed.",
-      "question": "What is the safer invalidation pattern?",
+      "title": "One CSS typo fix spiked origin worldwide",
+      "brief": "An engineer fixed a typo in site.css and ran 'purge all'. 2.1 million cached objects were dropped; origin jumped from 800 to 26,000 req/s and 97% CPU for 20 minutes.",
+      "constraint": "Designers ship CSS fixes several times a day, and each fix must reach visitors within a minute.",
+      "question": "How should a single-file fix reach users next time?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 20000,
+          "value": 26000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 35,
+          "value": 97,
           "unit": "%",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 500,
+          "value": 4200,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
           "label": "Errors",
-          "value": 10,
+          "value": 320,
           "unit": "errors",
           "tone": "bad"
+        },
+        {
+          "key": "stale",
+          "label": "Visitors on old CSS",
+          "value": 0,
+          "unit": "%",
+          "tone": "neutral"
         }
       ],
       "graphBefore": {
@@ -2784,70 +2833,52 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Visitors"
+          },
+          {
+            "id": "cdn",
+            "kind": "cdn",
+            "label": "CDN",
+            "tone": "warn",
+            "sub": "cache emptied"
           },
           {
             "id": "origin",
             "kind": "server",
             "label": "Origin",
-            "tone": "bad"
+            "tone": "bad",
+            "cpu": 97
           }
         ],
         "edges": [
           {
             "from": "users",
+            "to": "cdn"
+          },
+          {
+            "from": "cdn",
             "to": "origin"
           }
         ]
       },
       "choices": [
         {
-          "id": "hash-urls",
-          "label": "Hash URLs",
+          "id": "hashed-names",
+          "label": "Content-hashed filenames with year-long immutable TTLs",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "cdn",
-                "kind": "cdn",
-                "label": "CDN edge",
-                "tone": "good"
-              },
-              {
-                "id": "origin",
-                "kind": "server",
-                "label": "Origin",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "cdn"
-              },
-              {
-                "from": "cdn",
-                "to": "origin"
-              }
-            ]
-          },
+          "approach": "optimal",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 12,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 40,
+              "value": 70,
               "unit": "ms",
               "tone": "good"
             },
@@ -2857,80 +2888,104 @@
               "value": 0,
               "unit": "errors",
               "tone": "good"
+            },
+            {
+              "key": "stale",
+              "label": "Visitors on old CSS",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Purge or version only the changed object, not the whole site."
+          "resultTitle": "Fix shipped, cache untouched",
+          "resultBody": "Builds now emit site.3f9a1c.css and the HTML, cached for 60 s, points at the new name, so visitors get the fix within a minute while the other 2.1 million objects stay cached. Cost: a build step that rewrites references, and old hashed files must stay at origin until cached HTML expires."
         },
         {
-          "id": "wildcard-purge-every",
-          "label": "Wildcard purge every",
+          "id": "url-purge",
+          "label": "Purge only site.css by URL, keeping the same filename",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 39,
+              "value": 14,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 80,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            },
+            {
+              "key": "stale",
+              "label": "Visitors on old CSS",
+              "value": 60,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Edge fixed, browsers still stale",
+          "resultBody": "The single-URL purge spares origin, but browsers already hold site.css under a 1-day max-age, which no CDN purge can reach; most returning visitors keep the typo until tomorrow."
+        },
+        {
+          "id": "short-ttl",
+          "label": "Set every asset's TTL to 60 seconds so fixes appear",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 80,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 625,
+              "value": 1200,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 50,
+              "value": 90,
               "unit": "errors",
               "tone": "bad"
-            }
-          ],
-          "resultTitle": "Ocean still in path",
-          "resultBody": "Static bytes still cross the origin region."
-        },
-        {
-          "id": "turn-cdn-off",
-          "label": "Turn CDN off",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
+            },
             {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 37,
+              "key": "stale",
+              "label": "Visitors on old CSS",
+              "value": 0,
               "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 550,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 30,
-              "unit": "errors",
-              "tone": "bad"
+              "tone": "good"
             }
           ],
-          "resultTitle": "Ocean still in path",
-          "resultBody": "Turn the CDN off for an hour"
+          "resultTitle": "Hit ratio collapses permanently",
+          "resultBody": "Fixes now appear within a minute, but 2.1 million objects revalidate every 60 s; origin settles at 14,000 req/s and 80% CPU all day, not just after a purge."
         }
       ],
       "hints": [
-        "The bottleneck is distance, not CPU.",
-        "Heavy files are static.",
-        "Move assets to the edge."
+        "Only one of 2.1 million objects actually changed.",
+        "Browsers cache the file too, and a CDN purge can't reach them.",
+        "If the fixed file had a new name, nothing would need purging."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "cdn-16",
@@ -3525,37 +3580,37 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Signed URL media leak via long TTL",
-      "brief": "Private lecture videos use signed URLs but the CDN caches them as public for 7 days.",
-      "constraint": "Access must remain authorized.",
-      "question": "How should private media be edged?",
+      "title": "Leaked lecture links keep playing for a week",
+      "brief": "EduVault signs lecture URLs for 1 hour, but the CDN ignores the signature and caches each video as public for 7 days. One leaked link has served 48,000 views to non-students.",
+      "constraint": "Hit ratio must stay above 90%: the 4K lectures cost about $0.08/GB to serve from origin.",
+      "question": "How do you keep lectures cached but authorized?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 20000,
+          "value": 9000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 35,
+          "value": 30,
           "unit": "%",
-          "tone": "warn"
+          "tone": "good"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 500,
+          "value": 80,
           "unit": "ms",
-          "tone": "bad"
+          "tone": "good"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 10,
-          "unit": "errors",
+          "label": "Unauthorized plays",
+          "value": 2000,
+          "unit": "/hour",
           "tone": "bad"
         }
       ],
@@ -3564,153 +3619,138 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Students + strangers"
+          },
+          {
+            "id": "cdn",
+            "kind": "cdn",
+            "label": "CDN",
+            "tone": "bad",
+            "sub": "no token check"
           },
           {
             "id": "origin",
             "kind": "server",
-            "label": "Origin",
-            "tone": "bad"
+            "label": "Video origin",
+            "tone": "good",
+            "cpu": 30
           }
         ],
         "edges": [
           {
             "from": "users",
+            "to": "cdn"
+          },
+          {
+            "from": "cdn",
             "to": "origin"
           }
         ]
       },
       "choices": [
         {
-          "id": "add-cache",
-          "label": "Add cache",
+          "id": "edge-verify",
+          "label": "Validate the signed token at the edge; exclude it from the key",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "cdn",
-                "kind": "cdn",
-                "label": "CDN edge",
-                "tone": "good"
-              },
-              {
-                "id": "origin",
-                "kind": "server",
-                "label": "Origin",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "cdn"
-              },
-              {
-                "from": "cdn",
-                "to": "origin"
-              }
-            ]
-          },
+          "approach": "optimal",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
-              "unit": "%",
-              "tone": "good"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 40,
-              "unit": "ms",
-              "tone": "good"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
-              "tone": "good"
-            }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Cache with signed URL or token validation at the edge; do not treat private objects as public."
-        },
-        {
-          "id": "make-all-videos",
-          "label": "Make all videos",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 39,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 625,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 50,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Ocean still in path",
-          "resultBody": "Static bytes still cross the origin region."
-        },
-        {
-          "id": "put-video-bytes",
-          "label": "Put video bytes",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 37,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 550,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
               "value": 30,
-              "unit": "errors",
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 85,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Unauthorized plays",
+              "value": 0,
+              "unit": "/hour",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Tokens checked, bytes still cached",
+          "resultBody": "Each PoP verifies the signature and 1-hour expiry before serving, so the leaked link returns 403 once it expires, while the cache key ignores the token and all students share one copy; hit ratio stays at 96%. Cost: signing-key rotation and clock skew to manage, and a leaked link still works until its hour runs out."
+        },
+        {
+          "id": "sig-in-key",
+          "label": "Include the signature query string in the CDN cache key",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 85,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 900,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Unauthorized plays",
+              "value": 1800,
+              "unit": "/hour",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Ocean still in path",
-          "resultBody": "Put video bytes in the SQL primary"
+          "resultTitle": "Leaked link cached per signature",
+          "resultBody": "The leaked URL's signature is now its own cache entry with a 7-day TTL, so it keeps playing from the edge; meanwhile every student's unique URL misses, hit ratio falls to 9%, and origin CPU hits 85%."
+        },
+        {
+          "id": "no-store",
+          "label": "Mark lecture videos Cache-Control: private, no-store",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 96,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2400,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Unauthorized plays",
+              "value": 0,
+              "unit": "/hour",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Authorized, but origin takes every byte",
+          "resultBody": "The CDN stops caching lectures; unauthorized plays end because origin checks tokens, but 9,000 req/s of 4K video now stream from origin at 96% CPU with a 2.4 s p95."
         }
       ],
       "hints": [
-        "The bottleneck is distance, not CPU.",
-        "Heavy files are static.",
-        "Move assets to the edge."
+        "The CDN is treating a private object like a public one.",
+        "Two jobs are tangled: deciding who may watch, and deciding which bytes to reuse.",
+        "The edge can check a signature without making it part of the object's identity."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "cdn-20",
@@ -3904,6 +3944,198 @@
         "The bottleneck is distance, not CPU.",
         "Heavy files are static.",
         "Move assets to the edge."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "cdn-new-01",
+      "incidentCode": "INC-005-21",
+      "level": 5,
+      "patternId": "cdn-edge",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 50,
+      "title": "Origin outage takes the whole news site down",
+      "brief": "DailyWire's origin database failed for 12 minutes. Article pages have a 60 s TTL, so within a minute nearly all 50,000 req/s at the CDN became 502s, though every article had been cached moments earlier.",
+      "constraint": "Breaking-news pages must refresh within 60 seconds whenever origin is healthy.",
+      "question": "How do you keep serving readers while origin is down?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 50000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 99,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 8000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "5xx rate",
+          "value": 97,
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Readers"
+          },
+          {
+            "id": "cdn",
+            "kind": "cdn",
+            "label": "CDN",
+            "tone": "bad",
+            "sub": "TTL expired"
+          },
+          {
+            "id": "origin",
+            "kind": "server",
+            "label": "Origin",
+            "tone": "bad",
+            "cpu": 99,
+            "sub": "retry storm"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Articles DB",
+            "tone": "bad",
+            "sub": "down"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "cdn"
+          },
+          {
+            "from": "cdn",
+            "to": "origin"
+          },
+          {
+            "from": "origin",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "stale-if-error",
+          "label": "Serve expired copies via stale-if-error while origin fails",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 40,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 60,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "5xx rate",
+              "value": 1,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Readers get slightly older pages",
+          "resultBody": "With max-age=60, stale-while-revalidate=30, stale-if-error=86400, the edge keeps serving the last good copy whenever origin returns 5xx, so errors fall to about 1% (pages never cached). Cost: during an outage readers may see articles up to 12 minutes old, so pages should show an 'updated at' time."
+        },
+        {
+          "id": "long-ttl",
+          "label": "Raise the article TTL from 60 seconds to 1 hour",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 20,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 60,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "5xx rate",
+              "value": 3,
+              "unit": "%",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Outages hidden, news goes stale",
+          "resultBody": "The next outage is masked, but breaking-news corrections now take up to an hour to reach readers, breaking the 60-second freshness rule every normal day."
+        },
+        {
+          "id": "retry",
+          "label": "Make the CDN retry origin three times before returning 502",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 12000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "5xx rate",
+              "value": 97,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Retries tripled load on a dead origin",
+          "resultBody": "Each miss now hits the failing origin three times, so it sees about 150,000 req/s instead of 50,000; recovery takes 4 minutes longer and readers still get 502s, after an 8 s wait."
+        }
+      ],
+      "hints": [
+        "Every article was cached a minute before the outage.",
+        "The edge threw away copies it still had because they were past their TTL.",
+        "Cache-Control can say how long an expired copy may still be used when origin fails."
       ],
       "nextId": null
     }

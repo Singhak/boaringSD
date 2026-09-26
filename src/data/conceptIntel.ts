@@ -9,7 +9,7 @@ export const CONCEPT_INTEL_REGISTRY: Record<string, ConceptIntel> = {
     eli5Analogy: {
       title: "The Supermarket Cashier Analogy",
       story:
-        "Imagine a grocery store on Sunday evening. 500 customers are waiting in line at Cashier 1. If you replace Cashier 1 with the world's fastest human (Vertical Scaling), they will still eventually collapse under 500 people. Instead, the manager opens Cashier 2 and Cashier 3 (Horizontal Scaling). The line instantly cuts in three without hiring a superhuman.",
+        "Imagine a grocery store on Sunday evening. 500 customers are waiting in line at Cashier 1. If you replace Cashier 1 with the world's fastest human (Vertical Scaling), they will still eventually collapse under 500 people. Instead, the manager opens Cashier 2 and Cashier 3 (Horizontal Scaling). Each line is now about a third as long, and nobody had to hire a superhuman. (It only works because any cashier can scan any cart. If every customer had to see Cashier 1 personally, the new lanes would sit empty.)",
     },
     visualFlow: `[ 100,000 req/s ]
        │
@@ -17,12 +17,12 @@ export const CONCEPT_INTEL_REGISTRY: Record<string, ConceptIntel> = {
   ▼         ▼
 [Server 1] [Server 2]  (Traffic splits 50/50: CPU drops from 98% -> 45%)`,
     whyItWorks:
-      "Stateless web/API servers can execute identical logic independently. By provisioning identical nodes behind a shared ingress, capacity scales linearly with server count.",
+      "Stateless web/API servers can execute identical logic independently. By provisioning identical nodes behind a shared ingress, capacity grows roughly linearly with server count, but only while the servers stay stateless and a shared dependency (database, cache, a downstream API) is not the bottleneck. Once the DB saturates, extra app servers just add more connections to it.",
     tradeoffs: {
       pros: [
-        "Linear compute scaling without hardware ceiling",
+        "Near-linear compute scaling past a single machine's hardware ceiling (until a shared dependency saturates)",
         "High availability: if 1 server crashes, remaining servers keep serving",
-        "Cost efficiency: commodity cloud instances (e.g. c6g.xlarge) cost far less than mainframe scale",
+        "Cost efficiency: many commodity instances (e.g. c6g.xlarge) usually cost less than the largest single machines, and can scale down off-peak",
       ],
       cons: [
         "Servers MUST be stateless (sessions/state must live in Redis or DB)",
@@ -57,20 +57,20 @@ export const CONCEPT_INTEL_REGISTRY: Record<string, ConceptIntel> = {
       "A reverse proxy sits in front of the server fleet, terminating client TLS connections and forwarding HTTP requests to backend targets according to distribution algorithms and active health check probes.",
     tradeoffs: {
       pros: [
-        "Eliminates traffic skew and hot spots",
-        "Active health checks automatically pull failing/crashed servers out of rotation",
+        "Reduces traffic skew across servers (though it cannot fix a hot key inside the data tier)",
+        "Active health checks pull failing servers out of rotation after a few failed probes (typically seconds)",
         "SSL/TLS termination offloads cryptographic compute from application servers",
       ],
       cons: [
-        "Single Point of Failure (SPOF) if not deployed in active-passive HA pair",
-        "Adds ~1-3ms network hop latency",
+        "Single Point of Failure (SPOF) unless deployed redundantly (HA pair or a managed multi-AZ LB)",
+        "Adds an extra network hop (~0.5-2ms in the same datacenter)",
         "Sticky sessions (if needed) complicate even distribution",
       ],
     },
     interviewPlaybook: {
-      whenToUse: "Whenever scaling beyond a single server to guarantee uniform utilization and zero-downtime failover.",
+      whenToUse: "Whenever scaling beyond a single server, to spread load evenly and route around a failed node. Expect a short failover window (a few seconds while health checks notice) where some in-flight requests fail and need a client retry.",
       sampleDialogue:
-        "'We place a redundant Layer 7 Application Load Balancer in front of our backend cluster. We use a round-robin or least-outstanding-requests algorithm paired with deep HTTP health probes to immediately evict unhealthy pods within 2 failed heartbeats.'",
+        "'We place a redundant Layer 7 Application Load Balancer in front of our backend cluster. We use a round-robin or least-outstanding-requests algorithm paired with deep HTTP health probes, so an unhealthy pod is evicted after 2 failed checks, roughly 10 seconds at a 5-second interval. Clients retry idempotent requests to cover that window.'",
     },
   },
 
@@ -78,24 +78,24 @@ export const CONCEPT_INTEL_REGISTRY: Record<string, ConceptIntel> = {
     id: "caching",
     name: "In-Memory Caching (Cache-Aside)",
     category: "caching",
-    oneLiner: "Storing precomputed or frequent database reads in high-speed RAM for sub-millisecond lookups.",
+    oneLiner: "Keeping precomputed or frequently read results in an in-memory store so most requests skip the database query entirely.",
     eli5Analogy: {
       title: "The Sticky Note vs The Basement Filing Cabinet",
       story:
-        "Your boss asks you for the office Wi-Fi password 50 times an hour. Every time, you walk down 3 flights of stairs to unlock a metal filing cabinet in the dark basement (Disk Database). You are exhausted. Instead, you write the password on a sticky note pasted on your monitor (RAM Cache). Now you answer in 1 second. You only visit the basement when the password changes.",
+        "Your boss asks you for the office Wi-Fi password 50 times an hour. Every time, you walk down 3 flights of stairs, wait in line behind everyone else who needs the filing cabinet, and dig through the folders (Database Query). You are exhausted, and so is the line. Instead, you write the password on a sticky note pasted on your monitor (RAM Cache). Now you answer in 1 second. You only visit the basement when the password changes.",
     },
     visualFlow: `[ App Server ] ──1. Check Cache──► [ Redis RAM Cache ]
        │                                  │
-       │ (Cache Hit: 95% < 2ms) ◄─────────┘
+       │ (Cache Hit: 95% ~0.5ms) ◄────────┘
        │
        └──2. On Cache Miss (5%) ────────► [ Postgres DB ] ──► Update Cache`,
     whyItWorks:
-      "RAM memory access runs at ~100 nanoseconds, compared to disk SSD I/O running at ~1-10 milliseconds (10,000x slower). Caching reads shields the relational database from redundant queries.",
+      "Ballparks: RAM access ~100 ns, NVMe SSD random read ~100 µs, HDD seek ~5-10 ms. But a busy database already serves hot rows from its in-memory buffer pool, and a Redis GET including the network round-trip costs ~0.2-1 ms. So the cache's real win is not 'RAM vs disk': it skips the query work itself (parsing, planning, joins, locks, holding a scarce DB connection) and removes contention from the primary. That shields the relational database from thousands of redundant identical queries.",
     tradeoffs: {
       pros: [
-        "Dramatically slashes database read load (often 80-95% reduction)",
-        "Ultra-low latency (<2ms response times)",
-        "Handles viral traffic spikes on popular items seamlessly",
+        "Dramatically slashes database read load (often 80-95% at a high hit ratio)",
+        "Low latency on hits (~0.2-1ms per Redis round-trip)",
+        "Absorbs traffic spikes on popular items, as long as hot keys stay cached",
       ],
       cons: [
         "Cache invalidation is notoriously tricky (risk of serving stale data)",
@@ -106,7 +106,7 @@ export const CONCEPT_INTEL_REGISTRY: Record<string, ConceptIntel> = {
     interviewPlaybook: {
       whenToUse: "Read-heavy workloads (>80% reads) where data changes infrequently or tolerates slight staleness.",
       sampleDialogue:
-        "'Because our user timeline has a 99:1 read-to-write ratio, we implement a Cache-Aside pattern using Redis Cluster. Hot user feeds are cached with a 15-minute TTL. On user publish, we invalidate the specific cache key to guarantee near-instant freshness.'",
+        "'Because our user timeline has a 99:1 read-to-write ratio, we implement a Cache-Aside pattern using Redis Cluster. Hot user feeds are cached with a 15-minute TTL. On user publish, we delete the specific cache key so the next read refills it; a short TTL bounds staleness if an invalidation is ever lost.'",
     },
   },
 
@@ -124,16 +124,16 @@ export const CONCEPT_INTEL_REGISTRY: Record<string, ConceptIntel> = {
              │
              ▼
    [ Singleflight Barrier ]
-             │  (Only 1 request passes through!)
+             │  (Only 1 request per server passes through!)
              ▼
    [ Postgres Database ] ──► Returns data once ──► Broadcast to all 5,000 callers`,
     whyItWorks:
-      "When a hot cache key expires, thousands of concurrent threads simultaneously experience a cache miss and rush the DB (Thundering Herd). Singleflight uses an in-process mutex and promise/channel map so only the first request queries the DB; the other 4,999 wait and share the resolved result.",
+      "When a hot cache key expires, thousands of concurrent threads simultaneously experience a cache miss and rush the DB (Thundering Herd). Singleflight uses an in-process mutex and promise/channel map so, per key, only the first request on each server queries the DB; the others on that server wait and share the resolved result. With 50 app servers that is at most ~50 DB queries instead of 5,000.",
     tradeoffs: {
       pros: [
-        "Completely prevents cache stampedes without pre-warming",
-        "Zero added cloud infrastructure (runs in app process memory)",
-        "Protects SQL databases from instant connection exhaustion during key eviction",
+        "Caps a stampede at one query per key per server, without pre-warming",
+        "No added infrastructure for the in-process version (runs in app memory)",
+        "Protects SQL databases from sudden connection exhaustion when a hot key expires",
       ],
       cons: [
         "Only coalesces requests within the same server container (unless paired with distributed mutex)",
@@ -144,7 +144,7 @@ export const CONCEPT_INTEL_REGISTRY: Record<string, ConceptIntel> = {
     interviewPlaybook: {
       whenToUse: "High-concurrency systems vulnerable to hot-key expiration (e.g. celebrity tweets, breaking news, flash sales).",
       sampleDialogue:
-        "'To defend against cache stampedes on viral breaking news stories, we implement Go singleflight (or Redis mutex locks). When key TTL expires under 100k QPS, exactly one worker refreshes the cache from Postgres while all other requests await that single flight promise.'",
+        "'To defend against cache stampedes on viral breaking news stories, we implement Go singleflight (or Redis mutex locks). When a key's TTL expires under 100k QPS, one request per app instance refreshes it from Postgres while the rest await that in-flight promise. If we need a single refresh fleet-wide, we add a short-lived Redis lock with a timeout.'",
     },
   },
 
@@ -152,7 +152,7 @@ export const CONCEPT_INTEL_REGISTRY: Record<string, ConceptIntel> = {
     id: "read-replicas",
     name: "Database Read Replicas",
     category: "database",
-    oneLiner: "Dedicated read-only database copies synchronized asynchronously from the primary writer.",
+    oneLiner: "Read-only database copies kept in sync (usually asynchronously) from the primary writer.",
     eli5Analogy: {
       title: "The Library Reference Desk Analogy",
       story:
@@ -164,21 +164,21 @@ export const CONCEPT_INTEL_REGISTRY: Record<string, ConceptIntel> = {
                                ▼
 [ Reads (90%) ] ───────► [ Read Replica 1 ] & [ Read Replica 2 ]`,
     whyItWorks:
-      "Most production workloads are 80-95% reads. Offloading `SELECT` queries to read-only replica instances frees the primary master database to handle atomic writes, locks, and transactions without disk I/O saturation.",
+      "Many production workloads are 80-95% reads. Offloading `SELECT` queries to read-only replica instances frees the primary's CPU, connections, and buffer pool for writes, locks, and transactions.",
     tradeoffs: {
       pros: [
         "Scales read throughput horizontally across multiple instances",
-        "High availability: a healthy replica can be promoted to primary if master dies",
+        "High availability: a replica can be promoted if the primary dies. Expect a failover window of seconds to a minute, and with async replication any writes not yet replicated can be lost",
         "Isolates heavy analytical reports from production write paths",
       ],
       cons: [
         "Replication Lag: Replicas update asynchronously, so reads may be milliseconds or seconds stale",
-        "Risk of dirty reads / read-after-write inconsistency",
+        "Read-after-write inconsistency: a user may not see their own write if the read hits a lagging replica",
         "Does NOT scale write throughput (all writes still bottleneck on 1 master)",
       ],
     },
     interviewPlaybook: {
-      whenToUse: "When database CPU or disk IOPS is saturated by read queries on a write-capable relational database.",
+      whenToUse: "When the primary's CPU, connections, or I/O are saturated by read queries that can tolerate a little replication lag.",
       sampleDialogue:
         "'We configure master-replica replication with Amazon Aurora or PostgreSQL. All mutations hit the writer primary, while our API router sends read queries across a cluster of 3 read replicas with sticky read-your-own-writes session routing for active authors.'",
     },
@@ -192,16 +192,16 @@ export const CONCEPT_INTEL_REGISTRY: Record<string, ConceptIntel> = {
     eli5Analogy: {
       title: "The Electrical Fuse Box Analogy",
       story:
-        "If a wire in your kitchen starts sparking and drawing 100 amps of dangerous current, your house does not keep feeding it electricity until the whole building catches fire. The electrical fuse trips open immediately, cutting power to that single room so the rest of your house stays safe and brightly lit.",
+        "If a wire in your kitchen starts sparking and drawing 100 amps of dangerous current, your house does not keep feeding it electricity until the whole building catches fire. The breaker trips open within a moment, cutting power to that single room so the rest of your house stays safe and brightly lit.",
     },
     visualFlow: `Normal:   [ App ] ─── CLOSED ───► [ Payment Gateway (Healthy) ]
-Failing:  [ App ] ─── OPEN ─────► Returns Fast Fallback (Zero delay, stops retry storm)
+Failing:  [ App ] ─── OPEN ─────► Returns Fast Fallback (<1ms, stops retry storm)
 Probing:  [ App ] ─── HALF-OPEN ─► Sends 1 Canary Probe to check if recovered`,
     whyItWorks:
-      "When a third-party service slows down from 50ms to 10,000ms, thousands of caller threads hang waiting for timeouts, exhausting thread pools and causing cascading system collapse. A circuit breaker trips OPEN after N failures, returning immediate fallback errors and preventing resource exhaustion.",
+      "When a third-party service slows down from 50ms to 10,000ms, thousands of caller threads hang waiting for timeouts, exhausting thread pools and causing cascading system collapse. A circuit breaker trips OPEN once failures or slow calls cross a threshold, returning immediate fallback errors so caller threads are freed instead of piling up.",
     tradeoffs: {
       pros: [
-        "Eliminates cascading failure and thread starvation across microservices",
+        "Contains cascading failure and thread starvation (paired with timeouts and bounded pools)",
         "Provides predictable fallback user experiences (e.g. cached recommendations)",
         "Gives struggling downstream services breathing room to recover",
       ],

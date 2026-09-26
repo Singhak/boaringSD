@@ -180,8 +180,8 @@
               "tone": "bad"
             }
           ],
-          "resultTitle": "Side effect doubled",
-          "resultBody": "The retry ran the money path again."
+          "resultTitle": "Retries slip past the UI",
+          "resultBody": "Disabling the button stops double-clicks in the browser, but mobile clients and proxies still retry a timed-out POST, so 42 shoppers were charged twice anyway."
         },
         {
           "id": "accept-both",
@@ -211,8 +211,8 @@
               "tone": "bad"
             }
           ],
-          "resultTitle": "Side effect doubled",
-          "resultBody": "Accept both POSTs as separate orders"
+          "resultTitle": "Two orders, two charges",
+          "resultBody": "Accepting both POSTs as separate orders turns every double-click into a second charge on the card and a refund ticket for support."
         }
       ],
       "hints": [
@@ -658,212 +658,238 @@
       "level": 14,
       "patternId": "idempotency",
       "canonical": false,
+      "reviewed": true,
       "severity": "P1",
       "xp": 50,
-      "title": "Key reused for a different body",
-      "brief": "The same idempotency key is sent with a different cart total.",
-      "constraint": "Keys must bind to one request payload.",
-      "question": "What should the server return?",
+      "title": "Edited carts replay the old $42 order",
+      "brief": "A Basketly app bug reuses the idempotency key from a $42 checkout after the shopper edits the cart to $97. The API replays the stored $42 response, and 1.2% of edited orders ship wrong.",
+      "constraint": "Genuine retries of the same request must still get the stored response replayed.",
+      "question": "What should the server do when a known key arrives with a different body?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 200,
+          "value": 900,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 20,
+          "value": 30,
           "unit": "%",
-          "tone": "warn"
+          "tone": "neutral"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 400,
+          "value": 120,
           "unit": "ms",
-          "tone": "warn"
+          "tone": "neutral"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 2,
-          "unit": "errors",
+          "label": "Wrong-total orders",
+          "value": 11,
+          "unit": "/min",
           "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "user",
+            "id": "users",
             "kind": "users",
-            "label": "Double click"
+            "label": "Basketly app"
           },
           {
             "id": "api",
             "kind": "server",
-            "label": "API",
-            "tone": "warn"
+            "label": "Checkout API",
+            "tone": "warn",
+            "cpu": 30
+          },
+          {
+            "id": "store",
+            "kind": "cache",
+            "label": "Idempotency store",
+            "tone": "bad",
+            "sub": "key only, no body hash"
           },
           {
             "id": "pay",
             "kind": "server",
-            "label": "Two charges",
-            "tone": "bad"
+            "label": "Payments",
+            "tone": "warn"
           }
         ],
         "edges": [
           {
-            "from": "user",
+            "from": "users",
             "to": "api"
           },
           {
             "from": "api",
+            "to": "store"
+          },
+          {
+            "from": "store",
             "to": "pay"
           }
         ]
       },
       "choices": [
         {
-          "id": "idempotency-key",
-          "label": "Idempotency key",
+          "id": "hash-and-422",
+          "label": "Store a request hash with the key; mismatches get 422",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "user",
-                "kind": "users",
-                "label": "Retry"
-              },
-              {
-                "id": "api",
-                "kind": "server",
-                "label": "API",
-                "tone": "good"
-              },
-              {
-                "id": "key",
-                "kind": "cache",
-                "label": "Idempotency key",
-                "tone": "good"
-              },
-              {
-                "id": "pay",
-                "kind": "server",
-                "label": "One charge",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "user",
-                "to": "api"
-              },
-              {
-                "from": "api",
-                "to": "key"
-              },
-              {
-                "from": "key",
-                "to": "pay"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 1,
+            "complexityScore": 2,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "Misused keys fail loudly; clients must handle 422 and mint a new key."
           },
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 31,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 40,
+              "value": 121,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Wrong-total orders",
               "value": 0,
-              "unit": "errors",
+              "unit": "/min",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Reject the mismatch (e.g. 409) rather than silently applying a new charge under the old key."
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Basketly app",
+                "tone": "good"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Checkout API",
+                "tone": "good",
+                "cpu": 30
+              },
+              {
+                "id": "store",
+                "kind": "cache",
+                "label": "Idempotency store",
+                "tone": "good",
+                "sub": "key + body hash"
+              },
+              {
+                "id": "pay",
+                "kind": "server",
+                "label": "Payments",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "api"
+              },
+              {
+                "from": "api",
+                "to": "store"
+              },
+              {
+                "from": "store",
+                "to": "pay"
+              }
+            ]
+          },
+          "resultTitle": "Mismatch refused loudly",
+          "resultBody": "The store keeps a SHA-256 of the canonical body beside each key: same key and hash replays the stored response, same key with a new hash returns 422 so the app mints a fresh key and charges $97 once. Cost: one hash per request and a client fix to handle 422."
         },
         {
-          "id": "overwrite-first-charge",
-          "label": "Overwrite first charge",
+          "id": "overwrite-with-newest",
+          "label": "Overwrite the stored request with the newest body",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 24,
+              "value": 32,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 500,
+              "value": 140,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 42,
-              "unit": "errors",
+              "label": "Wrong-total orders",
+              "value": 14,
+              "unit": "/min",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Side effect doubled",
-          "resultBody": "The retry ran the money path again."
+          "resultTitle": "Charged $42 and then $97",
+          "resultBody": "Treating the newer body as authoritative runs a fresh $97 charge under the old key, so shoppers pay $139 in total and the replay record of the first order is gone."
         },
         {
-          "id": "ignore-body-always",
-          "label": "Ignore body always",
+          "id": "derive-key-from-cart",
+          "label": "Derive the key from user ID and cart ID",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 22,
+              "value": 30,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 440,
+              "value": 120,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 22,
-              "unit": "errors",
+              "label": "Wrong-total orders",
+              "value": 12,
+              "unit": "/min",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Side effect doubled",
-          "resultBody": "Ignore the body and always 200"
+          "resultTitle": "Every edit looks like a retry",
+          "resultBody": "A key built from user and cart IDs is identical before and after the edit, so the $97 checkout still matches the $42 record and replays the old order."
         }
       ],
       "hints": [
-        "Retries will happen.",
-        "Side effects must not double.",
-        "Key the write once."
+        "The key matched; the request didn't.",
+        "A key should identify one exact request, not just a user's checkout slot.",
+        "Compare something about the body before deciding to replay."
       ],
       "nextId": null
     },
@@ -873,212 +899,240 @@
       "level": 14,
       "patternId": "idempotency",
       "canonical": false,
+      "reviewed": true,
       "severity": "P1",
       "xp": 50,
-      "title": "In-flight duplicate",
-      "brief": "A retry arrives while the first charge is still processing.",
-      "constraint": "Two workers must not both call the card network.",
-      "question": "What coordination is required?",
+      "title": "Retry charges donors while the first charge is running",
+      "brief": "Fundly's card authorization takes 4-9 s. Clients time out at 3 s and retry with the same key, the store has no record yet, and a second worker calls the card network: 0.6% of donors pay twice.",
+      "constraint": "A card network call cannot be cancelled once it has started.",
+      "question": "What must the store record before the charge begins?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 200,
+          "value": 500,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 20,
+          "value": 35,
           "unit": "%",
-          "tone": "warn"
+          "tone": "neutral"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 400,
+          "value": 6500,
           "unit": "ms",
           "tone": "warn"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 2,
-          "unit": "errors",
+          "label": "Double charges",
+          "value": 3,
+          "unit": "/min",
           "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "user",
+            "id": "users",
             "kind": "users",
-            "label": "Double click"
+            "label": "Donors"
           },
           {
             "id": "api",
             "kind": "server",
-            "label": "API",
-            "tone": "warn"
+            "label": "Donation API x2",
+            "tone": "warn",
+            "cpu": 35
           },
           {
-            "id": "pay",
+            "id": "store",
+            "kind": "cache",
+            "label": "Idempotency store",
+            "tone": "bad",
+            "sub": "written after charge"
+          },
+          {
+            "id": "card",
             "kind": "server",
-            "label": "Two charges",
-            "tone": "bad"
+            "label": "Card network",
+            "tone": "bad",
+            "sub": "4-9 s auth"
           }
         ],
         "edges": [
           {
-            "from": "user",
+            "from": "users",
             "to": "api"
           },
           {
             "from": "api",
-            "to": "pay"
+            "to": "store"
+          },
+          {
+            "from": "api",
+            "to": "card"
           }
         ]
       },
       "choices": [
         {
-          "id": "idempotency-key",
-          "label": "Idempotency key",
+          "id": "in-progress-record",
+          "label": "Insert an in-progress key row first; duplicates get 409",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "user",
-                "kind": "users",
-                "label": "Retry"
-              },
-              {
-                "id": "api",
-                "kind": "server",
-                "label": "API",
-                "tone": "good"
-              },
-              {
-                "id": "key",
-                "kind": "cache",
-                "label": "Idempotency key",
-                "tone": "good"
-              },
-              {
-                "id": "pay",
-                "kind": "server",
-                "label": "One charge",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "user",
-                "to": "api"
-              },
-              {
-                "from": "api",
-                "to": "key"
-              },
-              {
-                "from": "key",
-                "to": "pay"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 2,
+            "complexityScore": 3,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "One atomic claim per key; needs a lease so crashed workers don't strand keys."
           },
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 36,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 40,
+              "value": 6500,
               "unit": "ms",
-              "tone": "good"
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Double charges",
               "value": 0,
-              "unit": "errors",
+              "unit": "/min",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Lock or record the key as in-progress so the second request waits or returns the same outcome."
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Donors",
+                "tone": "good"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Donation API x2",
+                "tone": "good",
+                "cpu": 36
+              },
+              {
+                "id": "store",
+                "kind": "cache",
+                "label": "Idempotency store",
+                "tone": "good",
+                "sub": "in_progress -> done"
+              },
+              {
+                "id": "card",
+                "kind": "server",
+                "label": "Card network",
+                "tone": "good",
+                "sub": "one call per key"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "api"
+              },
+              {
+                "from": "api",
+                "to": "store"
+              },
+              {
+                "from": "store",
+                "to": "card"
+              }
+            ]
+          },
+          "resultTitle": "One worker owns the key",
+          "resultBody": "INSERT ... ON CONFLICT DO NOTHING claims the key as in_progress before the card call; the retry loses the race and gets 409 with Retry-After until the first attempt stores its result, then gets the replay. Cost: clients must handle 409, and a crashed worker needs a lease timeout so its row doesn't block forever."
         },
         {
-          "id": "start-second-charge",
-          "label": "Start second charge",
+          "id": "longer-client-timeout",
+          "label": "Raise the client timeout from 3 s to 15 s",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 24,
+              "value": 35,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 9000,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Double charges",
+              "value": 1,
+              "unit": "/min",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Fewer retries, same race",
+          "resultBody": "Most timeout retries stop, but mobile connections that drop mid-request still reconnect and retry, so double charges fall from 0.6% to about 0.1% instead of zero."
+        },
+        {
+          "id": "check-then-charge",
+          "label": "Check the store for a finished response, then charge",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 36,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 500,
+              "value": 6600,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 42,
-              "unit": "errors",
+              "label": "Double charges",
+              "value": 3,
+              "unit": "/min",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Side effect doubled",
-          "resultBody": "The retry ran the money path again."
-        },
-        {
-          "id": "drop-first-request",
-          "label": "Drop first request",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 22,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 440,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 22,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Side effect doubled",
-          "resultBody": "Drop the first request"
+          "resultTitle": "Both workers read 'no record'",
+          "resultBody": "Check-then-act leaves a 4-9 s gap: both requests read an empty store before either writes a result, so both still call the card network."
         }
       ],
       "hints": [
-        "Retries will happen.",
-        "Side effects must not double.",
-        "Key the write once."
+        "The duplicate arrives before there is anything to replay.",
+        "Reading and then writing leaves a window where two workers both proceed.",
+        "Claim the key atomically first, then perform the side effect."
       ],
       "nextId": null
     },
@@ -1088,149 +1142,167 @@
       "level": 14,
       "patternId": "idempotency",
       "canonical": false,
+      "reviewed": true,
       "severity": "P1",
       "xp": 50,
-      "title": "Email send on retry",
-      "brief": "A welcome email job retries after SMTP success but before ack, and the user gets two emails.",
-      "constraint": "SMTP is not transactional with the queue.",
-      "question": "How do you make the job safe?",
+      "title": "Receipt emails arrive twice after consumer restarts",
+      "brief": "Mealbox's receipt worker consumes 300 order.paid events/s from Kafka. When it crashes or rebalances after sending but before committing offsets, events are redelivered, and 2% of customers get two receipts.",
+      "constraint": "Delivery to this consumer is at-least-once, and the email provider sits outside Kafka.",
+      "question": "How does the consumer make redelivery harmless?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 200,
-          "unit": "req/s",
+          "label": "Events",
+          "value": 300,
+          "unit": "/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 20,
+          "value": 25,
           "unit": "%",
-          "tone": "warn"
-        },
-        {
-          "key": "p95",
-          "label": "p95 latency",
-          "value": 400,
-          "unit": "ms",
-          "tone": "warn"
+          "tone": "neutral"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 2,
-          "unit": "errors",
+          "label": "Duplicate emails",
+          "value": 360,
+          "unit": "/min",
           "tone": "bad"
+        },
+        {
+          "key": "missing",
+          "label": "Missing receipts",
+          "value": 0,
+          "unit": "/min",
+          "tone": "good"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "user",
-            "kind": "users",
-            "label": "Double click"
+            "id": "topic",
+            "kind": "queue",
+            "label": "order.paid topic",
+            "tone": "neutral"
           },
           {
-            "id": "api",
-            "kind": "server",
-            "label": "API",
-            "tone": "warn"
+            "id": "w",
+            "kind": "worker",
+            "label": "Receipt worker",
+            "tone": "warn",
+            "cpu": 25,
+            "sub": "crash before commit"
           },
           {
-            "id": "pay",
+            "id": "mail",
             "kind": "server",
-            "label": "Two charges",
-            "tone": "bad"
+            "label": "Email provider",
+            "tone": "bad",
+            "sub": "sends again"
           }
         ],
         "edges": [
           {
-            "from": "user",
-            "to": "api"
+            "from": "topic",
+            "to": "w"
           },
           {
-            "from": "api",
-            "to": "pay"
+            "from": "w",
+            "to": "mail"
           }
         ]
       },
       "choices": [
         {
-          "id": "idempotency-key",
-          "label": "Idempotency key",
+          "id": "dedupe-table",
+          "label": "Dedupe on event ID in a table, plus provider idempotency key",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "user",
-                "kind": "users",
-                "label": "Retry"
-              },
-              {
-                "id": "api",
-                "kind": "server",
-                "label": "API",
-                "tone": "good"
-              },
-              {
-                "id": "key",
-                "kind": "cache",
-                "label": "Idempotency key",
-                "tone": "good"
-              },
-              {
-                "id": "pay",
-                "kind": "server",
-                "label": "One charge",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "user",
-                "to": "api"
-              },
-              {
-                "from": "api",
-                "to": "key"
-              },
-              {
-                "from": "key",
-                "to": "pay"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 40,
+            "latencyP99DeltaMs": 3,
+            "complexityScore": 3,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "Effectively-once sends at the cost of a DB write per event and a small crash window."
           },
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 28,
               "unit": "%",
               "tone": "good"
             },
             {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 40,
-              "unit": "ms",
+              "key": "errors",
+              "label": "Duplicate emails",
+              "value": 2,
+              "unit": "/min",
               "tone": "good"
             },
             {
-              "key": "errors",
-              "label": "Errors",
+              "key": "missing",
+              "label": "Missing receipts",
               "value": 0,
-              "unit": "errors",
+              "unit": "/min",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Record a sent token for that user/email type before or atomically with send, and skip if already sent."
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "topic",
+                "kind": "queue",
+                "label": "order.paid topic",
+                "tone": "good"
+              },
+              {
+                "id": "w",
+                "kind": "worker",
+                "label": "Receipt worker",
+                "tone": "good",
+                "cpu": 28
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "sent_receipts",
+                "tone": "good",
+                "sub": "unique event_id"
+              },
+              {
+                "id": "mail",
+                "kind": "server",
+                "label": "Email provider",
+                "tone": "good",
+                "sub": "idempotency key = event_id"
+              }
+            ],
+            "edges": [
+              {
+                "from": "topic",
+                "to": "w"
+              },
+              {
+                "from": "w",
+                "to": "db"
+              },
+              {
+                "from": "w",
+                "to": "mail"
+              }
+            ]
+          },
+          "resultTitle": "Redelivery becomes a no-op",
+          "resultBody": "The worker skips any event ID already marked sent in a unique-keyed sent_receipts table, and passes the same ID as the provider's idempotency key so a crash between send and mark is deduped at the provider. Duplicates drop from 360 to ~2/min. Cost: one DB write per event and rows kept for the redelivery window."
         },
         {
-          "id": "send-every-time",
-          "label": "Send every time",
+          "id": "commit-before-send",
+          "label": "Commit offsets before sending each email",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
@@ -1241,59 +1313,60 @@
               "tone": "bad"
             },
             {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 500,
-              "unit": "ms",
-              "tone": "bad"
+              "key": "errors",
+              "label": "Duplicate emails",
+              "value": 0,
+              "unit": "/min",
+              "tone": "good"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 42,
-              "unit": "errors",
+              "key": "missing",
+              "label": "Missing receipts",
+              "value": 90,
+              "unit": "/min",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Side effect doubled",
-          "resultBody": "The retry ran the money path again."
+          "resultTitle": "Receipts now go missing",
+          "resultBody": "Committing first turns delivery into at-most-once: every crash between commit and send silently drops a receipt, about 90 customers a minute get none, and nothing retries them."
         },
         {
-          "id": "ack-before-send",
-          "label": "Ack before send",
+          "id": "kafka-eos",
+          "label": "Enable Kafka exactly-once transactions on the worker",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 22,
+              "value": 30,
               "unit": "%",
               "tone": "bad"
             },
             {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 440,
-              "unit": "ms",
+              "key": "errors",
+              "label": "Duplicate emails",
+              "value": 350,
+              "unit": "/min",
               "tone": "bad"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 22,
-              "unit": "errors",
-              "tone": "bad"
+              "key": "missing",
+              "label": "Missing receipts",
+              "value": 0,
+              "unit": "/min",
+              "tone": "good"
             }
           ],
-          "resultTitle": "Side effect doubled",
-          "resultBody": "Ack before send and lose the email"
+          "resultTitle": "EOS stops at the broker",
+          "resultBody": "Kafka transactions make consume-and-produce atomic only for writes back into Kafka; the email send is an external side effect, so a crash after sending still redelivers the event and sends again."
         }
       ],
       "hints": [
-        "Retries will happen.",
-        "Side effects must not double.",
-        "Key the write once."
+        "The broker will redeliver; that part won't change.",
+        "The side effect happens outside Kafka, so Kafka can't dedupe it for you.",
+        "Give each event an identity the consumer and the provider can both remember."
       ],
       "nextId": null
     },
@@ -1733,16 +1806,17 @@
       "level": 14,
       "patternId": "idempotency",
       "canonical": false,
+      "reviewed": true,
       "severity": "P1",
       "xp": 50,
-      "title": "Idempotency store expires too soon",
-      "brief": "Keys live 60 seconds, but mobile retries after 3 minutes and a second order is created.",
-      "constraint": "Retry windows are longer than the TTL.",
-      "question": "How long should keys live?",
+      "title": "Duplicate rides dispatched after tunnel reconnects",
+      "brief": "Ridehop keeps booking idempotency keys in Redis with a 60 s TTL. Riders in tunnels reconnect 2-5 minutes later and the app retries; the key has expired, and 380 duplicate rides were dispatched yesterday.",
+      "constraint": "The app keeps retrying with the same key for up to 24 hours after going offline.",
+      "question": "How long, and where, must the server remember a key?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
+          "label": "Bookings",
           "value": 200,
           "unit": "req/s",
           "tone": "neutral"
@@ -1750,195 +1824,211 @@
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 20,
+          "value": 40,
           "unit": "%",
-          "tone": "warn"
-        },
-        {
-          "key": "p95",
-          "label": "p95 latency",
-          "value": 400,
-          "unit": "ms",
-          "tone": "warn"
+          "tone": "neutral"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 2,
-          "unit": "errors",
+          "label": "Duplicate rides",
+          "value": 16,
+          "unit": "/h",
           "tone": "bad"
+        },
+        {
+          "key": "mem",
+          "label": "Key storage",
+          "value": 0.1,
+          "unit": "GB",
+          "tone": "good"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "user",
+            "id": "users",
             "kind": "users",
-            "label": "Double click"
+            "label": "Rider app",
+            "sub": "retries after reconnect"
           },
           {
             "id": "api",
             "kind": "server",
-            "label": "API",
-            "tone": "warn"
+            "label": "Booking API",
+            "tone": "warn",
+            "cpu": 40
           },
           {
-            "id": "pay",
-            "kind": "server",
-            "label": "Two charges",
-            "tone": "bad"
+            "id": "keys",
+            "kind": "cache",
+            "label": "Redis keys",
+            "tone": "bad",
+            "sub": "60 s TTL"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Rides DB",
+            "tone": "warn"
           }
         ],
         "edges": [
           {
-            "from": "user",
+            "from": "users",
             "to": "api"
           },
           {
             "from": "api",
-            "to": "pay"
+            "to": "keys"
+          },
+          {
+            "from": "api",
+            "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "idempotency-key",
-          "label": "Idempotency key",
+          "id": "persist-25h",
+          "label": "Persist keys for 25 h, beyond the app's retry window",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "user",
-                "kind": "users",
-                "label": "Retry"
-              },
-              {
-                "id": "api",
-                "kind": "server",
-                "label": "API",
-                "tone": "good"
-              },
-              {
-                "id": "key",
-                "kind": "cache",
-                "label": "Idempotency key",
-                "tone": "good"
-              },
-              {
-                "id": "pay",
-                "kind": "server",
-                "label": "One charge",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "user",
-                "to": "api"
-              },
-              {
-                "from": "api",
-                "to": "key"
-              },
-              {
-                "from": "key",
-                "to": "pay"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 60,
+            "latencyP99DeltaMs": 2,
+            "complexityScore": 2,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "Covers the whole retry window, for ~5 GB of key rows and a cleanup job."
           },
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
-              "unit": "%",
-              "tone": "good"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 40,
-              "unit": "ms",
-              "tone": "good"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
-              "tone": "good"
-            }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Keep idempotency records at least as long as realistic client retry windows."
-        },
-        {
-          "id": "60-second-ttl-money",
-          "label": "60-second TTL money",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 24,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 500,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
               "value": 42,
-              "unit": "errors",
-              "tone": "bad"
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Duplicate rides",
+              "value": 0,
+              "unit": "/h",
+              "tone": "good"
+            },
+            {
+              "key": "mem",
+              "label": "Key storage",
+              "value": 5,
+              "unit": "GB",
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Side effect doubled",
-          "resultBody": "The retry ran the money path again."
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Rider app",
+                "tone": "good"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Booking API",
+                "tone": "good",
+                "cpu": 42
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Rides DB + keys",
+                "tone": "good",
+                "sub": "keys kept 25 h"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "api"
+              },
+              {
+                "from": "api",
+                "to": "db"
+              }
+            ]
+          },
+          "resultTitle": "Keys outlive every retry",
+          "resultBody": "Keys now live in a Postgres table written in the same transaction as the ride and purged after 25 hours, so a retry at minute 5 or hour 20 finds the stored response and replays it. Cost: ~17M rows a day (~5 GB) and a daily partition drop to keep the table lean."
         },
         {
-          "id": "no-persistence-keys",
-          "label": "No persistence keys",
+          "id": "retry-sooner",
+          "label": "Make the app retry within 50 seconds",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 22,
+              "value": 48,
               "unit": "%",
               "tone": "bad"
             },
             {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 440,
-              "unit": "ms",
+              "key": "errors",
+              "label": "Duplicate rides",
+              "value": 14,
+              "unit": "/h",
+              "tone": "bad"
+            },
+            {
+              "key": "mem",
+              "label": "Key storage",
+              "value": 0.1,
+              "unit": "GB",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Tunnels don't retry on schedule",
+          "resultBody": "A phone with no signal can't retry at all, so a faster backoff only adds load on healthy connections, while replays after a 3-minute reconnect still miss the 60 s key."
+        },
+        {
+          "id": "local-lru",
+          "label": "Cache keys in each API pod's local LRU",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 38,
+              "unit": "%",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 22,
-              "unit": "errors",
+              "label": "Duplicate rides",
+              "value": 30,
+              "unit": "/h",
               "tone": "bad"
+            },
+            {
+              "key": "mem",
+              "label": "Key storage",
+              "value": 0.3,
+              "unit": "GB",
+              "tone": "good"
             }
           ],
-          "resultTitle": "Side effect doubled",
-          "resultBody": "No persistence of keys"
+          "resultTitle": "The retry hits another pod",
+          "resultBody": "Local caches aren't shared: behind round-robin across 6 pods, 5 of 6 retries reach a pod that never saw the key, and duplicate rides nearly double to 30 an hour."
         }
       ],
       "hints": [
-        "Retries will happen.",
-        "Side effects must not double.",
-        "Key the write once."
+        "Compare the key's lifetime with the retry's lifetime.",
+        "A key that expires before the last retry protects nothing.",
+        "Where you store keys decides how long you can afford to keep them."
       ],
       "nextId": null
     },
@@ -2382,7 +2472,7 @@
       "xp": 50,
       "title": "Exactly-once as a slogan",
       "brief": "A team claims Kafka exactly-once, then a downstream HTTP call still fires twice.",
-      "constraint": "External side effects are outside the broker\u2019s EOS.",
+      "constraint": "External side effects are outside the broker’s EOS.",
       "question": "What still has to be designed?",
       "metricsBefore": [
         {
@@ -3229,6 +3319,279 @@
         "Retries will happen.",
         "Side effects must not double.",
         "Key the write once."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "idemp-new-01",
+      "incidentCode": "INC-014-16",
+      "level": 14,
+      "patternId": "idempotency",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 50,
+      "title": "Paid orders never reach the warehouse",
+      "brief": "Stockr's order service commits each order to Postgres, then publishes order.created to Kafka. When the publish fails or the pod dies in between, 0.3% of 50,000 daily orders never ship.",
+      "constraint": "Postgres and Kafka can't share one transaction; the warehouse already dedupes by order ID.",
+      "question": "How do the order write and its event succeed or fail together?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Orders",
+          "value": 35,
+          "unit": "/min",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 30,
+          "unit": "%",
+          "tone": "neutral"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 110,
+          "unit": "ms",
+          "tone": "neutral"
+        },
+        {
+          "key": "errors",
+          "label": "Lost or phantom events",
+          "value": 150,
+          "unit": "/day",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Shoppers"
+          },
+          {
+            "id": "svc",
+            "kind": "server",
+            "label": "Order service",
+            "tone": "warn",
+            "cpu": 30,
+            "sub": "commit, then publish"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres orders",
+            "tone": "neutral"
+          },
+          {
+            "id": "k",
+            "kind": "queue",
+            "label": "Kafka order.created",
+            "tone": "bad",
+            "sub": "events missing"
+          },
+          {
+            "id": "wh",
+            "kind": "worker",
+            "label": "Warehouse consumer",
+            "tone": "warn"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "svc"
+          },
+          {
+            "from": "svc",
+            "to": "db"
+          },
+          {
+            "from": "svc",
+            "to": "k"
+          },
+          {
+            "from": "k",
+            "to": "wh"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "outbox",
+          "label": "Write the event to an outbox table in the same transaction",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 80,
+            "latencyP99DeltaMs": 5,
+            "complexityScore": 3,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Atomic record of intent; delivery becomes at-least-once with a short relay delay."
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 32,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 115,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Lost or phantom events",
+              "value": 0,
+              "unit": "/day",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Shoppers",
+                "tone": "good"
+              },
+              {
+                "id": "svc",
+                "kind": "server",
+                "label": "Order service",
+                "tone": "good",
+                "cpu": 32,
+                "sub": "one transaction"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres orders + outbox",
+                "tone": "good"
+              },
+              {
+                "id": "relay",
+                "kind": "worker",
+                "label": "Outbox relay (CDC)",
+                "tone": "good"
+              },
+              {
+                "id": "k",
+                "kind": "queue",
+                "label": "Kafka order.created",
+                "tone": "good"
+              },
+              {
+                "id": "wh",
+                "kind": "worker",
+                "label": "Warehouse consumer",
+                "tone": "good",
+                "sub": "dedupe by order ID"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "svc"
+              },
+              {
+                "from": "svc",
+                "to": "db"
+              },
+              {
+                "from": "db",
+                "to": "relay"
+              },
+              {
+                "from": "relay",
+                "to": "k"
+              },
+              {
+                "from": "k",
+                "to": "wh"
+              }
+            ]
+          },
+          "resultTitle": "Event commits with the order",
+          "resultBody": "The order row and an outbox row commit atomically; a relay (Debezium CDC or a poller) publishes outbox rows to Kafka and retries until acknowledged. Delivery is at-least-once, which the warehouse's order-ID dedupe absorbs. Cost: an extra write per order, a relay to operate, and ~100-500 ms of publish delay."
+        },
+        {
+          "id": "publish-first",
+          "label": "Publish to Kafka first, then commit the order",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 140,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Lost or phantom events",
+              "value": 150,
+              "unit": "/day",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Phantom orders ship",
+          "resultBody": "The failure just flips: when the commit fails after the publish, the warehouse picks and ships orders that don't exist in Postgres, about 150 phantom shipments a day."
+        },
+        {
+          "id": "in-process-retry",
+          "label": "Retry the Kafka publish three times in-process",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 31,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 130,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Lost or phantom events",
+              "value": 60,
+              "unit": "/day",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Crashes still lose events",
+          "resultBody": "Retries cover brief broker blips, but a pod killed right after the commit loses its in-memory retry, so deploys and OOM kills still drop ~60 orders a day."
+        }
+      ],
+      "hints": [
+        "Two systems, two commits, one crash window between them.",
+        "Anything held only in process memory dies with the pod.",
+        "Make the event part of the same database transaction as the order."
       ],
       "nextId": null
     }

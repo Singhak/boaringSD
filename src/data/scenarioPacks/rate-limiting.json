@@ -16,7 +16,7 @@
       "severity": "P0",
       "xp": 150,
       "title": "One client floods the public API",
-      "brief": "A single API key sends 20,000 req/s and the shared cluster\u2019s p99 jumps from 80ms to 4s.",
+      "brief": "A single API key sends 20,000 req/s and the shared cluster’s p99 jumps from 80ms to 4s.",
       "constraint": "Other tenants are healthy but share the same edge.",
       "question": "What protects the majority of clients?",
       "metricsBefore": [
@@ -163,8 +163,8 @@
               "tone": "bad"
             }
           ],
-          "resultTitle": "Noisy neighbor wins",
-          "resultBody": "One caller still consumes the fleet."
+          "resultTitle": "Fleet grows, flood keeps pace",
+          "resultBody": "New servers buy a few minutes, but nothing stops the single key's 20,000 req/s from filling them too; CPU stays at 100% and p95 reaches 1.1 s for every tenant."
         },
         {
           "id": "longer-timeouts",
@@ -194,8 +194,8 @@
               "tone": "bad"
             }
           ],
-          "resultTitle": "Noisy neighbor wins",
-          "resultBody": "Increase timeouts for everyone"
+          "resultTitle": "Requests just wait longer",
+          "resultBody": "Longer timeouts keep queued requests alive, so the flood holds even more connections; other tenants now wait about 1 s instead of failing fast, and CPU stays pegged."
         }
       ],
       "hints": [
@@ -411,195 +411,194 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Burst vs sustained traffic",
-      "brief": "A mobile app retries a page load and 40 requests arrive in 200ms, then traffic is quiet.",
-      "constraint": "Short bursts are normal; sustained abuse is not.",
-      "question": "Which limiter shape fits?",
+      "title": "Rate limit lets double traffic through at :00",
+      "brief": "SMSly allows 600 messages per minute per account with a fixed window. A bulk sender fires 600 at 12:00:59 and 600 at 12:01:00; the carrier link, rated 20 msg/s, drops 40%.",
+      "constraint": "Customers pay for 600/min on average and need short bursts of up to 50 messages.",
+      "question": "Which limiter stops the window-edge double burst but still allows small bursts?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 200,
-          "unit": "req/s",
+          "label": "Peak send rate",
+          "value": 600,
+          "unit": "msg/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 85,
+          "value": 88,
           "unit": "%",
           "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 900,
+          "value": 3200,
           "unit": "ms",
           "tone": "bad"
         },
         {
-          "key": "errors",
-          "label": "Errors",
-          "value": 0,
-          "unit": "errors",
-          "tone": "neutral"
+          "key": "drops",
+          "label": "Carrier drops",
+          "value": 40,
+          "unit": "%",
+          "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "bot",
+            "id": "senders",
             "kind": "users",
-            "label": "Noisy client",
-            "tone": "bad"
+            "label": "Bulk sender"
           },
           {
             "id": "api",
             "kind": "server",
-            "label": "API",
+            "label": "Messaging API",
+            "cpu": 45,
+            "sub": "fixed 60 s window"
+          },
+          {
+            "id": "q",
+            "kind": "queue",
+            "label": "Send queue"
+          },
+          {
+            "id": "carrier",
+            "kind": "server",
+            "label": "Carrier link",
+            "cpu": 88,
             "tone": "bad",
-            "cpu": 96
+            "sub": "rated 20 msg/s"
           }
         ],
         "edges": [
           {
-            "from": "bot",
+            "from": "senders",
             "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "q"
+          },
+          {
+            "from": "q",
+            "to": "carrier"
           }
         ]
       },
       "choices": [
         {
-          "id": "rate-limit",
-          "label": "Rate limit",
+          "id": "token-bucket",
+          "label": "Token bucket refilling 10/s with capacity 50",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "bot",
-                "kind": "users",
-                "label": "Clients"
-              },
-              {
-                "id": "lim",
-                "kind": "lb",
-                "label": "Rate limiter",
-                "tone": "good"
-              },
-              {
-                "id": "api",
-                "kind": "server",
-                "label": "API",
-                "tone": "good",
-                "cpu": 32
-              }
-            ],
-            "edges": [
-              {
-                "from": "bot",
-                "to": "lim"
-              },
-              {
-                "from": "lim",
-                "to": "api"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 2,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "Smooth rate with an explicit burst allowance; big dumps take longer."
           },
+          "resultTitle": "Bursts capped at 50",
+          "resultBody": "The bucket refills 10 tokens/s (600/min) and holds at most 50, so the worst burst is 50 messages then a steady 10/s; carrier drops fall from 40% to 0.5%. Cost: the 1,200-message dump now takes about 2 minutes, and each key stores a count and a timestamp.",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 28,
+              "value": 52,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 60,
+              "value": 180,
               "unit": "ms",
               "tone": "good"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
+              "key": "drops",
+              "label": "Carrier drops",
+              "value": 0.5,
+              "unit": "%",
               "tone": "good"
             }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Token bucket or leaky bucket that allows bursts but caps sustained rate."
+          ]
         },
         {
-          "id": "hard-1-request",
-          "label": "Hard 1 request",
+          "id": "smaller-window",
+          "label": "Shrink the fixed window to 100 messages per 10 s",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
+          "resultTitle": "Smaller window, smaller double burst",
+          "resultBody": "The edge burst shrinks to 200 messages in about 2 s, 100 msg/s, still five times the carrier's 20 msg/s rating; drops only fall to 22%.",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 89,
+              "value": 80,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 1125,
+              "value": 1400,
               "unit": "ms",
               "tone": "bad"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 40,
-              "unit": "errors",
+              "key": "drops",
+              "label": "Carrier drops",
+              "value": 22,
+              "unit": "%",
               "tone": "bad"
             }
-          ],
-          "resultTitle": "Noisy neighbor wins",
-          "resultBody": "One caller still consumes the fleet."
+          ]
         },
         {
-          "id": "unlimited-retries",
-          "label": "Unlimited retries",
+          "id": "retry-next-minute",
+          "label": "Queue rejected messages and resend them each minute",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
+          "resultTitle": "The backlog flushes in lockstep",
+          "resultBody": "Rejected messages pile up and are resent at the top of each minute, syncing the backlog into the same edge spike; drops stay at 38% and delivery lag grows to 4 minutes.",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 87,
+              "value": 90,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 990,
+              "value": 240000,
               "unit": "ms",
               "tone": "bad"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 20,
-              "unit": "errors",
+              "key": "drops",
+              "label": "Carrier drops",
+              "value": 38,
+              "unit": "%",
               "tone": "bad"
             }
-          ],
-          "resultTitle": "Noisy neighbor wins",
-          "resultBody": "Unlimited retries"
+          ]
         }
       ],
       "hints": [
-        "One caller is starving the rest.",
-        "Unbounded QPS is the incident.",
-        "Cap by key at the edge."
+        "The per-minute total is never exceeded.",
+        "Two full windows back to back put 1,200 messages into about 2 seconds.",
+        "Limit the rate continuously, with an explicit cap on burst size."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "rl-04",
@@ -807,195 +806,194 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Distributed counters disagree",
-      "brief": "Each app instance counts locally and the true rate is 8x the intended limit.",
-      "constraint": "Instances do not share limiter state.",
-      "question": "What makes the limit correct?",
+      "title": "Limit is 100 req/s, partner gets 2,400",
+      "brief": "PayGrid caps each partner at 100 req/s, but the counter lives in memory on each of 24 gateway pods. One partner spreads evenly and gets 2,400 req/s through to the ledger.",
+      "constraint": "Pods autoscale between 12 and 40; the limit must hold however many are running.",
+      "question": "Where should the counter live so the limit is actually global?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 20000,
+          "label": "Partner traffic",
+          "value": 2400,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 85,
+          "value": 94,
           "unit": "%",
           "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 900,
+          "value": 1800,
           "unit": "ms",
           "tone": "bad"
         },
         {
-          "key": "errors",
-          "label": "Errors",
-          "value": 0,
-          "unit": "errors",
-          "tone": "neutral"
+          "key": "over",
+          "label": "Over contracted limit",
+          "value": 24,
+          "unit": "x",
+          "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "bot",
+            "id": "partner",
             "kind": "users",
-            "label": "Noisy client",
+            "label": "Partner API key",
             "tone": "bad"
           },
           {
-            "id": "api",
+            "id": "lb",
+            "kind": "lb",
+            "label": "Load balancer"
+          },
+          {
+            "id": "g1",
             "kind": "server",
-            "label": "API",
-            "tone": "bad",
-            "cpu": 96
+            "label": "Gateway pods x24",
+            "cpu": 40,
+            "sub": "local counters"
+          },
+          {
+            "id": "ledger",
+            "kind": "db",
+            "label": "Ledger DB",
+            "cpu": 94,
+            "tone": "bad"
           }
         ],
         "edges": [
           {
-            "from": "bot",
-            "to": "api"
+            "from": "partner",
+            "to": "lb"
+          },
+          {
+            "from": "lb",
+            "to": "g1"
+          },
+          {
+            "from": "g1",
+            "to": "ledger"
           }
         ]
       },
       "choices": [
         {
-          "id": "rate-limit",
-          "label": "Rate limit",
+          "id": "shared-redis-counter",
+          "label": "Atomic per-key counter in shared Redis for all pods",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "bot",
-                "kind": "users",
-                "label": "Clients"
-              },
-              {
-                "id": "lim",
-                "kind": "lb",
-                "label": "Rate limiter",
-                "tone": "good"
-              },
-              {
-                "id": "api",
-                "kind": "server",
-                "label": "API",
-                "tone": "good",
-                "cpu": 32
-              }
-            ],
-            "edges": [
-              {
-                "from": "bot",
-                "to": "lim"
-              },
-              {
-                "from": "lim",
-                "to": "api"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 400,
+            "latencyP99DeltaMs": 1,
+            "complexityScore": 2,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "Global limit at the cost of a shared dependency on the hot path."
           },
+          "resultTitle": "One counter, one limit",
+          "resultBody": "Every pod runs the same atomic INCR-with-expiry script on partner:{id}, so the 100 req/s cap holds at 24 or 40 pods and ledger CPU drops to 38%. Cost: a ~0.5 ms Redis round-trip per request, and a fail-open or fail-closed decision for Redis outages.",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 28,
+              "value": 38,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 60,
+              "value": 90,
               "unit": "ms",
               "tone": "good"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
+              "key": "over",
+              "label": "Over contracted limit",
+              "value": 1,
+              "unit": "x",
               "tone": "good"
             }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "A shared rate-limit store or a gateway that enforces the quota centrally."
+          ]
         },
         {
-          "id": "per-process-counters-no",
-          "label": "Per-process counters no",
+          "id": "divide-by-pods",
+          "label": "Divide the limit by pod count, 4 req/s each",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
+          "resultTitle": "Breaks every time pods scale",
+          "resultBody": "At 24 pods it roughly holds, but autoscaling to 40 lets 160 req/s through, and uneven balancing throttles the partner at 60 req/s on busy pods while others sit idle.",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 89,
+              "value": 52,
               "unit": "%",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 1125,
+              "value": 240,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "good"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 40,
-              "unit": "errors",
-              "tone": "bad"
+              "key": "over",
+              "label": "Over contracted limit",
+              "value": 1.6,
+              "unit": "x",
+              "tone": "warn"
             }
-          ],
-          "resultTitle": "Noisy neighbor wins",
-          "resultBody": "One caller still consumes the fleet."
+          ]
         },
         {
-          "id": "random-429s",
-          "label": "Random 429s",
+          "id": "sticky-key",
+          "label": "Sticky-route each API key to a single gateway pod",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
+          "resultTitle": "One pod becomes the hotspot",
+          "resultBody": "The limit holds until the busiest partners pile onto a few pods; one hits 97% CPU, and every pod restart wipes its in-memory counters, briefly letting 2,400 req/s through again.",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 87,
+              "value": 97,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 990,
+              "value": 700,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 20,
-              "unit": "errors",
+              "key": "over",
+              "label": "Over contracted limit",
+              "value": 3,
+              "unit": "x",
               "tone": "bad"
             }
-          ],
-          "resultTitle": "Noisy neighbor wins",
-          "resultBody": "Random 429s"
+          ]
         }
       ],
       "hints": [
-        "One caller is starving the rest.",
-        "Unbounded QPS is the incident.",
-        "Cap by key at the edge."
+        "Each pod enforces the limit correctly on its own.",
+        "24 pods each allowing 100 req/s is 2,400 req/s.",
+        "The pods need to agree on one count per key."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "rl-06",
@@ -1005,195 +1003,184 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "429 with no Retry-After",
-      "brief": "Clients retry immediately after 429 and the limiter never cools down.",
-      "constraint": "Honest clients will follow standard headers.",
-      "question": "What should the API return?",
+      "title": "Throttled clients all come back at once",
+      "brief": "Mapify returns 429 with no Retry-After, and its SDK retries immediately up to 5 times. When 8k req/s gets throttled, retries push the gateway to 40k req/s.",
+      "constraint": "You own the server and ship SDK updates; there is no extra capacity this week.",
+      "question": "What turns rejected requests into fewer requests, not more?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 429,
+          "value": 40000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 85,
+          "value": 91,
           "unit": "%",
           "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 900,
+          "value": 1300,
           "unit": "ms",
           "tone": "bad"
         },
         {
-          "key": "errors",
-          "label": "Errors",
-          "value": 0,
-          "unit": "errors",
-          "tone": "neutral"
+          "key": "rejected",
+          "label": "Rejected",
+          "value": 72,
+          "unit": "%",
+          "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "bot",
+            "id": "sdk",
             "kind": "users",
-            "label": "Noisy client",
+            "label": "SDK clients",
+            "tone": "bad"
+          },
+          {
+            "id": "gw",
+            "kind": "lb",
+            "label": "API gateway",
+            "cpu": 91,
             "tone": "bad"
           },
           {
             "id": "api",
             "kind": "server",
-            "label": "API",
-            "tone": "bad",
-            "cpu": 96
+            "label": "Tiles API",
+            "cpu": 60
           }
         ],
         "edges": [
           {
-            "from": "bot",
+            "from": "sdk",
+            "to": "gw"
+          },
+          {
+            "from": "gw",
             "to": "api"
           }
         ]
       },
       "choices": [
         {
-          "id": "honor-429",
-          "label": "Honor 429",
+          "id": "retry-after-backoff",
+          "label": "Retry-After header plus SDK backoff with jitter",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "bot",
-                "kind": "users",
-                "label": "Clients"
-              },
-              {
-                "id": "lim",
-                "kind": "lb",
-                "label": "Rate limiter",
-                "tone": "good"
-              },
-              {
-                "id": "api",
-                "kind": "server",
-                "label": "API",
-                "tone": "good",
-                "cpu": 32
-              }
-            ],
-            "edges": [
-              {
-                "from": "bot",
-                "to": "lim"
-              },
-              {
-                "from": "lim",
-                "to": "api"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 2,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Server hints plus client discipline; depends on SDK adoption."
           },
+          "resultTitle": "Retries spread out and fade",
+          "resultBody": "Each 429 now says Retry-After: 2, and the SDK waits 2, 4, then 8 s with full jitter, so retry load drops from 32k to about 3k req/s and rejections fall from 72% to 9%. Cost: throttled calls finish seconds later, and old SDK versions keep hammering until upgraded.",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 28,
+              "value": 48,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 60,
+              "value": 140,
               "unit": "ms",
               "tone": "good"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
+              "key": "rejected",
+              "label": "Rejected",
+              "value": 9,
+              "unit": "%",
               "tone": "good"
             }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "429 plus Retry-After (or equivalent) so clients back off predictably."
+          ]
         },
         {
-          "id": "200-empty-body",
-          "label": "200 empty body",
+          "id": "return-503",
+          "label": "Return 503 instead of 429 for throttled calls",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
+          "resultTitle": "Clients retry 503 even harder",
+          "resultBody": "Many HTTP clients and proxies treat 503 as a transient server fault and retry it automatically, so gateway traffic climbs to 46k req/s and dashboards now report an outage.",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 89,
+              "value": 97,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 1125,
+              "value": 1900,
               "unit": "ms",
               "tone": "bad"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 40,
-              "unit": "errors",
+              "key": "rejected",
+              "label": "Rejected",
+              "value": 78,
+              "unit": "%",
               "tone": "bad"
             }
-          ],
-          "resultTitle": "Noisy neighbor wins",
-          "resultBody": "One caller still consumes the fleet."
+          ]
         },
         {
-          "id": "connection-reset-no",
-          "label": "Connection reset no",
+          "id": "one-retry",
+          "label": "Cut the SDK retry cap from 5 to 1",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
+          "resultTitle": "Fewer retries, same stampede",
+          "resultBody": "Retry volume shrinks, but the single retry still fires instantly and in lockstep, so each throttle wave doubles traffic; rejections only fall from 72% to 55%.",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 87,
+              "value": 85,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 990,
+              "value": 900,
               "unit": "ms",
               "tone": "bad"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 20,
-              "unit": "errors",
+              "key": "rejected",
+              "label": "Rejected",
+              "value": 55,
+              "unit": "%",
               "tone": "bad"
             }
-          ],
-          "resultTitle": "Noisy neighbor wins",
-          "resultBody": "Connection reset with no status"
+          ]
         }
       ],
       "hints": [
-        "One caller is starving the rest.",
-        "Unbounded QPS is the incident.",
-        "Cap by key at the edge."
+        "Most of the 40k req/s are not new requests.",
+        "Clients retry instantly and all at the same moment.",
+        "Tell clients when to come back, and make them spread out."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "rl-07",
@@ -1203,195 +1190,203 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Partner SLA vs noisy neighbor",
-      "brief": "A gold partner is starved because a free-tier integration shares one global QPS bucket.",
-      "constraint": "Tiers have different contracts.",
-      "question": "How should quotas be modeled?",
+      "title": "Gold partner gets 429s while free tier floods",
+      "brief": "Formly's API has one cluster-wide limit of 50k req/s. A free-tier scraping wave takes 46k of it, and the gold partner's 3k req/s of SLA traffic gets 429s 35% of the time.",
+      "constraint": "Gold contracts guarantee 5k req/s; the free tier must keep working, just slower.",
+      "question": "What guarantees each tier its share of the 50k req/s capacity?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 20000,
+          "value": 50000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 85,
+          "value": 82,
           "unit": "%",
-          "tone": "bad"
+          "tone": "warn"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 900,
+          "value": 640,
           "unit": "ms",
-          "tone": "bad"
+          "tone": "warn"
         },
         {
-          "key": "errors",
-          "label": "Errors",
-          "value": 0,
-          "unit": "errors",
-          "tone": "neutral"
+          "key": "gold429",
+          "label": "Gold requests rejected",
+          "value": 35,
+          "unit": "%",
+          "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "bot",
+            "id": "free",
             "kind": "users",
-            "label": "Noisy client",
+            "label": "Free-tier scrapers",
             "tone": "bad"
+          },
+          {
+            "id": "gold",
+            "kind": "users",
+            "label": "Gold partner",
+            "tone": "warn"
+          },
+          {
+            "id": "gw",
+            "kind": "lb",
+            "label": "Gateway (one global limit)"
           },
           {
             "id": "api",
             "kind": "server",
-            "label": "API",
-            "tone": "bad",
-            "cpu": 96
+            "label": "Form API",
+            "cpu": 82,
+            "tone": "warn"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Submissions DB",
+            "cpu": 61
           }
         ],
         "edges": [
           {
-            "from": "bot",
+            "from": "free",
+            "to": "gw"
+          },
+          {
+            "from": "gold",
+            "to": "gw"
+          },
+          {
+            "from": "gw",
             "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "rate-limit",
-          "label": "Rate limit",
+          "id": "per-tenant-buckets",
+          "label": "Per-tenant token buckets with a reserved gold quota",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "bot",
-                "kind": "users",
-                "label": "Clients"
-              },
-              {
-                "id": "lim",
-                "kind": "lb",
-                "label": "Rate limiter",
-                "tone": "good"
-              },
-              {
-                "id": "api",
-                "kind": "server",
-                "label": "API",
-                "tone": "good",
-                "cpu": 32
-              }
-            ],
-            "edges": [
-              {
-                "from": "bot",
-                "to": "lim"
-              },
-              {
-                "from": "lim",
-                "to": "api"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 1,
+            "complexityScore": 3,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "Isolation between tenants; quotas must be sized and maintained."
           },
+          "resultTitle": "Gold gets its lane back",
+          "resultBody": "Gold keys draw from a reserved 5k req/s bucket, and free keys share the other 45k with a 200 req/s per-key cap; gold rejections fall from 35% to 0.2%. Cost: a tier lookup on every request, per-contract quotas to maintain, and scrapers now see 429s.",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 28,
+              "value": 78,
               "unit": "%",
-              "tone": "good"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 60,
+              "value": 120,
               "unit": "ms",
               "tone": "good"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
+              "key": "gold429",
+              "label": "Gold requests rejected",
+              "value": 0.2,
+              "unit": "%",
               "tone": "good"
             }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Separate limit buckets per tenant and plan, not one global counter."
+          ]
         },
         {
-          "id": "one-cluster-wide-qps",
-          "label": "One cluster-wide QPS",
+          "id": "raise-global",
+          "label": "Raise the cluster-wide limit to 80k req/s",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
+          "resultTitle": "Scrapers expand to fill it",
+          "resultBody": "The free-tier wave grows into the new headroom, API CPU hits 99% and p95 climbs to 2.1 s; gold is rarely 429ed now, but 20% of its calls time out instead.",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 89,
+              "value": 99,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 1125,
+              "value": 2100,
               "unit": "ms",
               "tone": "bad"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 40,
-              "unit": "errors",
+              "key": "gold429",
+              "label": "Gold requests rejected",
+              "value": 5,
+              "unit": "%",
               "tone": "bad"
             }
-          ],
-          "resultTitle": "Noisy neighbor wins",
-          "resultBody": "One caller still consumes the fleet."
+          ]
         },
         {
-          "id": "unlimited-gold-traffic",
-          "label": "Unlimited gold traffic",
+          "id": "priority-queue",
+          "label": "Prioritize gold requests in the API's work queue",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
+          "resultTitle": "Priority after capacity is spent",
+          "resultBody": "Requests are reordered only after the gateway admits them, and the 46k free req/s still saturate workers; gold waits less, but 18% of its calls still miss the 1 s deadline.",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 87,
+              "value": 84,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 990,
+              "value": 900,
               "unit": "ms",
               "tone": "bad"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 20,
-              "unit": "errors",
+              "key": "gold429",
+              "label": "Gold requests rejected",
+              "value": 18,
+              "unit": "%",
               "tone": "bad"
             }
-          ],
-          "resultTitle": "Noisy neighbor wins",
-          "resultBody": "Unlimited gold traffic with no isolation"
+          ]
         }
       ],
       "hints": [
-        "One caller is starving the rest.",
-        "Unbounded QPS is the incident.",
-        "Cap by key at the edge."
+        "A limit exists; everyone just shares it.",
+        "One tier is spending capacity promised to another.",
+        "Give each tenant its own budget instead of one global one."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "rl-08",
@@ -3779,7 +3774,7 @@
       "xp": 50,
       "title": "Cron from every pod",
       "brief": "Each replica runs the same cron and 30 instances hit a partner API at 00:00.",
-      "constraint": "The partner\u2019s rate limit is per account.",
+      "constraint": "The partner’s rate limit is per account.",
       "question": "What prevents the stampede?",
       "metricsBefore": [
         {
@@ -3964,6 +3959,212 @@
         "One caller is starving the rest.",
         "Unbounded QPS is the incident.",
         "Cap by key at the edge."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "rl-new-01",
+      "incidentCode": "INC-009-21",
+      "level": 9,
+      "patternId": "rate-limiting",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 50,
+      "title": "Rejected requests still melt the session database",
+      "brief": "StreamBox's limiter runs inside the video API, after session lookup. A credential-stuffing botnet sends 90k req/s; 87% get 429, but each still costs a session-DB query.",
+      "constraint": "Legitimate traffic is 12k req/s, and the session DB cannot be scaled up this quarter.",
+      "question": "Where should the throttle run so rejected traffic is cheap?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 90000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 97,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 2400,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "rejected",
+          "label": "429 responses",
+          "value": 87,
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "bots",
+            "kind": "users",
+            "label": "Botnet + viewers",
+            "tone": "bad"
+          },
+          {
+            "id": "edge",
+            "kind": "cdn",
+            "label": "Edge"
+          },
+          {
+            "id": "gw",
+            "kind": "lb",
+            "label": "Origin gateway"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Video API",
+            "cpu": 70,
+            "sub": "limiter here"
+          },
+          {
+            "id": "sess",
+            "kind": "db",
+            "label": "Session DB",
+            "cpu": 97,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "bots",
+            "to": "edge"
+          },
+          {
+            "from": "edge",
+            "to": "gw"
+          },
+          {
+            "from": "gw",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "sess"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "edge-buckets",
+          "label": "Per-IP and per-key token buckets at the edge",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 600,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 2,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Cheap coarse rejection at the edge, fine-grained rules stay in the service."
+          },
+          "resultTitle": "Bots stopped before any lookup",
+          "resultBody": "The edge now rejects about 78k abusive req/s before they reach the origin or the session DB, so DB CPU drops from 97% to 31%. Cost: the edge only knows IPs and API keys, so per-user rules still need a finer limiter inside the API.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 31,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 110,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "rejected",
+              "label": "429 responses",
+              "value": 3,
+              "unit": "%",
+              "tone": "good"
+            }
+          ]
+        },
+        {
+          "id": "cache-sessions",
+          "label": "Cache session lookups in the API for 60 s",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "retry": true,
+          "resultTitle": "Cache misses on fresh junk",
+          "resultBody": "The botnet cycles random credentials, so nearly every lookup misses the cache; DB CPU only falls to 91%, and revoked sessions now stay valid for up to 60 s.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 91,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1900,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "rejected",
+              "label": "429 responses",
+              "value": 87,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ]
+        },
+        {
+          "id": "stricter-api-limit",
+          "label": "Lower the API limiter from 100 to 20 req/s",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "resultTitle": "Stricter, but still after lookup",
+          "resultBody": "More requests get 429, but every one is still rejected after its session query; DB CPU stays at 96%, and legitimate households sharing an IP are now throttled too.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 96,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2300,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "rejected",
+              "label": "429 responses",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ]
+        }
+      ],
+      "hints": [
+        "The limiter is doing its job: most requests are rejected.",
+        "Every rejection still pays for a database query first.",
+        "Move the rejection ahead of the expensive work."
       ],
       "nextId": null
     }
