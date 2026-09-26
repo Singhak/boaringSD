@@ -1,0 +1,1091 @@
+{
+  "version": 2,
+  "patternId": "consensus-quorums",
+  "patternName": "Consensus & Quorums",
+  "level": 17,
+  "phase": "Depth",
+  "canonicalId": "cq-01",
+  "nextCanonicalId": null,
+  "incidents": [
+    {
+      "id": "cq-01",
+      "incidentCode": "INC-017",
+      "level": 17,
+      "patternId": "consensus-quorums",
+      "canonical": true,
+      "severity": "P0",
+      "xp": 150,
+      "title": "Two leaders accept writes",
+      "brief": "A network blip isolates node A. Nodes B and C elect B, but A keeps accepting writes as leader. Orders now conflict.",
+      "constraint": "Only one node may accept writes at a time.",
+      "question": "What stops the isolated node from acting as leader?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 18000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 88,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 350,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 640,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "c1",
+            "kind": "server",
+            "label": "Node A (leader)",
+            "cpu": 88,
+            "tone": "bad"
+          },
+          {
+            "id": "c2",
+            "kind": "server",
+            "label": "Node B",
+            "cpu": 30
+          },
+          {
+            "id": "c3",
+            "kind": "server",
+            "label": "Node C",
+            "cpu": 30
+          }
+        ],
+        "edges": [
+          {
+            "from": "c1",
+            "to": "c2"
+          },
+          {
+            "from": "c1",
+            "to": "c3"
+          },
+          {
+            "from": "c2",
+            "to": "c3"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "majority-lease",
+          "label": "Require majority acks per write so the minority node can't commit",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 53,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 122,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Only one side can commit",
+          "resultBody": "Node A cannot reach a majority, so its writes never commit and clients retry against B; the higher term makes A step down when it rejoins."
+        },
+        {
+          "id": "faster-heartbeat",
+          "label": "Send heartbeats every 10 ms so failures are noticed faster",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 93,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 455,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 896,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Faster detection, same split brain",
+          "resultBody": "Quicker heartbeats shorten the election, but the isolated old leader still believes it leads and keeps accepting writes.",
+          "retry": true
+        },
+        {
+          "id": "clock-leader",
+          "label": "Pick the leader as the node with the most accurate wall clock",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 490,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 960,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Clocks don't settle elections",
+          "resultBody": "Clock accuracy says nothing about which nodes can talk to each other; A can still keep accepting writes nobody else sees.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "Which side of the split has more nodes?",
+        "A write is safe only when most nodes have it.",
+        "Terms tell a stale leader to step down."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "cq-02",
+      "incidentCode": "INC-017",
+      "level": 17,
+      "patternId": "consensus-quorums",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 120,
+      "title": "Four-node cluster stalls",
+      "brief": "The team grew the metadata cluster from 3 to 4 nodes for safety. A 2-2 network split froze all writes for 5 minutes.",
+      "constraint": "The cluster must survive any single rack failure.",
+      "question": "What cluster size should they run?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 9000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 35,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 5000,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 900,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "r1",
+            "kind": "server",
+            "label": "Rack 1 · 2 nodes",
+            "cpu": 35,
+            "tone": "bad"
+          },
+          {
+            "id": "r2",
+            "kind": "server",
+            "label": "Rack 2 · 2 nodes",
+            "cpu": 34,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "r1",
+            "to": "r2"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "odd-five",
+          "label": "Run five nodes across three racks so any rack can fail",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 21,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1750,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Majority survives a rack",
+          "resultBody": "Five nodes need three for a majority; losing any one rack of at most two nodes still leaves three, so writes continue."
+        },
+        {
+          "id": "four-tiebreak",
+          "label": "Keep four nodes and let the lowest node ID win a tie",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 40,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 6500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1260,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Ties break into split brain",
+          "resultBody": "If each half believes it holds the lowest ID, or the tie rule reads stale membership, both sides can lead; majorities exist to avoid tie rules.",
+          "retry": true
+        },
+        {
+          "id": "two-nodes",
+          "label": "Drop to two nodes so the cluster has fewer parts to fail",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 41,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 7000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1350,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Any failure stops writes",
+          "resultBody": "A two-node cluster needs both nodes for a majority, so losing either one halts every write.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "How many nodes form a majority of four?",
+        "Even sizes add cost without adding tolerance.",
+        "Spread an odd count across failure domains."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "cq-03",
+      "incidentCode": "INC-017",
+      "level": 17,
+      "patternId": "consensus-quorums",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 120,
+      "title": "Reads miss acknowledged writes",
+      "brief": "A replicated store uses N=3, W=1, R=1. Users occasionally write a setting and read back the old value.",
+      "constraint": "Reads must see the latest acknowledged write.",
+      "question": "Which quorum settings guarantee that?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 26000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 58,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 45,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 310,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Clients"
+          },
+          {
+            "id": "r1",
+            "kind": "db",
+            "label": "Replica 1",
+            "cpu": 58,
+            "tone": "warn"
+          },
+          {
+            "id": "r2",
+            "kind": "db",
+            "label": "Replica 2",
+            "cpu": 30
+          },
+          {
+            "id": "r3",
+            "kind": "db",
+            "label": "Replica 3",
+            "cpu": 30
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "r1"
+          },
+          {
+            "from": "users",
+            "to": "r2"
+          },
+          {
+            "from": "users",
+            "to": "r3"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "w2r2",
+          "label": "Use W=2 and R=2 so every read set overlaps the write set",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 35,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 20,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Read and write sets overlap",
+          "resultBody": "With R + W > N, any two replicas you read share at least one with the two that acked the write, so the newest value is always seen."
+        },
+        {
+          "id": "w1r3",
+          "label": "Keep W=1 but raise R to 2 on the client's retry path",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 63,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 58,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 434,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Overlap isn't guaranteed",
+          "resultBody": "R=2 with W=1 gives R + W = 3, not more than N, so both replicas read can still miss the single replica that took the write.",
+          "retry": true
+        },
+        {
+          "id": "w3r0",
+          "label": "Write to all three replicas asynchronously after acking W=1",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 64,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 63,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 465,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "The ack came before the copies",
+          "resultBody": "Async fan-out still acks after one replica, so a read that lands on another replica before the copy arrives sees the old value.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "When must a read set share a node with a write set?",
+        "Compare R + W with N.",
+        "Overlap guarantees you see the latest write."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "cq-04",
+      "incidentCode": "INC-017",
+      "level": 17,
+      "patternId": "consensus-quorums",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 120,
+      "title": "Stale leader writes after pause",
+      "brief": "A 20-second GC pause freezes the lock holder. It wakes up, still believes it holds the lease, and overwrites a file another worker now owns.",
+      "constraint": "Only the current lock holder may write to storage.",
+      "question": "What prevents the paused process from corrupting data?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 4000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 91,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 800,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 150,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "w1",
+            "kind": "worker",
+            "label": "Worker 1 (paused)",
+            "cpu": 91,
+            "tone": "bad"
+          },
+          {
+            "id": "w2",
+            "kind": "worker",
+            "label": "Worker 2 (new holder)",
+            "cpu": 40
+          },
+          {
+            "id": "store",
+            "kind": "db",
+            "label": "Object storage",
+            "cpu": 30
+          }
+        ],
+        "edges": [
+          {
+            "from": "w1",
+            "to": "store"
+          },
+          {
+            "from": "w2",
+            "to": "store"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "fencing-token",
+          "label": "Issue a rising fencing token and have storage reject older ones",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 55,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 280,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Old holder fenced off",
+          "resultBody": "Worker 2 got token 34 and Worker 1 still holds 33, so storage refuses the stale write even though Worker 1 thinks its lease is valid."
+        },
+        {
+          "id": "shorter-lease",
+          "label": "Shorten the lease from 30 s to 5 s so it expires sooner",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 96,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1040,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 210,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Pauses outlast any lease",
+          "resultBody": "A 20 s pause outlives a 5 s lease just as easily; the paused process never gets to check that its lease expired.",
+          "retry": true
+        },
+        {
+          "id": "check-lease",
+          "label": "Have the worker re-check its lease right before each write",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 97,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1120,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 225,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "The pause can hit after the check",
+          "resultBody": "The process can check, pass, then pause for 20 s before the write lands; only the storage side can reject it reliably.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "What if the process freezes between check and write?",
+        "The storage layer must be able to say no.",
+        "A monotonically increasing number orders lock holders."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "cq-05",
+      "incidentCode": "INC-017",
+      "level": 17,
+      "patternId": "consensus-quorums",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 120,
+      "title": "Elections never settle",
+      "brief": "After a leader crash, the cluster spends 40 seconds in repeated elections; candidates keep splitting the vote.",
+      "constraint": "Leader failover should take a few seconds, not a minute.",
+      "question": "What makes the election converge?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 12000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 76,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 4000,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 1200,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "c1",
+            "kind": "server",
+            "label": "Node A (candidate)",
+            "cpu": 76,
+            "tone": "warn"
+          },
+          {
+            "id": "c2",
+            "kind": "server",
+            "label": "Node B (candidate)",
+            "cpu": 75,
+            "tone": "warn"
+          },
+          {
+            "id": "c3",
+            "kind": "server",
+            "label": "Node C (candidate)",
+            "cpu": 74,
+            "tone": "warn"
+          }
+        ],
+        "edges": [
+          {
+            "from": "c1",
+            "to": "c2"
+          },
+          {
+            "from": "c1",
+            "to": "c3"
+          },
+          {
+            "from": "c2",
+            "to": "c3"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "random-timeout",
+          "label": "Randomize election timeouts, e.g. 150-300 ms per node",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 46,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1400,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "One candidate goes first",
+          "resultBody": "Staggered timeouts let one node request votes before the others wake up, so it wins a majority on the first round and failover takes under a second."
+        },
+        {
+          "id": "same-timeout",
+          "label": "Give every node the same fixed election timeout for fairness",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 81,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 5200,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1680,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Everyone runs at once",
+          "resultBody": "Identical timeouts are what cause the split votes: all nodes become candidates together and each votes for itself.",
+          "retry": true
+        },
+        {
+          "id": "more-nodes",
+          "label": "Add two more nodes so a candidate is likelier to win",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 82,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 5600,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1800,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "More voters, more split votes",
+          "resultBody": "Extra candidates with the same timing split the vote even more ways; the fix is timing, not headcount.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "Why does everyone become a candidate at once?",
+        "Symmetry is the enemy of elections.",
+        "Stagger who wakes up first."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "cq-06",
+      "incidentCode": "INC-017",
+      "level": 17,
+      "patternId": "consensus-quorums",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 120,
+      "title": "Leader failover lost writes",
+      "brief": "The old leader acked writes after persisting locally, then crashed. The new leader never had them; 1,200 orders vanished.",
+      "constraint": "An acknowledged order must survive a leader crash.",
+      "question": "When should the leader acknowledge a write?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 15000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 83,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 60,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 1200,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Clients"
+          },
+          {
+            "id": "old",
+            "kind": "db",
+            "label": "Old leader (crashed)",
+            "cpu": 83,
+            "tone": "bad"
+          },
+          {
+            "id": "new",
+            "kind": "db",
+            "label": "New leader",
+            "cpu": 40
+          },
+          {
+            "id": "f2",
+            "kind": "db",
+            "label": "Follower",
+            "cpu": 40
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "old"
+          },
+          {
+            "from": "old",
+            "to": "new"
+          },
+          {
+            "from": "old",
+            "to": "f2"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "commit-majority",
+          "label": "Ack only after a majority of nodes have the entry in their logs",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 50,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 21,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Acked means replicated",
+          "resultBody": "Any future leader must win votes from a majority, and that majority overlaps the one holding the entry, so acknowledged orders survive."
+        },
+        {
+          "id": "fsync-local",
+          "label": "Ack after an fsync on the leader's local disk only",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 88,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 78,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1680,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Durable on one dead box",
+          "resultBody": "The entry survives on the old leader's disk, but the cluster elects a node without it and the orders never reappear.",
+          "retry": true
+        },
+        {
+          "id": "async-replicate",
+          "label": "Ack immediately and replicate to followers in the background",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 89,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 84,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1800,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Acked before anyone copied",
+          "resultBody": "A crash in the replication gap loses exactly the writes clients were told succeeded, which is how the 1,200 orders vanished.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "Who has the write when the leader dies?",
+        "The next leader comes from a majority.",
+        "Make the ack depend on the same majority."
+      ],
+      "nextId": null,
+      "reviewed": true
+    }
+  ]
+}

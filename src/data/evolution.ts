@@ -3,7 +3,7 @@ import { EvolutionStage } from "@/types";
 export const EVOLUTION_STAGES: EvolutionStage[] = [
   {
     stage: 1,
-    title: "Level 1: The Monolith Startup",
+    title: "Stage 1: The Monolith Startup",
     userCountLabel: "100 Users",
     userCountNumeric: 100,
     status: "healthy",
@@ -25,7 +25,7 @@ export const EVOLUTION_STAGES: EvolutionStage[] = [
   },
   {
     stage: 2,
-    title: "Level 2: The HackerNews Surge",
+    title: "Stage 2: The HackerNews Surge",
     userCountLabel: "10,000 Users",
     userCountNumeric: 10000,
     status: "warning",
@@ -48,7 +48,7 @@ export const EVOLUTION_STAGES: EvolutionStage[] = [
   },
   {
     stage: 3,
-    title: "Level 3: Horizontal Compute Scaling",
+    title: "Stage 3: Horizontal Compute Scaling",
     userCountLabel: "50,000 Users",
     userCountNumeric: 50000,
     status: "healthy",
@@ -73,12 +73,12 @@ export const EVOLUTION_STAGES: EvolutionStage[] = [
   },
   {
     stage: 4,
-    title: "Level 4: The 1M User Database Wall",
+    title: "Stage 4: The 1M User Database Wall",
     userCountLabel: "1,000,000 Users",
     userCountNumeric: 1000000,
     status: "danger",
     statusBadge: "Database Bottleneck 💥",
-    description: "Your app hits 1M registered users. While stateless web servers handle the traffic, your single PostgreSQL database is slammed with 25,000 disk I/O queries/sec.",
+    description: "Your app hits 1M registered users. While stateless web servers handle the traffic, your single PostgreSQL database is slammed with 25,000 queries/sec, and CPU plus lock contention on the primary become the wall.",
     painPoint: "Disk IOPS limit reached, lock contention on popular rows, connection pool timeout errors spike to 35%!",
     solutionNarrative: "Adding more web servers does NOT help! In fact, more web servers create more database connections, worsening the crisis.",
     components: [
@@ -98,7 +98,7 @@ export const EVOLUTION_STAGES: EvolutionStage[] = [
   },
   {
     stage: 5,
-    title: "Level 5: Distributed Tiered Architecture",
+    title: "Stage 5: Distributed Tiered Architecture",
     userCountLabel: "5,000,000 Users",
     userCountNumeric: 5000000,
     status: "healthy",

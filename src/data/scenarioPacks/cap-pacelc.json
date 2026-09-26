@@ -1,0 +1,1093 @@
+{
+  "version": 2,
+  "patternId": "cap-pacelc",
+  "patternName": "CAP & PACELC",
+  "level": 16,
+  "phase": "Depth",
+  "canonicalId": "cap-01",
+  "nextCanonicalId": null,
+  "incidents": [
+    {
+      "id": "cap-01",
+      "incidentCode": "INC-016",
+      "level": 16,
+      "patternId": "cap-pacelc",
+      "canonical": true,
+      "severity": "P0",
+      "xp": 150,
+      "title": "Gift cards double-spent in a split",
+      "brief": "The US-EU link drops for 90 s. EU checkout keeps approving gift-card spends from a stale local balance while US users spend the same cards.",
+      "constraint": "Balances must never go negative; reviews and carts can tolerate divergence.",
+      "question": "What partition policy should gift-card spends follow?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 35000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 70,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 140,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 480,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "us",
+            "kind": "db",
+            "label": "US primary",
+            "cpu": 70,
+            "tone": "warn"
+          },
+          {
+            "id": "eu",
+            "kind": "replica",
+            "label": "EU replica",
+            "cpu": 40,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "us"
+          },
+          {
+            "from": "users",
+            "to": "eu"
+          },
+          {
+            "from": "us",
+            "to": "eu"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "quorum-spend",
+          "label": "Require a quorum-confirmed debit, reject spends when unreachable",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 42,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 49,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Balances stay correct",
+          "resultBody": "EU spends fail fast during the 90 s split instead of approving money the US side may already have spent; carts and reviews stay writable."
+        },
+        {
+          "id": "lww-spend",
+          "label": "Accept spends locally and merge balances by latest timestamp",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 75,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 182,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 672,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "One debit vanished on merge",
+          "resultBody": "Last-write-wins keeps only one region's balance, so two $50 spends against a $50 card both succeed and one debit is silently lost.",
+          "retry": true
+        },
+        {
+          "id": "retry-spend",
+          "label": "Accept spends locally and retry the US primary until it acks",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 76,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 196,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 720,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Approved before anyone agreed",
+          "resultBody": "The shopper already got an approval, so background retries are reconciliation after the fact; the double spend has happened.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "Which data is cheap to reconcile and which is money?",
+        "An approval is a promise the other region never saw.",
+        "Pick consistency for balances, availability for the rest."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "cap-02",
+      "incidentCode": "INC-016",
+      "level": 16,
+      "patternId": "cap-pacelc",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 120,
+      "title": "Every feature went read-only",
+      "brief": "During a 2-minute partition the EU site rejected likes, carts and logins because the whole database was configured CP.",
+      "constraint": "Only payments need strong consistency; the rest merges cleanly.",
+      "question": "How should the team change the partition policy?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 42000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 55,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 310,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 2600,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "EU users"
+          },
+          {
+            "id": "eu",
+            "kind": "replica",
+            "label": "EU node (refusing)",
+            "cpu": 55,
+            "tone": "bad"
+          },
+          {
+            "id": "us",
+            "kind": "db",
+            "label": "US primary",
+            "cpu": 50
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "eu"
+          },
+          {
+            "from": "eu",
+            "to": "us"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "per-feature",
+          "label": "Classify features: AP with merge rules for likes, CP for payments",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 33,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 108,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "EU stays useful in a split",
+          "resultBody": "Likes, carts and sessions accept local writes and merge on heal, while only payment writes wait for a quorum; errors drop to near zero."
+        },
+        {
+          "id": "longer-timeout",
+          "label": "Raise the cross-region write timeout from 2 s to 30 s",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 60,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 403,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 3640,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Requests hang instead of failing",
+          "resultBody": "A partition does not heal faster because clients wait longer; users now stare at spinners for 30 s before the same error.",
+          "retry": true
+        },
+        {
+          "id": "single-region",
+          "label": "Route every EU request to the US region during splits",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 61,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 434,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 3900,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "The US is exactly what EU cannot reach",
+          "resultBody": "During a partition the EU clients cannot reach the US region either, so rerouting adds latency and still ends in errors.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "Is every feature equally dangerous to diverge?",
+        "CAP is a per-operation choice.",
+        "Keep strictness where divergence costs money."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "cap-03",
+      "incidentCode": "INC-016",
+      "level": 16,
+      "patternId": "cap-pacelc",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 120,
+      "title": "Feed reads pay the ocean tax",
+      "brief": "No partition today, yet every feed read in Singapore goes to the US leader: 180 ms extra per request.",
+      "constraint": "Feeds may be a few seconds stale; profile edits must show to the author.",
+      "question": "What does PACELC suggest for normal operation?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 60000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 62,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 420,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 90,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "APAC users"
+          },
+          {
+            "id": "leader",
+            "kind": "db",
+            "label": "US leader",
+            "cpu": 62,
+            "tone": "warn"
+          },
+          {
+            "id": "sg",
+            "kind": "replica",
+            "label": "SG follower (idle)",
+            "cpu": 12
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "leader"
+          },
+          {
+            "from": "leader",
+            "to": "sg"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "local-follower",
+          "label": "Serve feed reads from the local follower, author reads from leader",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 37,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 147,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Fast feeds, fresh self-view",
+          "resultBody": "The Else branch of PACELC trades a little staleness for latency on feeds, while read-your-writes routing keeps the author's own edits visible."
+        },
+        {
+          "id": "sync-all",
+          "label": "Make SG replication synchronous so local reads are always fresh",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 67,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 546,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 126,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writes now wait on the ocean",
+          "resultBody": "Every write must cross the Pacific before acking, so write latency jumps by the round trip and a slow link stalls the leader.",
+          "retry": true
+        },
+        {
+          "id": "bigger-leader",
+          "label": "Move the US leader to a larger instance with faster disks",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 68,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 588,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 135,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "The distance didn't change",
+          "resultBody": "The 180 ms is network round trip, not server time; a bigger leader shaves a few milliseconds off a delay caused by geography.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "There's no partition. What's the tradeoff now?",
+        "Latency or consistency, every read.",
+        "Who actually needs the freshest copy?"
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "cap-04",
+      "incidentCode": "INC-016",
+      "level": 16,
+      "patternId": "cap-pacelc",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 120,
+      "title": "Inventory oversold after heal",
+      "brief": "Both regions sold the last 40 concert seats during a 3-minute split. After heal, 38 seats were sold twice.",
+      "constraint": "Seats are unique; overselling means refunds and angry fans.",
+      "question": "Which design prevents double-sold seats during a partition?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 28000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 81,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 260,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 380,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Fans"
+          },
+          {
+            "id": "us",
+            "kind": "db",
+            "label": "US seat DB",
+            "cpu": 81,
+            "tone": "bad"
+          },
+          {
+            "id": "eu",
+            "kind": "db",
+            "label": "EU seat DB",
+            "cpu": 78,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "us"
+          },
+          {
+            "from": "users",
+            "to": "eu"
+          },
+          {
+            "from": "us",
+            "to": "eu"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "seat-owner",
+          "label": "Give each seat block one owning region; others must reach it",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 49,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 91,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "One owner per seat",
+          "resultBody": "A seat is only sold by its owner region, so a partitioned region refuses that block instead of selling it twice; the other blocks keep selling."
+        },
+        {
+          "id": "merge-seats",
+          "label": "Let both regions sell and resolve conflicts with a CRDT counter",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 86,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 338,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 532,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Counters don't make seats unique",
+          "resultBody": "A CRDT can merge a count, but it cannot un-sell seat 14B to the second buyer; uniqueness needs a single decision point.",
+          "retry": true
+        },
+        {
+          "id": "clock-order",
+          "label": "Order conflicting sales by synchronized wall-clock timestamps",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 87,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 364,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 570,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Clock order came too late",
+          "resultBody": "Picking a winner after heal still means one fan was charged and emailed a ticket that no longer exists; the refund storm is the incident.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "Can two regions both own the same seat?",
+        "Merging after the fact still means a broken promise.",
+        "Give each item a single place to decide."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "cap-05",
+      "incidentCode": "INC-016",
+      "level": 16,
+      "patternId": "cap-pacelc",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 120,
+      "title": "Quorum reads timing out",
+      "brief": "The team set every read to QUORUM across three regions. p95 read latency hit 900 ms and the product page is timing out.",
+      "constraint": "Product descriptions change a few times a day; stock counts need care.",
+      "question": "How should read consistency be tuned?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 75000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 74,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 900,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 1400,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Shoppers"
+          },
+          {
+            "id": "n1",
+            "kind": "db",
+            "label": "Node us-east",
+            "cpu": 74,
+            "tone": "warn"
+          },
+          {
+            "id": "n2",
+            "kind": "db",
+            "label": "Node eu-west",
+            "cpu": 70,
+            "tone": "warn"
+          },
+          {
+            "id": "n3",
+            "kind": "db",
+            "label": "Node ap-south",
+            "cpu": 72,
+            "tone": "warn"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "n1"
+          },
+          {
+            "from": "users",
+            "to": "n2"
+          },
+          {
+            "from": "users",
+            "to": "n3"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "tune-per-query",
+          "label": "Use ONE for descriptions, LOCAL_QUORUM for stock reads",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 44,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 315,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Latency matched to the data",
+          "resultBody": "Descriptions read from the nearest replica in single-digit milliseconds, and stock checks use a local-region quorum instead of waiting on every ocean."
+        },
+        {
+          "id": "all-quorum-cache",
+          "label": "Keep cross-region QUORUM and add a 24-hour cache for stock",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 79,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1170,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1960,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Stale stock for a whole day",
+          "resultBody": "The cache hides the latency but serves stock counts up to a day old, so the page shows items that sold out this morning.",
+          "retry": true
+        },
+        {
+          "id": "all-one",
+          "label": "Drop every read, including stock, to consistency level ONE",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 80,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1260,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 2100,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Stock reads went stale",
+          "resultBody": "Descriptions got fast, but stock checks can now read a lagging replica and show sold-out items as available.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "Does every field need the same guarantee?",
+        "Nearest-replica reads are cheap; ocean quorums are not.",
+        "Tune consistency per query, not per cluster."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "cap-06",
+      "incidentCode": "INC-016",
+      "level": 16,
+      "patternId": "cap-pacelc",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 120,
+      "title": "Shopping carts lose items",
+      "brief": "After a 60 s split, shoppers find items missing from their carts. Conflicting carts were resolved by keeping the newest copy.",
+      "constraint": "Carts should never silently lose an add.",
+      "question": "What merge rule fits the cart?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 30000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 48,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 160,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 220,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Shoppers"
+          },
+          {
+            "id": "us",
+            "kind": "db",
+            "label": "US cart store",
+            "cpu": 48,
+            "tone": "warn"
+          },
+          {
+            "id": "eu",
+            "kind": "db",
+            "label": "EU cart store",
+            "cpu": 45,
+            "tone": "warn"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "us"
+          },
+          {
+            "from": "users",
+            "to": "eu"
+          },
+          {
+            "from": "us",
+            "to": "eu"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "union-merge",
+          "label": "Merge conflicting carts as a union of adds, then reconcile removes",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 29,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 56,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "No add left behind",
+          "resultBody": "Both regions' adds survive the heal; a rare resurrected item is cheap to fix at checkout, unlike a sale lost to a vanished item."
+        },
+        {
+          "id": "reject-writes",
+          "label": "Reject cart writes whenever the other region is unreachable",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 53,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 208,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 308,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Carts went dark for a minute",
+          "resultBody": "Shoppers can't add anything for the whole 60 s split, so sales are lost to protect data that merges almost for free.",
+          "retry": true
+        },
+        {
+          "id": "newest-wins",
+          "label": "Keep the newest cart but sync clocks with a tighter NTP interval",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 54,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 224,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 330,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still throwing one side away",
+          "resultBody": "Better clocks pick the winner more accurately, but last-write-wins still discards every add made on the losing side.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "What does keeping the newest copy throw away?",
+        "Adds from two sides can be combined.",
+        "Choose a merge that never loses an add."
+      ],
+      "nextId": null,
+      "reviewed": true
+    }
+  ]
+}

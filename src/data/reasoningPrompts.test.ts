@@ -27,10 +27,13 @@ const PATTERN_IDS: PatternId[] = [
   "idempotency",
   "multi-region",
   "health-checks",
+  "cap-pacelc",
+  "consensus-quorums",
+  "storage-engines",
 ];
 
-test("has 34 prompts with unique ids", () => {
-  assert.equal(REASONING_PROMPTS.length, 34);
+test("has 40 prompts with unique ids", () => {
+  assert.equal(REASONING_PROMPTS.length, 40);
   const ids = new Set(REASONING_PROMPTS.map((p) => p.id));
   assert.equal(ids.size, REASONING_PROMPTS.length);
 });

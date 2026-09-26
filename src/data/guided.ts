@@ -15,7 +15,7 @@ export const GUIDED_SCENARIOS: GuidedScenario[] = [
       options: [
         {
           id: "wa-req-1",
-          text: "1-on-1 text messaging, delivery & read receipts, online presence, and offline message storage",
+          text: "1-on-1 messages, delivery/read receipts, presence, and offline storage",
           isCorrect: true,
           feedback: "Perfect! Lock down the core communication loop first: send/receive messages, delivery/read acks, user presence, and durable offline queueing before tackling media or 1,000-person group chats.",
         },
@@ -136,7 +136,7 @@ export const GUIDED_SCENARIOS: GuidedScenario[] = [
       options: [
         {
           id: "nf-req-1",
-          text: "Upload & asynchronous multi-bitrate transcoding (HLS/DASH), global CDN playback, and watch progress tracking",
+          text: "Upload, offline multi-bitrate transcoding, CDN playback, watch progress",
           isCorrect: true,
           feedback: "Accurate! Netflix separates the Control Plane (catalog browsing, user auth, watch checkpointing) from the Data Plane (CDN edge chunk delivery).",
         },
@@ -251,7 +251,7 @@ export const GUIDED_SCENARIOS: GuidedScenario[] = [
       options: [
         {
           id: "ub-req-1",
-          text: "Real-time driver location tracking, geospatial radius search for available drivers, and atomic trip dispatch",
+          text: "Live driver locations, nearby-driver search, and atomic trip dispatch",
           isCorrect: true,
           feedback: "Direct hit! Driver GPS ingestion, spatial indexing (GeoHash / QuadTree), and trip lifecycle state transitions form the core dispatch engine.",
         },
@@ -366,7 +366,7 @@ export const GUIDED_SCENARIOS: GuidedScenario[] = [
       options: [
         {
           id: "amz-req-1",
-          text: "Strict atomic inventory reservation, idempotency against double charges, and automatic release on payment timeout",
+          text: "Atomic stock reservation, idempotent checkout, release on payment timeout",
           isCorrect: true,
           feedback: "Exactly right! Under high concurrency, one hot inventory row serializes every checkout on its lock. You need atomic stock reservation (e.g. a Redis Lua decrement or sharded counters) with leased TTLs that release unpaid stock.",
         },
@@ -481,7 +481,7 @@ export const GUIDED_SCENARIOS: GuidedScenario[] = [
       options: [
         {
           id: "ig-req-1",
-          text: "Upload photos/captions, follow users, and deliver a fast reverse-chronological or ranked home feed",
+          text: "Post photos, follow users, and load a fast ranked or chronological feed",
           isCorrect: true,
           feedback: "Spot on! The core social engine consists of photo publishing (write path), following users (graph path), and viewing the aggregated feed (read path).",
         },
@@ -596,7 +596,7 @@ export const GUIDED_SCENARIOS: GuidedScenario[] = [
       options: [
         {
           id: "pb-req-1",
-          text: "Upload text paste, generate unique short URL key, retrieve content by key, and support automated expiration",
+          text: "Store a paste, return a unique short key, fetch by key, expire on TTL",
           isCorrect: true,
           feedback: "Spot on! The core functionality is fast key-based text retrieval and automated TTL purging.",
         },
@@ -900,6 +900,739 @@ export const GUIDED_SCENARIOS: GuidedScenario[] = [
       requiredComponents: ["load_balancer", "server", "cache", "database"],
       explanation:
         "Because redirects follow the 80/20 Pareto principle (the top 20% of links account for 80% of redirects), caching hot shortKey->longUrl pairs in Redis RAM delivers sub-5ms redirects without overwhelming the relational database.",
+    },
+  },
+  {
+    id: "design-rate-limiter",
+    title: "Design a Distributed Rate Limiter",
+    subtitle: "Token buckets in shared memory, consistent limits across 40 gateways, and fail-open safety",
+    category: "Infrastructure & Traffic Control",
+    estimatedTime: "7 mins",
+    xpReward: 200,
+    problemStatement:
+      "Your public API gateway runs on 40 nodes and handles 2M requests/s. Each API key gets a plan limit (e.g. 1,000 requests/minute with bursts up to 100). How do you enforce the same limit no matter which node a request lands on, while adding under 1 ms p99 and never taking the API down if the limiter itself breaks?",
+    requirementsDiscovery: {
+      question: "Step 1: Clarifying Requirements. What belongs in the core scope of the rate limiter?",
+      options: [
+        {
+          id: "rl-req-1",
+          text: "Each gateway node enforces the full per-key limit with its own in-memory counter",
+          isCorrect: false,
+          feedback: "Fast, but with 40 nodes behind a round-robin balancer a client effectively gets up to 40x its limit (40,000 req/min instead of 1,000). Local counters are a good first tier for obvious floods, not the source of truth.",
+        },
+        {
+          id: "rl-req-2",
+          text: "Shared per-key limits on every node, 429 + Retry-After, <1 ms added",
+          isCorrect: true,
+          feedback: "Locked in. The limit must be global per key, rejections must tell well-behaved clients when to come back, and the check sits on every request, so its latency budget is tiny. Also decide the failure policy up front: fail open for most APIs.",
+        },
+        {
+          id: "rl-req-3",
+          text: "Exact counts via a transactional increment on a Postgres row per API key",
+          isCorrect: false,
+          feedback: "Correct counts, wrong tool. 2M increments/s turn hot keys into row-lock queues, and each check costs a few ms of commit latency. Counters belong in an in-memory store with atomic ops.",
+        },
+        {
+          id: "rl-req-4",
+          text: "Queue over-limit requests and replay them once the key has quota again",
+          isCorrect: false,
+          feedback: "That's traffic shaping, not limiting. Queues grow without bound during an abusive burst, held requests time out anyway, and clients retry on top. Reject fast with 429 and let the client back off.",
+        },
+      ],
+    },
+    entitiesDiscovery: {
+      instruction: "Step 2: Core Data Model. Select the entities the limiter needs to decide allow or deny:",
+      availableEntities: [
+        {
+          id: "rl-entity-rule",
+          name: "RateLimitRule",
+          attributes: ["id: UUID", "plan: enum(free,pro,enterprise)", "route_pattern: string", "refill_per_sec: float", "burst_capacity: int"],
+          isEssential: true,
+        },
+        {
+          id: "rl-entity-bucket",
+          name: "TokenBucketState",
+          attributes: ["bucket_key: string (api_key:route)", "tokens: float", "last_refill_ms: bigint", "ttl_seconds: int"],
+          isEssential: true,
+        },
+        {
+          id: "rl-entity-client",
+          name: "ApiClient",
+          attributes: ["api_key: string", "account_id: UUID", "plan: enum(free,pro,enterprise)", "overrides: json"],
+          isEssential: true,
+        },
+        {
+          id: "rl-entity-log",
+          name: "RequestAuditLog",
+          attributes: ["request_id: UUID", "api_key: string", "route: string", "decision: enum(allow,deny)", "at: timestamp"],
+          isEssential: false,
+        },
+        {
+          id: "rl-entity-invoice",
+          name: "UsageInvoice",
+          attributes: ["account_id: UUID", "month: date", "billable_requests: bigint", "amount_cents: int"],
+          isEssential: false,
+        },
+      ],
+      correctEntityIds: ["rl-entity-rule", "rl-entity-bucket", "rl-entity-client"],
+    },
+    apiDesignDiscovery: {
+      instruction: "Step 3: API Contracts. Select the endpoints the limiter must expose for the MVP:",
+      availableApis: [
+        {
+          id: "rl-api-check",
+          method: "POST",
+          path: "/internal/v1/ratelimit/check",
+          description: "Gateway sends `{ key, route, cost }`; returns allow/deny plus remaining tokens and reset time for the X-RateLimit headers.",
+          isInitialCore: true,
+        },
+        {
+          id: "rl-api-rules",
+          method: "PUT",
+          path: "/api/v1/rate-limit-rules/:id",
+          description: "Creates or updates a plan's limit; gateways pick up the change within ~30 s via a cached rules snapshot.",
+          isInitialCore: true,
+        },
+        {
+          id: "rl-api-quota",
+          method: "GET",
+          path: "/api/v1/clients/:apiKey/quota",
+          description: "Lets a customer see how much of their current window they have left.",
+          isInitialCore: true,
+        },
+        {
+          id: "rl-api-report",
+          method: "GET",
+          path: "/api/v1/analytics/throttled?range=30d",
+          description: "Dashboard of which keys were throttled most over the last month.",
+          isInitialCore: false,
+        },
+      ],
+      correctApiIds: ["rl-api-check", "rl-api-rules", "rl-api-quota"],
+    },
+    architectureDiscovery: {
+      instruction: "Step 4: System Architecture. Assemble the components that give one consistent limit across 40 gateways:",
+      requiredComponents: ["load_balancer", "server", "cache", "database"],
+      explanation:
+        "The Load Balancer spreads traffic over the gateway Servers, which run the limiter in-process. Bucket state lives in a sharded Redis Cluster: a Lua script refills and decrements the token bucket atomically in one round-trip (~0.3-0.8 ms in-region), keyed by api_key:route so each key lands on one shard. Rules live in a small Database and are cached in each gateway's memory, so rule reads never hit the network. If Redis is unreachable the gateway fails open (or falls back to a conservative local limit) instead of rejecting everyone. A sliding-window counter is a fine alternative when you need smoother edges than fixed windows.",
+    },
+  },
+  {
+    id: "design-kv-store",
+    title: "Design a Distributed Key-Value Store",
+    subtitle: "Consistent hashing, N-way replication, R+W>N quorums, hinted handoff, and anti-entropy repair",
+    category: "Storage & Databases",
+    estimatedTime: "10 mins",
+    xpReward: 240,
+    problemStatement:
+      "Design a Dynamo-style key-value store holding 50 TB across 60 nodes in 3 availability zones, serving 500k operations/s at p99 under 10 ms. It must keep accepting writes when a node or even a whole AZ is down. How do you place data, replicate it, and heal after failures?",
+    requirementsDiscovery: {
+      question: "Step 1: Clarifying Requirements. What is the core scope of a highly available key-value store?",
+      options: [
+        {
+          id: "kv-req-1",
+          text: "Multi-key ACID transactions and secondary indexes on fields inside values",
+          isCorrect: false,
+          feedback: "Those turn a KV store into a database. Cross-partition transactions need 2PC or consensus on every write, which blocks when a participant is down, exactly what 'always writable' rules out. Keep the API to single-key get/put/delete.",
+        },
+        {
+          id: "kv-req-2",
+          text: "One leader node for the whole cluster so every read is linearizable",
+          isCorrect: false,
+          feedback: "A single leader caps throughput at one machine and stops all writes while a new one is elected. Per-partition leaders with Raft are a valid design, but this brief prioritises availability, which points to leaderless quorums.",
+        },
+        {
+          id: "kv-req-3",
+          text: "Single-key get/put, partitioning, N-way replicas, quorums, and repair",
+          isCorrect: true,
+          feedback: "That's the core. Decide how keys map to nodes, how many copies exist, how many acks a read and write need (R and W), and how replicas that missed writes catch up. Everything else builds on those four.",
+        },
+        {
+          id: "kv-req-4",
+          text: "Keep the full dataset in RAM on every node and rebuild from peers on restart",
+          isCorrect: false,
+          feedback: "50 TB doesn't fit in RAM on one node, and full copies everywhere waste 60x the storage. Each node owns a slice on disk (commit log + LSM tree) with hot keys in the page cache.",
+        },
+      ],
+    },
+    entitiesDiscovery: {
+      instruction: "Step 2: Core Data Model. Select the structures every storage node needs:",
+      availableEntities: [
+        {
+          id: "kv-entity-record",
+          name: "VersionedRecord",
+          attributes: ["key: bytes", "value: bytes", "version: vector_clock | hlc_timestamp", "tombstone: boolean"],
+          isEssential: true,
+        },
+        {
+          id: "kv-entity-ring",
+          name: "TokenRing",
+          attributes: ["vnode_token: uint64", "owner_node_id: string", "zone: string", "ring_version: int"],
+          isEssential: true,
+        },
+        {
+          id: "kv-entity-member",
+          name: "NodeMembership",
+          attributes: ["node_id: string", "address: string", "status: enum(up,suspect,down)", "heartbeat_gen: int"],
+          isEssential: true,
+        },
+        {
+          id: "kv-entity-hint",
+          name: "HintedWrite",
+          attributes: ["intended_node_id: string", "key: bytes", "value: bytes", "version: vector_clock", "stored_at: timestamp"],
+          isEssential: true,
+        },
+        {
+          id: "kv-entity-merkle",
+          name: "MerkleRangeTree",
+          attributes: ["token_range: (start,end)", "leaf_hashes: list<bytes>", "root_hash: bytes", "built_at: timestamp"],
+          isEssential: true,
+        },
+        {
+          id: "kv-entity-index",
+          name: "SecondaryIndexEntry",
+          attributes: ["field_name: string", "field_value: bytes", "primary_key: bytes"],
+          isEssential: false,
+        },
+        {
+          id: "kv-entity-schema",
+          name: "TableSchema",
+          attributes: ["table: string", "columns: list<(name,type)>", "primary_key: string"],
+          isEssential: false,
+        },
+      ],
+      correctEntityIds: ["kv-entity-record", "kv-entity-ring", "kv-entity-member", "kv-entity-hint", "kv-entity-merkle"],
+    },
+    apiDesignDiscovery: {
+      instruction: "Step 3: API Contracts. Select the client operations for the MVP:",
+      availableApis: [
+        {
+          id: "kv-api-get",
+          method: "GET",
+          path: "/v1/kv/:key?r=2",
+          description: "Coordinator reads from R of the N replicas, returns the newest version (or siblings) and repairs stale replicas in the background.",
+          isInitialCore: true,
+        },
+        {
+          id: "kv-api-put",
+          method: "PUT",
+          path: "/v1/kv/:key?w=2",
+          description: "Writes value with the version context from the last read; succeeds once W replicas have it on their commit log.",
+          isInitialCore: true,
+        },
+        {
+          id: "kv-api-delete",
+          method: "DELETE",
+          path: "/v1/kv/:key",
+          description: "Writes a tombstone (not an immediate erase) so replicas that missed the delete don't resurrect the key.",
+          isInitialCore: true,
+        },
+        {
+          id: "kv-api-scan",
+          method: "GET",
+          path: "/v1/kv?prefix=user:42&limit=100",
+          description: "Range scan by key prefix. Hash partitioning scatters adjacent keys, so this hits every node.",
+          isInitialCore: false,
+        },
+      ],
+      correctApiIds: ["kv-api-get", "kv-api-put", "kv-api-delete"],
+    },
+    architectureDiscovery: {
+      instruction: "Step 4: System Architecture. Assemble a store that survives the loss of an AZ without refusing writes:",
+      requiredComponents: ["load_balancer", "server", "database", "replica"],
+      explanation:
+        "Clients hit a Load Balancer (or a partition-aware client) that reaches any coordinator Server. Keys are placed with consistent hashing over ~256 virtual nodes per machine, so adding a node moves only ~1/60 of the data. Each key is stored on N=3 storage nodes in different AZs (Database + Replicas), each using a commit log plus LSM tree. With W=2 and R=2, R+W>N means every read quorum overlaps the latest write quorum. When a replica is down, a sloppy quorum writes to the next healthy node with a hint, and hinted handoff replays it on recovery (note: sloppy quorums weaken the R+W>N overlap until hints drain). Read repair fixes stale copies on the read path, and background anti-entropy compares Merkle trees per token range so only divergent ranges are streamed. Gossip spreads membership and failure suspicion.",
+    },
+  },
+  {
+    id: "design-payments-ledger",
+    title: "Design a Payments Ledger",
+    subtitle: "Double-entry bookkeeping, idempotency keys, effectively-once processing, and reconciliation",
+    category: "Fintech & Correctness",
+    estimatedTime: "9 mins",
+    xpReward: 230,
+    problemStatement:
+      "Design the ledger for a payments platform processing 3,000 payments/s at peak. Mobile clients retry on timeouts, the card processor sometimes sends the same webhook twice or hours late, and finance must match a daily settlement file to the cent. How do you guarantee money is never created, lost, or charged twice?",
+    requirementsDiscovery: {
+      question: "Step 1: Clarifying Requirements. What is the core scope for a correct payments ledger?",
+      options: [
+        {
+          id: "pay-req-1",
+          text: "A mutable balance column per account, updated in place on every payment",
+          isCorrect: false,
+          feedback: "It's how many first versions start, and it breaks audits: there's no record of why a balance changed, concurrent updates can overwrite each other, and you can't reconcile against the processor. Balances should be derived from immutable entries.",
+        },
+        {
+          id: "pay-req-2",
+          text: "Double-entry postings, idempotency keys, async calls, daily reconciliation",
+          isCorrect: true,
+          feedback: "Right. Every movement is a debit and a matching credit that sum to zero, retries with the same idempotency key return the stored result, calls to the processor happen off the request path, and a daily job proves the ledger matches the outside world.",
+        },
+        {
+          id: "pay-req-3",
+          text: "Exactly-once delivery guaranteed end to end between us and the card network",
+          isCorrect: false,
+          feedback: "Over an unreliable network nobody can guarantee exactly-once delivery: a timeout can't tell you whether the charge happened. What you can build is at-least-once delivery plus idempotent processing, which looks exactly-once from the outside.",
+        },
+        {
+          id: "pay-req-4",
+          text: "Two-phase commit spanning our database, the card processor, and the bank",
+          isCorrect: false,
+          feedback: "External processors and banks don't join your XA transaction, and 2PC blocks when any participant stalls. Use a saga: record intent locally, call the processor with its idempotency key, and post or reverse entries when the result arrives.",
+        },
+      ],
+    },
+    entitiesDiscovery: {
+      instruction: "Step 2: Core Data Model. Select the entities needed to move money correctly and prove it:",
+      availableEntities: [
+        {
+          id: "pay-entity-account",
+          name: "LedgerAccount",
+          attributes: ["id: UUID", "owner_id: UUID", "type: enum(asset,liability,revenue,expense)", "currency: char(3)"],
+          isEssential: true,
+        },
+        {
+          id: "pay-entity-journal",
+          name: "JournalEntry",
+          attributes: ["id: UUID", "payment_id: UUID", "description: string", "created_at: timestamp", "reverses_entry_id: UUID?"],
+          isEssential: true,
+        },
+        {
+          id: "pay-entity-posting",
+          name: "Posting",
+          attributes: ["journal_entry_id: UUID", "account_id: UUID", "direction: enum(debit,credit)", "amount_minor: bigint", "currency: char(3)"],
+          isEssential: true,
+        },
+        {
+          id: "pay-entity-idem",
+          name: "IdempotencyRecord",
+          attributes: ["key: string UNIQUE", "request_hash: bytes", "response_body: json", "status: enum(in_progress,done)", "expires_at: timestamp"],
+          isEssential: true,
+        },
+        {
+          id: "pay-entity-settlement",
+          name: "SettlementLine",
+          attributes: ["processor_ref: string", "amount_minor: bigint", "settled_on: date", "matched_journal_id: UUID?"],
+          isEssential: true,
+        },
+        {
+          id: "pay-entity-points",
+          name: "RewardPointsBalance",
+          attributes: ["user_id: UUID", "points: int", "tier: enum(silver,gold)"],
+          isEssential: false,
+        },
+        {
+          id: "pay-entity-statement",
+          name: "MonthlyStatementPdf",
+          attributes: ["account_id: UUID", "month: date", "pdf_url: string"],
+          isEssential: false,
+        },
+      ],
+      correctEntityIds: ["pay-entity-account", "pay-entity-journal", "pay-entity-posting", "pay-entity-idem", "pay-entity-settlement"],
+    },
+    apiDesignDiscovery: {
+      instruction: "Step 3: API Contracts. Select the endpoints that keep the ledger correct under retries:",
+      availableApis: [
+        {
+          id: "pay-api-create",
+          method: "POST",
+          path: "/api/v1/payments (Idempotency-Key header)",
+          description: "Creates a payment once per key; a retry with the same key returns the original response instead of charging again.",
+          isInitialCore: true,
+        },
+        {
+          id: "pay-api-balance",
+          method: "GET",
+          path: "/api/v1/accounts/:id/balance",
+          description: "Returns the balance derived from postings (served from a snapshot plus postings since).",
+          isInitialCore: true,
+        },
+        {
+          id: "pay-api-webhook",
+          method: "POST",
+          path: "/webhooks/processor",
+          description: "Receives capture/refund events; dedupes on the processor's event id before posting entries.",
+          isInitialCore: true,
+        },
+        {
+          id: "pay-api-edit",
+          method: "PUT",
+          path: "/api/v1/postings/:id",
+          description: "Edits the amount on an existing posting so support can fix a mistaken charge.",
+          isInitialCore: false,
+        },
+      ],
+      correctApiIds: ["pay-api-create", "pay-api-balance", "pay-api-webhook"],
+    },
+    architectureDiscovery: {
+      instruction: "Step 4: System Architecture. Assemble the stack that survives retries, duplicates, and processor outages:",
+      requiredComponents: ["load_balancer", "server", "queue", "database"],
+      explanation:
+        "A Load Balancer fronts stateless payment Servers. PostgreSQL is the source of truth: a journal entry and its postings are written in one ACID transaction with a check that debits equal credits, and the idempotency key has a UNIQUE constraint, so a concurrent retry fails the insert instead of double-posting. The ledger is append-only: mistakes are fixed with a reversing entry, never an UPDATE. A transactional outbox publishes 'charge requested' to a Queue (Kafka); workers call the processor with its own idempotency key and retry with backoff, so delivery is at-least-once while processing is effectively-once. Webhooks are deduped by event id. A nightly reconciliation job matches SettlementLines to journal entries and parks any mismatch in a suspense account for a human to resolve.",
+    },
+  },
+  {
+    id: "design-web-crawler",
+    title: "Design a Web Crawler",
+    subtitle: "URL frontier, per-host politeness, Bloom-filter dedupe, and crawler-trap defence",
+    category: "Data Pipelines & Search",
+    estimatedTime: "9 mins",
+    xpReward: 220,
+    problemStatement:
+      "Design a crawler that fetches 1 billion pages a month (~400 pages/s average, ~1,000/s peak, ~100 KB each) to feed a search index. It must obey robots.txt, hit no host more than once per second, avoid refetching URLs it has seen, and not get stuck in infinite calendar pages. How do you build it?",
+    requirementsDiscovery: {
+      question: "Step 1: Clarifying Requirements. What belongs in the crawler's core scope?",
+      options: [
+        {
+          id: "wc-req-1",
+          text: "Render every page's JavaScript in headless Chrome before extracting links",
+          isCorrect: false,
+          feedback: "Rendering costs roughly 10-50x the CPU and time of a plain HTTP fetch. Most pages expose their links in raw HTML, so render selectively (for hosts known to need it) as a later tier.",
+        },
+        {
+          id: "wc-req-2",
+          text: "Fetch breadth-first from one global FIFO queue as fast as bandwidth allows",
+          isCorrect: false,
+          feedback: "Links cluster by site, so a plain FIFO sends bursts of requests to the same host. You'd break the 1 req/s politeness rule within seconds and get your IPs blocked. The frontier has to be organised per host.",
+        },
+        {
+          id: "wc-req-3",
+          text: "Prioritised frontier, per-host politeness, robots.txt, dedupe, recrawl",
+          isCorrect: true,
+          feedback: "That's the core loop: pick the next URL worth fetching, only when its host is due, skip anything seen or disallowed, store the content, and schedule a revisit based on how often the page changes.",
+        },
+        {
+          id: "wc-req-4",
+          text: "Rank fetched pages and answer user search queries over the results",
+          isCorrect: false,
+          feedback: "Indexing and ranking are downstream consumers of the crawl. Keep the crawler focused on fetching, deduping, and storing; the indexer reads from its output.",
+        },
+      ],
+    },
+    entitiesDiscovery: {
+      instruction: "Step 2: Core Data Model. Select the entities the crawler needs:",
+      availableEntities: [
+        {
+          id: "wc-entity-frontier",
+          name: "FrontierUrl",
+          attributes: ["url: string", "host: string", "priority: float", "depth: int", "discovered_at: timestamp"],
+          isEssential: true,
+        },
+        {
+          id: "wc-entity-host",
+          name: "HostPolicy",
+          attributes: ["host: string", "robots_rules: text", "crawl_delay_ms: int", "next_allowed_at: timestamp", "resolved_ip: string"],
+          isEssential: true,
+        },
+        {
+          id: "wc-entity-page",
+          name: "CrawledPage",
+          attributes: ["url_hash: bytes", "content_hash: bytes", "simhash: uint64", "http_status: int", "fetched_at: timestamp", "blob_path: string"],
+          isEssential: true,
+        },
+        {
+          id: "wc-entity-bloom",
+          name: "SeenUrlFilter",
+          attributes: ["bit_array: ~1.2 GB for 1B URLs", "hash_functions: 7", "target_fp_rate: 1%"],
+          isEssential: true,
+        },
+        {
+          id: "wc-entity-rank",
+          name: "PageRankScore",
+          attributes: ["url_hash: bytes", "score: float", "computed_at: timestamp"],
+          isEssential: false,
+        },
+        {
+          id: "wc-entity-query",
+          name: "SearchQueryLog",
+          attributes: ["query: string", "user_id: UUID", "clicked_url: string"],
+          isEssential: false,
+        },
+      ],
+      correctEntityIds: ["wc-entity-frontier", "wc-entity-host", "wc-entity-page", "wc-entity-bloom"],
+    },
+    apiDesignDiscovery: {
+      instruction: "Step 3: Internal Contracts. Select the interfaces between frontier, fetchers, and storage:",
+      availableApis: [
+        {
+          id: "wc-api-enqueue",
+          method: "POST",
+          path: "/internal/v1/frontier/urls",
+          description: "Adds newly discovered URLs after normalisation and a Bloom-filter seen check.",
+          isInitialCore: true,
+        },
+        {
+          id: "wc-api-lease",
+          method: "GET",
+          path: "/internal/v1/frontier/next?worker=:id&batch=50",
+          description: "Leases URLs only from hosts whose next_allowed_at has passed; unacked leases return to the frontier.",
+          isInitialCore: true,
+        },
+        {
+          id: "wc-api-store",
+          method: "POST",
+          path: "/internal/v1/pages",
+          description: "Stores fetched content and extracted links; skips storage if the content hash is already known.",
+          isInitialCore: true,
+        },
+        {
+          id: "wc-api-search",
+          method: "GET",
+          path: "/api/v1/search?q=",
+          description: "Returns ranked results for a user's keyword query.",
+          isInitialCore: false,
+        },
+      ],
+      correctApiIds: ["wc-api-enqueue", "wc-api-lease", "wc-api-store"],
+    },
+    architectureDiscovery: {
+      instruction: "Step 4: System Architecture. Assemble a crawler that stays polite at 1,000 pages/s:",
+      requiredComponents: ["server", "queue", "cache", "database"],
+      explanation:
+        "The frontier is a set of Queues in the Mercator style: front queues by priority, back queues one per host, and a heap of next-allowed times so a fetcher only pulls from hosts that are due. Fetcher Servers (a few hundred async connections each) download pages and extract links. A Cache holds robots.txt and DNS results (DNS lookups otherwise become the bottleneck) plus the Bloom filter of seen URLs: at 1% false positives that's ~9.6 bits per URL, about 1.2 GB for 1B URLs, and a false positive only means skipping one new page. Content dedupe uses an exact hash plus SimHash for near-duplicates (mirrors and tracking parameters). Raw pages go to object storage (~100 TB/month), URL metadata to a Database. Trap guards cap depth, URL length, and pages per host.",
+    },
+  },
+  {
+    id: "design-typeahead",
+    title: "Design Search Autocomplete",
+    subtitle: "Prefix tries with precomputed top-k, offline aggregation, and edge caching per keystroke",
+    category: "Search & Low Latency",
+    estimatedTime: "8 mins",
+    xpReward: 210,
+    problemStatement:
+      "Design autocomplete for a search box used for 500M searches/day. Each search fires about 6 suggestion requests after debouncing, so that's roughly 35k requests/s on average and ~100k/s at peak. Suggestions must appear in under 100 ms end to end, and a breaking-news term should start showing up within ~15 minutes. How do you serve top-10 suggestions per prefix?",
+    requirementsDiscovery: {
+      question: "Step 1: Clarifying Requirements. What belongs in the core autocomplete MVP?",
+      options: [
+        {
+          id: "ta-req-1",
+          text: "Top-10 per prefix by popularity, <100 ms, trends visible in minutes",
+          isCorrect: true,
+          feedback: "Correct. Serving a ranked top-k per prefix, fast, with fresh-enough popularity is the whole product. Note that 'minutes' of freshness, not seconds, is what lets you precompute.",
+        },
+        {
+          id: "ta-req-2",
+          text: "Fuzzy matching with edit distance up to 3 on every prefix the user types",
+          isCorrect: false,
+          feedback: "Distance 3 on a 4-letter prefix matches almost anything, and the candidate set explodes per keystroke. Typo tolerance (usually distance 1-2, on longer prefixes) is a later layer on top of exact prefix lookup.",
+        },
+        {
+          id: "ta-req-3",
+          text: "Update the suggestion index synchronously every time a search is submitted",
+          isCorrect: false,
+          feedback: "That's ~6k writes/s landing on the same hot prefix nodes ('a', 'th', ...) that serve 100k reads/s. Log searches asynchronously, aggregate in batches, and publish a new snapshot every few minutes.",
+        },
+        {
+          id: "ta-req-4",
+          text: "Personalise every suggestion from each user's complete search history",
+          isCorrect: false,
+          feedback: "Personalisation is a good v2 blend (a few recent queries of this user on top), but a per-user index for every user multiplies storage and kills cacheability. Start with global top-k per prefix and locale.",
+        },
+      ],
+    },
+    entitiesDiscovery: {
+      instruction: "Step 2: Core Data Model. Select the entities needed to build and serve suggestions:",
+      availableEntities: [
+        {
+          id: "ta-entity-prefix",
+          name: "PrefixTopK",
+          attributes: ["prefix: string", "locale: string", "suggestions: list<(term, score)> (k=10)", "snapshot_version: int"],
+          isEssential: true,
+        },
+        {
+          id: "ta-entity-stats",
+          name: "QueryTermStats",
+          attributes: ["term: string", "locale: string", "decayed_score: float", "count_24h: bigint", "last_seen: timestamp"],
+          isEssential: true,
+        },
+        {
+          id: "ta-entity-event",
+          name: "SearchEvent",
+          attributes: ["query: string", "locale: string", "submitted_at: timestamp", "session_id: string"],
+          isEssential: true,
+        },
+        {
+          id: "ta-entity-history",
+          name: "UserSearchHistory",
+          attributes: ["user_id: UUID", "queries: list<string>", "updated_at: timestamp"],
+          isEssential: false,
+        },
+        {
+          id: "ta-entity-ads",
+          name: "SponsoredKeywordBid",
+          attributes: ["keyword: string", "advertiser_id: UUID", "bid_cents: int"],
+          isEssential: false,
+        },
+      ],
+      correctEntityIds: ["ta-entity-prefix", "ta-entity-stats", "ta-entity-event"],
+    },
+    apiDesignDiscovery: {
+      instruction: "Step 3: API Contracts. Select the endpoints for serving and learning suggestions:",
+      availableApis: [
+        {
+          id: "ta-api-suggest",
+          method: "GET",
+          path: "/api/v1/suggest?q=wea&locale=en-US&limit=10",
+          description: "Returns the precomputed top-10 for the prefix; cacheable at the edge with a short TTL.",
+          isInitialCore: true,
+        },
+        {
+          id: "ta-api-log",
+          method: "POST",
+          path: "/api/v1/search-events",
+          description: "Fire-and-forget log of a submitted query into the aggregation stream.",
+          isInitialCore: true,
+        },
+        {
+          id: "ta-api-publish",
+          method: "POST",
+          path: "/internal/v1/suggest-index/publish",
+          description: "Atomically swaps serving nodes to a newly built trie snapshot version.",
+          isInitialCore: true,
+        },
+        {
+          id: "ta-api-history",
+          method: "DELETE",
+          path: "/api/v1/users/me/search-history",
+          description: "Clears the user's personal search history used for personalised suggestions.",
+          isInitialCore: false,
+        },
+      ],
+      correctApiIds: ["ta-api-suggest", "ta-api-log", "ta-api-publish"],
+    },
+    architectureDiscovery: {
+      instruction: "Step 4: System Architecture. Assemble a stack that answers 100k prefix lookups/s in milliseconds:",
+      requiredComponents: ["cdn", "load_balancer", "server", "cache", "queue", "database"],
+      explanation:
+        "The browser debounces (~100-150 ms) and caches recent answers. A CDN caches responses for short, very popular prefixes with a TTL of a few minutes. The Load Balancer routes misses to suggestion Servers that hold a trie in memory where every node already stores its top-10, so a lookup is O(prefix length) with no ranking at request time; the trie is sharded by prefix range, with hot short prefixes replicated. A Redis Cache holds hot prefixes across servers. Submitted searches flow through a Queue (Kafka) into a stream job that updates time-decayed scores every few minutes; a builder writes a new trie snapshot to the Database/object store, and servers swap to it atomically. An inverted index over terms is the alternative when you need mid-word or multi-token matching.",
+    },
+  },
+  {
+    id: "design-notification-system",
+    title: "Design a Notification System",
+    subtitle: "Multi-channel fan-out, priority queues, user preferences, retries, and deduplication",
+    category: "Messaging & Delivery",
+    estimatedTime: "8 mins",
+    xpReward: 210,
+    problemStatement:
+      "Design the notification platform for an app with 100M users: push (APNs/FCM), SMS, and email. Normal load is 5k notifications/s, but a breaking-news alert must reach 20M devices within about 5 minutes (~67k/s) without delaying login codes. Users set channel preferences and quiet hours, and nobody should get the same alert twice. How do you build it?",
+    requirementsDiscovery: {
+      question: "Step 1: Clarifying Requirements. What belongs in the core notification MVP?",
+      options: [
+        {
+          id: "nt-req-1",
+          text: "Exactly-once delivery to the device across push, SMS, and email",
+          isCorrect: false,
+          feedback: "APNs, FCM, and SMS gateways don't confirm that the user's device displayed the message, and a timeout leaves you guessing. Aim for at-least-once sends with a dedupe key per notification, plus collapse ids so the device shows one copy.",
+        },
+        {
+          id: "nt-req-2",
+          text: "Call the push provider inside the API request that triggered the alert",
+          isCorrect: false,
+          feedback: "Provider calls take 100-500 ms and sometimes fail for minutes. Doing it inline makes the caller slow and loses the notification when the provider is down. Accept, persist, enqueue, and send asynchronously.",
+        },
+        {
+          id: "nt-req-3",
+          text: "Hold our own persistent socket to every phone instead of using APNs/FCM",
+          isCorrect: false,
+          feedback: "Mobile OSes suspend background apps and their sockets, so it wouldn't reach phones that aren't in use, and it drains battery. APNs and FCM exist precisely because the OS keeps one shared connection per device.",
+        },
+        {
+          id: "nt-req-4",
+          text: "Queued fan-out per channel, preferences, retries with dedupe, tracking",
+          isCorrect: true,
+          feedback: "That's the core. Accept requests fast, fan out through queues per channel and priority, respect opt-outs, quiet hours, and frequency caps, retry failed sends without duplicating them, and record what was delivered.",
+        },
+      ],
+    },
+    entitiesDiscovery: {
+      instruction: "Step 2: Core Data Model. Select the entities needed to decide what to send, where, and whether it arrived:",
+      availableEntities: [
+        {
+          id: "nt-entity-notification",
+          name: "Notification",
+          attributes: ["id: UUID", "user_id: UUID", "type: string", "priority: enum(critical,high,bulk)", "dedupe_key: string", "payload: json"],
+          isEssential: true,
+        },
+        {
+          id: "nt-entity-prefs",
+          name: "UserPreference",
+          attributes: ["user_id: UUID", "channels: map<type, list<channel>>", "quiet_hours: (start,end)", "timezone: string"],
+          isEssential: true,
+        },
+        {
+          id: "nt-entity-device",
+          name: "DeviceToken",
+          attributes: ["user_id: UUID", "platform: enum(apns,fcm)", "token: string", "last_active_at: timestamp"],
+          isEssential: true,
+        },
+        {
+          id: "nt-entity-attempt",
+          name: "DeliveryAttempt",
+          attributes: ["notification_id: UUID", "channel: enum(push,sms,email)", "provider_msg_id: string", "status: enum(sent,failed,bounced)", "attempt: int"],
+          isEssential: true,
+        },
+        {
+          id: "nt-entity-abtest",
+          name: "CopyExperimentVariant",
+          attributes: ["experiment_id: UUID", "variant: string", "template_text: text"],
+          isEssential: false,
+        },
+        {
+          id: "nt-entity-badge",
+          name: "InboxTheme",
+          attributes: ["user_id: UUID", "accent_color: string", "sound: string"],
+          isEssential: false,
+        },
+      ],
+      correctEntityIds: ["nt-entity-notification", "nt-entity-prefs", "nt-entity-device", "nt-entity-attempt"],
+    },
+    apiDesignDiscovery: {
+      instruction: "Step 3: API Contracts. Select the endpoints the platform needs on day one:",
+      availableApis: [
+        {
+          id: "nt-api-send",
+          method: "POST",
+          path: "/api/v1/notifications",
+          description: "Internal services submit a notification with a dedupe_key; returns 202 Accepted after it's persisted and enqueued.",
+          isInitialCore: true,
+        },
+        {
+          id: "nt-api-prefs",
+          method: "PUT",
+          path: "/api/v1/users/:id/preferences",
+          description: "Updates channel opt-ins and quiet hours per notification type.",
+          isInitialCore: true,
+        },
+        {
+          id: "nt-api-device",
+          method: "POST",
+          path: "/api/v1/devices",
+          description: "Registers or refreshes a device's push token after app install or token rotation.",
+          isInitialCore: true,
+        },
+        {
+          id: "nt-api-callback",
+          method: "POST",
+          path: "/webhooks/providers/:provider",
+          description: "Receives delivery, bounce, and 'token unregistered' callbacks from email/SMS/push providers.",
+          isInitialCore: true,
+        },
+        {
+          id: "nt-api-analytics",
+          method: "GET",
+          path: "/api/v1/campaigns/:id/open-rates",
+          description: "Dashboard of open and click-through rates per campaign.",
+          isInitialCore: false,
+        },
+      ],
+      correctApiIds: ["nt-api-send", "nt-api-prefs", "nt-api-device", "nt-api-callback"],
+    },
+    architectureDiscovery: {
+      instruction: "Step 4: System Architecture. Assemble a pipeline that absorbs a 20M-device burst without delaying login codes:",
+      requiredComponents: ["load_balancer", "server", "cache", "queue", "database"],
+      explanation:
+        "A Load Balancer fronts stateless API Servers that validate, persist the Notification to the Database, and enqueue it. Separate Queue topics per priority (critical OTPs never wait behind a bulk news blast) and per channel, partitioned by user_id, let each worker pool scale on its own. Workers read preferences and frequency caps from a Redis Cache, claim the dedupe_key with SET NX and a 24 h TTL so retries can't double-send, then call APNs/FCM/SMS/email with exponential backoff and a dead-letter queue. A broadcast is expanded into batches of ~500 tokens, so 20M devices become ~40k send jobs spread across the worker pool. Provider callbacks update DeliveryAttempt and prune dead tokens.",
     },
   },
 ];

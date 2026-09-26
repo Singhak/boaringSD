@@ -580,6 +580,105 @@ export const REASONING_PROMPTS: ReasoningPrompt[] = [
     modelAnswer:
       "Catalog reads can be seconds stale, so CDN, caches and local replicas keep them under 50ms. Stock decrements go to one home region per SKU with an atomic 'stock > 0' check. Tradeoff: remote shoppers pay ~100ms more at checkout, and a partition can pause that SKU's sales.",
   },
+  // ── CAP & PACELC ──────────────────────────────────────────────────────
+  {
+    id: "cap-pacelc-why",
+    patternId: "cap-pacelc",
+    kind: "why_this",
+    askedBy: "Priya · Incident commander",
+    prompt:
+      "You made gift cards CP but left carts AP. Why not make everything CP? Nobody likes stale data.",
+    starters: ["Because during a split…", "Carts can…", "The cost of CP is…"],
+    rubric: [
+      { id: "unavail", criterion: "Explains CP means rejecting requests during a partition, so everything CP makes the whole site unavailable", weight: 3 },
+      { id: "merge", criterion: "Notes cart divergence is cheap to merge (union of adds) while balances cannot be merged safely", weight: 2 },
+      { id: "per-op", criterion: "States the choice is per feature/operation, not one setting for the system", weight: 2 },
+    ],
+    modelAnswer:
+      "CP means refusing writes while regions can't talk, so all-CP turns a 90 s split into a 90 s outage. Carts merge cleanly as a union of adds; a double-spent balance can't be undone. So pick per feature: CP where divergence costs money, AP where it merges.",
+  },
+  {
+    id: "cap-pacelc-10x",
+    patternId: "cap-pacelc",
+    kind: "ten_x",
+    askedBy: "Jordan · CTO",
+    prompt:
+      "We're adding a third region and 10x the writes. What gets worse with cross-region quorum writes, and how will we notice?",
+    starters: ["Every quorum write…", "I'd watch…", "To mitigate…"],
+    rubric: [
+      { id: "latency", criterion: "Identifies that cross-region quorum writes pay inter-region round-trip latency on every write, which grows under load", weight: 3 },
+      { id: "signal", criterion: "Names a signal: write p99, quorum timeout rate, or inter-region link latency", weight: 2 },
+      { id: "mitigate", criterion: "Proposes a mitigation: keep only money/stock CP, local quorums, or home-region ownership for data", weight: 2 },
+    ],
+    modelAnswer:
+      "Each CP write waits on a round trip to another region, so 10x writes means 10x ocean waits and a queue behind them. I'd alert on write p99 and quorum timeouts. Keep only money and stock on global quorums; give other data a home region with local quorums.",
+  },
+  // ── Consensus & quorums ───────────────────────────────────────────────
+  {
+    id: "consensus-quorums-why",
+    patternId: "consensus-quorums",
+    kind: "why_this",
+    askedBy: "Jordan · CTO",
+    prompt:
+      "Why did you insist on 5 nodes instead of 4? Four sounds safer than three and cheaper than five.",
+    starters: ["A majority of four…", "With five nodes…", "Odd sizes…"],
+    rubric: [
+      { id: "majority", criterion: "Explains a majority of 4 is 3, so 4 nodes tolerate only one failure, the same as 3", weight: 3 },
+      { id: "split", criterion: "Notes an even cluster can split 2-2 with no majority on either side, halting writes", weight: 2 },
+      { id: "five", criterion: "States 5 nodes tolerate two failures (majority 3), ideally spread across failure domains", weight: 2 },
+    ],
+    modelAnswer:
+      "A majority of 4 is 3, so 4 nodes survive one failure, same as 3, and a 2-2 split leaves neither side a majority. Five nodes need 3 votes, so we survive two failures. Spread them across racks so one rack loss never takes the majority.",
+  },
+  {
+    id: "consensus-quorums-10x",
+    patternId: "consensus-quorums",
+    kind: "ten_x",
+    askedBy: "Priya · Incident commander",
+    prompt:
+      "The metadata cluster is getting 10x the writes. Can we just add more Raft nodes to keep up? What breaks first?",
+    starters: ["More nodes…", "The leader…", "I'd watch…"],
+    rubric: [
+      { id: "leader", criterion: "Explains all writes go through one leader and wait for a majority, so adding nodes does not add write throughput (it adds latency)", weight: 3 },
+      { id: "signal", criterion: "Names a signal: leader CPU/disk, commit latency, or follower replication lag", weight: 2 },
+      { id: "mitigate", criterion: "Proposes a mitigation: batching/pipelining, sharding into multiple consensus groups, or moving bulk data out of the consensus store", weight: 2 },
+    ],
+    modelAnswer:
+      "No: every write goes through one leader and waits for a majority, so more nodes mean more acks per write, not more throughput. The leader's disk and commit latency break first. Batch writes, keep only metadata in Raft, and split into several consensus groups by key.",
+  },
+  // ── Storage engines & indexing ────────────────────────────────────────
+  {
+    id: "storage-engines-why",
+    patternId: "storage-engines",
+    kind: "why_this",
+    askedBy: "Imani · Incident commander",
+    prompt:
+      "You moved telemetry to an LSM engine. Our main DB is a B-tree and works fine. Why a different engine here?",
+    starters: ["Because this workload…", "LSM trees…", "The tradeoff is…"],
+    rubric: [
+      { id: "writes", criterion: "Explains LSM turns random in-place page writes into sequential appends/flushes, suiting write-heavy ingest", weight: 3 },
+      { id: "reads", criterion: "Names the read-side cost: a lookup may check several SSTables, mitigated by Bloom filters/compaction", weight: 2 },
+      { id: "fit", criterion: "Notes B-trees remain a good fit for read-heavy or update-in-place workloads like the main DB", weight: 2 },
+    ],
+    modelAnswer:
+      "Telemetry is 90k small inserts/s. A B-tree rewrites random pages, so the disk saturates; an LSM appends to a memtable and flushes sorted files sequentially. Reads may touch several files, so we rely on Bloom filters and compaction. The read-heavy main DB stays on a B-tree.",
+  },
+  {
+    id: "storage-engines-10x",
+    patternId: "storage-engines",
+    kind: "ten_x",
+    askedBy: "Jordan · CTO",
+    prompt:
+      "Ingest is going 10x on the LSM store. What breaks first, and how will we see it before users do?",
+    starters: ["Compaction…", "I'd watch…", "To mitigate…"],
+    rubric: [
+      { id: "compaction", criterion: "Identifies compaction falling behind: SSTables pile up, write stalls, and read amplification grows", weight: 3 },
+      { id: "signal", criterion: "Names a signal: pending compaction bytes, SSTable/L0 file count, or write-stall events", weight: 2 },
+      { id: "mitigate", criterion: "Proposes a mitigation: more disk bandwidth/nodes, tuning compaction strategy, or sharding the write load", weight: 2 },
+    ],
+    modelAnswer:
+      "At 10x, flushes outpace compaction: level-0 files pile up, reads check more files, and the engine eventually stalls writes. I'd alert on pending compaction bytes and L0 file count. Add disk bandwidth or shards, and tune the compaction strategy for the write rate.",
+  },
 ];
 
 const BY_ID = new Map(REASONING_PROMPTS.map((p) => [p.id, p]));

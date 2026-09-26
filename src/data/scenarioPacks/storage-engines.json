@@ -1,0 +1,1012 @@
+{
+  "version": 2,
+  "patternId": "storage-engines",
+  "patternName": "Storage Engines & Indexing",
+  "level": 18,
+  "phase": "Depth",
+  "canonicalId": "se-01",
+  "nextCanonicalId": null,
+  "incidents": [
+    {
+      "id": "se-01",
+      "incidentCode": "INC-018",
+      "level": 18,
+      "patternId": "storage-engines",
+      "canonical": true,
+      "severity": "P0",
+      "xp": 150,
+      "title": "Write-heavy telemetry crushes B-tree",
+      "brief": "An IoT ingest writes 90,000 small rows/s into a B-tree table. Random page updates keep the disk at 95% and p95 insert latency at 400 ms.",
+      "constraint": "Writes dominate; reads are mostly recent time ranges.",
+      "question": "Which storage engine fits this workload?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 90000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 95,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 400,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 700,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "ingest",
+            "kind": "server",
+            "label": "Ingest API",
+            "cpu": 45
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "B-tree DB (disk 95%)",
+            "cpu": 95,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "ingest",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "lsm",
+          "label": "Use an LSM-tree engine that appends writes and compacts later",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 57,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 140,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Sequential writes, calm disk",
+          "resultBody": "Writes land in a memtable and flush as sorted files, turning random page rewrites into sequential I/O; insert p95 falls to tens of milliseconds."
+        },
+        {
+          "id": "more-indexes",
+          "label": "Add secondary indexes on device_id and timestamp",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 520,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 980,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Each index is another write",
+          "resultBody": "Every insert now updates three B-trees instead of one, so write amplification and disk load rise further.",
+          "retry": true
+        },
+        {
+          "id": "bigger-pages",
+          "label": "Raise the B-tree page size from 8 KB to 64 KB",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 560,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1050,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Bigger random writes",
+          "resultBody": "Each random update now rewrites a larger page, so the disk moves more bytes per insert and gets busier, not calmer.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "Is this workload read-heavy or write-heavy?",
+        "Random in-place updates are expensive on disk.",
+        "Append first, organize later."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "se-02",
+      "incidentCode": "INC-018",
+      "level": 18,
+      "patternId": "storage-engines",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 120,
+      "title": "LSM reads touch every file",
+      "brief": "Point lookups on the LSM store take 60 ms because each read checks dozens of SSTables for a key that usually doesn't exist.",
+      "constraint": "Most lookups are for keys that are absent.",
+      "question": "What cuts the wasted reads?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 40000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 82,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 60,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 180,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Lookup API",
+            "cpu": 40
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "LSM store (40 SSTables)",
+            "cpu": 82,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "api",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "bloom",
+          "label": "Add a Bloom filter per SSTable so absent keys skip the file",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 49,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 21,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Most files skipped",
+          "resultBody": "A Bloom filter answers 'definitely not here' from memory, so a missing key costs a few filter checks instead of dozens of disk reads."
+        },
+        {
+          "id": "hash-index",
+          "label": "Replace SSTables with an in-memory hash index of all keys",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 87,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 78,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 252,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Index no longer fits",
+          "resultBody": "Billions of keys will not fit in RAM, and a hash index loses the sorted range scans the time-series reads rely on.",
+          "retry": true
+        },
+        {
+          "id": "more-memtable",
+          "label": "Double the memtable size so fewer lookups reach disk",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 88,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 84,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 270,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Only recent keys helped",
+          "resultBody": "A larger memtable holds a few more recent writes, but lookups for absent keys still scan every SSTable on disk.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "What does a read of a missing key cost?",
+        "You want a cheap 'definitely not here'.",
+        "A probabilistic filter per file."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "se-03",
+      "incidentCode": "INC-018",
+      "level": 18,
+      "patternId": "storage-engines",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 120,
+      "title": "Compaction steals the disk",
+      "brief": "Every afternoon LSM compaction saturates disk bandwidth; foreground write latency spikes from 5 ms to 300 ms for 20 minutes.",
+      "constraint": "Writes must stay fast even while compaction runs.",
+      "question": "How should compaction be managed?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 55000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 300,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 260,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Write API",
+            "cpu": 38
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "LSM store (compacting)",
+            "cpu": 90,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "api",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "throttle-compaction",
+          "label": "Rate-limit compaction I/O and schedule it off peak",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 54,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 105,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Compaction in the background",
+          "resultBody": "Capping compaction bandwidth leaves headroom for foreground writes, and running the heavy merges off peak keeps p95 near 5 ms."
+        },
+        {
+          "id": "disable-compaction",
+          "label": "Pause compaction entirely until the weekend",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 95,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 390,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 364,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Read cost exploded",
+          "resultBody": "Uncompacted SSTables pile up all week, so reads check ever more files and disk usage grows with duplicate keys.",
+          "retry": true
+        },
+        {
+          "id": "sync-writes",
+          "label": "Make every write wait until compaction finishes its current pass",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 96,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 420,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 390,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Writes queued behind merges",
+          "resultBody": "Foreground writes now block on multi-minute compaction passes, turning a 300 ms spike into timeouts.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "Two workloads share one disk. Who wins?",
+        "Background work should stay in the background.",
+        "Budget the I/O compaction may use."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "se-04",
+      "incidentCode": "INC-018",
+      "level": 18,
+      "patternId": "storage-engines",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 120,
+      "title": "Orders query scans the table",
+      "brief": "SELECT * FROM orders WHERE customer_id = ? takes 2.4 s on a 400M-row table; the DB CPU is pinned by sequential scans.",
+      "constraint": "The query runs 3,000 times per second from the order-history page.",
+      "question": "What is the right fix?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 3000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 93,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 2400,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 520,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Order history API",
+            "cpu": 30
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Orders DB (seq scans)",
+            "cpu": 93,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "api",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "btree-index",
+          "label": "Add a B-tree index on customer_id, ordered by created_at",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 56,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 840,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Seeks instead of scans",
+          "resultBody": "The index finds one customer's rows in a few page reads and returns them already sorted, so the query drops from seconds to milliseconds."
+        },
+        {
+          "id": "read-replicas",
+          "label": "Add three read replicas and spread the scans across them",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 98,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3120,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 728,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Three slow scans instead of one",
+          "resultBody": "Each replica still scans 400M rows per query; you've bought three copies of the bottleneck.",
+          "retry": true
+        },
+        {
+          "id": "cache-all",
+          "label": "Cache every customer's full order history in Redis",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3360,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 780,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Cache misses still scan",
+          "resultBody": "The first read for each customer still runs the 2.4 s scan, and invalidating whole histories on every new order is costly.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "How many rows does the query read to find one customer?",
+        "An access path beats more copies.",
+        "Index the column in the WHERE clause."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "se-05",
+      "incidentCode": "INC-018",
+      "level": 18,
+      "patternId": "storage-engines",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 120,
+      "title": "Index slows the write path",
+      "brief": "The team indexed nine columns on the events table 'just in case'. Inserts slowed from 2 ms to 25 ms and ingest is falling behind.",
+      "constraint": "Only two query patterns hit this table.",
+      "question": "What should they do?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 20000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 86,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 25,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 400,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "ingest",
+            "kind": "server",
+            "label": "Event ingest",
+            "cpu": 42
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Events DB (9 indexes)",
+            "cpu": 86,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "ingest",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "drop-unused",
+          "label": "Keep indexes for the two real queries and drop the rest",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 52,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 20,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Writes fast again",
+          "resultBody": "Every index is updated on every insert; removing seven unused ones cuts write amplification and inserts return to a few milliseconds."
+        },
+        {
+          "id": "async-index",
+          "label": "Keep all nine and rebuild them nightly instead of on insert",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 91,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 32,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 560,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Queries read stale indexes",
+          "resultBody": "Most engines can't defer index maintenance; the ones that can serve queries that miss the day's rows until the rebuild.",
+          "retry": true
+        },
+        {
+          "id": "bigger-disk",
+          "label": "Move the table to faster NVMe disks and keep every index",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 35,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 600,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still nine writes per insert",
+          "resultBody": "Faster disks shave some latency, but each insert still updates nine B-trees and CPU stays pinned on index maintenance.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "What does each extra index cost on insert?",
+        "Indexes are for queries you actually run.",
+        "Remove what nobody reads."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "se-06",
+      "incidentCode": "INC-018",
+      "level": 18,
+      "patternId": "storage-engines",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 120,
+      "title": "Range scans on a hash key",
+      "brief": "A time-series table is partitioned by hash(timestamp). 'Last 15 minutes' dashboards now fan out to all 64 partitions and time out.",
+      "constraint": "Most reads are recent time ranges per device.",
+      "question": "Which key layout fits?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 25000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 84,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 1800,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 340,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "dash",
+            "kind": "server",
+            "label": "Dashboard API",
+            "cpu": 40
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Store (64 hash partitions)",
+            "cpu": 84,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "dash",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "composite-key",
+          "label": "Key rows by device, then time, so a range is one contiguous scan",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 50,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 630,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "One partition, one scan",
+          "resultBody": "A device's recent rows sit next to each other, so the dashboard reads one small sorted range instead of querying 64 partitions."
+        },
+        {
+          "id": "more-partitions",
+          "label": "Increase the hash partitions from 64 to 256",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 89,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2340,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 476,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Wider fan-out",
+          "resultBody": "Each range query now touches 256 partitions instead of 64, so tail latency gets worse.",
+          "retry": true
+        },
+        {
+          "id": "time-only",
+          "label": "Key rows purely by timestamp so recent data is together",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 90,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2520,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 510,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "One hot partition",
+          "resultBody": "Every write for the current minute lands on the same partition, creating a write hotspot even as range reads improve.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "Where do one device's recent rows live today?",
+        "Hashing destroys order.",
+        "Put the range you read next to itself."
+      ],
+      "nextId": null,
+      "reviewed": true
+    }
+  ]
+}
