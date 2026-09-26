@@ -25,6 +25,7 @@ import { getAllCampaignChapters, getCampaignChapterById } from "@/data/campaign"
 import { getPatternByChapterId, getPatternById, getAllPatterns } from "@/data/patterns";
 import { getCanonicalIncident, getPatternReplayVariant } from "@/data/scenarioPacks";
 import IncidentWarRoom from "@/components/incident/IncidentWarRoom";
+import SystemFlightSim from "@/components/simulation/SystemFlightSim";
 
 import {
   clearRunProgress,
@@ -73,6 +74,109 @@ export default function CampaignChapterPage({
 
   const stats = useUserStats();
   const total = getAllCampaignChapters().length;
+  const [simMode, setSimMode] = useState<"warroom" | "flight">("warroom");
+
+  if (stats !== null && isPatternUnlocked(stats, pattern) && mode !== "review") {
+    const isGuided = mode === "guided";
+
+    return (
+      <div className="h-screen max-h-screen overflow-hidden text-slate-100 flex flex-col bg-[#080d19]">
+        <Navbar />
+
+        {/* Compact Navigation Bar */}
+        <div className="shrink-0 flex items-center justify-between gap-3 px-4 sm:px-6 py-1.5 border-b border-[var(--line)] bg-[#0b1020]/90 backdrop-blur-md">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <Link
+              href="/campaign"
+              className="btn btn-ghost !py-1 !px-2 text-xs flex items-center gap-1.5 text-slate-400 hover:text-white shrink-0"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" />
+              <span>Level map</span>
+            </Link>
+            <span className="text-slate-600">/</span>
+            <span className="font-mono text-cyan-300 font-semibold tracking-wide text-xs truncate">
+              LEVEL {pattern.levelNumber} OF {total}: {pattern.title.toUpperCase()} {isGuided ? "(GUIDED STUDY)" : ""}
+            </span>
+            <span className="chip chip-warn !text-[9px] !py-0 !px-1.5 shrink-0 hidden sm:inline-flex">
+              <Zap className="w-2.5 h-2.5 mr-0.5" /> {isPatternCleared(stats, pattern) ? `Replay +${pattern.rewards.replayXp} XP` : `+${pattern.rewards.firstClearXp} XP`}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            {!isGuided && pattern.levelNumber <= 2 && (
+              <div className="flex items-center rounded-lg border border-white/10 bg-black/40 p-0.5">
+                <button
+                  type="button"
+                  onClick={() => setSimMode("flight")}
+                  className={`px-2 py-0.5 rounded text-[11px] font-medium transition-all ${
+                    simMode === "flight"
+                      ? "bg-cyan-400/20 text-cyan-300 border border-cyan-400/30"
+                      : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  ⚡ Kinetic Sim
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSimMode("warroom")}
+                  className={`px-2 py-0.5 rounded text-[11px] font-medium transition-all ${
+                    simMode === "warroom"
+                      ? "bg-cyan-400/20 text-cyan-300 border border-cyan-400/30"
+                      : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  🛡️ War Room
+                </button>
+              </div>
+            )}
+            {isGuided ? (
+              <Link
+                href={`/campaign/${chapter.id}`}
+                className="btn btn-primary !py-1 !px-2.5 text-xs flex items-center gap-1.5"
+              >
+                <Play className="w-3 h-3" />
+                <span className="hidden sm:inline">Launch Live</span> War Room
+              </Link>
+            ) : (
+              <Link
+                href={`/campaign/${chapter.id}?mode=guided`}
+                className="btn btn-ghost !py-1 !px-2.5 text-xs text-slate-400 hover:text-white"
+              >
+                Switch to Guided Mode
+              </Link>
+            )}
+          </div>
+        </div>
+
+        <main className="flex-1 min-h-0 w-full max-w-7xl mx-auto p-2 sm:p-3 flex flex-col overflow-hidden">
+          {isGuided ? (
+            <PatternRun chapter={chapter} pattern={pattern} stats={stats} isCompactView={true} />
+          ) : simMode === "flight" && pattern.levelNumber <= 2 ? (
+            <SystemFlightSim
+              initialIncidentId={pattern.levelNumber === 1 ? "hs-01" : "lb-01"}
+              onAllCompleted={() => {
+                completePatternRun(pattern, {
+                  patternId: pattern.id,
+                  diagnosisFirstTry: true,
+                  interventionFirstTry: true,
+                  transferFirstTry: true,
+                  hintsUsed: 0,
+                  failureReasons: [],
+                });
+              }}
+            />
+          ) : (
+            <IncidentWarRoom
+              key={`warroom-${pattern.id}`}
+              pattern={pattern}
+              chapter={chapter}
+              initialIncidentId={getCanonicalIncident(pattern.levelNumber)?.id || "hs-01"}
+            />
+          )}
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen text-slate-100 flex flex-col">
@@ -100,7 +204,7 @@ export default function CampaignChapterPage({
           <LockedLevel pattern={pattern} />
         ) : mode === "review" ? (
           <ReviewRun chapter={chapter} pattern={pattern} stats={stats} />
-        ) : mode === "guided" ? (
+        ) : (
           <div className="space-y-4">
             <div className="surface p-4 rounded-xl border border-cyan-400/20 bg-cyan-400/[0.03] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div className="space-y-0.5">
@@ -117,21 +221,6 @@ export default function CampaignChapterPage({
               </Link>
             </div>
             <PatternRun chapter={chapter} pattern={pattern} stats={stats} />
-          </div>
-        ) : (
-          <div className="space-y-4">
-            <div className="flex items-center justify-between pb-2">
-              <span className="eyebrow text-cyan-300">Live Incident War Room · Level {pattern.levelNumber}</span>
-              <Link href={`/campaign/${chapter.id}?mode=guided`} className="btn btn-ghost text-xs">
-                Switch to Guided Mode
-              </Link>
-            </div>
-            <IncidentWarRoom
-              key={`warroom-${pattern.id}`}
-              pattern={pattern}
-              chapter={chapter}
-              initialIncidentId={getCanonicalIncident(pattern.levelNumber)?.id || "hs-01"}
-            />
           </div>
         )}
 
@@ -268,10 +357,12 @@ function PatternRun({
   chapter,
   pattern,
   stats,
+  isCompactView = false,
 }: {
   chapter: CampaignChapter;
   pattern: SystemDesignPattern;
   stats: UserStats;
+  isCompactView?: boolean;
 }) {
   // Rendered only after stats load on the client, so reading localStorage here is safe.
   const [run, setRun] = useState<RunProgress>(() => {
@@ -333,191 +424,245 @@ function PatternRun({
   const objective = pattern.objectives.find((o) => o.stage === run.stage);
 
   return (
-    <>
-      <LevelHeader chapter={chapter} pattern={pattern} reward={reward} />
-      <RunStepper stage={run.stage} />
+    <div className={isCompactView ? "flex-1 min-h-0 flex flex-col justify-between overflow-hidden gap-2" : "space-y-6"}>
+      {!isCompactView && <LevelHeader chapter={chapter} pattern={pattern} reward={reward} />}
+      <div className="shrink-0">
+        <RunStepper stage={run.stage} />
+      </div>
 
       {resumed && run.stage !== "result" && (
-        <p role="status" className="text-[13px] text-slate-300 flex items-center justify-between gap-3 px-4 py-2.5 rounded-xl border border-cyan-300/20 bg-cyan-300/[0.04] animate-fadeIn">
+        <p role="status" className="shrink-0 text-xs text-slate-300 flex items-center justify-between gap-2 px-3 py-1.5 rounded-lg border border-cyan-300/20 bg-cyan-300/[0.04] animate-fadeIn">
           <span>Resumed where you left off. Earlier answers are saved.</span>
-          <button type="button" onClick={restart} className="btn btn-ghost !py-1 text-xs">
-            <RotateCcw className="w-3.5 h-3.5" /> Start over
+          <button type="button" onClick={restart} className="btn btn-ghost !py-0.5 !px-2 text-[11px]">
+            <RotateCcw className="w-3 h-3 mr-1" /> Start over
           </button>
         </p>
       )}
 
       {run.stage === "result" && outcome ? (
-        <RunResult chapter={chapter} pattern={pattern} outcome={outcome} onReplay={restart} />
+        <div className={isCompactView ? "flex-1 min-h-0 overflow-y-auto pr-1" : ""}>
+          <RunResult chapter={chapter} pattern={pattern} outcome={outcome} onReplay={restart} />
+        </div>
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.1fr] gap-6 items-start">
+        <div className={`grid grid-cols-1 lg:grid-cols-[1.1fr_1.25fr] gap-3 ${isCompactView ? "flex-1 min-h-0 items-stretch overflow-hidden" : "items-start gap-6"}`}>
           {/* Live system */}
-          <section className="space-y-3 lg:sticky lg:top-20" aria-label="Live system">
-            <div className="flex items-center justify-between">
-              <h2 className="eyebrow flex items-center gap-2">
-                <Sparkles className="w-3.5 h-3.5 text-cyan-300" /> Live system
+          <section className={`space-y-3 ${isCompactView ? "flex flex-col justify-between min-h-0 space-y-2 overflow-y-auto lg:overflow-visible pr-1" : "lg:sticky lg:top-20"}`} aria-label="Live system">
+            <div className="flex items-center justify-between shrink-0">
+              <h2 className="eyebrow flex items-center gap-1.5 !text-[11px]">
+                <Sparkles className="w-3 h-3 text-cyan-300" /> Live system
               </h2>
-              <span className={`chip ${fixed ? "chip-ok" : "chip-bad"}`}>
+              <span className={`chip !py-0 !text-[10px] ${fixed ? "chip-ok" : "chip-bad"}`}>
                 <span className={`dot ${fixed ? "" : "animate-pulse-glow"}`} aria-hidden />
                 {fixed ? "Stabilized" : "Degraded"}
               </span>
             </div>
-            <MetricsStrip metrics={metrics} before={fixed ? chapter.initialMetrics : undefined} />
-            <RunTopology patternId={pattern.id} fixed={fixed} />
+            <div className="shrink-0">
+              <MetricsStrip metrics={metrics} before={fixed ? chapter.initialMetrics : undefined} />
+            </div>
+            <div className={isCompactView ? "flex-1 min-h-0 flex flex-col justify-center" : ""}>
+              <RunTopology patternId={pattern.id} fixed={fixed} />
+            </div>
           </section>
 
           {/* Current stage */}
-          <section className="surface p-5 sm:p-7 space-y-5" aria-live="polite">
+          <section className={`surface ${isCompactView ? "p-3 sm:p-4 flex flex-col justify-between min-h-0 overflow-y-auto rounded-xl border border-[var(--line)] space-y-2" : "p-5 sm:p-7 space-y-5"}`} aria-live="polite">
             {objective && (
-              <p className="text-xs text-slate-500 pb-4 border-b border-[var(--line)]">
+              <p className="shrink-0 text-[11px] text-slate-500 pb-1 border-b border-[var(--line)]">
                 Objective · <span className="text-slate-200">{objective.label}</span>
               </p>
             )}
 
             {run.stage === "observe" && (
-              <div className="space-y-4">
-                <span className="eyebrow text-cyan-300/80">Observe</span>
-                <p className="text-[15px] text-slate-200 leading-relaxed">
-                  Look at the metrics and the system diagram. Something is failing. Before you touch anything, work out what.
-                </p>
-                <p className="text-[13px] text-slate-400">
-                  New constraint this level: <span className="text-slate-200">{pattern.newConstraint}</span>
-                </p>
-                <div className="rounded-xl border border-cyan-400/20 bg-cyan-400/[0.04] p-3.5">
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="eyebrow text-cyan-300/80">Fresh replay variant</p>
-                    <button type="button" onClick={nextScenario} className="btn btn-ghost !px-2 !py-1 text-[11px]">
-                      Next scenario
-                    </button>
+              isCompactView ? (
+                <div className="space-y-2 flex-1 min-h-0 flex flex-col justify-between">
+                  <div className="space-y-0.5 shrink-0">
+                    <span className="eyebrow text-cyan-300/80 !text-[10px]">Observe · New Constraint</span>
+                    <h2 className="text-lg sm:text-xl display font-bold leading-tight text-white">{pattern.levelGoal}</h2>
+                    <p className="text-[12px] sm:text-[13px] text-slate-300 leading-snug line-clamp-2">{chapter.scenario}</p>
+                    <p className="text-[11px] text-slate-400">Constraint: <span className="text-slate-200">{pattern.newConstraint}</span></p>
                   </div>
-                  <h3 className="mt-2 text-base font-semibold text-white">{replayVariant.title}</h3>
-                  <p className="mt-1 text-sm text-slate-300">{replayVariant.context}</p>
-                  <p className="mt-2 text-[12px] text-slate-400">Constraint: {replayVariant.constraint}</p>
-                  <p className="mt-2 text-[12px] text-emerald-200">Expected fix: {replayVariant.expectedPattern}</p>
+                  <div className="rounded-xl border border-cyan-400/20 bg-cyan-400/[0.04] p-2.5 space-y-1 flex-1 min-h-0 overflow-y-auto">
+                    <div className="flex items-center justify-between">
+                      <p className="eyebrow text-cyan-300/80 !text-[10px]">Fresh replay variant</p>
+                      <button type="button" onClick={nextScenario} className="btn btn-ghost !px-1.5 !py-0.5 text-[10px]">
+                        Next scenario
+                      </button>
+                    </div>
+                    <h3 className="text-sm font-semibold text-white leading-tight">{replayVariant.title}</h3>
+                    <p className="text-xs text-slate-300 leading-snug line-clamp-2">{replayVariant.context}</p>
+                    <p className="text-[11px] text-emerald-200">Expected: {replayVariant.expectedPattern}</p>
+                  </div>
+                  {cleared && (
+                    <p className="shrink-0 text-[11px] text-emerald-200/90 px-2.5 py-1 rounded-lg bg-emerald-400/[0.06] border border-emerald-400/20">
+                      Cleared before. Replaying pays +{pattern.rewards.replayXp} XP once a day.
+                    </p>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      markRunStarted(pattern.id);
+                      update({ stage: "diagnose" });
+                    }}
+                    className="btn btn-primary btn-md w-full justify-center shrink-0 !py-2 text-xs sm:text-sm font-medium"
+                  >
+                    <Play className="w-4 h-4 mr-1" />
+                    Start diagnosis
+                  </button>
                 </div>
-                {cleared && (
-                  <p className="text-[13px] text-emerald-200/90 px-3 py-2.5 rounded-lg bg-emerald-400/[0.06] border border-emerald-400/20">
-                    You have cleared this level before. Replaying is good practice; it pays +{pattern.rewards.replayXp} XP once a day.
+              ) : (
+                <div className="space-y-4">
+                  <span className="eyebrow text-cyan-300/80">Observe</span>
+                  <p className="text-[15px] text-slate-200 leading-relaxed">
+                    Look at the metrics and the system diagram. Something is failing. Before you touch anything, work out what.
                   </p>
-                )}
-                <button
-                  type="button"
-                  onClick={() => {
-                    markRunStarted(pattern.id);
-                    update({ stage: "diagnose" });
-                  }}
-                  className="btn btn-primary btn-lg"
-                >
-                  <Play className="w-4 h-4" />
-                  Start diagnosis
-                </button>
-              </div>
+                  <p className="text-[13px] text-slate-400">
+                    New constraint this level: <span className="text-slate-200">{pattern.newConstraint}</span>
+                  </p>
+                  <div className="rounded-xl border border-cyan-400/20 bg-cyan-400/[0.04] p-3.5">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="eyebrow text-cyan-300/80">Fresh replay variant</p>
+                      <button type="button" onClick={nextScenario} className="btn btn-ghost !px-2 !py-1 text-[11px]">
+                        Next scenario
+                      </button>
+                    </div>
+                    <h3 className="mt-2 text-base font-semibold text-white">{replayVariant.title}</h3>
+                    <p className="mt-1 text-sm text-slate-300">{replayVariant.context}</p>
+                    <p className="mt-2 text-[12px] text-slate-400">Constraint: {replayVariant.constraint}</p>
+                    <p className="mt-2 text-[12px] text-emerald-200">Expected fix: {replayVariant.expectedPattern}</p>
+                  </div>
+                  {cleared && (
+                    <p className="text-[13px] text-emerald-200/90 px-3 py-2.5 rounded-lg bg-emerald-400/[0.06] border border-emerald-400/20">
+                      You have cleared this level before. Replaying is good practice; it pays +{pattern.rewards.replayXp} XP once a day.
+                    </p>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      markRunStarted(pattern.id);
+                      update({ stage: "diagnose" });
+                    }}
+                    className="btn btn-primary btn-lg"
+                  >
+                    <Play className="w-4 h-4" />
+                    Start diagnosis
+                  </button>
+                </div>
+              )
             )}
 
             {run.stage === "diagnose" && (
-              <QuestionCard
-                key={`diagnose-${replayVariant.id}`}
-                eyebrow={`Diagnose · Incident: ${replayVariant.title}`}
-                context={replayVariant.context}
-                question={replayQuestion}
-                submitLabel="Lock in diagnosis"
-                continueLabel="Choose a fix"
-                onAnswer={(opt, attempt) =>
-                  update({
-                    diagnosisAttempts: attempt,
-                    failureReasons: opt.isCorrect ? run.failureReasons : [...run.failureReasons, "diagnosis"],
-                  })
-                }
-                onContinue={() => update({ stage: "choose" })}
-              />
+              <div className={isCompactView ? "flex-1 min-h-0 overflow-y-auto pr-0.5" : ""}>
+                <QuestionCard
+                  key={`diagnose-${replayVariant.id}`}
+                  eyebrow={`Diagnose · Incident: ${replayVariant.title}`}
+                  context={replayVariant.context}
+                  question={replayQuestion}
+                  submitLabel="Lock in diagnosis"
+                  continueLabel="Choose a fix"
+                  onAnswer={(opt, attempt) =>
+                    update({
+                      diagnosisAttempts: attempt,
+                      failureReasons: opt.isCorrect ? run.failureReasons : [...run.failureReasons, "diagnosis"],
+                    })
+                  }
+                  onContinue={() => update({ stage: "choose" })}
+                />
+              </div>
             )}
 
             {run.stage === "choose" && (
-              <QuestionCard
-                key="choose"
-                eyebrow="Deploy a fix"
-                question={pattern.intervention}
-                submitLabel="Deploy this change"
-                continueLabel="Continue"
-                onAnswer={(opt, attempt) => {
-                  update({
-                    interventionAttempts: attempt,
-                    failureReasons: opt.isCorrect ? run.failureReasons : [...run.failureReasons, "intervention"],
-                  });
-                  if (opt.isCorrect) {
-                    playDeploySound();
-                    setFixDeployed(true);
-                    markFixApplied(pattern.id);
+              <div className={isCompactView ? "flex-1 min-h-0 overflow-y-auto pr-0.5" : ""}>
+                <QuestionCard
+                  key="choose"
+                  eyebrow="Deploy a fix"
+                  question={pattern.intervention}
+                  submitLabel="Deploy this change"
+                  continueLabel="Continue"
+                  onAnswer={(opt, attempt) => {
+                    update({
+                      interventionAttempts: attempt,
+                      failureReasons: opt.isCorrect ? run.failureReasons : [...run.failureReasons, "intervention"],
+                    });
+                    if (opt.isCorrect) {
+                      playDeploySound();
+                      setFixDeployed(true);
+                      markFixApplied(pattern.id);
+                    }
+                  }}
+                  afterCorrect={
+                    <div className="p-2.5 rounded-lg bg-black/20 border border-[var(--line)] text-slate-300 text-xs space-y-1">
+                      <p className="font-medium text-white">Verify: compare the metrics.</p>
+                      <p>
+                        CPU {chapter.initialMetrics.cpuUsage}% → {chapter.targetMetrics.cpuUsage}%, latency{" "}
+                        {chapter.initialMetrics.latencyMs.toLocaleString()}ms → {chapter.targetMetrics.latencyMs.toLocaleString()}ms,
+                        errors {chapter.initialMetrics.errorRate}% → {chapter.targetMetrics.errorRate}%.
+                      </p>
+                      <p className="text-amber-200/80">Hold on. Fixes have side effects.</p>
+                    </div>
                   }
-                }}
-                afterCorrect={
-                  <div className="p-3 rounded-lg bg-black/20 border border-[var(--line)] text-slate-300 space-y-1">
-                    <p className="font-medium text-white">Verify: compare the metrics.</p>
-                    <p>
-                      CPU {chapter.initialMetrics.cpuUsage}% → {chapter.targetMetrics.cpuUsage}%, latency{" "}
-                      {chapter.initialMetrics.latencyMs.toLocaleString()}ms → {chapter.targetMetrics.latencyMs.toLocaleString()}ms,
-                      errors {chapter.initialMetrics.errorRate}% → {chapter.targetMetrics.errorRate}%.
-                    </p>
-                    <p className="text-amber-200/80">Hold on. Fixes have side effects.</p>
-                  </div>
-                }
-                onContinue={() => update({ stage: "counter" })}
-              />
+                  onContinue={() => update({ stage: "counter" })}
+                />
+              </div>
             )}
 
             {run.stage === "counter" && (
-              <QuestionCard
-                key="counter"
-                eyebrow="Tradeoff counter-strike"
-                title={chapter.challenge.title}
-                context={chapter.challenge.scenario}
-                question={counterQuestion}
-                hints={chapter.challenge.hints}
-                onHint={() => update({ hintsUsed: run.hintsUsed + 1 })}
-                submitLabel="Submit decision"
-                continueLabel="One more: new situation"
-                onAnswer={(opt, attempt) =>
-                  update({
-                    counterAttempts: attempt,
-                    failureReasons: opt.isCorrect ? run.failureReasons : [...run.failureReasons, "counter"],
-                  })
-                }
-                onContinue={() => update({ stage: "transfer" })}
-              />
+              <div className={isCompactView ? "flex-1 min-h-0 overflow-y-auto pr-0.5" : ""}>
+                <QuestionCard
+                  key="counter"
+                  eyebrow="Tradeoff counter-strike"
+                  title={chapter.challenge.title}
+                  context={chapter.challenge.scenario}
+                  question={counterQuestion}
+                  hints={chapter.challenge.hints}
+                  onHint={() => update({ hintsUsed: run.hintsUsed + 1 })}
+                  submitLabel="Submit decision"
+                  continueLabel="One more: new situation"
+                  onAnswer={(opt, attempt) =>
+                    update({
+                      counterAttempts: attempt,
+                      failureReasons: opt.isCorrect ? run.failureReasons : [...run.failureReasons, "counter"],
+                    })
+                  }
+                  onContinue={() => update({ stage: "transfer" })}
+                />
+              </div>
             )}
 
             {run.stage === "transfer" && (
-              <QuestionCard
-                key="transfer"
-                eyebrow="Transfer: same pattern, different product"
-                question={pattern.transfer}
-                submitLabel="Check my answer"
-                continueLabel="See the result"
-                onAnswer={(opt, attempt) => {
-                  if (!opt.isCorrect) {
-                    markTransferMiss(pattern.id);
-                    update({ transferAttempts: attempt, failureReasons: [...run.failureReasons, "transfer"] });
-                    return;
-                  }
-                  const out = completePatternRun(pattern, {
-                    patternId: pattern.id,
-                    diagnosisFirstTry: run.diagnosisAttempts === 1,
-                    interventionFirstTry: run.interventionAttempts === 1,
-                    transferFirstTry: attempt === 1,
-                    hintsUsed: run.hintsUsed,
-                    failureReasons: run.failureReasons,
-                  });
-                  setOutcome(out);
-                  clearRunProgress(chapter.id);
-                  celebrate();
-                  if (out.leveledUp) {
-                    setTimeout(() => {
-                      setLevelUp(out.stats.level);
-                      playLevelUpSound();
-                    }, 600);
-                  }
-                }}
-                onContinue={() => update({ stage: "result" })}
-              />
+              <div className={isCompactView ? "flex-1 min-h-0 overflow-y-auto pr-0.5" : ""}>
+                <QuestionCard
+                  key="transfer"
+                  eyebrow="Transfer: same pattern, different product"
+                  question={pattern.transfer}
+                  submitLabel="Check my answer"
+                  continueLabel="See the result"
+                  onAnswer={(opt, attempt) => {
+                    if (!opt.isCorrect) {
+                      markTransferMiss(pattern.id);
+                      update({ transferAttempts: attempt, failureReasons: [...run.failureReasons, "transfer"] });
+                      return;
+                    }
+                    const out = completePatternRun(pattern, {
+                      patternId: pattern.id,
+                      diagnosisFirstTry: run.diagnosisAttempts === 1,
+                      interventionFirstTry: run.interventionAttempts === 1,
+                      transferFirstTry: attempt === 1,
+                      hintsUsed: run.hintsUsed,
+                      failureReasons: run.failureReasons,
+                    });
+                    setOutcome(out);
+                    clearRunProgress(chapter.id);
+                    celebrate();
+                    if (out.leveledUp) {
+                      setTimeout(() => {
+                        setLevelUp(out.stats.level);
+                        playLevelUpSound();
+                      }, 600);
+                    }
+                  }}
+                  onContinue={() => update({ stage: "result" })}
+                />
+              </div>
             )}
           </section>
         </div>
@@ -537,7 +682,7 @@ function PatternRun({
           nextLabel="See the result"
         />
       )}
-    </>
+    </div>
   );
 }
 

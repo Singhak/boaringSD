@@ -32,15 +32,23 @@ export default function RootPage() {
   // =========================================================================
   if (!hasSavedTwitter || !action) {
     return (
-      <div className="min-h-screen text-slate-100 flex flex-col items-center justify-center px-4 py-8 relative overflow-hidden">
+      <div
+        className={`text-slate-100 flex flex-col items-center justify-center relative overflow-hidden ${
+          inFixMode ? "h-screen max-h-screen p-2 sm:p-4" : "min-h-screen px-4 py-8"
+        }`}
+      >
         <div
           aria-hidden
           className="absolute top-[18%] left-1/2 -translate-x-1/2 w-[760px] h-[420px] rounded-full bg-rose-500/[0.07] blur-[120px] pointer-events-none -z-10"
         />
 
-        <div className={`w-full mx-auto transition-[max-width] ${inFixMode ? "max-w-5xl" : "max-w-3xl"}`}>
+        <div
+          className={`w-full mx-auto transition-[max-width] ${
+            inFixMode ? "max-w-5xl h-full flex flex-col justify-center min-h-0" : "max-w-3xl"
+          }`}
+        >
           {inFixMode ? (
-            <div className="animate-fadeIn w-full">
+            <div className="animate-fadeIn w-full h-full flex flex-col justify-center min-h-0">
               <PushpaMissionWarRoom onClose={() => setInFixMode(false)} />
             </div>
           ) : (
@@ -113,8 +121,8 @@ export default function RootPage() {
   const streak = getCurrentStreak(stats, new Date());
 
   return (
-    <div className="min-h-screen text-slate-100 flex flex-col">
-      <header className="border-b border-[var(--line)] px-4 sm:px-8 h-14 flex items-center justify-between">
+    <div className={`text-slate-100 flex flex-col ${inFixMode ? "h-screen max-h-screen overflow-hidden" : "min-h-screen"}`}>
+      <header className="shrink-0 border-b border-[var(--line)] px-4 sm:px-8 h-14 flex items-center justify-between">
         <span className="text-[15px] font-semibold tracking-tight text-white">
           System Design <span className="text-slate-400 font-normal">Quest</span>
         </span>
@@ -128,9 +136,9 @@ export default function RootPage() {
         </nav>
       </header>
 
-      <main className="flex-1 flex items-center justify-center px-4 py-10">
+      <main className={`flex-1 flex items-center justify-center min-h-0 ${inFixMode ? "p-2 sm:p-4 max-h-[calc(100vh-3.5rem)] overflow-hidden" : "px-4 py-10"}`}>
         {inFixMode ? (
-          <div className="w-full max-w-5xl animate-fadeIn">
+          <div className="w-full max-w-5xl h-full flex flex-col justify-center min-h-0 animate-fadeIn">
             <PushpaMissionWarRoom onClose={() => setInFixMode(false)} />
           </div>
         ) : (
