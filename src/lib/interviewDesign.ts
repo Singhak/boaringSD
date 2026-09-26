@@ -1,4 +1,5 @@
 import type { InterviewProblem } from "@/types";
+import { buildAdjacency, nodeId, reachableFrom, type BuilderEdgeLike, type BuilderNodeLike } from "@/lib/graph";
 
 /** Topology picked in the interview design stage. */
 export interface Design {
@@ -134,4 +135,74 @@ export function evaluateArchitecture(problem: InterviewProblem, d: Design) {
     strengths: criteria.filter((c) => c.passed).map((c) => c.strength),
     issues: criteria.filter((c) => !c.passed).map((c) => c.issue),
   };
+}
+
+interface GraphIndex {
+  typeOf: Map<string, string>;
+  outgoing: Map<string, string[]>;
+  incoming: Map<string, string[]>;
+  reachable: Set<string>;
+}
+
+function indexGraph(nodes: BuilderNodeLike[], edges: BuilderEdgeLike[]): GraphIndex {
+  const { outgoing, incoming } = buildAdjacency(nodes, edges);
+  const typeOf = new Map(nodes.map((n, i) => [nodeId(n, i), n.data?.type ?? ""]));
+  const clients = [...typeOf].filter(([, t]) => t === "client").map(([id]) => id);
+  return { typeOf, outgoing, incoming, reachable: reachableFrom(clients, outgoing) };
+}
+
+/** Ids of wired components that actually earn credit in {@link designFromGraph}. */
+function countedIds(g: GraphIndex): Set<string> {
+  const { typeOf, outgoing, incoming, reachable } = g;
+  const live = (type: string) => [...reachable].filter((id) => typeOf.get(id) === type);
+  const neighbours = (id: string) => [...(outgoing.get(id) ?? []), ...(incoming.get(id) ?? [])];
+  const touches = (id: string, pool: Set<string>) => neighbours(id).some((n) => pool.has(n));
+
+  const servers = new Set(live("server"));
+  // Anything downstream of a live server is part of the request path.
+  const behindServers = reachableFrom([...servers], outgoing);
+  const databases = new Set(live("database").filter((id) => behindServers.has(id)));
+
+  const counted = new Set<string>([...servers, ...databases]);
+  live("client").forEach((id) => counted.add(id));
+  live("load_balancer")
+    .filter((id) => (outgoing.get(id) ?? []).some((n) => servers.has(n)))
+    .forEach((id) => counted.add(id));
+  live("cdn")
+    .filter((id) => (outgoing.get(id) ?? []).some((n) => reachable.has(n) && typeOf.get(n) !== "client"))
+    .forEach((id) => counted.add(id));
+  live("cache").filter((id) => touches(id, servers)).forEach((id) => counted.add(id));
+  live("queue")
+    .filter((id) => (incoming.get(id) ?? []).some((n) => servers.has(n)))
+    .forEach((id) => counted.add(id));
+  live("replica").filter((id) => touches(id, databases)).forEach((id) => counted.add(id));
+  return counted;
+}
+
+/**
+ * Derives the graded {@link Design} from a drawn topology. Only components on
+ * a path from a client count, and each must be wired where it does its job:
+ * an LB must feed a server, a cache must talk to a server, a queue must be fed
+ * by a server, a replica must hang off a database the servers write to.
+ */
+export function designFromGraph(nodes: BuilderNodeLike[], edges: BuilderEdgeLike[]): Design {
+  const g = indexGraph(nodes, edges);
+  const counted = countedIds(g);
+  const count = (type: string) => [...counted].filter((id) => g.typeOf.get(id) === type).length;
+  return {
+    hasCDN: count("cdn") > 0,
+    hasLB: count("load_balancer") > 0,
+    serverCount: count("server"),
+    hasCache: count("cache") > 0,
+    hasQueue: count("queue") > 0,
+    hasDatabase: count("database") > 0,
+    hasReplica: count("replica") > 0,
+  };
+}
+
+/** Ids of drawn components that earn nothing because they are not wired into the request path. */
+export function unwiredNodeIds(nodes: BuilderNodeLike[], edges: BuilderEdgeLike[]): string[] {
+  const g = indexGraph(nodes, edges);
+  const counted = countedIds(g);
+  return [...g.typeOf.keys()].filter((id) => !counted.has(id));
 }
