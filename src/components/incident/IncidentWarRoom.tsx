@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   AlertTriangle,
@@ -21,6 +21,8 @@ import {
 import confetti from "canvas-confetti";
 import ConceptIntelDrawer from "@/components/incident/ConceptIntelDrawer";
 import TelemetryInspector from "@/components/incident/TelemetryInspector";
+import ArchitecturalDefenseModal from "@/components/incident/ArchitecturalDefenseModal";
+import { getTradeoffsForPattern } from "@/data/tradeoffScenarios";
 import { getMockTelemetryForNode } from "@/data/telemetryData";
 import { StatStrip, Stepper, Topology } from "@/components/run/RunVisuals";
 import type { Stat } from "@/components/run/RunVisuals";
@@ -34,7 +36,21 @@ import {
   playLevelUpSound,
   playSuccessSound,
 } from "@/lib/sound";
-import { completePatternRun, getUserStats, loginUser, recordMissionComplete, saveUserStats } from "@/lib/storage";
+import {
+  completePatternRun,
+  getUserStats,
+  markFixApplied,
+  markTransferMiss,
+  nextShuffleSeed,
+  recordMissionComplete,
+  saveDefenseResult,
+  saveUserStats,
+} from "@/lib/storage";
+import QuestionCard from "@/components/run/QuestionCard";
+import ReasoningCard from "@/components/run/ReasoningCard";
+import { getPatternReasoningPrompt } from "@/data/reasoningPrompts";
+import { deterministicShuffle, hashSeed } from "@/lib/shuffle";
+import { applySkin, pickSkin } from "@/lib/incidentSkin";
 import { useUserStats } from "@/lib/useUserStats";
 import type { CampaignChapter, ComponentKind, IncidentChoice, IncidentGraph, IncidentMetric, IncidentV2, SystemDesignPattern } from "@/types";
 
@@ -44,6 +60,10 @@ interface IncidentWarRoomProps {
   chapter?: CampaignChapter;
   onClose?: () => void;
   onAllClear?: () => void;
+  /** Campaign replays: start a fresh incident instead of rolling back this one. */
+  onNewRun?: () => void;
+  /** Replays only: reskins traffic, region and occasion so the page feels new. */
+  skinSeed?: string;
   standalone?: boolean;
 }
 
@@ -55,6 +75,8 @@ export default function IncidentWarRoom({
   chapter,
   onClose,
   onAllClear,
+  onNewRun,
+  skinSeed,
 }: IncidentWarRoomProps) {
   const stats = useUserStats();
   const soundOn = stats?.soundEnabled ?? true;
@@ -64,10 +86,19 @@ export default function IncidentWarRoom({
   const [currentStep, setCurrentStep] = useState<number>(0);
   const [solvedIncidents, setSolvedIncidents] = useState<Record<string, number>>({});
   const [isDebrief, setIsDebrief] = useState(false);
-  const [savedAs, setSavedAs] = useState<"guest" | string | null>(null);
+  // Campaign runs end with an "Aftershock": the same pattern on a different system (transfer check).
+  const [isAftershock, setIsAftershock] = useState(false);
+  // Optional "Defend your call" chat after the Aftershock; skippable, pays a bonus.
+  const [isDefendingCall, setIsDefendingCall] = useState(false);
+  // Honest run evidence: every wrong deploy and hint across the run's incidents counts.
+  const [wrongDeploys, setWrongDeploys] = useState(0);
+  const [hintsUsedTotal, setHintsUsedTotal] = useState(0);
+  const [fixRecorded, setFixRecorded] = useState(false);
   const [cascadePendingId, setCascadePendingId] = useState<string | null>(null);
   const [cascadeCountdown, setCascadeCountdown] = useState<number | null>(null);
   const [survivedCascades, setSurvivedCascades] = useState<string[]>([]);
+  // Rendered client-side only (after stats load), so the seed can come from localStorage.
+  const [shuffleSeed] = useState(() => nextShuffleSeed(`warroom:${initialIncidentId}`));
 
   // Synchronize when initialIncidentId prop changes across levels
   const [prevInitialIncidentId, setPrevInitialIncidentId] = useState(initialIncidentId);
@@ -79,8 +110,13 @@ export default function IncidentWarRoom({
   }
 
   // Active incident state
-  const incident: IncidentV2 | undefined =
+  const baseIncident: IncidentV2 | undefined =
     getIncidentById(incidentId) || getCanonicalIncident(pattern?.levelNumber || 1);
+  const skin = useMemo(() => (skinSeed ? pickSkin(skinSeed) : null), [skinSeed]);
+  const incident = useMemo(
+    () => (baseIncident && skin ? applySkin(baseIncident, skin) : baseIncident),
+    [baseIncident, skin]
+  );
 
   const [activeGraph, setActiveGraph] = useState<IncidentGraph | null>(
     incident ? incident.graphBefore : null
@@ -93,6 +129,13 @@ export default function IncidentWarRoom({
   const [hintsRevealed, setHintsRevealed] = useState<number>(0);
   const [selectedIntelId, setSelectedIntelId] = useState<string | null>(null);
   const [inspectedRole, setInspectedRole] = useState<ComponentKind | null>(null);
+
+  // SRE Architectural Defense Gate state (Pillars 2 & 3)
+  const [defenseModalOpen, setDefenseModalOpen] = useState(false);
+  const [defenseVerified, setDefenseVerified] = useState(false);
+  const [pendingSuccessChoice, setPendingSuccessChoice] = useState<IncidentChoice | null>(null);
+  const tradeoffSet = pattern ? getTradeoffsForPattern(pattern.id) : undefined;
+  const activeDefenseOption = tradeoffSet?.options.find((o) => o.id === tradeoffSet.recommendedOptionId) || tradeoffSet?.options[0];
 
   // Synchronize graph and metrics during render when incidentId changes
   const [prevIncidentId, setPrevIncidentId] = useState(incidentId);
@@ -140,6 +183,7 @@ export default function IncidentWarRoom({
     return () => clearTimeout(timer);
   }, [cascadePendingId, cascadeCountdown, triggerCascade]);
 
+  const orderedChoices = incident ? deterministicShuffle(incident.choices, `${shuffleSeed}|${incident.id}`) : [];
   const selectedChoice: IncidentChoice | undefined = incident?.choices.find(
     (c) => c.id === selectedChoiceId
   );
@@ -152,6 +196,44 @@ export default function IncidentWarRoom({
     saveUserStats({ ...current, soundEnabled: !current.soundEnabled });
   };
 
+  const executeDeploySuccess = (choice: IncidentChoice) => {
+    // SUCCESS PHYSICS: Mutate topology & metrics to stabilized architecture
+    if (choice.graphAfter) {
+      setActiveGraph(choice.graphAfter);
+    }
+    if (choice.metricsAfter && incident) {
+      setActiveMetrics(applyMetricUpdates(incident.metricsBefore, choice.metricsAfter));
+    }
+    playDeploySound();
+    setTimeout(() => playSuccessSound(), 200);
+
+    // Check if this choice triggers a second-order cascade outage!
+    if (choice.cascadeIncidentId) {
+      setCascadePendingId(choice.cascadeIncidentId);
+      setCascadeCountdown(choice.cascadeDelayMs ? Math.round(choice.cascadeDelayMs / 1000) : 5);
+    }
+
+    // Record XP reward for this incident
+    if (incident && !(incident.id in solvedIncidents)) {
+      const outcome = recordMissionComplete(incident.id, incident.xp);
+      setSolvedIncidents((prev) => ({ ...prev, [incident.id]: outcome.xpAwarded }));
+    }
+
+    if (pattern && !fixRecorded) {
+      markFixApplied(pattern.id);
+      setFixRecorded(true);
+    }
+  };
+
+  const handleDefenseSuccess = (firstTry: boolean) => {
+    saveDefenseResult(firstTry);
+    setDefenseVerified(true);
+    setDefenseModalOpen(false);
+    if (pendingSuccessChoice) {
+      executeDeploySuccess(pendingSuccessChoice);
+    }
+  };
+
   // Choice selection & simulation physics
   const handleDeployChoice = (choice: IncidentChoice) => {
     if (isSubmitted && selectedChoice?.correct) return; // already solved
@@ -160,40 +242,15 @@ export default function IncidentWarRoom({
     setIsSubmitted(true);
 
     if (choice.correct) {
-      // SUCCESS PHYSICS: Mutate topology & metrics to stabilized architecture
-      if (choice.graphAfter) {
-        setActiveGraph(choice.graphAfter);
+      // If an architectural tradeoff scenario exists and defense not yet verified, open defense modal
+      if (tradeoffSet && !defenseVerified) {
+        setPendingSuccessChoice(choice);
+        setDefenseModalOpen(true);
+        return;
       }
-      if (choice.metricsAfter && incident) {
-        setActiveMetrics(applyMetricUpdates(incident.metricsBefore, choice.metricsAfter));
-      }
-      playDeploySound();
-      setTimeout(() => playSuccessSound(), 200);
-
-      // Check if this choice triggers a second-order cascade outage!
-      if (choice.cascadeIncidentId) {
-        setCascadePendingId(choice.cascadeIncidentId);
-        setCascadeCountdown(choice.cascadeDelayMs ? Math.round(choice.cascadeDelayMs / 1000) : 5);
-      }
-
-      // Record XP reward for this incident
-      if (incident && !(incident.id in solvedIncidents)) {
-        const outcome = recordMissionComplete(incident.id, incident.xp);
-        setSolvedIncidents((prev) => ({ ...prev, [incident.id]: outcome.xpAwarded }));
-      }
-
-      // If playing in campaign mode, mark pattern run completed when not heading into cascade
-      if (pattern && !choice.cascadeIncidentId) {
-        completePatternRun(pattern, {
-          patternId: pattern.id,
-          diagnosisFirstTry: true,
-          interventionFirstTry: !isWrong,
-          transferFirstTry: true,
-          hintsUsed: hintsRevealed,
-          failureReasons: isWrong ? ["intervention"] : [],
-        });
-      }
+      executeDeploySuccess(choice);
     } else {
+      setWrongDeploys((n) => n + 1);
       // WRONG ANSWER PHYSICS: Physically impact the live system!
       if (choice.graphAfter) {
         setActiveGraph(choice.graphAfter);
@@ -225,6 +282,49 @@ export default function IncidentWarRoom({
     setCascadePendingId(null);
     setCascadeCountdown(null);
     setCurrentStep(0);
+    setDefenseVerified(false);
+    setDefenseModalOpen(false);
+    setPendingSuccessChoice(null);
+  };
+
+  // Alternates "why this" and "10x" prompts across runs.
+  const reasoningPrompt = pattern ? getPatternReasoningPrompt(pattern.id, hashSeed(shuffleSeed)) : undefined;
+
+  // Aftershock answered: record the run with what actually happened, then debrief.
+  const finishCampaignRun = (transferFirstTry: boolean) => {
+    if (!pattern) return;
+    const firstTryFix = wrongDeploys === 0;
+    completePatternRun(pattern, {
+      patternId: pattern.id,
+      diagnosisFirstTry: firstTryFix,
+      interventionFirstTry: firstTryFix,
+      transferFirstTry,
+      hintsUsed: hintsUsedTotal,
+      failureReasons: [...(firstTryFix ? [] : ["intervention"]), ...(transferFirstTry ? [] : ["transfer"])],
+    });
+    setIsAftershock(false);
+    if (reasoningPrompt) {
+      setIsDefendingCall(true);
+      playBlipSound();
+      return;
+    }
+    openDebrief();
+  };
+
+  const openDebrief = () => {
+    setIsDefendingCall(false);
+    setIsDebrief(true);
+    setCurrentStep(2);
+    playLevelUpSound();
+    try {
+      confetti({
+        particleCount: 100,
+        spread: 80,
+        origin: { y: 0.6 },
+        colors: ["#38d6e8", "#34d399", "#fbbf24"],
+      });
+    } catch {}
+    onAllClear?.();
   };
 
   // Advance to next incident or debrief
@@ -237,27 +337,10 @@ export default function IncidentWarRoom({
     }
 
     if (pattern) {
-      completePatternRun(pattern, {
-        patternId: pattern.id,
-        diagnosisFirstTry: true,
-        interventionFirstTry: true,
-        transferFirstTry: true,
-        hintsUsed: hintsRevealed,
-        failureReasons: [],
-      });
-      // In campaign mode, resolving the level incident completes the level and goes to debrief
-      setIsDebrief(true);
+      // In campaign mode, a different system pages you before the level clears.
+      setIsAftershock(true);
       setCurrentStep(1);
-      playLevelUpSound();
-      try {
-        confetti({
-          particleCount: 100,
-          spread: 80,
-          origin: { y: 0.6 },
-          colors: ["#38d6e8", "#34d399", "#fbbf24"],
-        });
-      } catch {}
-      onAllClear?.();
+      playAlarmSound();
       return;
     }
 
@@ -304,10 +387,11 @@ export default function IncidentWarRoom({
     if (isSubmitted && beforeMetric && beforeMetric.value !== m.value) {
       const delta = m.value - beforeMetric.value;
       const sign = delta > 0 ? "+" : "";
+      const unitStr = m.unit ? (m.unit.startsWith("%") ? m.unit : ` ${m.unit}`) : "";
       if (m.key === "cpu" || m.key === "errors" || m.key === "p95") {
-        sub = delta < 0 ? `was ${beforeMetric.value}${m.unit || ""}` : `${sign}${delta}${m.unit || ""}`;
+        sub = delta < 0 ? `was ${beforeMetric.value.toLocaleString()}${unitStr}` : `${sign}${delta.toLocaleString()}${unitStr}`;
       } else {
-        sub = `was ${beforeMetric.value.toLocaleString()}`;
+        sub = `was ${beforeMetric.value.toLocaleString()}${unitStr}`;
       }
     }
 
@@ -323,6 +407,7 @@ export default function IncidentWarRoom({
   const stepsList = pattern
     ? [
         { id: incident.id, label: incident.incidentCode ? `${incident.incidentCode} · Incident` : "Incident 01" },
+        { id: "aftershock", label: "Aftershock" },
         { id: "debrief", label: "Level Cleared" },
       ]
     : ONBOARDING_FLOW_IDS.map((id, idx) => ({
@@ -357,6 +442,14 @@ export default function IncidentWarRoom({
           {isDebrief ? (
             <span className="chip chip-ok">
               <Check className="w-3 h-3" aria-hidden /> All clear
+            </span>
+          ) : isAftershock ? (
+            <span className="chip chip-warn animate-pulse">
+              <Zap className="w-3 h-3" aria-hidden /> Aftershock
+            </span>
+          ) : isDefendingCall ? (
+            <span className="chip chip-accent">
+              <Sparkles className="w-3 h-3" aria-hidden /> Defend your call
             </span>
           ) : isWrong ? (
             <span className="chip chip-bad animate-pulse">
@@ -401,18 +494,34 @@ export default function IncidentWarRoom({
           <Stepper steps={stepsList} current={isDebrief ? stepsList.length - 1 : currentStep} label="Progress" />
         </div>
 
-        {!isDebrief ? (
+        {isDefendingCall && reasoningPrompt ? (
+          <div className="flex-1 min-h-0 overflow-y-auto pr-1 py-2">
+            <ReasoningCard prompt={reasoningPrompt} onDone={openDebrief} />
+          </div>
+        ) : isAftershock && pattern ? (
+          <AftershockPanel
+            pattern={pattern}
+            shuffleSeed={shuffleSeed}
+            onMiss={() => markTransferMiss(pattern.id)}
+            onResolved={finishCampaignRun}
+          />
+        ) : !isDebrief ? (
           <div className="grid grid-cols-1 lg:grid-cols-[1.2fr_1fr] gap-3 sm:gap-4 flex-1 min-h-0 items-stretch overflow-hidden animate-fadeIn">
             {/* Left: What the system is physically doing */}
-            <section className="flex flex-col justify-between min-h-0 space-y-2 overflow-y-auto lg:overflow-visible pr-1" aria-label="Live System State">
+            <section className="flex flex-col min-h-0 gap-3 overflow-y-auto pr-1 pb-3" aria-label="Live System State">
               <div className="space-y-0.5 shrink-0">
                 <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="eyebrow text-cyan-300 !text-[10px]">
+                  <span className="eyebrow text-cyan-300 !text-[11px]">
                     {incident.isCascade ? "⚡ Cascade Outage" : "Live Incident"}
                   </span>
-                  <span className="chip !text-[9px] !py-0 !px-1.5">{incident.constraint}</span>
+                  <span className="chip !text-[11px] !py-0 !px-1.5">{incident.constraint}</span>
+                  {skin && (
+                    <span className="chip chip-accent !text-[11px] !py-0 !px-1.5">
+                      {skin.region} · {skin.occasion}
+                    </span>
+                  )}
                   {incident.isCascade && (
-                    <span className="chip chip-warn !text-[9px] !py-0 !px-1.5">
+                    <span className="chip chip-warn !text-[11px] !py-0 !px-1.5">
                       <Flame className="w-2.5 h-2.5 text-amber-400 mr-1 inline" /> Second-Order Consequence
                     </span>
                   )}
@@ -435,7 +544,7 @@ export default function IncidentWarRoom({
                     </span>
                     {selectedChoice.approach && (
                       <span
-                        className={`chip !py-0 !text-[10px] ${
+                        className={`chip !py-0 !text-[11px] ${
                           selectedChoice.approach === "optimal"
                             ? "chip-ok"
                             : selectedChoice.approach === "viable_with_tradeoffs"
@@ -454,7 +563,7 @@ export default function IncidentWarRoom({
 
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
                     <div className="p-2.5 rounded-lg bg-black/25 border border-white/[0.04]">
-                      <span className="text-slate-400 block text-[10px] uppercase font-mono">Monthly Cost</span>
+                      <span className="text-slate-400 block text-[11px] uppercase font-mono">Monthly Cost</span>
                       <span
                         className={`num font-semibold text-sm ${
                           (selectedChoice.tradeoffs.costMonthlyDelta ?? 0) > 0 ? "text-amber-300" : "text-emerald-400"
@@ -467,21 +576,21 @@ export default function IncidentWarRoom({
                     </div>
 
                     <div className="p-2.5 rounded-lg bg-black/25 border border-white/[0.04]">
-                      <span className="text-slate-400 block text-[10px] uppercase font-mono">p99 Latency</span>
+                      <span className="text-slate-400 block text-[11px] uppercase font-mono">p99 Latency</span>
                       <span className="num font-semibold text-sm text-cyan-300">
                         {selectedChoice.tradeoffs.latencyP99DeltaMs ? `${selectedChoice.tradeoffs.latencyP99DeltaMs}ms` : "Neutral"}
                       </span>
                     </div>
 
                     <div className="p-2.5 rounded-lg bg-black/25 border border-white/[0.04]">
-                      <span className="text-slate-400 block text-[10px] uppercase font-mono">Consistency</span>
+                      <span className="text-slate-400 block text-[11px] uppercase font-mono">Consistency</span>
                       <span className="num font-semibold text-sm capitalize text-slate-200">
                         {selectedChoice.tradeoffs.consistencyGuarantee ?? "Eventual"}
                       </span>
                     </div>
 
                     <div className="p-2.5 rounded-lg bg-black/25 border border-white/[0.04]">
-                      <span className="text-slate-400 block text-[10px] uppercase font-mono">Complexity</span>
+                      <span className="text-slate-400 block text-[11px] uppercase font-mono">Complexity</span>
                       <span className="num font-semibold text-sm text-slate-200">
                         Tier {selectedChoice.tradeoffs.complexityScore ?? 2} / 5
                       </span>
@@ -498,22 +607,22 @@ export default function IncidentWarRoom({
               )}
 
               {/* Live topology simulation */}
-              <div className="flex-1 min-h-0 flex flex-col justify-center">
+              <div className="shrink-0">
                 <Topology
                   tiers={tiers}
                   caption={
                     <>
-                      <span className="eyebrow !text-[10px]">Topology Simulation</span>
+                      <span className="eyebrow !text-[11px]">Topology Simulation</span>
                       {isSolved ? (
-                        <span className="chip chip-ok !py-0 !text-[10px]">
+                        <span className="chip chip-ok !py-0 !text-[11px]">
                           <span className="dot" aria-hidden /> Balanced & Stable
                         </span>
                       ) : isWrong ? (
-                        <span className="chip chip-bad !py-0 !text-[10px]">
+                        <span className="chip chip-bad !py-0 !text-[11px]">
                           <span className="dot animate-pulse-glow" aria-hidden /> Degradation
                         </span>
                       ) : (
-                        <span className="chip chip-bad !py-0 !text-[10px]">
+                        <span className="chip chip-bad !py-0 !text-[11px]">
                           <span className="dot animate-pulse-glow" aria-hidden /> Bottleneck
                         </span>
                       )}
@@ -523,7 +632,7 @@ export default function IncidentWarRoom({
               </div>
 
               {/* Digital Detective Telemetry Shortcuts */}
-              <div className="shrink-0 flex flex-wrap items-center gap-1.5 pt-0.5">
+              <div className="shrink-0 flex flex-wrap items-center gap-1.5 pt-1 pb-1">
                 <span className="text-[11px] text-slate-400 font-mono">Inspect Logs:</span>
                 <button
                   type="button"
@@ -551,17 +660,17 @@ export default function IncidentWarRoom({
 
             {/* Right: Tactical Command (The Choice) */}
             <section
-              className="lg:border-l lg:border-[var(--line)] lg:pl-4 flex flex-col justify-between min-h-0 space-y-2 overflow-y-auto pr-1"
+              className="lg:border-l lg:border-[var(--line)] lg:pl-4 flex flex-col justify-between min-h-0 space-y-2 overflow-y-auto pr-1 pb-2"
               aria-label="Tactical Command"
             >
               <div className="space-y-0.5 shrink-0">
-                <span className="eyebrow text-cyan-300/90 !text-[10px]">Your Move</span>
+                <span className="eyebrow text-cyan-300/90 !text-[11px]">Your Move</span>
                 <h3 className="text-sm sm:text-base font-semibold text-white leading-snug">{incident.question}</h3>
               </div>
 
               {/* 3 Short Choice Cards */}
               <div className="space-y-1.5 flex-1 min-h-0 overflow-y-auto pr-0.5">
-                {incident.choices.map((choice) => {
+                {orderedChoices.map((choice) => {
                   const isSelected = selectedChoiceId === choice.id;
                   let stateClass = "border-[var(--line)] bg-[var(--surface-2)] text-slate-200 hover:border-slate-500 hover:bg-white/[0.04]";
 
@@ -579,10 +688,10 @@ export default function IncidentWarRoom({
                       onClick={() => handleDeployChoice(choice)}
                       className={`w-full p-2.5 rounded-xl border text-left transition-all duration-300 flex flex-col gap-1 group cursor-pointer ${stateClass}`}
                     >
-                      <div className="flex items-center justify-between w-full">
-                        <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="flex items-start justify-between gap-2 w-full">
+                        <div className="flex items-start gap-2.5 min-w-0 flex-1">
                           <span
-                            className={`w-5 h-5 rounded-full border grid place-items-center text-[10px] font-mono shrink-0 ${
+                            className={`w-5 h-5 rounded-full border grid place-items-center text-[11px] font-mono shrink-0 mt-0.5 ${
                               isSelected && isSubmitted
                                 ? choice.correct
                                   ? "border-emerald-400 bg-emerald-400/20 text-emerald-300"
@@ -596,17 +705,17 @@ export default function IncidentWarRoom({
                               "▶"
                             )}
                           </span>
-                          <span className="text-sm font-medium leading-snug truncate">{choice.label}</span>
+                          <span className="text-xs sm:text-sm font-medium leading-snug break-words">{choice.label}</span>
                         </div>
 
-                        <span className="text-[11px] text-slate-500 group-hover:text-cyan-300 transition-colors shrink-0 ml-2">
+                        <span className="text-[11px] text-slate-500 group-hover:text-cyan-300 transition-colors shrink-0 mt-0.5">
                           Deploy
                         </span>
                       </div>
 
                       {/* Tradeoff Vector & Approach Micro-badges */}
                       {(choice.approach || choice.tradeoffs) && (
-                        <div className="flex flex-wrap items-center gap-1.5 pl-7 text-[10px]">
+                        <div className="flex flex-wrap items-center gap-1.5 pl-7 text-[11px]">
                           {choice.approach && (
                             <span
                               className={`px-1.5 py-0.5 rounded font-mono font-medium ${
@@ -654,7 +763,10 @@ export default function IncidentWarRoom({
                   hintsRevealed < incident.hints.length ? (
                     <button
                       type="button"
-                      onClick={() => setHintsRevealed((n) => n + 1)}
+                      onClick={() => {
+                        setHintsRevealed((n) => n + 1);
+                        setHintsUsedTotal((n) => n + 1);
+                      }}
                       className="text-xs text-cyan-400/80 hover:text-cyan-300 flex items-center gap-1 cursor-pointer"
                     >
                       <HelpCircle className="w-3.5 h-3.5" />
@@ -729,7 +841,7 @@ export default function IncidentWarRoom({
                           <Timer className="w-3.5 h-3.5 text-amber-400 animate-pulse" />
                           Cascade in {cascadeCountdown}s...
                         </span>
-                        <span className="font-mono text-[10px] text-amber-300/80">
+                        <span className="font-mono text-[11px] text-amber-300/80">
                           {cascadePendingId}
                         </span>
                       </div>
@@ -786,14 +898,11 @@ export default function IncidentWarRoom({
                 selectedChoice={selectedChoice}
                 totalXp={totalXp || incident.xp}
                 survivedCascades={survivedCascades}
-                onReplay={handleRollback}
+                onReplay={onNewRun ?? handleRollback}
+                replayLabel={onNewRun ? "Next incident" : "Replay Incident"}
               />
             ) : (
-              <DebriefScreen
-                totalXp={totalXp}
-                savedAs={savedAs}
-                onSave={setSavedAs}
-              />
+              <DebriefScreen totalXp={totalXp} />
             )}
           </div>
         )}
@@ -803,12 +912,23 @@ export default function IncidentWarRoom({
 
       {inspectedRole && (
         <TelemetryInspector
-          telemetry={getMockTelemetryForNode(
-            `node-${inspectedRole}`,
-            inspectedRole,
-            !isSolved
-          )}
+          telemetry={telemetryForIncident(inspectedRole, activeGraph, activeMetrics)}
           onClose={() => setInspectedRole(null)}
+        />
+      )}
+
+      {defenseModalOpen && activeDefenseOption && (
+        <ArchitecturalDefenseModal
+          isOpen={defenseModalOpen}
+          option={activeDefenseOption}
+          onSuccess={handleDefenseSuccess}
+          onClose={() => {
+            // Backing out of the defense cancels the deploy; the fix only lands once defended.
+            setDefenseModalOpen(false);
+            setPendingSuccessChoice(null);
+            setSelectedChoiceId(null);
+            setIsSubmitted(false);
+          }}
         />
       )}
     </article>
@@ -835,6 +955,70 @@ function applyMetricUpdates(
 // Campaign Debrief Screen: Level Cleared & Next Level Navigation
 // ---------------------------------------------------------------------------
 
+/** Transfer check framed as a second page: same pattern, different product. */
+function AftershockPanel({
+  pattern,
+  shuffleSeed,
+  onMiss,
+  onResolved,
+}: {
+  pattern: SystemDesignPattern;
+  shuffleSeed: string;
+  onMiss: () => void;
+  onResolved: (firstTry: boolean) => void;
+}) {
+  const [firstTry, setFirstTry] = useState<boolean | null>(null);
+
+  return (
+    <div className="flex-1 min-h-0 overflow-y-auto pr-1 animate-fadeIn">
+      <div className="max-w-2xl mx-auto space-y-4 py-2">
+        <div className="rounded-xl border border-amber-400/30 bg-amber-400/[0.05] p-3 flex items-start gap-3">
+          <Zap className="w-5 h-5 text-amber-300 shrink-0 mt-0.5" aria-hidden />
+          <div className="space-y-0.5">
+            <p className="text-sm font-semibold text-amber-100">Aftershock: a different team is paging you</p>
+            <p className="text-xs text-slate-300">
+              Your fix held. Now a different system hits the same kind of wall. Get it on the first try to earn the
+              &ldquo;transfer&rdquo; evidence for this pattern.
+            </p>
+          </div>
+        </div>
+        <QuestionCard
+          eyebrow="⚡ Aftershock · Same pattern, different product"
+          question={pattern.transfer}
+          shuffleSeed={shuffleSeed}
+          submitLabel="Deploy answer"
+          continueLabel="Close the incident"
+          onAnswer={(option, attempt) => {
+            if (attempt === 1) setFirstTry(option.isCorrect);
+            if (!option.isCorrect) onMiss();
+          }}
+          onContinue={() => onResolved(firstTry === true)}
+        />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Telemetry for the inspected node, seeded from the incident's own graph and
+ * metrics so the numbers match what the player sees. Knobs are omitted: in the
+ * War Room the fix is deployed from the choice cards, not from sliders.
+ */
+function telemetryForIncident(role: ComponentKind, graph: IncidentGraph | null, metrics: IncidentMetric[]) {
+  const node = graph?.nodes.find((n) => n.kind === role);
+  const metric = (key: string) => metrics.find((m) => m.key === key)?.value;
+  const overloaded = node ? node.tone === "bad" || (node.cpu ?? 0) > 85 : false;
+  const p95 = metric("p95");
+  const errors = metric("errors");
+  return getMockTelemetryForNode(node?.id ?? `node-${role}`, role, overloaded, {
+    ...(node?.label ? { nodeName: node.label } : {}),
+    ...(typeof node?.cpu === "number" ? { cpuUsage: node.cpu } : {}),
+    ...(p95 !== undefined ? { p99LatencyMs: p95 } : {}),
+    ...(errors !== undefined ? { errorRate: errors } : {}),
+    knobs: [],
+  });
+}
+
 function CampaignDebriefScreen({
   pattern,
   incident,
@@ -842,6 +1026,7 @@ function CampaignDebriefScreen({
   totalXp,
   survivedCascades,
   onReplay,
+  replayLabel,
 }: {
   pattern: SystemDesignPattern;
   chapter?: CampaignChapter;
@@ -850,6 +1035,7 @@ function CampaignDebriefScreen({
   totalXp: number;
   survivedCascades?: string[];
   onReplay: () => void;
+  replayLabel: string;
 }) {
   const nextPattern = getAllPatterns().find((p) => p.levelNumber === pattern.levelNumber + 1);
 
@@ -932,10 +1118,10 @@ function CampaignDebriefScreen({
               onClick={onReplay}
               className="btn btn-secondary text-xs flex items-center justify-center gap-1.5"
             >
-              <RotateCcw className="w-3.5 h-3.5" /> Replay Incident
+              <RotateCcw className="w-3.5 h-3.5" /> {replayLabel}
             </button>
             <Link
-              href={`/builder?scenario=${pattern.id}`}
+              href={`/builder?scenario=${pattern.builderScenarioId}`}
               className="btn btn-ghost border border-[var(--line)] text-xs flex items-center justify-center gap-1.5"
             >
               <Sparkles className="w-3.5 h-3.5 text-cyan-300" /> Test in Architecture Sandbox
@@ -974,20 +1160,7 @@ function CampaignDebriefScreen({
 // Debrief Screen: Campaign Map Unlocked!
 // ---------------------------------------------------------------------------
 
-function DebriefScreen({
-  totalXp,
-  savedAs,
-  onSave,
-}: {
-  totalXp: number;
-  savedAs: "guest" | string | null;
-  onSave: (who: "guest" | string) => void;
-}) {
-  const signIn = () => {
-    const user = loginUser("alex.chen@systemdesignquest.io", "Alex Chen");
-    onSave(user.userName || "Alex Chen");
-  };
-
+function DebriefScreen({ totalXp }: { totalXp: number }) {
   return (
     <div className="space-y-6 animate-fadeIn py-2">
       <div className="space-y-2 max-w-2xl">
@@ -1032,26 +1205,12 @@ function DebriefScreen({
         {/* Progress saving */}
         <section className="surface !rounded-xl p-5 space-y-4" aria-label="Keep Progress">
           <div className="space-y-1">
-            <h3 className="text-[15px] font-semibold text-white">Save your badge & streak</h3>
-            <p className="text-[13px] text-slate-400 leading-relaxed">
-              Your XP and unlocked levels are preserved in local storage.
-            </p>
-          </div>
-          {savedAs ? (
+            <h3 className="text-[15px] font-semibold text-white">Your badge & streak are saved</h3>
             <p role="status" className="flex items-start gap-2 text-[13px] text-emerald-200">
               <Check className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" aria-hidden />
-              {savedAs === "guest" ? "Progress saved in browser." : `Signed in as ${savedAs}.`}
+              XP and unlocked levels are kept in this browser. No sign-up needed.
             </p>
-          ) : (
-            <div className="flex flex-col sm:flex-row lg:flex-col xl:flex-row gap-2">
-              <button type="button" onClick={signIn} className="btn btn-secondary flex-1 cursor-pointer">
-                Sign in (demo)
-              </button>
-              <button type="button" onClick={() => onSave("guest")} className="btn btn-ghost flex-1 border border-[var(--line)] cursor-pointer">
-                Continue as guest
-              </button>
-            </div>
-          )}
+          </div>
         </section>
       </div>
 

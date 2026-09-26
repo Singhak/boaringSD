@@ -78,9 +78,9 @@ function PatternCard({
             {String(p.levelNumber).padStart(2, "0")}
           </span>
           {unlocked ? (
-            <span className={`${STATE_CHIP[state]} !text-[10px] !py-0`}>{MASTERY_LABELS[state]}</span>
+            <span className={`${STATE_CHIP[state]} !text-[11px] !py-0`}>{MASTERY_LABELS[state]}</span>
           ) : (
-            <span className="text-[10px] text-slate-600 flex items-center gap-1">
+            <span className="text-[11px] text-slate-600 flex items-center gap-1">
               <Lock className="w-3 h-3" aria-hidden /> Locked
             </span>
           )}

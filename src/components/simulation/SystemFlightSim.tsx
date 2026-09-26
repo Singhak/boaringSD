@@ -44,7 +44,8 @@ import { ComponentKind } from "@/types";
 interface SystemFlightSimProps {
   initialIncidentId?: "hs-01" | "lb-01";
   onClose?: () => void;
-  onAllCompleted?: () => void;
+  /** firstTry is false if the player used a band-aid, an overkill fix, or let the system go down. */
+  onAllCompleted?: (result: { firstTry: boolean }) => void;
 }
 
 interface SimNode {
@@ -98,6 +99,7 @@ export default function SystemFlightSim({
   // Stabilization state (hold green for 5.0 seconds)
   const [stabilizeProgress, setStabilizeProgress] = useState(0); // 0 to 5
   const [isResolved, setIsResolved] = useState(false);
+  const [mistakes, setMistakes] = useState(0);
 
   // Drawer & Inspector
   const [selectedIntelId, setSelectedIntelId] = useState<string | null>(null);
@@ -114,14 +116,23 @@ export default function SystemFlightSim({
   const nextExplosionId = useRef(1);
   const animFrameId = useRef<number | null>(null);
 
-  // Track incident reset / mount
+  // Mirrors of the loop-driven values so the game loop can detect thresholds
+  // in its own tick instead of in follow-up effects.
+  const errorBudgetRef = useRef(100);
+  const stabilizeRef = useRef(0);
+
+  const resetBudget = () => {
+    errorBudgetRef.current = 100;
+    setErrorBudget(100);
+  };
+  const resetStabilize = () => {
+    stabilizeRef.current = 0;
+    setStabilizeProgress(0);
+  };
+
+  // Sound the alarm when an incident opens
   useEffect(() => {
     playAlarmSound();
-    setErrorBudget(100);
-    setIsSystemDown(false);
-    setAppliedFix(null);
-    setStabilizeProgress(0);
-    setIsResolved(false);
   }, [incidentId]);
 
   // Determine dynamic system state based on incident & fix
@@ -129,15 +140,15 @@ export default function SystemFlightSim({
   const isLb = incidentId === "lb-01";
 
   // System metrics calculations
-  let trafficRps = 100000;
-  let server1Cpu = isHs ? (appliedFix === "scale_out" ? 45 : 98) : (appliedFix === "deploy_lb" ? 42 : 98);
-  let server2Cpu = isHs
+  const trafficRps = 100000;
+  const server1Cpu = isHs ? (appliedFix === "scale_out" ? 45 : 98) : (appliedFix === "deploy_lb" ? 42 : 98);
+  const server2Cpu = isHs
     ? (appliedFix === "scale_out" ? 45 : 0)
     : (appliedFix === "deploy_lb" ? 42 : appliedFix === "upgrade_core" ? 38 : 0);
-  let errorRate = appliedFix ? 0 : isHs ? 48 : 50;
-  let p95Latency = appliedFix ? (isHs ? 38 : 34) : 4200;
-  let hasLb = isLb && appliedFix === "deploy_lb";
-  let hasServer2 = (isHs && appliedFix === "scale_out") || isLb;
+  const errorRate = appliedFix ? 0 : isHs ? 48 : 50;
+  const p95Latency = appliedFix ? (isHs ? 38 : 34) : 4200;
+  const hasLb = isLb && appliedFix === "deploy_lb";
+  const hasServer2 = (isHs && appliedFix === "scale_out") || isLb;
 
   // Nodes model
   const nodes: SimNode[] = [
@@ -270,39 +281,34 @@ export default function SystemFlightSim({
     if (isResolved || isSystemDown) return;
 
     const interval = setInterval(() => {
-      // Error budget burn down
       if (!appliedFix) {
-        setErrorBudget((prev) => Math.max(0, prev - 1.2));
+        // Error budget burn down
+        if (errorBudgetRef.current <= 0) return;
+        const next = Math.max(0, errorBudgetRef.current - 1.2);
+        errorBudgetRef.current = next;
+        setErrorBudget(next);
+        if (next <= 0) {
+          setIsSystemDown(true);
+          setMistakes((m) => m + 1);
+          playErrorSound();
+        }
       } else {
         // Stabilization countdown
-        setStabilizeProgress((prev) => Math.min(5.0, prev + 0.5));
+        if (stabilizeRef.current >= 5.0) return;
+        const next = Math.min(5.0, stabilizeRef.current + 0.5);
+        stabilizeRef.current = next;
+        setStabilizeProgress(next);
+        if (next >= 5.0) {
+          setIsResolved(true);
+          playSuccessSound();
+          confetti({ particleCount: 100, spread: 70, origin: { y: 0.6 } });
+          recordMissionComplete(incidentId, 150);
+        }
       }
     }, 500);
 
     return () => clearInterval(interval);
-  }, [appliedFix, isResolved, isSystemDown]);
-
-  // Handle system down trigger
-  useEffect(() => {
-    if (errorBudget <= 0 && !appliedFix && !isSystemDown) {
-      setIsSystemDown(true);
-      playErrorSound();
-    }
-  }, [errorBudget, appliedFix, isSystemDown]);
-
-  // Handle stabilization resolution
-  useEffect(() => {
-    if (stabilizeProgress >= 5.0 && appliedFix && !isResolved) {
-      setIsResolved(true);
-      playSuccessSound();
-      confetti({ particleCount: 100, spread: 70, origin: { y: 0.6 } });
-      // Defer storage event dispatch slightly to avoid setState during render
-      const timer = setTimeout(() => {
-        recordMissionComplete(incidentId, 150);
-      }, 50);
-      return () => clearTimeout(timer);
-    }
-  }, [stabilizeProgress, appliedFix, isResolved, incidentId]);
+  }, [appliedFix, isResolved, isSystemDown, incidentId]);
 
   // Particle Generation & Animation Canvas
   useEffect(() => {
@@ -468,9 +474,10 @@ export default function SystemFlightSim({
 
   // Tactical Actions
   const handleDeployFix = (fixKey: string) => {
+    if (fixKey === "upgrade_core") setMistakes((m) => m + 1);
     playDeploySound();
     setAppliedFix(fixKey);
-    setStabilizeProgress(0);
+    resetStabilize();
     setTimeout(() => {
       if (soundEnabled) playBlipSound();
     }, 300);
@@ -479,17 +486,22 @@ export default function SystemFlightSim({
   const handleRollback = () => {
     playBlipSound();
     setAppliedFix(null);
-    setStabilizeProgress(0);
-    setErrorBudget(100);
+    resetStabilize();
+    resetBudget();
     setIsSystemDown(false);
   };
 
   const handleNextIncident = () => {
     if (incidentId === "hs-01") {
       setIncidentId("lb-01");
+      resetBudget();
+      resetStabilize();
+      setIsSystemDown(false);
+      setAppliedFix(null);
+      setIsResolved(false);
     } else {
       if (onAllCompleted) {
-        onAllCompleted();
+        onAllCompleted({ firstTry: mistakes === 0 });
       } else if (onClose) {
         onClose();
       }
@@ -512,7 +524,7 @@ export default function SystemFlightSim({
         {/* SLA Error Budget Meter */}
         <div className="flex items-center gap-3 sm:gap-4">
           <div className="flex items-center gap-2">
-            <span className="eyebrow !text-[10px] text-slate-400 hidden sm:inline">SLA Error Budget:</span>
+            <span className="eyebrow !text-[11px] text-slate-400 hidden sm:inline">SLA Error Budget:</span>
             <div className="w-24 sm:w-36 h-2 rounded-full bg-black/50 border border-white/10 overflow-hidden relative">
               <div
                 className={`h-full transition-all duration-300 ${
@@ -553,40 +565,40 @@ export default function SystemFlightSim({
       {/* Live System Metrics Bar */}
       <div className="shrink-0 grid grid-cols-2 sm:grid-cols-4 border-b border-[var(--line)] bg-black/20 divide-x divide-[var(--line)] text-xs">
         <div className="p-2 sm:px-5 sm:py-2.5">
-          <span className="eyebrow !text-[10px] text-slate-400 block">Ingress Traffic</span>
+          <span className="eyebrow !text-[11px] text-slate-400 block">Ingress Traffic</span>
           <div className="num text-sm sm:text-base font-medium text-cyan-300 mt-0.5">
-            {trafficRps.toLocaleString()} <span className="text-[10px] sm:text-[11px] text-slate-500">req/s</span>
+            {trafficRps.toLocaleString()} <span className="text-[11px] sm:text-[11px] text-slate-500">req/s</span>
           </div>
         </div>
         <div className="p-2 sm:px-5 sm:py-2.5">
-          <span className="eyebrow !text-[10px] text-slate-400 block">App CPU Saturation</span>
+          <span className="eyebrow !text-[11px] text-slate-400 block">App CPU Saturation</span>
           <div
             className={`num text-sm sm:text-base font-semibold mt-0.5 ${
               server1Cpu > 80 ? "text-rose-400 animate-pulse" : "text-emerald-400"
             }`}
           >
             {server1Cpu}%{" "}
-            <span className="text-[10px] sm:text-[11px] text-slate-500">{server1Cpu > 80 ? "(Limit)" : "(Optimal)"}</span>
+            <span className="text-[11px] sm:text-[11px] text-slate-500">{server1Cpu > 80 ? "(Limit)" : "(Optimal)"}</span>
           </div>
         </div>
         <div className="p-2 sm:px-5 sm:py-2.5">
-          <span className="eyebrow !text-[10px] text-slate-400 block">p95 Latency</span>
+          <span className="eyebrow !text-[11px] text-slate-400 block">p95 Latency</span>
           <div
             className={`num text-sm sm:text-base font-medium mt-0.5 ${
               p95Latency > 500 ? "text-rose-400" : "text-emerald-300"
             }`}
           >
-            {p95Latency} <span className="text-[10px] sm:text-[11px] text-slate-500">ms</span>
+            {p95Latency} <span className="text-[11px] sm:text-[11px] text-slate-500">ms</span>
           </div>
         </div>
         <div className="p-2 sm:px-5 sm:py-2.5">
-          <span className="eyebrow !text-[10px] text-slate-400 block">5xx Error Rate</span>
+          <span className="eyebrow !text-[11px] text-slate-400 block">5xx Error Rate</span>
           <div
             className={`num text-sm sm:text-base font-semibold mt-0.5 ${
               errorRate > 0 ? "text-rose-400" : "text-emerald-400"
             }`}
           >
-            {errorRate}% <span className="text-[10px] sm:text-[11px] text-slate-500">{errorRate > 0 ? "(504s)" : "(All Clear)"}</span>
+            {errorRate}% <span className="text-[11px] sm:text-[11px] text-slate-500">{errorRate > 0 ? "(504s)" : "(All Clear)"}</span>
           </div>
         </div>
       </div>
@@ -594,7 +606,10 @@ export default function SystemFlightSim({
       {/* Main Simulation Viewport (Interactive Circuit Canvas) */}
       <div className="relative flex-1 min-h-[220px] bg-gradient-to-b from-[#0b101b] via-[#090d16] to-[#06080e] overflow-hidden">
         {/* Dynamic Canvas with Particles */}
-        <canvas ref={canvasRef} className="absolute inset-0 w-full h-full pointer-events-none z-0" />
+        <canvas ref={canvasRef} aria-hidden className="absolute inset-0 w-full h-full pointer-events-none z-0" />
+        <p className="sr-only" aria-live="polite">
+          {`Error budget ${Math.round(errorBudget)}%. ${nodes.map((n) => `${n.label}: ${n.statusText}`).join(". ")}.`}
+        </p>
 
         {/* DOM Topology Nodes Layer */}
         <div className="absolute inset-0 z-10 pointer-events-none">
@@ -644,7 +659,7 @@ export default function SystemFlightSim({
 
                 {/* Live CPU Bar */}
                 <div className="space-y-1">
-                  <div className="flex items-center justify-between text-[10px] text-slate-400 font-mono">
+                  <div className="flex items-center justify-between text-[11px] text-slate-400 font-mono">
                     <span>CPU: {node.cpu}%</span>
                     <span>{node.rps > 0 ? `${(node.rps / 1000).toFixed(0)}k RPS` : "0 RPS"}</span>
                   </div>
@@ -659,7 +674,7 @@ export default function SystemFlightSim({
                 </div>
 
                 {/* Node Buffer Queue dots */}
-                <div className="mt-2 flex items-center justify-between text-[9px] text-slate-400 border-t border-white/5 pt-1.5">
+                <div className="mt-2 flex items-center justify-between text-[11px] text-slate-400 border-t border-white/5 pt-1.5">
                   <span>Buffer Queue:</span>
                   <div className="flex items-center gap-1">
                     {[1, 2, 3, 4, 5].map((slot) => (
@@ -678,7 +693,7 @@ export default function SystemFlightSim({
                 </div>
 
                 {/* Hover hint */}
-                <div className="hidden group-hover:block absolute -top-7 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded bg-black/90 border border-white/10 text-[9px] text-slate-300 font-mono whitespace-nowrap z-20">
+                <div className="hidden group-hover:block absolute -top-7 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded bg-black/90 border border-white/10 text-[11px] text-slate-300 font-mono whitespace-nowrap z-20">
                   Click to inspect telemetry
                 </div>
               </div>
@@ -745,17 +760,17 @@ export default function SystemFlightSim({
             {/* Scorecard Strip */}
             <div className="grid grid-cols-3 gap-3 w-full max-w-md surface p-3.5 rounded-xl border border-emerald-400/30 text-xs">
               <div>
-                <span className="text-slate-400 block text-[10px]">SLA Preserved</span>
+                <span className="text-slate-400 block text-[11px]">SLA Preserved</span>
                 <span className="num font-semibold text-emerald-300 text-sm">
                   {errorBudget.toFixed(0)}% Budget
                 </span>
               </div>
               <div>
-                <span className="text-slate-400 block text-[10px]">p95 Latency</span>
+                <span className="text-slate-400 block text-[11px]">p95 Latency</span>
                 <span className="num font-semibold text-cyan-300 text-sm">{p95Latency}ms</span>
               </div>
               <div>
-                <span className="text-slate-400 block text-[10px]">Reward</span>
+                <span className="text-slate-400 block text-[11px]">Reward</span>
                 <span className="num font-semibold text-amber-300 text-sm">+150 XP</span>
               </div>
             </div>
@@ -784,7 +799,7 @@ export default function SystemFlightSim({
       <footer className="shrink-0 p-2.5 sm:p-3.5 border-t border-[var(--line)] bg-[var(--surface-2)] space-y-2">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <span className="eyebrow text-cyan-300 flex items-center gap-1.5 !text-[10px] sm:!text-[11px]">
+            <span className="eyebrow text-cyan-300 flex items-center gap-1.5 !text-[11px] sm:!text-[11px]">
               <Zap className="w-3 h-3 text-cyan-400" /> Tactical Command Tray
             </span>
             <span className="text-[11px] text-slate-400 hidden sm:inline">
@@ -822,7 +837,7 @@ export default function SystemFlightSim({
                 <div className="space-y-0.5 flex-1 min-w-0">
                   <div className="flex items-center justify-between gap-1">
                     <span className="font-semibold text-xs sm:text-sm truncate">Scale Out: Deploy App Server 2</span>
-                    <span className="chip chip-ok !text-[9px] !py-0 shrink-0">Optimal</span>
+                    <span className="chip chip-ok !text-[11px] !py-0 shrink-0">Optimal</span>
                   </div>
                   <p className="text-[11px] text-slate-400 leading-tight">
                     Forks incoming traffic across 2 parallel nodes. Cuts CPU saturation in half (+ $120/mo).
@@ -835,6 +850,7 @@ export default function SystemFlightSim({
                 type="button"
                 onClick={() => {
                   playErrorSound();
+                  setMistakes((m) => m + 1);
                   setAppliedFix("restart");
                   setTimeout(() => setAppliedFix(null), 2000);
                 }}
@@ -846,7 +862,7 @@ export default function SystemFlightSim({
                 <div className="space-y-0.5 flex-1 min-w-0">
                   <div className="flex items-center justify-between gap-1">
                     <span className="font-semibold text-xs sm:text-sm truncate">Reboot Overloaded Node</span>
-                    <span className="chip chip-bad !text-[9px] !py-0 shrink-0">Band-Aid</span>
+                    <span className="chip chip-bad !text-[11px] !py-0 shrink-0">Band-Aid</span>
                   </div>
                   <p className="text-[11px] text-slate-400 leading-tight">
                     Clears memory momentarily, but 100k req/s instantly slams the server back to 98% CPU.
@@ -873,7 +889,7 @@ export default function SystemFlightSim({
                 <div className="space-y-0.5 flex-1 min-w-0">
                   <div className="flex items-center justify-between gap-1">
                     <span className="font-semibold text-xs sm:text-sm truncate">Deploy Nginx Load Balancer</span>
-                    <span className="chip chip-ok !text-[9px] !py-0 shrink-0">Optimal</span>
+                    <span className="chip chip-ok !text-[11px] !py-0 shrink-0">Optimal</span>
                   </div>
                   <p className="text-[11px] text-slate-400 leading-tight">
                     Places reverse proxy between Users & Fleet. Uses round-robin to balance load 50/50.
@@ -894,7 +910,7 @@ export default function SystemFlightSim({
                 <div className="space-y-0.5 flex-1 min-w-0">
                   <div className="flex items-center justify-between gap-1">
                     <span className="font-semibold text-xs sm:text-sm truncate">Upgrade Server 1 to 64 Cores</span>
-                    <span className="chip chip-warn !text-[9px] !py-0 shrink-0">Overkill</span>
+                    <span className="chip chip-warn !text-[11px] !py-0 shrink-0">Overkill</span>
                   </div>
                   <p className="text-[11px] text-slate-400 leading-tight">
                     Absorbs spike vertically, but leaves Server 1 as Single Point of Failure (+$800/mo).

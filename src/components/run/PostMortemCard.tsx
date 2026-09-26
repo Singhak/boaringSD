@@ -68,7 +68,7 @@ export default function PostMortemCard({ data }: { data: PostMortemData }) {
         <div className="grid grid-cols-3 gap-px rounded-lg overflow-hidden bg-[var(--line)]">
           {rows.map((r) => (
             <div key={r.label} className="bg-[var(--surface)] p-3">
-              <div className="eyebrow !text-[10px]">{r.label}</div>
+              <div className="eyebrow !text-[11px]">{r.label}</div>
               <div className="num text-lg text-emerald-300 mt-1">
                 {r.after.toLocaleString()}
                 <span className="text-xs text-slate-500 ml-0.5">{r.unit}</span>

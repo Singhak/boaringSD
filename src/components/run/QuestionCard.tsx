@@ -1,9 +1,10 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import { ArrowRight, Check, HelpCircle, Lightbulb, RotateCcw, X } from "lucide-react";
 import type { PatternQuestion, QuizOption } from "@/types";
 import { playBlipSound, playErrorSound, playSuccessSound } from "@/lib/sound";
+import { deterministicShuffle } from "@/lib/shuffle";
 
 interface QuestionCardProps {
   eyebrow: string;
@@ -19,6 +20,8 @@ interface QuestionCardProps {
   onContinue?: () => void;
   /** Extra content shown after a correct answer, above the continue button. */
   afterCorrect?: React.ReactNode;
+  /** Varies option order between attempts (e.g. from nextShuffleSeed). Order is always shuffled. */
+  shuffleSeed?: string;
 }
 
 const LETTERS = ["A", "B", "C", "D", "E"];
@@ -35,6 +38,7 @@ export default function QuestionCard({
   onAnswer,
   onContinue,
   afterCorrect,
+  shuffleSeed = "",
 }: QuestionCardProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [submitted, setSubmitted] = useState(false);
@@ -42,7 +46,11 @@ export default function QuestionCard({
   const [wrongIds, setWrongIds] = useState<string[]>([]);
   const [hintsShown, setHintsShown] = useState(0);
 
-  const selected = question.options.find((o) => o.id === selectedId);
+  const options = useMemo(
+    () => deterministicShuffle(question.options, `${shuffleSeed}|${question.question}`),
+    [question.options, question.question, shuffleSeed]
+  );
+  const selected = options.find((o) => o.id === selectedId);
   const correct = submitted && selected?.isCorrect === true;
 
   const submit = () => {
@@ -72,7 +80,7 @@ export default function QuestionCard({
   return (
     <div className="space-y-3">
       <div className="space-y-1">
-        <span className="eyebrow text-cyan-300/80 !text-[10px]">{eyebrow}</span>
+        <span className="eyebrow text-cyan-300/80 !text-[11px]">{eyebrow}</span>
         {title && <h3 className="text-base font-bold display">{title}</h3>}
         {context && (
           <p className="text-xs text-slate-300 leading-snug pl-2.5 border-l-2 border-[var(--line-strong)]">{context}</p>
@@ -81,7 +89,7 @@ export default function QuestionCard({
 
       <fieldset className="space-y-1.5" disabled={correct}>
         <legend className="text-sm font-medium text-white leading-snug mb-1.5">{question.question}</legend>
-        {question.options.map((opt, i) => {
+        {options.map((opt, i) => {
           const isSelected = selectedId === opt.id;
           const ruledOut = wrongIds.includes(opt.id) && !isSelected;
           const state =
@@ -111,7 +119,7 @@ export default function QuestionCard({
               <span className="flex items-start gap-3">
                 <span
                   aria-hidden
-                  className={`num w-5 h-5 shrink-0 rounded-md grid place-items-center text-[10px] border ${
+                  className={`num w-5 h-5 shrink-0 rounded-md grid place-items-center text-[11px] border ${
                     state === "right"
                       ? "border-emerald-400/60 bg-emerald-400/20 text-emerald-200"
                       : state === "wrong"

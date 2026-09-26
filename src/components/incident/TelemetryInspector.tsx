@@ -21,11 +21,22 @@ import {
 } from "lucide-react";
 import { NodeTelemetry, OperationalKnob, TelemetryLogEntry } from "@/types";
 import { playBlipSound, playDeploySound } from "@/lib/sound";
+import SRECommandShell from "./SRECommandShell";
+
+type KnobValue = OperationalKnob["value"];
+
+function initialKnobValues(telemetry: NodeTelemetry | null): Record<string, KnobValue> {
+  const values: Record<string, KnobValue> = {};
+  telemetry?.knobs.forEach((k) => {
+    values[k.id] = k.value;
+  });
+  return values;
+}
 
 interface TelemetryInspectorProps {
   telemetry: NodeTelemetry | null;
   onClose: () => void;
-  onKnobChange?: (knobId: string, value: any) => void;
+  onKnobChange?: (knobId: string, value: KnobValue) => void;
 }
 
 export default function TelemetryInspector({
@@ -33,21 +44,17 @@ export default function TelemetryInspector({
   onClose,
   onKnobChange,
 }: TelemetryInspectorProps) {
-  const [activeTab, setActiveTab] = useState<"logs" | "vitals" | "knobs">("logs");
-  const [knobValues, setKnobValues] = useState<Record<string, any>>({});
+  const [activeTab, setActiveTab] = useState<"logs" | "vitals" | "knobs" | "shell">("logs");
+  const [knobValues, setKnobValues] = useState<Record<string, KnobValue>>(() => initialKnobValues(telemetry));
   const [savedFeedback, setSavedFeedback] = useState<string | null>(null);
 
-  // Synchronize local knob values when telemetry node changes
-  useEffect(() => {
-    if (telemetry) {
-      const initial: Record<string, any> = {};
-      telemetry.knobs.forEach((k) => {
-        initial[k.id] = k.value;
-      });
-      setKnobValues(initial);
-      setSavedFeedback(null);
-    }
-  }, [telemetry]);
+  // Re-sync local knob values when a different node is inspected
+  const [syncedTelemetry, setSyncedTelemetry] = useState(telemetry);
+  if (telemetry !== syncedTelemetry) {
+    setSyncedTelemetry(telemetry);
+    setKnobValues(initialKnobValues(telemetry));
+    setSavedFeedback(null);
+  }
 
   // Close on Escape key
   useEffect(() => {
@@ -60,7 +67,7 @@ export default function TelemetryInspector({
 
   if (!telemetry) return null;
 
-  const handleKnobUpdate = (knobId: string, val: any) => {
+  const handleKnobUpdate = (knobId: string, val: KnobValue) => {
     setKnobValues((prev) => ({ ...prev, [knobId]: val }));
     playBlipSound();
     if (onKnobChange) {
@@ -128,7 +135,9 @@ export default function TelemetryInspector({
                 </h2>
                 {getStatusChip(telemetry.status)}
               </div>
-              <p className="text-xs text-slate-400 font-mono">Node ID: {telemetry.nodeId} · Live Telemetry Inspector</p>
+              <p className="text-xs text-slate-400 font-mono">
+                Node ID: {telemetry.nodeId} · Illustrative telemetry for this incident
+              </p>
             </div>
           </div>
 
@@ -169,6 +178,7 @@ export default function TelemetryInspector({
             Resource Vitals
           </button>
 
+          {telemetry.knobs.length > 0 && (
           <button
             type="button"
             onClick={() => setActiveTab("knobs")}
@@ -180,6 +190,20 @@ export default function TelemetryInspector({
           >
             <Sliders className="w-4 h-4" />
             Live Operational Knobs ({telemetry.knobs.length})
+          </button>
+          )}
+
+          <button
+            type="button"
+            onClick={() => setActiveTab("shell")}
+            className={`py-3 px-4 text-xs font-mono font-medium border-b-2 flex items-center gap-2 transition-colors cursor-pointer ${
+              activeTab === "shell"
+                ? "border-amber-400 text-amber-300 bg-amber-400/[0.04]"
+                : "border-transparent text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            <Terminal className="w-4 h-4 text-amber-400" />
+            Interactive SRE Shell
           </button>
         </div>
 
@@ -215,7 +239,7 @@ export default function TelemetryInspector({
                         {log.timestamp}
                       </span>
                       <span
-                        className={`px-1.5 py-0.2 rounded text-[10px] font-bold shrink-0 ${
+                        className={`px-1.5 py-0.2 rounded text-[11px] font-bold shrink-0 ${
                           isErr
                             ? "bg-rose-500/20 text-rose-300 border border-rose-500/30"
                             : isWarn
@@ -265,7 +289,7 @@ export default function TelemetryInspector({
                   <div className="num text-2xl font-bold text-cyan-300">
                     {(telemetry.memoryUsedMb / 1024).toFixed(1)} GB
                   </div>
-                  <span className="text-[10px] text-slate-500 font-mono">
+                  <span className="text-[11px] text-slate-500 font-mono">
                     of {(telemetry.memoryTotalMb / 1024).toFixed(0)} GB Total
                   </span>
                 </div>
@@ -275,7 +299,7 @@ export default function TelemetryInspector({
                   <div className="num text-2xl font-bold text-slate-100">
                     {telemetry.activeConnections.toLocaleString()}
                   </div>
-                  <span className="text-[10px] text-slate-500 font-mono">
+                  <span className="text-[11px] text-slate-500 font-mono">
                     Limit: {telemetry.maxConnections.toLocaleString()}
                   </span>
                 </div>
@@ -285,7 +309,7 @@ export default function TelemetryInspector({
                   <div className={`num text-2xl font-bold ${telemetry.workerThreadsUsed >= telemetry.workerThreadsTotal ? "text-rose-400" : "text-emerald-300"}`}>
                     {telemetry.workerThreadsUsed} / {telemetry.workerThreadsTotal}
                   </div>
-                  <span className="text-[10px] text-slate-500 font-mono">
+                  <span className="text-[11px] text-slate-500 font-mono">
                     {telemetry.workerThreadsUsed >= telemetry.workerThreadsTotal ? "POOLS EXHAUSTED" : "NOMINAL"}
                   </span>
                 </div>
@@ -371,7 +395,7 @@ export default function TelemetryInspector({
                               }
                               className="w-full accent-cyan-400 cursor-pointer"
                             />
-                            <div className="flex justify-between text-[10px] text-slate-500 font-mono">
+                            <div className="flex justify-between text-[11px] text-slate-500 font-mono">
                               <span>{knob.min} {knob.unit}</span>
                               <span>{knob.max} {knob.unit}</span>
                             </div>
@@ -417,6 +441,13 @@ export default function TelemetryInspector({
                   })}
                 </div>
               )}
+            </div>
+          )}
+
+          {/* TAB 4: INTERACTIVE SRE SHELL */}
+          {activeTab === "shell" && (
+            <div className="animate-fadeIn">
+              <SRECommandShell telemetry={telemetry} />
             </div>
           )}
         </div>

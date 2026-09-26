@@ -56,7 +56,7 @@ export function Stepper({
               {done ? (
                 <Check className="w-3 h-3 shrink-0" aria-hidden />
               ) : (
-                <span className="num text-[10px] opacity-60" aria-hidden>
+                <span className="num text-[11px] opacity-60" aria-hidden>
                   {i + 1}
                 </span>
               )}
@@ -132,14 +132,14 @@ export function StatStrip({ stats, label = "System metrics" }: { stats: Stat[]; 
           <div key={m.label} className={`p-2 sm:p-2.5 space-y-0.5 min-w-0 ${span}`}>
             <div className="flex items-center gap-1.5">
               {tone !== "neutral" && <span aria-hidden className={`dot ${TONE_DOT[tone]}`} />}
-              <span className="eyebrow truncate !text-[10px]">{m.label}</span>
+              <span className="eyebrow truncate !text-[11px]">{m.label}</span>
             </div>
             <div className={`num text-base sm:text-lg font-medium transition-colors duration-700 ${TONE_TEXT[tone]}`}>
               {m.value}
               {m.unit && <span className="text-[11px] text-slate-500 ml-1">{m.unit}</span>}
               {TONE_SR[tone] && <span className="sr-only">{TONE_SR[tone]}</span>}
             </div>
-            <div className="num text-[10px] text-slate-500 h-3.5 truncate">{m.sub ?? ""}</div>
+            <div className="num text-[11px] text-slate-500 h-3.5 truncate">{m.sub ?? ""}</div>
           </div>
         );
       })}
@@ -329,7 +329,7 @@ export function Topology({ tiers, caption }: { tiers: Tier[]; caption?: React.Re
                     <span aria-hidden className={`dot ${HEALTH_DOT[box.health]}`} />
                     {box.label}
                   </div>
-                  {box.note && <div className="num text-[10px] opacity-70 mt-0.5 pl-3">{box.note}</div>}
+                  {box.note && <div className="num text-[11px] opacity-70 mt-0.5 pl-3">{box.note}</div>}
                 </div>
               ))}
             </div>
