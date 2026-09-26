@@ -8,6 +8,7 @@ import {
   Check,
   Flame,
   HelpCircle,
+  Lightbulb,
   RotateCcw,
   Scale,
   Sparkles,
@@ -18,6 +19,9 @@ import {
   Zap,
 } from "lucide-react";
 import confetti from "canvas-confetti";
+import ConceptIntelDrawer from "@/components/incident/ConceptIntelDrawer";
+import TelemetryInspector from "@/components/incident/TelemetryInspector";
+import { getMockTelemetryForNode } from "@/data/telemetryData";
 import { StatStrip, Stepper, Topology } from "@/components/run/RunVisuals";
 import type { Stat } from "@/components/run/RunVisuals";
 import { getCanonicalIncident, getIncidentById, graphToTiers } from "@/data/scenarioPacks";
@@ -32,7 +36,7 @@ import {
 } from "@/lib/sound";
 import { completePatternRun, getUserStats, loginUser, recordMissionComplete, saveUserStats } from "@/lib/storage";
 import { useUserStats } from "@/lib/useUserStats";
-import type { CampaignChapter, IncidentChoice, IncidentGraph, IncidentMetric, IncidentV2, SystemDesignPattern } from "@/types";
+import type { CampaignChapter, ComponentKind, IncidentChoice, IncidentGraph, IncidentMetric, IncidentV2, SystemDesignPattern } from "@/types";
 
 interface IncidentWarRoomProps {
   initialIncidentId?: string;
@@ -87,6 +91,8 @@ export default function IncidentWarRoom({
   const [selectedChoiceId, setSelectedChoiceId] = useState<string | null>(null);
   const [isSubmitted, setIsSubmitted] = useState<boolean>(false);
   const [hintsRevealed, setHintsRevealed] = useState<number>(0);
+  const [selectedIntelId, setSelectedIntelId] = useState<string | null>(null);
+  const [inspectedRole, setInspectedRole] = useState<ComponentKind | null>(null);
 
   // Synchronize graph and metrics during render when incidentId changes
   const [prevIncidentId, setPrevIncidentId] = useState(incidentId);
@@ -328,7 +334,7 @@ export default function IncidentWarRoom({
 
   return (
     <article
-      className={`surface overflow-hidden w-full text-left transition-[border-color,box-shadow] duration-700 ${
+      className={`surface overflow-hidden w-full h-full max-h-full flex flex-col text-left transition-[border-color,box-shadow] duration-700 rounded-xl ${
         isWrong
           ? "!border-rose-500/40 shadow-[0_30px_90px_-30px_rgba(244,63,94,0.45)]"
           : isSolved
@@ -339,7 +345,7 @@ export default function IncidentWarRoom({
     >
       {/* Pager Header */}
       <header
-        className={`flex items-center justify-between gap-3 px-4 sm:px-6 py-3 border-b border-[var(--line)] transition-colors duration-500 ${
+        className={`flex items-center justify-between gap-3 px-4 sm:px-6 py-2 border-b border-[var(--line)] shrink-0 transition-colors duration-500 ${
           isWrong
             ? "bg-rose-500/[0.08]"
             : isSolved
@@ -389,32 +395,36 @@ export default function IncidentWarRoom({
         </div>
       </header>
 
-      <div className="p-4 sm:p-6 space-y-6">
+      <div className="flex-1 min-h-0 p-3 sm:p-4 flex flex-col justify-between overflow-hidden gap-2 sm:gap-3">
         {/* Step tracker */}
-        <Stepper steps={stepsList} current={isDebrief ? stepsList.length - 1 : currentStep} label="Progress" />
+        <div className="shrink-0">
+          <Stepper steps={stepsList} current={isDebrief ? stepsList.length - 1 : currentStep} label="Progress" />
+        </div>
 
         {!isDebrief ? (
-          <div className="grid grid-cols-1 lg:grid-cols-[1.35fr_1fr] gap-6 animate-fadeIn">
+          <div className="grid grid-cols-1 lg:grid-cols-[1.2fr_1fr] gap-3 sm:gap-4 flex-1 min-h-0 items-stretch overflow-hidden animate-fadeIn">
             {/* Left: What the system is physically doing */}
-            <section className="space-y-4 min-w-0" aria-label="Live System State">
-              <div className="space-y-1.5">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="eyebrow text-cyan-300">
+            <section className="flex flex-col justify-between min-h-0 space-y-2 overflow-y-auto lg:overflow-visible pr-1" aria-label="Live System State">
+              <div className="space-y-0.5 shrink-0">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="eyebrow text-cyan-300 !text-[10px]">
                     {incident.isCascade ? "⚡ Cascade Outage" : "Live Incident"}
                   </span>
-                  <span className="chip !text-[10px] !py-0">{incident.constraint}</span>
+                  <span className="chip !text-[9px] !py-0 !px-1.5">{incident.constraint}</span>
                   {incident.isCascade && (
-                    <span className="chip chip-warn !text-[10px] !py-0">
+                    <span className="chip chip-warn !text-[9px] !py-0 !px-1.5">
                       <Flame className="w-2.5 h-2.5 text-amber-400 mr-1 inline" /> Second-Order Consequence
                     </span>
                   )}
                 </div>
-                <h2 className="text-2xl sm:text-3xl display">{incident.title}</h2>
-                <p className="text-[14px] text-slate-300 leading-relaxed">{incident.brief}</p>
+                <h2 className="text-xl sm:text-2xl display font-bold leading-tight">{incident.title}</h2>
+                <p className="text-[12px] sm:text-[13px] text-slate-300 leading-snug line-clamp-2">{incident.brief}</p>
               </div>
 
               {/* Dynamic metrics strip */}
-              <StatStrip stats={statStripData} />
+              <div className="shrink-0">
+                <StatStrip stats={statStripData} />
+              </div>
 
               {/* Architectural Tradeoff Ledger (When deployed choice has tradeoffs) */}
               {isSubmitted && selectedChoice?.tradeoffs && (
@@ -488,41 +498,69 @@ export default function IncidentWarRoom({
               )}
 
               {/* Live topology simulation */}
-              <Topology
-                tiers={tiers}
-                caption={
-                  <>
-                    <span className="eyebrow">Topology Simulation</span>
-                    {isSolved ? (
-                      <span className="chip chip-ok !py-0">
-                        <span className="dot" aria-hidden /> Balanced & Stable
-                      </span>
-                    ) : isWrong ? (
-                      <span className="chip chip-bad !py-0">
-                        <span className="dot animate-pulse-glow" aria-hidden /> Degradation
-                      </span>
-                    ) : (
-                      <span className="chip chip-bad !py-0">
-                        <span className="dot animate-pulse-glow" aria-hidden /> Bottleneck
-                      </span>
-                    )}
-                  </>
-                }
-              />
+              <div className="flex-1 min-h-0 flex flex-col justify-center">
+                <Topology
+                  tiers={tiers}
+                  caption={
+                    <>
+                      <span className="eyebrow !text-[10px]">Topology Simulation</span>
+                      {isSolved ? (
+                        <span className="chip chip-ok !py-0 !text-[10px]">
+                          <span className="dot" aria-hidden /> Balanced & Stable
+                        </span>
+                      ) : isWrong ? (
+                        <span className="chip chip-bad !py-0 !text-[10px]">
+                          <span className="dot animate-pulse-glow" aria-hidden /> Degradation
+                        </span>
+                      ) : (
+                        <span className="chip chip-bad !py-0 !text-[10px]">
+                          <span className="dot animate-pulse-glow" aria-hidden /> Bottleneck
+                        </span>
+                      )}
+                    </>
+                  }
+                />
+              </div>
+
+              {/* Digital Detective Telemetry Shortcuts */}
+              <div className="shrink-0 flex flex-wrap items-center gap-1.5 pt-0.5">
+                <span className="text-[11px] text-slate-400 font-mono">Inspect Logs:</span>
+                <button
+                  type="button"
+                  onClick={() => setInspectedRole("server")}
+                  className="btn btn-ghost !py-0.5 !px-2 !text-[11px] border border-white/10 hover:border-cyan-400 text-cyan-300 cursor-pointer"
+                >
+                  🖥️ App Server Logs
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setInspectedRole("db")}
+                  className="btn btn-ghost !py-0.5 !px-2 !text-[11px] border border-white/10 hover:border-purple-400 text-purple-300 cursor-pointer"
+                >
+                  🗄️ PostgreSQL Slow Queries
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setInspectedRole("cache")}
+                  className="btn btn-ghost !py-0.5 !px-2 !text-[11px] border border-white/10 hover:border-amber-400 text-amber-300 cursor-pointer"
+                >
+                  ⚡ Redis Cache Vitals
+                </button>
+              </div>
             </section>
 
             {/* Right: Tactical Command (The Choice) */}
             <section
-              className="lg:border-l lg:border-[var(--line)] lg:pl-6 space-y-5"
+              className="lg:border-l lg:border-[var(--line)] lg:pl-4 flex flex-col justify-between min-h-0 space-y-2 overflow-y-auto pr-1"
               aria-label="Tactical Command"
             >
-              <div className="space-y-1">
-                <span className="eyebrow text-cyan-300/90">Your Move</span>
-                <h3 className="text-lg font-semibold text-white leading-snug">{incident.question}</h3>
+              <div className="space-y-0.5 shrink-0">
+                <span className="eyebrow text-cyan-300/90 !text-[10px]">Your Move</span>
+                <h3 className="text-sm sm:text-base font-semibold text-white leading-snug">{incident.question}</h3>
               </div>
 
               {/* 3 Short Choice Cards */}
-              <div className="space-y-2.5">
+              <div className="space-y-1.5 flex-1 min-h-0 overflow-y-auto pr-0.5">
                 {incident.choices.map((choice) => {
                   const isSelected = selectedChoiceId === choice.id;
                   let stateClass = "border-[var(--line)] bg-[var(--surface-2)] text-slate-200 hover:border-slate-500 hover:bg-white/[0.04]";
@@ -539,10 +577,10 @@ export default function IncidentWarRoom({
                       type="button"
                       disabled={isSolved}
                       onClick={() => handleDeployChoice(choice)}
-                      className={`w-full p-4 rounded-xl border text-left transition-all duration-300 flex flex-col gap-2.5 group cursor-pointer ${stateClass}`}
+                      className={`w-full p-2.5 rounded-xl border text-left transition-all duration-300 flex flex-col gap-1 group cursor-pointer ${stateClass}`}
                     >
                       <div className="flex items-center justify-between w-full">
-                        <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-2.5 min-w-0">
                           <span
                             className={`w-5 h-5 rounded-full border grid place-items-center text-[10px] font-mono shrink-0 ${
                               isSelected && isSubmitted
@@ -558,17 +596,17 @@ export default function IncidentWarRoom({
                               "▶"
                             )}
                           </span>
-                          <span className="text-[15px] font-medium leading-snug">{choice.label}</span>
+                          <span className="text-sm font-medium leading-snug truncate">{choice.label}</span>
                         </div>
 
-                        <span className="text-xs text-slate-500 group-hover:text-cyan-300 transition-colors shrink-0 ml-2">
+                        <span className="text-[11px] text-slate-500 group-hover:text-cyan-300 transition-colors shrink-0 ml-2">
                           Deploy
                         </span>
                       </div>
 
                       {/* Tradeoff Vector & Approach Micro-badges */}
                       {(choice.approach || choice.tradeoffs) && (
-                        <div className="flex flex-wrap items-center gap-1.5 pl-8 text-[11px]">
+                        <div className="flex flex-wrap items-center gap-1.5 pl-7 text-[10px]">
                           {choice.approach && (
                             <span
                               className={`px-1.5 py-0.5 rounded font-mono font-medium ${
@@ -582,7 +620,7 @@ export default function IncidentWarRoom({
                               {choice.approach === "optimal"
                                 ? "Optimal"
                                 : choice.approach === "viable_with_tradeoffs"
-                                ? "Viable with Tradeoffs"
+                                ? "Viable"
                                 : "Anti-Pattern"}
                             </span>
                           )}
@@ -595,12 +633,12 @@ export default function IncidentWarRoom({
                           )}
                           {choice.tradeoffs?.consistencyGuarantee && (
                             <span className="text-slate-400 font-mono bg-black/30 px-1.5 py-0.5 rounded border border-white/[0.04] capitalize">
-                              {choice.tradeoffs.consistencyGuarantee} consistency
+                              {choice.tradeoffs.consistencyGuarantee}
                             </span>
                           )}
                           {choice.cascadeIncidentId && (
                             <span className="text-amber-400/90 font-mono bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20 flex items-center gap-1">
-                              <AlertTriangle className="w-3 h-3 text-amber-400" /> Cascade Risk
+                              <AlertTriangle className="w-2.5 h-2.5 text-amber-400" /> Cascade Risk
                             </span>
                           )}
                         </div>
@@ -610,36 +648,45 @@ export default function IncidentWarRoom({
                 })}
               </div>
 
-              {/* Hints toggle */}
-              {incident.hints && incident.hints.length > 0 && !isSolved && (
-                <div className="pt-2">
-                  {hintsRevealed < incident.hints.length ? (
+              {/* Hints & Concept Intel toggle */}
+              <div className="shrink-0 pt-0.5 flex flex-wrap items-center gap-2.5">
+                {incident.hints && incident.hints.length > 0 && !isSolved && (
+                  hintsRevealed < incident.hints.length ? (
                     <button
                       type="button"
                       onClick={() => setHintsRevealed((n) => n + 1)}
-                      className="text-xs text-cyan-400/80 hover:text-cyan-300 flex items-center gap-1.5 cursor-pointer"
+                      className="text-xs text-cyan-400/80 hover:text-cyan-300 flex items-center gap-1 cursor-pointer"
                     >
                       <HelpCircle className="w-3.5 h-3.5" />
-                      Need intel? Hint ({hintsRevealed + 1}/{incident.hints.length})
+                      Hint ({hintsRevealed + 1}/{incident.hints.length})
                     </button>
-                  ) : null}
+                  ) : null
+                )}
 
-                  {hintsRevealed > 0 && (
-                    <div className="mt-2 p-3 rounded-lg border border-cyan-400/20 bg-cyan-400/[0.04] space-y-1 animate-fadeIn">
-                      {incident.hints.slice(0, hintsRevealed).map((h, i) => (
-                        <p key={i} className="text-xs text-cyan-200/90 leading-relaxed">
-                          • {h}
-                        </p>
-                      ))}
-                    </div>
-                  )}
+                <button
+                  type="button"
+                  onClick={() => setSelectedIntelId(incident.patternId || pattern?.id || "caching")}
+                  className="text-xs text-amber-300/90 hover:text-amber-200 flex items-center gap-1 cursor-pointer"
+                >
+                  <Lightbulb className="w-3.5 h-3.5 text-amber-400" />
+                  30s ELI5 Concept Intel
+                </button>
+              </div>
+
+              {hintsRevealed > 0 && incident.hints && (
+                <div className="shrink-0 p-2 rounded-lg border border-cyan-400/20 bg-cyan-400/[0.04] space-y-0.5 animate-fadeIn">
+                  {incident.hints.slice(0, hintsRevealed).map((h, i) => (
+                    <p key={i} className="text-[11px] text-cyan-200/90 leading-tight">
+                      • {h}
+                    </p>
+                  ))}
                 </div>
               )}
 
               {/* Post-Mortem HUD (Consequences of Action) */}
               {isSubmitted && selectedChoice && (
                 <div
-                  className={`p-4 rounded-xl border space-y-3 animate-fadeIn ${
+                  className={`shrink-0 p-2.5 sm:p-3 rounded-xl border space-y-2 animate-fadeIn ${
                     isSolved
                       ? "border-emerald-400/30 bg-emerald-400/[0.05]"
                       : "border-rose-400/30 bg-rose-400/[0.06]"
@@ -670,19 +717,19 @@ export default function IncidentWarRoom({
                     )}
                   </div>
 
-                  <p className="text-xs sm:text-[13px] text-slate-300 leading-relaxed">
+                  <p className="text-xs text-slate-300 leading-relaxed line-clamp-3">
                     {selectedChoice.resultBody}
                   </p>
 
                   {/* Actions */}
                   {cascadePendingId ? (
-                    <div className="space-y-2">
-                      <div className="p-3 rounded-lg border border-amber-500/40 bg-amber-500/10 flex items-center justify-between text-xs text-amber-200 animate-pulse">
-                        <span className="flex items-center gap-1.5 font-medium">
-                          <Timer className="w-4 h-4 text-amber-400 animate-pulse" />
-                          Second-Order Cascade Brewing in {cascadeCountdown}s...
+                    <div className="space-y-1.5">
+                      <div className="p-2 rounded-lg border border-amber-500/40 bg-amber-500/10 flex items-center justify-between text-xs text-amber-200 animate-pulse">
+                        <span className="flex items-center gap-1.5 font-medium text-[11px]">
+                          <Timer className="w-3.5 h-3.5 text-amber-400 animate-pulse" />
+                          Cascade in {cascadeCountdown}s...
                         </span>
-                        <span className="font-mono text-[11px] text-amber-300/80">
+                        <span className="font-mono text-[10px] text-amber-300/80">
                           {cascadePendingId}
                         </span>
                       </div>
@@ -690,18 +737,18 @@ export default function IncidentWarRoom({
                         <button
                           type="button"
                           onClick={() => triggerCascade(cascadePendingId)}
-                          className="btn btn-primary btn-md flex-1 justify-center bg-gradient-to-r from-amber-600 to-rose-600 border-amber-500 hover:brightness-110 group cursor-pointer"
+                          className="btn btn-primary btn-sm flex-1 justify-center bg-gradient-to-r from-amber-600 to-rose-600 border-amber-500 hover:brightness-110 group cursor-pointer text-xs"
                         >
-                          <Flame className="w-4 h-4 mr-1 text-amber-200" />
-                          Trigger Cascade Outage Now ⏩
+                          <Flame className="w-3.5 h-3.5 mr-1 text-amber-200" />
+                          Trigger Cascade Now ⏩
                         </button>
                         <button
                           type="button"
                           onClick={handleRollback}
-                          className="btn btn-secondary btn-md text-slate-300 border-slate-700 hover:bg-slate-800 cursor-pointer"
+                          className="btn btn-secondary btn-sm text-slate-300 border-slate-700 hover:bg-slate-800 cursor-pointer"
                           title="Roll back deployment"
                         >
-                          <RotateCcw className="w-3.5 h-3.5" />
+                          <RotateCcw className="w-3 h-3" />
                         </button>
                       </div>
                     </div>
@@ -709,16 +756,16 @@ export default function IncidentWarRoom({
                     <button
                       type="button"
                       onClick={handleNextIncident}
-                      className="btn btn-primary btn-md w-full justify-center group"
+                      className="btn btn-primary btn-sm w-full justify-center group text-xs !py-1.5"
                     >
                       {pattern ? "View debrief & complete level" : "Deploy next fix"}
-                      <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-0.5" />
+                      <ArrowRight className="w-3.5 h-3.5 transition-transform group-hover:translate-x-0.5 ml-1" />
                     </button>
                   ) : (
                     <button
                       type="button"
                       onClick={handleRollback}
-                      className="btn btn-secondary btn-md w-full justify-center text-rose-200 border-rose-400/30 hover:bg-rose-400/10 cursor-pointer"
+                      className="btn btn-secondary btn-sm w-full justify-center text-rose-200 border-rose-400/30 hover:bg-rose-400/10 cursor-pointer text-xs !py-1.5"
                     >
                       <RotateCcw className="w-3.5 h-3.5 mr-1" />
                       Roll back deployment & retry
@@ -730,25 +777,40 @@ export default function IncidentWarRoom({
           </div>
         ) : (
           /* ================= DEBRIEF SCREEN ================= */
-          pattern ? (
-            <CampaignDebriefScreen
-              pattern={pattern}
-              chapter={chapter}
-              incident={incident}
-              selectedChoice={selectedChoice}
-              totalXp={totalXp || incident.xp}
-              survivedCascades={survivedCascades}
-              onReplay={handleRollback}
-            />
-          ) : (
-            <DebriefScreen
-              totalXp={totalXp}
-              savedAs={savedAs}
-              onSave={setSavedAs}
-            />
-          )
+          <div className="flex-1 min-h-0 overflow-y-auto pr-1">
+            {pattern ? (
+              <CampaignDebriefScreen
+                pattern={pattern}
+                chapter={chapter}
+                incident={incident}
+                selectedChoice={selectedChoice}
+                totalXp={totalXp || incident.xp}
+                survivedCascades={survivedCascades}
+                onReplay={handleRollback}
+              />
+            ) : (
+              <DebriefScreen
+                totalXp={totalXp}
+                savedAs={savedAs}
+                onSave={setSavedAs}
+              />
+            )}
+          </div>
         )}
       </div>
+
+      <ConceptIntelDrawer intelId={selectedIntelId} onClose={() => setSelectedIntelId(null)} />
+
+      {inspectedRole && (
+        <TelemetryInspector
+          telemetry={getMockTelemetryForNode(
+            `node-${inspectedRole}`,
+            inspectedRole,
+            !isSolved
+          )}
+          onClose={() => setInspectedRole(null)}
+        />
+      )}
     </article>
   );
 }
