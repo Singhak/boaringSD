@@ -7,11 +7,20 @@
 
 ## Executive Summary & Core Philosophy
 
-### Product Vision
-**System Design Quest** transforms system design learning from passive video consumption into an interactive, gamified engineering simulation:
+### Product Vision & Single Core Motive
+> **"One who comes to the website learns system design without being bored. He not only plays a game, but actually learns the concepts deeply."**
+
+**BoaringSD** transforms system design learning from passive textbook reading into an indispensable, tactical engineering flight simulator:
 ```
-Observe Incident ──► Diagnose Bottleneck ──► Deploy Architectural Fix ──► Verify Metrics & Graph ──► Defend Tradeoffs ──► Transfer Pattern ──► Boss Builder ──► Spaced Review
+Outage Fire ──► Concept Intel (ELI5 Analogy) ──► Architectural Deploy ──► Tradeoff Ledger ──► Second-Order Cascade ──► FAANG Post-Mortem ──► Boss Builder
 ```
+
+### The 5 Unified Product Pillars
+1. **Just-In-Time Concept Intel**: 30-second ELI5 analogies (e.g. *The Carpool Analogy for Singleflight*, *The Bathroom Key for Mutex*) and visual dataflows on every choice card so engineers never guess blindly.
+2. **Concept-Guarded Procedural Synthesizer (Every Level is a Surprise)**: Dynamic outage archetypes, fluctuating traffic scales (20k–350k req/s), and mid-flight chaos curveballs ensure no two runs are identical while mastering that level's core pattern.
+3. **Tactical War Room & Telemetry Inspector**: Real digital detective work—click topology nodes to inspect PostgreSQL slow query logs, Redis memory stats, and tweak live operational knobs (TTL sliders, mutex toggles).
+4. **Iconic FAANG System Clones**: High-prestige production architectures candidates face in L5/L6 interviews (Twitter Celebrity Fanout, Uber Ride Matching, Netflix Video CDN, Stripe Payment Idempotency).
+5. **Back-of-the-Envelope Math Gym & Daily Habit Loop**: Mastering mental capacity estimation rules of thumb ($1\text{M req/day} \approx 12\text{ RPS}$, 80/20 cache sizing) paired with a Wordle-style 24-hour Daily Incident and verified SRE scorecards for LinkedIn/GitHub.
 
 ### The Cardinal Rule
 ```
@@ -103,6 +112,8 @@ This section documents all features, engines, data models, and UI surfaces that 
     13. `idempotency.json` (INC-013)
     14. `multi-region.json` (INC-014)
     15. `health-checks.json` (INC-015)
+  * **Multi-Attribute Tradeoff Vectors**: Replaces binary pass/fail mechanics with dimensional scoring across `Latency`, `Cloud Cost`, `Operational Complexity`, `Staleness & Data Loss`, and `Availability Risk`. Choices categorize under canonical archetypes (`quick_fix`, `overkill`, `fragile`, `pragmatic`, `scalable`).
+  * **Second-Order Cascade Outage Engine**: Chained downstream incident propagation where initial fixes trigger realistic follow-up failures (e.g., naive TTL expiration $\rightarrow$ DB cache stampede; aggressive replica offloading $\rightarrow$ replication lag & dirty reads). Features impending countdown warnings, fast-forwarding, and "Staff Engineering Defense" debrief achievements.
 
 ---
 
