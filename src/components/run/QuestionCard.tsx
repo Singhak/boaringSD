@@ -70,17 +70,17 @@ export default function QuestionCard({
   };
 
   return (
-    <div className="space-y-5">
-      <div className="space-y-2">
-        <span className="eyebrow text-cyan-300/80">{eyebrow}</span>
-        {title && <h3 className="text-lg display">{title}</h3>}
+    <div className="space-y-3">
+      <div className="space-y-1">
+        <span className="eyebrow text-cyan-300/80 !text-[10px]">{eyebrow}</span>
+        {title && <h3 className="text-base font-bold display">{title}</h3>}
         {context && (
-          <p className="text-[13px] text-slate-300 leading-relaxed pl-3 border-l-2 border-[var(--line-strong)]">{context}</p>
+          <p className="text-xs text-slate-300 leading-snug pl-2.5 border-l-2 border-[var(--line-strong)]">{context}</p>
         )}
       </div>
 
-      <fieldset className="space-y-2" disabled={correct}>
-        <legend className="text-[15px] font-medium text-white leading-snug mb-3">{question.question}</legend>
+      <fieldset className="space-y-1.5" disabled={correct}>
+        <legend className="text-sm font-medium text-white leading-snug mb-1.5">{question.question}</legend>
         {question.options.map((opt, i) => {
           const isSelected = selectedId === opt.id;
           const ruledOut = wrongIds.includes(opt.id) && !isSelected;
@@ -96,7 +96,7 @@ export default function QuestionCard({
                 setSelectedId(opt.id);
                 playBlipSound();
               }}
-              className={`choice ${
+              className={`choice !py-2 !px-2.5 !text-xs ${
                 state === "right"
                   ? "!border-emerald-400/60 !bg-emerald-400/[0.08] !text-white"
                   : state === "wrong"

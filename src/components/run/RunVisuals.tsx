@@ -129,17 +129,17 @@ export function StatStrip({ stats, label = "System metrics" }: { stats: Stat[]; 
         // An odd count leaves a hole in the 2-column phone grid; let the last cell fill the row.
         const span = stats.length % 2 === 1 && i === stats.length - 1 ? "col-span-2 sm:col-span-1" : "";
         return (
-          <div key={m.label} className={`p-3.5 space-y-1 min-w-0 ${span}`}>
+          <div key={m.label} className={`p-2 sm:p-2.5 space-y-0.5 min-w-0 ${span}`}>
             <div className="flex items-center gap-1.5">
               {tone !== "neutral" && <span aria-hidden className={`dot ${TONE_DOT[tone]}`} />}
-              <span className="eyebrow truncate">{m.label}</span>
+              <span className="eyebrow truncate !text-[10px]">{m.label}</span>
             </div>
-            <div className={`num text-xl font-medium transition-colors duration-700 ${TONE_TEXT[tone]}`}>
+            <div className={`num text-base sm:text-lg font-medium transition-colors duration-700 ${TONE_TEXT[tone]}`}>
               {m.value}
-              {m.unit && <span className="text-xs text-slate-500 ml-1">{m.unit}</span>}
+              {m.unit && <span className="text-[11px] text-slate-500 ml-1">{m.unit}</span>}
               {TONE_SR[tone] && <span className="sr-only">{TONE_SR[tone]}</span>}
             </div>
-            <div className="num text-[11px] text-slate-500 h-4 truncate">{m.sub ?? ""}</div>
+            <div className="num text-[10px] text-slate-500 h-3.5 truncate">{m.sub ?? ""}</div>
           </div>
         );
       })}
@@ -305,8 +305,8 @@ export function RunTopology({ patternId, fixed }: { patternId: PatternId; fixed:
 export function Topology({ tiers, caption }: { tiers: Tier[]; caption?: React.ReactNode }) {
   const visible = tiers.filter((t) => t.length > 0);
   return (
-    <div className="surface !rounded-xl p-5 sm:p-6 space-y-5">
-      {caption && <div className="flex flex-wrap items-center justify-between gap-2">{caption}</div>}
+    <div className="surface !rounded-xl p-2.5 sm:p-3 space-y-2">
+      {caption && <div className="flex flex-wrap items-center justify-between gap-1.5">{caption}</div>}
       <div
         className="flex flex-col md:flex-row items-stretch md:items-center justify-center gap-2 md:gap-0 md:overflow-x-auto md:-mx-1 md:px-1 md:py-1"
         role="img"
