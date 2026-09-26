@@ -40,6 +40,18 @@ Visit [http://localhost:3000](http://localhost:3000) in your browser!
 npm test
 ```
 
+### 5. (Optional) Enable "Defend your call" grading
+Free-text answers are graded by an LLM against a server-side rubric. Copy `.env.example` to `.env.local` and set:
+```bash
+LLM_PROVIDER=gemini
+LLM_API_KEY=your-gemini-api-key
+LLM_MODEL=gemini-2.5-flash   # optional
+```
+Without a key, learners grade themselves against the model answer and rubric (self-assessment counts half toward progress). New providers plug in by implementing `GradingProvider` in `src/lib/grading/`.
+
+### 6. Writing scenario content
+See [`docs/content-style.md`](docs/content-style.md). Incidents that fail the automatic quality gate (`src/data/incidentQuality.ts`) are hidden from play; `npx tsx --test src/data/scenarioPacks.test.ts` checks your work.
+
 ---
 
 ## 🎯 15-Level Pattern Mastery Campaign
@@ -59,10 +71,10 @@ The core curriculum is structured into 15 cumulative distributed systems pattern
 
 **Evidence Progression Model**:
 Progress is tracked as verified evidence, not superficial completion percentages:
-`Unseen → Introduced → Applied Once → Passed Transfer → Reliable` (or `Needs Review`). Achieving `Reliable` requires passing the pattern run, a transfer question, a builder boss challenge, and a subsequent spaced review.
+`Unseen → Introduced → Applied Once → Passed Transfer → Reliable` (or `Needs Review`). Achieving `Reliable` requires passing the pattern run, a first-try transfer ("Aftershock") question, a builder boss challenge, a later spaced review, and a "Defend your call" answer scoring 60+.
 
 **Persistence**:
-Browser `localStorage` with versioned v1 → v2 migration. `/api/progress` mirrors completions to PostgreSQL.
+Browser `localStorage` only, with staged v1 → v2 → v3 migrations. There are no accounts or cross-device sync yet. PostgreSQL is used only for the lesson catalogue (`/api/lessons`, which falls back to bundled JSON).
 
 ---
 
@@ -76,19 +88,22 @@ Browser `localStorage` with versioned v1 → v2 migration. `/api/progress` mirro
 - 15-level visual map grouped by Foundation, Resilience, and Mastery tiers.
 - Matrix view and tier view with real-time mastery badges and prerequisite locking.
 
-### 3. Incident War Room Engine (`/campaign/[chapterId]?mode=incident`)
-- 15 data-driven scenario packs (`src/data/scenarioPacks/*.json`) powered by Incident Schema v2.
+### 3. Incident War Room Engine (`/campaign/[chapterId]`)
+- 15 data-driven scenario packs (`src/data/scenarioPacks/*.json`) powered by Incident Schema v2; 114 incidents pass the quality gate, and every level has 6+ playable.
+- Replays rotate incidents with procedural skins (traffic scale, region, occasion); options are shuffled per attempt.
+- Each level ends with an "Aftershock" transfer question and an optional "Defend your call" free-text reply.
 - Dynamic SVG network topologies with animated packet flows and node status tones (`good`, `bad`, `warn`, `neutral`).
 - Wrong-answer physics: incorrect deployments visibly spike node CPU, trigger 504 gateway timeouts, and cascade failure states.
 
 ### 4. Interactive Architecture Builder & Boss Loop (`/builder`)
-- React Flow drag-and-drop design canvas supporting Clients, Load Balancers, Servers, Caches, Databases, Read Replicas, CDNs, and Queues.
+- React Flow drag-and-drop design canvas supporting Clients, Load Balancers, Servers, Caches, Databases, Read Replicas, CDNs, and Queues (keyboard "Connect to…" control included).
+- Grading follows the wiring, and a cloud-credit budget penalizes over-building.
 - Real-time traffic load stress slider (1,000 to 50,000 req/s) with live bottleneck diagnostics.
 - 15 scenario boss challenges (`boss-scale`, `boss-lb`, `boss-replicas`, ..., `boss-health-checks`).
 
 ### 5. System Design Interview Arena (`/interview`)
 - Timed real-world mock interview challenges (TinyURL, Twitter Feed, Uber Dispatch, Global E-Commerce).
-- Interactive component assembly with real-time SPOF and capacity grading.
+- Component selection graded on requirements, with penalties for unjustified extras and an overtime penalty on the pager countdown.
 - Staff-level follow-up interview questions testing race conditions, failovers, and architectural tradeoff defenses.
 
 ### 6. Engineering Dashboard & Profile (`/dashboard`)
@@ -97,5 +112,6 @@ Browser `localStorage` with versioned v1 → v2 migration. `/api/progress` mirro
 
 ### 7. Auxiliary Engineering Labs
 - **Architecture Evolution** (`/evolution`): 5-stage scaling simulation from 1 to 10M users.
-- **Guided Challenge Lab** (`/guided`): Methodical breakdown (Requirements $\rightarrow$ Entities $\rightarrow$ APIs $\rightarrow$ Architecture).
+- **Case Studies** (`/guided`): Methodical breakdown (Requirements $\rightarrow$ Entities $\rightarrow$ APIs $\rightarrow$ Architecture).
+- **Estimation Gym** (`/math`): Back-of-the-envelope drills; results feed the Capacity Estimation radar axis.
 - **Concept Lessons** (`/learn/[lessonId]`): Interactive concept deep-dives.

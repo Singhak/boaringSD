@@ -74,8 +74,11 @@ export interface UserStats {
   completedChapters?: string[];
   systemsSaved?: number;
   incidentsSolved?: number;
+  /** @deprecated mock account fields, removed by the v3 migration */
   isLoggedIn?: boolean;
+  /** @deprecated */
   userEmail?: string | null;
+  /** @deprecated */
   userName?: string | null;
   totalScore: number;
   soundEnabled: boolean;
@@ -86,6 +89,35 @@ export interface UserStats {
   awardedEvents?: string[]; // idempotency keys for rewards
   lastPracticeDate?: string; // YYYY-MM-DD of last meaningful practice
   practiceDays?: string[]; // recent YYYY-MM-DD practice days
+  // Measured results (schema v3) — these feed the competency radar
+  estimationResults?: Record<string, EstimationResult>;
+  interviewResults?: Record<string, InterviewResult>;
+  reasoningResults?: Record<string, ReasoningResult>;
+  defenseStats?: { attempts: number; firstTry: number };
+}
+
+export interface EstimationResult {
+  best: number;
+  last: number;
+  attempts: number;
+}
+
+/** Pillar scores (0–100) from a mock interview; a pillar is omitted when the stage was skipped. */
+export interface InterviewResult {
+  scope?: number;
+  math?: number;
+  design?: number;
+  deepDive?: number;
+  total: number;
+  at: string;
+}
+
+export interface ReasoningResult {
+  score: number;
+  /** True when the learner graded themselves because no grader was available. */
+  selfAssessed: boolean;
+  patternId?: PatternId;
+  at: string;
 }
 
 export interface CampaignChapter {
@@ -170,6 +202,7 @@ export interface CustomNodeData {
   type: ArchitectureNodeType;
   status: "idle" | "healthy" | "warning" | "overloaded";
   cpu?: number;
+  queueDepth?: number;
   requestsHandled?: number;
   cacheHits?: number;
   down?: boolean; // killed by failure injection
@@ -287,6 +320,8 @@ export interface InterviewProblem {
     summary: string;
     spofVulnerabilitiesWithout: string[];
   };
+  scopeItems?: InterviewScopeItem[];
+  estimationTargets?: InterviewEstimationTarget[];
   followUpQuestions?: InterviewFollowUp[];
   requiredDesign?: {
     needsLB?: boolean;
@@ -403,6 +438,8 @@ export interface PatternEvidence {
   reviewsPassed: number;
   reviewsFailed: number;
   reviewStage: number; // 0..3 → next review at 1, 3, 7 days
+  /** Best "defend your call" score for this pattern (self-assessed counts half). */
+  reasoningBest?: number;
   scenariosPassed: string[];
   failureReasons: string[];
   firstClearedAt?: string;
@@ -414,7 +451,8 @@ export interface PatternRunResult {
   patternId: PatternId;
   diagnosisFirstTry: boolean;
   interventionFirstTry: boolean;
-  transferFirstTry: boolean;
+  /** null when the run had no transfer question; only a first-try pass counts as a transfer pass. */
+  transferFirstTry: boolean | null;
   hintsUsed: number;
   failureReasons: string[];
 }
@@ -442,6 +480,10 @@ export interface BuilderScenario {
     minServers?: number;
   };
   requiredComponents: ArchitectureNodeType[];
+  /** Monthly cloud-credit budget; derived from a lean passing design when omitted. */
+  budget?: number;
+  /** Alternative valid designs (e.g. cache path vs queue path) that also pass. */
+  acceptedArchetypes?: ArchitecturalArchetype[];
   inheritsFrom?: string;
   startingNodes: { id: string; label: string; type: ArchitectureNodeType; x: number; y: number }[];
   startingEdges: { source: string; target: string }[];
@@ -513,7 +555,7 @@ export interface TradeoffVector {
   costMonthlyDelta?: number;
   latencyP99DeltaMs?: number;
   complexityScore?: 1 | 2 | 3 | 4 | 5;
-  consistencyGuarantee?: "strong" | "eventual" | "session";
+  consistencyGuarantee?: "strong" | "eventual" | "session" | "weak";
   tradeoffSummary?: string;
 }
 
@@ -540,6 +582,8 @@ export interface IncidentV2 {
   level: number;
   patternId: string;
   canonical?: boolean;
+  /** Rewritten to docs/content-style.md and passes the quality gate. */
+  reviewed?: boolean;
   isCascade?: boolean;
   parentIncidentCode?: string;
   severity: "P0" | "P1" | "P2";
@@ -645,5 +689,130 @@ export interface NodeTelemetry {
   knobs: OperationalKnob[];
 }
 
+// ============================================================================
+// 6-Axis Engineering Competency Mastery Radar (Pillar 6)
+// ============================================================================
 
+export type CompetencyArea =
+  | "bottleneck_diagnosis"
+  | "pattern_selection"
+  | "capacity_estimation"
+  | "tradeoff_defense"
+  | "end_to_end_design"
+  | "resilience_recovery";
 
+export type CompetencyTier = "Novice" | "Proficient" | "Advanced" | "Staff Architect";
+
+export interface CompetencyScore {
+  area: CompetencyArea;
+  label: string;
+  score: number; // 0 to 100
+  tier: CompetencyTier;
+  /** Attempts measured for this axis. */
+  evidencesCount: number;
+  /** False while the axis has fewer than RADAR_MIN_SAMPLES attempts ("scouting"). */
+  hasEnoughData: boolean;
+  highlightTip: string;
+}
+
+export interface UserSkillRadar {
+  scores: Record<CompetencyArea, CompetencyScore>;
+  overallIndex: number; // 0 to 100
+  strongestArea: CompetencyArea;
+  growthArea: CompetencyArea;
+}
+
+// ============================================================================
+// 4-Stage FAANG Mock Interview Arena (Pillar 1)
+// ============================================================================
+
+export type InterviewStage = "scope" | "math" | "design" | "deepdive" | "scorecard";
+
+export interface InterviewScopeItem {
+  id: string;
+  label: string;
+  category: "functional" | "non_functional" | "out_of_scope";
+  isCore: boolean;
+  explanation: string;
+}
+
+export interface InterviewEstimationTarget {
+  id: string;
+  prompt: string;
+  parameterContext: string;
+  canonicalAnswer: number;
+  unit: string;
+  magnitudeLabel: string; // e.g. "RPS", "TB/year", "GB RAM"
+  tolerancePercent: number; // e.g. 25%
+  stepByStepDerivation: string[];
+  ruleOfThumbTip: string;
+}
+
+export interface InterviewStageScorecard {
+  scopeScore: number;       // 0 - 25%
+  estimationScore: number;  // 0 - 25%
+  architectureScore: number;// 0 - 25%
+  deepDiveScore: number;    // 0 - 25%
+  overallScore: number;     // 0 - 100%
+  tierRating: "Needs Improvement" | "Hire · Senior Engineer" | "Strong Hire · Staff Architect";
+  detailedRubric: {
+    stage: string;
+    passed: boolean;
+    strengths: string[];
+    improvements: string[];
+  }[];
+}
+
+// ============================================================================
+// Multi-Attribute Tradeoff Cards & Architectural Defense (Pillars 2 & 3)
+// ============================================================================
+
+export interface TradeoffCardOption {
+  id: string;
+  title: string;
+  tagline: string;
+  patternId: string;
+  costEstimateDeltaUsd: number;      // e.g. +450
+  latencyProfileMs: number;          // e.g. -120ms
+  operationalComplexity: 1 | 2 | 3 | 4 | 5; // 1 = Low, 5 = Extreme
+  // "Not applicable" is for stateless components (e.g. a load balancer) that store no data.
+  consistencyGuarantee: "Strict ACID" | "Eventual Consistency" | "Read-Your-Writes" | "Not applicable (stateless)";
+  durabilityTier: "Ephemeral (RAM)" | "Durable SSD" | "Multi-Region Distributed" | "Not applicable (stateless)";
+  pros: string[];
+  cons: string[];
+  isRecommendedForConstraints: boolean;
+  tradeoffDefenseQuestion: {
+    question: string;
+    options: {
+      id: string;
+      text: string;
+      isCorrect: boolean;
+      feedback: string;
+    }[];
+  };
+  stressTest10xQuestion: {
+    question: string;
+    options: {
+      id: string;
+      text: string;
+      isCorrect: boolean;
+      feedback: string;
+    }[];
+  };
+}
+
+// ============================================================================
+// Multi-Path Production Boss Fights (Pillar 5)
+// ============================================================================
+
+export interface ArchitecturalArchetype {
+  id: string;
+  name: string;
+  description: string;
+  requiredComponents: ArchitectureNodeType[];
+  optionalComponents?: ArchitectureNodeType[];
+  forbiddenComponents?: ArchitectureNodeType[];
+  maxLatencyP99Ms: number;
+  maxMonthlyCostUsd: number;
+  tradeoffSummary: string;
+}
