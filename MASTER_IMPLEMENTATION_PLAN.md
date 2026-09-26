@@ -15,21 +15,43 @@
 Outage Fire ──► Concept Intel (ELI5 Analogy) ──► Architectural Deploy ──► Tradeoff Ledger ──► Second-Order Cascade ──► FAANG Post-Mortem ──► Boss Builder
 ```
 
-### The 5 Unified Product Pillars
+### The 6 Unified Product Pillars
 1. **Just-In-Time Concept Intel**: 30-second ELI5 analogies (e.g. *The Carpool Analogy for Singleflight*, *The Bathroom Key for Mutex*) and visual dataflows on every choice card so engineers never guess blindly.
 2. **Concept-Guarded Procedural Synthesizer (Every Level is a Surprise)**: Dynamic outage archetypes, fluctuating traffic scales (20k–350k req/s), and mid-flight chaos curveballs ensure no two runs are identical while mastering that level's core pattern.
 3. **Tactical War Room & Telemetry Inspector**: Real digital detective work—click topology nodes to inspect PostgreSQL slow query logs, Redis memory stats, and tweak live operational knobs (TTL sliders, mutex toggles).
-4. **Iconic FAANG System Clones**: High-prestige production architectures candidates face in L5/L6 interviews (Twitter Celebrity Fanout, Uber Ride Matching, Netflix Video CDN, Stripe Payment Idempotency).
-5. **Back-of-the-Envelope Math Gym & Daily Habit Loop**: Mastering mental capacity estimation rules of thumb ($1\text{M req/day} \approx 12\text{ RPS}$, 80/20 cache sizing) paired with a Wordle-style 24-hour Daily Incident and verified SRE scorecards for LinkedIn/GitHub.
+4. **4-Stage FAANG Interview Arena**: Standard FAANG 4-stage interview simulation (*Requirements Scoping & Distractor Trap Detection $\rightarrow$ Back-of-the-Envelope Capacity Math $\rightarrow$ High-Level Architecture $\rightarrow$ Staff Deep Dive & Concurrency Defense*).
+5. **Architectural Tradeoff Cards & SRE Defense Gates**: Replaces binary guessing with multi-dimensional engineering cards balancing Monthly Cloud Cost ($\Delta$), Latency Impact, Operational Complexity (1-5), and Consistency Guarantees, paired with a mandatory SRE verification gate.
+6. **6-Axis Engineering Competency Mastery Radar**: Verified competency tracking across *Bottleneck Diagnosis, Pattern Selection, Capacity Estimation, Tradeoff Defense, End-to-End Design, and Resilience & Recovery*.
 
 ### The Cardinal Rule
 ```
-Abstract Pattern First  ──►  Identify Bottleneck  ──►  Deploy Cloud Service / Architecture
+Abstract Pattern First  ──►  Identify Bottleneck  ──►  Defend Tradeoff & Scale  ──►  Deploy Cloud Service
 ```
 Learners master foundational distributed systems principles (Horizontal Scaling, Caching, Read Replicas, Queues, Sharding) before being introduced to cloud provider implementations (AWS, Azure, GCP) or advanced infrastructure tracks.
 
 ### Action Before Authentication ("No Thinking UX")
 Users must never be paralyzed by onboarding forms or complex navigation menus. On their very first visit, they are immediately placed into a production incident, resolve it with interactive decisions, and only then save their progress.
+
+---
+
+## Honest Status (updated 2026-09-26)
+> The earlier self-scores in this section (9.3/10 overall) were not backed by the code. A learner-eyes review scored the app about **4.5/10**: answers were guessable (the correct option was always first), most scenario-pack incidents were machine-templated with broken labels, nothing required reasoning, progress evidence was inflated, and several "shipped" features were cosmetic. This table records what is actually live after the quality-fix pass.
+
+| Area | Status | Notes |
+| :--- | :--- | :--- |
+| Answer integrity | **Live** | Every multiple-choice surface shuffles options per attempt (`src/lib/shuffle.ts`); answer leaks removed; `answerOrder.test.ts` guards it. |
+| Scenario content | **Live, growing** | 132 of 302 incidents pass the content-quality gate (`src/data/incidentQuality.ts`); the other 170 are hidden until rewritten per `docs/content-style.md`. Every level has 6+ playable War Room incidents. |
+| Replay variety | **Live** | War Room replays rotate incidents and apply procedural skins (traffic scale, region, occasion) via `src/lib/incidentSkin.ts`. |
+| Transfer check | **Live** | "Aftershock" question closes every War Room level; only a first-try pass counts as transfer evidence. |
+| Free-text reasoning | **Live** | "Defend your call" (≤280 chars) graded by an LLM against a server-side rubric (`/api/grade`, Gemini provider), with self-assessment fallback. Required for the Reliable tier. |
+| Progress evidence | **Live** | Run results report real first-try/hint data; the radar is computed only from measured results and shows "Scouting" until an axis has 3+ attempts. |
+| Builder grading | **Live** | Simulation follows the wiring; cloud-credit budgets and unneeded-component penalties stop "place everything"; accepted archetypes let alternate designs pass. |
+| Interview arena | **Live** | The design stage is a canvas (`ArchitectureCanvas`); only components wired on a path from the client count (`designFromGraph`). Over-engineering and overtime penalties, first-attempt follow-up scoring, pillar results saved. |
+| Estimation | **Live** | One ratio-based scorer (`src/lib/estimation.ts`) for the gym and the interview; accepts "12k", "1.5M", "1e4". |
+| Telemetry inspector | **Illustrative** | Seeded from the incident's own graph and metrics and labelled illustrative; knobs removed from the War Room (they only work in the flight sim). |
+| Accounts / sync | **Not built** | Progress is local to the browser. The fake sign-in and the demo-user `/api/progress` mirror were removed. |
+| Procedural outage synthesizer | **Not built** | Replaced by incident rotation, skins and curveballs: on replays, a seeded 50% chance fires a second incident from the same pack after the fix. |
+| Coverage | **Growing** | Added levels 16–18 (Depth tier: CAP & PACELC, Consensus & Quorums, Storage Engines & Indexing), each with a 6-incident pack, a builder boss and 2 reasoning prompts. Added case studies: rate limiter, KV store, payments ledger, web crawler, typeahead, notifications (14 total). Still missing: ID generation, search, streams, observability, auth; chat and feed ranking case studies. |
 
 ---
 
@@ -39,12 +61,13 @@ Users must never be paralyzed by onboarding forms or complex navigation menus. O
 graph TD
     subgraph Part1["PART I: ALREADY IMPLEMENTED (LIVE IN CODEBASE)"]
         A1["1. First-Run Incident Onboarding (Pushpa Mode)"]
-        A2["2. Incident Schema v2 & Playable War Room"]
-        A3["3. 15-Level 3-Tier Pattern Campaign"]
-        A4["4. Interactive Architecture Builder & Boss Loop"]
-        A5["5. System Design Interview Arena (MVP)"]
-        A6["6. Progression, Evidence Model & Local Storage"]
-        A7["7. Legacy Labs (Evolution, Guided, Concept Lessons)"]
+        A2["2. War Room Engine, Tradeoff Cards & SRE Defense Gates"]
+        A3["3. 18-Level 4-Tier Pattern Campaign"]
+        A4["4. Architecture Builder & Multi-Path Boss Battles"]
+        A5["5. 4-Stage FAANG Mock Interview Arena"]
+        A6["6. 6-Axis Engineering Competency Mastery Radar"]
+        A7["7. Progression, Evidence Model & Local Persistence"]
+        A8["8. Auxiliary Labs & Math Capacity Gym"]
     end
 
     subgraph Part2["PART II: FUTURE ROADMAP (PLANNED / BACKLOG)"]
@@ -55,8 +78,8 @@ graph TD
         F5["Phase 5: Tradeoff & Vendor Lock-In Simulators (V6 & V7)"]
         F6["Phase 6: Chaos Engineering & Live Outage Track (V8)"]
         F7["Phase 7: Observability & Security Tracks (V9 & V10)"]
-        F8["Phase 8: SRE Reliability & Interview Expansion (V11 & V12)"]
-        F9["Phase 9: Engineering Career Paths & Skill Radar (V13)"]
+        F8["Phase 8: SRE Reliability & AI Interview Grilling (V11 & V12)"]
+        F9["Phase 9: Enterprise Career Paths & Diagnostic Engine (V13)"]
     end
 
     Part1 -->|Natural Evolution| Part2
@@ -71,11 +94,10 @@ This section documents all features, engines, data models, and UI surfaces that 
 ---
 
 ### 1. First-Run "No Thinking" Incident Onboarding (Pushpa Mode)
-* **Status**: **SHIPPED & ACTIVE**
+* **Status**: **Live**. `/mission` now redirects to `/`.
 * **Primary Files**:
   * [`src/app/page.tsx`](file:///d:/03-React/boaringSD/src/app/page.tsx)
   * [`src/components/PushpaMissionWarRoom.tsx`](file:///d:/03-React/boaringSD/src/components/PushpaMissionWarRoom.tsx)
-  * [`src/app/mission/page.tsx`](file:///d:/03-React/boaringSD/src/app/mission/page.tsx)
 * **Capabilities**:
   * **Zero Friction Entry**: Unauthenticated users opening `/` bypass marketing fluff and are paged with a live P0 outage: *"The feed is down — 100,000 req/s, 98% CPU, 4,200ms latency, 504 errors"*.
   * **Interactive War Room Simulation**:
@@ -86,10 +108,12 @@ This section documents all features, engines, data models, and UI surfaces that 
 ---
 
 ### 2. Playable Incident Schema v2 & War Room Engine
-* **Status**: **SHIPPED & ACTIVE**
+* **Status**: **Live**, with corrections: tradeoff defense sets exist for 2 of 15 patterns (caching, load balancing); the standalone `TradeoffCard` component was unused and has been removed (choice cards show tradeoff badges instead).
 * **Primary Files**:
-  * [`src/types/index.ts`](file:///d:/03-React/boaringSD/src/types/index.ts#L466-L562) (`IncidentV2`, `IncidentGraph`, `IncidentChoice`, `IncidentMetric`, `IncidentPackV2`)
+  * [`src/types/index.ts`](file:///d:/03-React/boaringSD/src/types/index.ts) (`IncidentV2`, `IncidentGraph`, `IncidentChoice`, `IncidentMetric`, `TradeoffCardOption`)
   * [`src/components/incident/IncidentWarRoom.tsx`](file:///d:/03-React/boaringSD/src/components/incident/IncidentWarRoom.tsx)
+  * [`src/components/incident/ArchitecturalDefenseModal.tsx`](file:///d:/03-React/boaringSD/src/components/incident/ArchitecturalDefenseModal.tsx)
+  * [`src/data/tradeoffScenarios.ts`](file:///d:/03-React/boaringSD/src/data/tradeoffScenarios.ts)
   * [`src/data/scenarioPacks.ts`](file:///d:/03-React/boaringSD/src/data/scenarioPacks.ts)
   * [`src/data/scenarioPacks/*.json`](file:///d:/03-React/boaringSD/src/data/scenarioPacks/) (15 scenario pack files)
 * **Capabilities**:
@@ -112,13 +136,14 @@ This section documents all features, engines, data models, and UI surfaces that 
     13. `idempotency.json` (INC-013)
     14. `multi-region.json` (INC-014)
     15. `health-checks.json` (INC-015)
-  * **Multi-Attribute Tradeoff Vectors**: Replaces binary pass/fail mechanics with dimensional scoring across `Latency`, `Cloud Cost`, `Operational Complexity`, `Staleness & Data Loss`, and `Availability Risk`. Choices categorize under canonical archetypes (`quick_fix`, `overkill`, `fragile`, `pragmatic`, `scalable`).
+  * **Multi-Attribute Tradeoff Cards**: Replaces binary pass/fail mechanics with interactive engineering cards displaying **Monthly Cloud Cost ($\Delta$)**, **P99 Latency Impact**, **Operational Complexity (1–5)**, and **Consistency Guarantees** (`Strict ACID`, `Eventual Consistency`, `Read-Your-Writes`).
+  * **SRE Architectural Defense Gate** (caching and load-balancing levels): a modal asks *"Why this pattern over X?"* and *"What fails at 10x?"*. It is scored on the first attempt; after feedback the learner may deploy anyway without the defense bonus.
   * **Second-Order Cascade Outage Engine**: Chained downstream incident propagation where initial fixes trigger realistic follow-up failures (e.g., naive TTL expiration $\rightarrow$ DB cache stampede; aggressive replica offloading $\rightarrow$ replication lag & dirty reads). Features impending countdown warnings, fast-forwarding, and "Staff Engineering Defense" debrief achievements.
 
 ---
 
-### 3. 15-Level 3-Tier Pattern Campaign & Roadmap
-* **Status**: **SHIPPED & ACTIVE**
+### 3. 18-Level 4-Tier Pattern Campaign & Roadmap
+* **Status**: **Live**. Guided study mode is `?mode=study` (`?mode=guided` still accepted).
 * **Primary Files**:
   * [`src/app/campaign/page.tsx`](file:///d:/03-React/boaringSD/src/app/campaign/page.tsx)
   * [`src/app/campaign/[chapterId]/page.tsx`](file:///d:/03-React/boaringSD/src/app/campaign/[chapterId]/page.tsx)
@@ -150,8 +175,8 @@ This section documents all features, engines, data models, and UI surfaces that 
 
 ---
 
-### 4. Interactive Architecture Builder & Scenario Boss Loop
-* **Status**: **SHIPPED & ACTIVE**
+### 4. Interactive Architecture Builder & Multi-Path Boss Battles
+* **Status**: **Live**, with corrections: `bossBattles.ts` was never used by any page and has been removed. Multi-path support now lives on `BuilderScenario.acceptedArchetypes` (no shipped scenario uses it yet).
 * **Primary Files**:
   * [`src/app/builder/page.tsx`](file:///d:/03-React/boaringSD/src/app/builder/page.tsx)
   * [`src/lib/builderScore.ts`](file:///d:/03-React/boaringSD/src/lib/builderScore.ts)
@@ -161,51 +186,75 @@ This section documents all features, engines, data models, and UI surfaces that 
   * **React Flow Canvas**: Drag-and-drop design surface supporting Clients, Load Balancers, Servers, Caches, Databases, Read Replicas, CDNs, and Queues.
   * **Live Traffic Stress Simulation**: Slider injecting 1,000 to 50,000 req/s into the visual topology, calculating node CPU, queue backpressure, cache hits, and latency bottlenecks.
   * **Scenario Boss Mode (`/builder?scenario=<id>`)**: Launches predefined broken systems with concrete traffic parameters, required components, and win criteria.
-  * **Single Scoring Authority**: `evaluateArchitectureScore()` calculates performance scores (0–100), provides structural and performance feedback, and enforces the pass/fail threshold.
+  * **Wiring-aware grading**: traffic follows the edges (an LB only feeds servers it connects to; a cache only helps if a serving server uses it), and a cloud-credit budget plus unneeded-component penalties stop "place every component" from winning.
 
 ---
 
-### 5. System Design Interview Arena (MVP)
-* **Status**: **SHIPPED & ACTIVE**
+### 5. 4-Stage FAANG Mock Interview Arena
+* **Status**: **Live**. The design stage is a drawable canvas graded on wiring (unwired parts are ignored and extras are penalized); the timer applies an overtime penalty rather than ending the interview.
 * **Primary Files**:
   * [`src/app/interview/page.tsx`](file:///d:/03-React/boaringSD/src/app/interview/page.tsx)
+  * [`src/components/interview/InterviewScopeStep.tsx`](file:///d:/03-React/boaringSD/src/components/interview/InterviewScopeStep.tsx)
+  * [`src/components/interview/InterviewMathStep.tsx`](file:///d:/03-React/boaringSD/src/components/interview/InterviewMathStep.tsx)
   * [`src/data/interview.ts`](file:///d:/03-React/boaringSD/src/data/interview.ts)
 * **Capabilities**:
-  * **Timed Mock Interview Rounds**: Real-world interview countdowns with strict constraints on scale, latency, and durability.
-  * **Interactive Component Assembly**: Toggle edge CDNs, reverse proxies, server counts, caches, queues, databases, and read replicas.
-  * **Real-Time Rubric Evaluation**: Immediate architectural scoring with explicit feedback on single points of failure (SPOFs) and resource saturation.
-  * **Multi-Stage Interviewer Follow-Ups**: Deep dive oral/quiz questions testing edge cases, race conditions, and staff-level tradeoff defenses.
-  * **Implemented Scenarios**:
-    1. **Tier 1 (Beginner)**: *Design URL Shortener (TinyURL)* (100:1 read ratio, Base62 counter ranges, 301 vs 302 redirects).
-    2. **Tier 2 (Intermediate)**: *Design Twitter Feed (Timeline & Fanout)* (Fanout-on-write push vs pull, celebrity hotkey solutions).
-    3. **Tier 3 (Advanced)**: *Design Uber (Geospatial Ride Dispatch)* (1.25M GPS pings/sec, Redis Geo / QuadTree / S2 cells, double-dispatch mutual exclusion).
-    4. **Tier 4 (Staff)**: *Design Global E-Commerce (Amazon Prime Day)* (500K catalog RPS, Lua atomic flash inventory lease, transactional outbox).
+  * **Stage 1: Requirements Scoping & Scope Creep Distractor Traps**: Candidates clarify functional goals, define non-functional SLOs, and identify deliberate out-of-scope traps (e.g. 4K video transcoding for TinyURL or biometric login gates).
+  * **Stage 2: Capacity Estimation Workspace**: Interactive numeric inputs for Read QPS, 5-Year Storage Capacity (TB), and 80/20 RAM Cache sizing with logarithmic tolerance evaluation ($\pm 15\%$ perfect, $\pm 35\%$ acceptable) and collapsible step-by-step derivations.
+  * **Stage 3: High-Level Architecture Design**: Component toggles (Edge CDN, Load Balancer, In-Memory Cache, Queue, Database, Replicas) and autoscaling server fleet with live topology rendering and SPOF detection.
+  * **Stage 4: Staff-Level Deep-Dive Probing**: Interactive interviewer follow-ups probing race conditions (Base62 distributed counter ranges, token buckets, celebrity fanout push/pull hybrid models, transactional outbox).
+  * **Stage 5: Comprehensive 4-Pillar Evaluation Scorecard**: Weighted hiring committee scorecard (*Scoping 25%, Capacity Math 25%, Topology & SPOF 25%, Staff Defense 25%*) with a practice verdict per pillar (the old "Strong Hire · Staff Architect" labels were removed; a practice score is not a hiring signal). An optional "Defend your design" free-text round follows.
+  * **Implemented Problem Scenarios**:
+    1. **Tier 1 (Beginner)**: *Design URL Shortener (TinyURL)* (100:1 read ratio, 40k Read QPS, 3 TB 5-yr storage, 10 GB RAM cache, Base62 token ranges).
+    2. **Tier 2 (Intermediate)**: *Design Twitter Feed (Timeline & Fanout)* (300M DAU, 21k Read QPS, 270 TB 5-yr storage, 1.9 TB RAM cache, hybrid push/pull fanout).
+    3. **Tier 3 (Advanced)**: *Design Uber (Geospatial Ride Dispatch)* (5M drivers, 1.25M GPS pings/sec write throughput, 325 MB RAM footprint, Redis GeoHash / S2 cells).
+    4. **Tier 4 (Staff)**: *Design Global E-Commerce (Amazon Prime Day)* (50M concurrent shoppers, 500k catalog RPS, 50k orders/sec flash burst, Lua atomic inventory leasing).
 
 ---
 
-### 6. Progression, Evidence Model & Local Persistence
-* **Status**: **SHIPPED & ACTIVE**
+### 6. 6-Axis Engineering Competency Mastery Radar
+* **Status**: **Live, rebuilt**. Previously the axes counted activity (streaks, XP, interview count); they are now computed only from measured results, shrunk toward zero for small samples, and show "Scouting" until an axis has 3+ attempts.
+* **Primary Files**:
+  * [`src/components/dashboard/SkillRadarChart.tsx`](file:///d:/03-React/boaringSD/src/components/dashboard/SkillRadarChart.tsx)
+  * [`src/lib/progression.ts`](file:///d:/03-React/boaringSD/src/lib/progression.ts) (`calculateSkillRadar`)
+  * [`src/app/dashboard/page.tsx`](file:///d:/03-React/boaringSD/src/app/dashboard/page.tsx)
+* **Capabilities**:
+  * **Measured Competency Engine**: a 0–100 reading per axis from first-try diagnoses and fixes, transfer passes, estimate accuracy, defenses and reasoning scores, builder passes, reviews, and interview pillars:
+    1. **Bottleneck Diagnosis**: Telemetry triage, slow query analysis, and log inspection.
+    2. **Pattern Selection**: Choosing optimal distributed patterns under explicit constraints.
+    3. **Capacity Estimation**: Back-of-the-envelope math intuition, QPS, storage, and RAM cache sizing.
+    4. **Tradeoff Defense**: Defending cost vs latency vs complexity vs consistency tradeoffs.
+    5. **End-to-End Design**: Assembling multi-tier architectures without single points of failure.
+    6. **Resilience & Recovery**: Surviving cascading outages, circuit breakers, and disaster failovers.
+  * **Cyber-Aesthetic SVG Polygon Visualization**: Native SVG polygon chart with glowing vertices, concentric 5-ring grid lines, competency drilldown cards, and automated personalized growth recommendations.
+  * **Engineering Competency Tiers**: Candidates advance across *Novice*, *Proficient*, *Advanced*, and *Staff Architect* ranks based on proven mission evidence.
+
+---
+
+### 7. Progression, Evidence Model & Local Persistence
+* **Status**: **Live**. Stats schema v3; localStorage only (no accounts).
 * **Primary Files**:
   * [`src/lib/progression.ts`](file:///d:/03-React/boaringSD/src/lib/progression.ts)
   * [`src/lib/storage.ts`](file:///d:/03-React/boaringSD/src/lib/storage.ts)
   * [`src/lib/useUserStats.ts`](file:///d:/03-React/boaringSD/src/lib/useUserStats.ts)
-  * [`src/lib/*.test.ts`](file:///d:/03-React/boaringSD/src/lib/)
+  * [`src/lib/*.test.ts`](file:///d:/03-React/boaringSD/src/lib/) (157 automated tests: progression, builder wiring/budgets, answer order, content-quality gate, skins, estimation, grading, interview design, radar)
 * **Capabilities**:
   * **Honest Evidence Model**: Replaces superficial percentage progress with verified mastery states:  
     `Unseen ──► Introduced ──► Applied Once ──► Passed Transfer ──► Reliable ──► Needs Review`
-  * **Reliability Gate**: A pattern can only achieve `Reliable` after passing the pattern run, a transfer question, an architecture builder boss, and a subsequent spaced review (1, 3, 7, 30 days).
+  * **Reliability Gate**: A pattern can only achieve `Reliable` after passing the pattern run, a first-try transfer question, an architecture builder boss, a later spaced review (1, 3, 7, 30 days), and a "Defend your call" answer scoring 60+ (self-assessment counts half).
   * **Pure Progression Functions**: Next-action recommendation (`selectNextAction()`), daily streak calculation, level thresholds, and XP award idempotency.
-  * **LocalStorage v1 $\rightarrow$ v2 Migration**: Versioned browser persistence with automatic fallback guards.
+  * **LocalStorage v1 $\rightarrow$ v2 $\rightarrow$ v3 Migration**: Staged, versioned browser persistence with automatic fallback guards.
 
 ---
 
-### 7. Auxiliary Labs & Legacy Modules
-* **Status**: **MAINTAINED IN LABS**
+### 8. Auxiliary Labs & Math Capacity Gym
+* **Status**: **Live**. Labs are defined once in `src/lib/labs.ts` (navbar, dashboard and page gates agree). Challenge Lab is now "Case Studies"; the math gym is the "Estimation Gym" and records results into the radar.
 * **Primary Files**:
+  * [`src/app/math/page.tsx`](file:///d:/03-React/boaringSD/src/app/math/page.tsx): Back-of-the-envelope estimation drills & 60-second speed sprints.
+  * [`src/data/mathProblems.ts`](file:///d:/03-React/boaringSD/src/data/mathProblems.ts): Canonical problems for QPS, storage, bandwidth, RAM, availability, and cloud cost.
   * [`src/app/evolution/page.tsx`](file:///d:/03-React/boaringSD/src/app/evolution/page.tsx): 5-stage evolutionary scaling simulation (1 user $\rightarrow$ 10M users).
   * [`src/app/guided/page.tsx`](file:///d:/03-React/boaringSD/src/app/guided/page.tsx): Guided thinking mode (Requirements $\rightarrow$ Entities $\rightarrow$ APIs $\rightarrow$ Architecture).
   * [`src/app/learn/[lessonId]/page.tsx`](file:///d:/03-React/boaringSD/src/app/learn/[lessonId]/page.tsx): Foundational interactive concept lessons.
-  * [`src/app/dashboard/page.tsx`](file:///d:/03-React/boaringSD/src/app/dashboard/page.tsx): Learner profile, rank title, XP breakdown, badges, and next mission CTA.
+  * [`src/app/dashboard/page.tsx`](file:///d:/03-React/boaringSD/src/app/dashboard/page.tsx): Learner profile, rank title, XP breakdown, 6-Axis Skill Radar, and next mission CTA.
 
 ---
 
@@ -231,7 +280,7 @@ This section details all planned enhancements, technical refactors, and advanced
   1. Remove or redirect orphaned `/challenge/[challengeId]` routes to the corresponding level on `/campaign/[chapterId]`.
   2. Embed `/learn/[lessonId]` as a contextual *"Read Concept Deep-Dive"* drawer/modal inside the level run rather than a standalone disconnected page.
   3. Streamline Navbar into two distinct groupings:
-     * **Core Quest**: Next Incident $\rightarrow$ 15-Level Map $\rightarrow$ Review Queue.
+     * **Core Quest**: Next Incident $\rightarrow$ 18-Level Map $\rightarrow$ Review Queue.
      * **Engineering Labs**: Architecture Builder Sandbox + Interview Arena.
   4. Update `README.md` to accurately document the 15-level pattern game, incident war rooms, and interview arena.
 
@@ -333,7 +382,9 @@ graph LR
 ## Phase 5: Tradeoff Simulator (V6) & Vendor Portability (V7)
 > **Priority: Medium | Focus: Senior Engineering Decision-Making**
 
-### 5.1 Tradeoff Simulator (V6)
+### 5.1 Standalone Tradeoff Comparison Labs (V6)
+> *Note: Core multi-attribute tradeoff cards ($ Cost, Latency, Complexity, Consistency) are already live in Part I Section 2 for incident triage. Phase 5 extends this into dedicated standalone Tradeoff Comparison Labs.*
+
 Structured decision-making scenarios where every choice incurs engineering tradeoffs:
 1. **Cost vs Performance**: Provisioning peak hardware vs autoscaling with warm-up latency.
 2. **Consistency vs Availability (CAP / PACELC)**: Strong linearizable consistency vs eventual consistency under network partition.
@@ -393,7 +444,9 @@ Structured decision-making scenarios where every choice incurs engineering trade
 * **Blameless Post-Mortem Generator**: Interactive incident retrospectives compiling timeline of events, root cause analysis, and preventative action items.
 
 ### 8.2 System Design Interview Arena Expansion (V12)
-* **Expanded Problem Library**: Covering 15+ canonical interview problems.
+> *Note: The initial 4-stage FAANG Arena with TinyURL, Twitter, Uber, and Global E-Commerce is live in Part I Section 5. Phase 8.2 scales the catalog to 15+ interactive problem suites.*
+
+* **Expanded Problem Library**: Covering 15+ canonical interview problems (WhatsApp, Netflix, Dropbox, Stripe, Google Maps).
 * **Simulated Interviewer Grilling Engine**: Dynamic follow-up questions challenging learner designs on cost, scale, and failure resilience.
 * **Comprehensive Scoring Rubric**: Automated grading based on FAANG interview standards across Functional Requirements, Non-Functional Requirements, Architecture Diagram, and Deep Dive Defense.
 
@@ -401,23 +454,26 @@ Structured decision-making scenarios where every choice incurs engineering trade
 
 ## Phase 9: Engineering Career Paths & Skill Diagnostic Engine (V13)
 > **Priority: Low | Focus: Career Progression & Gap Analysis**
+> *Note: The 6-Axis Engineering Competency Mastery Radar (`SkillRadarChart.tsx`) is already live on `/dashboard` in Part I Section 6. Phase 9 expands this with personalized enterprise career tracks.*
 
 * **Role-Based Engineering Roadmaps**:
   * **Junior SDE (L3)**: Core fundamentals (HTTP, Caching, Load Balancing, Basic CRUD).
   * **Mid-Level SDE (L4)**: System reliability (Replication, Queues, Rate Limiting, Connection Pools).
   * **Senior SDE (L5)**: Distributed architecture (Sharding, Consistency models, Multi-Region, Chaos tolerance).
   * **Staff / Principal Architect (L6+)**: Tradeoffs, multi-cloud strategy, cost optimization, vendor portability, and organizational technical leadership.
-* **Diagnostic Skill Radar**: Visual radar chart highlighting strengths and knowledge gaps across 12 distributed systems competencies.
+* **Enterprise Career Tracks & Certifications**: Deepening the active 6-Axis Competency Radar with external milestone badges, verified assessment exports, and portfolio artifacts.
 * **Personalized Curriculum Generator**: Customized study paths targeting upcoming interview dates or role promotions.
 
 ---
 
 # PART III: PLAN CONSOLIDATION & CLEANUP AUDIT
 
-To eliminate documentation fragmentation and guarantee that this master document serves as the **single source of truth**, all previously scattered plan files were merged into this document and removed from the repository:
+To eliminate documentation fragmentation and guarantee that this master document serves as the **single source of truth**, all previously scattered plan files and external reviews were merged into this document:
 
-| Historical / Retired Plan File | Status | Consolidated Mapping |
+| Historical / Evaluated Artifact | Status | Consolidated Mapping |
 | :--- | :--- | :--- |
+| `APP_REVIEW_SYSTEM_DESIGN_LEARNING.md` | **Removed (Integrated into Core)** | App critique on depth, capacity math, tradeoff reasoning, and interview readiness addressed in **Part I (Sections 2, 4, 5, 6)** and the Architectural Depth Trajectory Scorecard. |
+| `system_design_depth_plan.md` | **Integrated & Shipped** | 4-Stage FAANG interview arena, Tradeoff Cards, SRE Defense Gates, Multi-path Boss Battles, and 6-Axis Skill Radar fully implemented in **Part I (Sections 2, 4, 5, 6)**. |
 | `Instruction.md` | **Removed (Superseded)** | Foundational vision & MVP features integrated into **Part I (Sections 1–4)** and Tech Stack. |
 | `MVP_ENHANCEMENTS.md` | **Removed (Superseded)** | Guided thinking, interactive feedback, and scenario ideas integrated into **Part I (Section 5 & 7)** and **Part II (Phase 2)**. |
 | `NO_THINKING_UX_PRINCIPLES.md` | **Removed (Superseded)** | Action Before Authentication & first-run incident flow integrated into **Part I (Section 1)**. |

@@ -54,19 +54,20 @@ See [`docs/content-style.md`](docs/content-style.md). Incidents that fail the au
 
 ---
 
-## 🎯 15-Level Pattern Mastery Campaign
+## 🎯 18-Level Pattern Mastery Campaign
 
-The core curriculum is structured into 15 cumulative distributed systems patterns across 3 tiers:
+The core curriculum is structured into 18 cumulative distributed systems patterns across 4 tiers:
 
 - **Tier 1: Foundation (Levels 01–05)**: Horizontal Scaling, Load Balancing, Read Replicas, In-Memory Caching, CDN & Edge Delivery.
 - **Tier 2: Resilience (Levels 06–10)**: Asynchronous Queues, Database Sharding, Distributed Consistency, Rate Limiting, Circuit Breakers.
 - **Tier 3: Mastery (Levels 11–15)**: Connection Pooling, Backpressure & Throttling, Idempotency & Outbox, Multi-Region DR, Health Checks & Eviction.
+- **Tier 4: Depth (Levels 16–18)**: CAP & PACELC, Consensus & Quorums, Storage Engines & Indexing.
 
 ### The Learning & Evidence Loop:
 1. **Level Run** (`/campaign/[chapterId]`):
    - **Simulation War Room Mode (`?mode=incident`)**: Live SVG topology, real-time telemetry deltas, and physical wrong-answer degradation.
    - **Structured Pattern Run Mode**: 6-stage evidence loop: Observe → Diagnose → Deploy fix → Tradeoff counter-strike → Transfer question → Post-mortem.
-2. **Builder Boss** (`/builder?scenario=<id>`): 15 predefined broken systems (`src/data/builderScenarios.ts`). The player builds, stress-tests, defends tradeoffs, and submits. `evaluateScenario` in `src/lib/builderScore.ts` is the single scoring authority.
+2. **Builder Boss** (`/builder?scenario=<id>`): 18 predefined broken systems (`src/data/builderScenarios.ts`). The player builds, stress-tests, defends tradeoffs, and submits. `evaluateScenario` in `src/lib/builderScore.ts` is the single scoring authority.
 3. **Spaced Review** (`/campaign/[chapterId]?mode=review`): Scheduled spaced recall at 1, 3, 7, and 30 days.
 
 **Evidence Progression Model**:
@@ -89,7 +90,7 @@ Browser `localStorage` only, with staged v1 → v2 → v3 migrations. There are 
 - Matrix view and tier view with real-time mastery badges and prerequisite locking.
 
 ### 3. Incident War Room Engine (`/campaign/[chapterId]`)
-- 15 data-driven scenario packs (`src/data/scenarioPacks/*.json`) powered by Incident Schema v2; 114 incidents pass the quality gate, and every level has 6+ playable.
+- 18 data-driven scenario packs (`src/data/scenarioPacks/*.json`) powered by Incident Schema v2; 132 incidents pass the quality gate, and every level has 6+ playable.
 - Replays rotate incidents with procedural skins (traffic scale, region, occasion); options are shuffled per attempt.
 - Each level ends with an "Aftershock" transfer question and an optional "Defend your call" free-text reply.
 - Dynamic SVG network topologies with animated packet flows and node status tones (`good`, `bad`, `warn`, `neutral`).
@@ -103,7 +104,7 @@ Browser `localStorage` only, with staged v1 → v2 → v3 migrations. There are 
 
 ### 5. System Design Interview Arena (`/interview`)
 - Timed real-world mock interview challenges (TinyURL, Twitter Feed, Uber Dispatch, Global E-Commerce).
-- Component selection graded on requirements, with penalties for unjustified extras and an overtime penalty on the pager countdown.
+- Design stage on a canvas: only components wired on a path from users count, with penalties for unjustified extras and an overtime penalty on the pager countdown.
 - Staff-level follow-up interview questions testing race conditions, failovers, and architectural tradeoff defenses.
 
 ### 6. Engineering Dashboard & Profile (`/dashboard`)
