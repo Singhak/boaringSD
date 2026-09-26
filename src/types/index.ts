@@ -523,6 +523,7 @@ export interface IncidentChoice {
   correct: boolean;
   approach?: ApproachKind;
   tradeoffs?: TradeoffVector;
+  conceptIntelId?: string;
   cascadeIncidentId?: string;
   cascadeDelayMs?: number;
   retry?: boolean;
@@ -547,6 +548,7 @@ export interface IncidentV2 {
   brief: string;
   constraint: string;
   question: string;
+  conceptIntelId?: string;
   metricsBefore: IncidentMetric[];
   graphBefore: IncidentGraph;
   choices: IncidentChoice[];
@@ -573,5 +575,75 @@ export interface IncidentPackV2 {
     wrongChoices: string[];
   }[];
 }
+
+// ============================================================================
+// Just-In-Time Concept Intel (Pillar 1)
+// ============================================================================
+
+export interface ConceptIntel {
+  id: string;
+  name: string;
+  category: "caching" | "scaling" | "database" | "resilience" | "consistency" | "networking";
+  oneLiner: string;
+  eli5Analogy: {
+    title: string;
+    story: string;
+  };
+  visualFlow: string;
+  whyItWorks: string;
+  tradeoffs: {
+    pros: string[];
+    cons: string[];
+  };
+  interviewPlaybook: {
+    whenToUse: string;
+    sampleDialogue: string;
+  };
+}
+
+// ============================================================================
+// Telemetry Inspector & Operational Knobs (Pillar 3)
+// ============================================================================
+
+export interface TelemetryLogEntry {
+  timestamp: string;
+  level: "INFO" | "WARN" | "ERROR" | "FATAL";
+  source: string;
+  message: string;
+  durationMs?: number;
+  highlight?: boolean;
+}
+
+export interface OperationalKnob {
+  id: string;
+  label: string;
+  description: string;
+  type: "slider" | "toggle" | "select";
+  value: number | boolean | string;
+  min?: number;
+  max?: number;
+  step?: number;
+  unit?: string;
+  options?: { label: string; value: string }[];
+}
+
+export interface NodeTelemetry {
+  nodeId: string;
+  nodeName: string;
+  role: ComponentKind;
+  status: "HEALTHY" | "DEGRADED" | "CRITICAL" | "IDLE";
+  cpuUsage: number;
+  memoryUsedMb: number;
+  memoryTotalMb: number;
+  activeConnections: number;
+  maxConnections: number;
+  workerThreadsUsed: number;
+  workerThreadsTotal: number;
+  p99LatencyMs: number;
+  errorRate: number;
+  logs: TelemetryLogEntry[];
+  knobs: OperationalKnob[];
+}
+
 
 
