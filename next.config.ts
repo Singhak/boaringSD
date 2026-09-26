@@ -1,7 +1,12 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  async redirects() {
+    return [
+      // The first-run incident lives on the home page now.
+      { source: "/mission", destination: "/", permanent: false },
+    ];
+  },
 };
 
 export default nextConfig;
