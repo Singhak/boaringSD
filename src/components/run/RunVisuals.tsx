@@ -268,6 +268,18 @@ const TOPOLOGIES: Record<PatternId, { before: Tier[]; after: Tier[] }> = {
     before: [[T("Load Balancer")], [T("Node 1", "ok"), T("Node 2", "hot", "zombie 500 error"), T("Node 3", "ok")]],
     after: [[T("Load Balancer")], [T("Health Probes", "new", "evict failed node")], [T("Node 1", "ok"), T("Node 3", "ok")]],
   },
+  "cap-pacelc": {
+    before: [[T("US users"), T("EU users")], [T("US primary", "warn"), T("EU replica", "hot", "approving stale spends")]],
+    after: [[T("US users"), T("EU users")], [T("US primary"), T("EU replica", "new", "CP for money, AP for carts")]],
+  },
+  "consensus-quorums": {
+    before: [[T("Clients")], [T("Node A", "hot", "isolated, still leading"), T("Node B", "warn", "new leader")], [T("Node C")]],
+    after: [[T("Clients")], [T("Node B", "new", "leader, term 8"), T("Node A", "idle", "stepped down")], [T("Node C", "ok", "majority ack")]],
+  },
+  "storage-engines": {
+    before: [[T("Ingest API")], [T("B-tree DB", "hot", "random writes, disk 95%")]],
+    after: [[T("Ingest API")], [T("LSM memtable", "new")], [T("Sorted SSTables", "ok", "Bloom filters")]],
+  },
 };
 
 const HEALTH_STYLES: Record<Health, string> = {

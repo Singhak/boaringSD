@@ -26,7 +26,8 @@ import { getTradeoffsForPattern } from "@/data/tradeoffScenarios";
 import { getMockTelemetryForNode } from "@/data/telemetryData";
 import { StatStrip, Stepper, Topology } from "@/components/run/RunVisuals";
 import type { Stat } from "@/components/run/RunVisuals";
-import { getCanonicalIncident, getIncidentById, graphToTiers } from "@/data/scenarioPacks";
+import { getCanonicalIncident, getIncidentById, getScenarioPackByPatternId, graphToTiers } from "@/data/scenarioPacks";
+import { getPlayableIncidents } from "@/data/incidentQuality";
 import { getAllPatterns } from "@/data/patterns";
 import {
   playAlarmSound,
@@ -97,6 +98,9 @@ export default function IncidentWarRoom({
   const [cascadePendingId, setCascadePendingId] = useState<string | null>(null);
   const [cascadeCountdown, setCascadeCountdown] = useState<number | null>(null);
   const [survivedCascades, setSurvivedCascades] = useState<string[]>([]);
+  // Replays only: about half the time a second, different incident pages you right after your fix.
+  const [curveballId] = useState<string | null>(() => pickCurveball(pattern?.id, initialIncidentId, skinSeed));
+  const [curveballFired, setCurveballFired] = useState(false);
   // Rendered client-side only (after stats load), so the seed can come from localStorage.
   const [shuffleSeed] = useState(() => nextShuffleSeed(`warroom:${initialIncidentId}`));
 
@@ -211,6 +215,10 @@ export default function IncidentWarRoom({
     if (choice.cascadeIncidentId) {
       setCascadePendingId(choice.cascadeIncidentId);
       setCascadeCountdown(choice.cascadeDelayMs ? Math.round(choice.cascadeDelayMs / 1000) : 5);
+    } else if (curveballId && !curveballFired && incident?.id !== curveballId) {
+      setCurveballFired(true);
+      setCascadePendingId(curveballId);
+      setCascadeCountdown(6);
     }
 
     // Record XP reward for this incident
@@ -1017,6 +1025,17 @@ function telemetryForIncident(role: ComponentKind, graph: IncidentGraph | null, 
     ...(errors !== undefined ? { errorRate: errors } : {}),
     knobs: [],
   });
+}
+
+/** A curveball for a replay: another startable incident of the same level, chosen from the seed. */
+function pickCurveball(patternId: string | undefined, currentId: string, skinSeed: string | undefined): string | null {
+  if (!patternId || !skinSeed) return null;
+  const h = Math.abs(hashSeed(`${skinSeed}|curveball`));
+  if (h % 2 === 1) return null;
+  const pack = getScenarioPackByPatternId(patternId);
+  if (!pack) return null;
+  const options = getPlayableIncidents(pack).filter((i) => !i.isCascade && i.id !== currentId);
+  return options.length > 0 ? options[h % options.length].id : null;
 }
 
 function CampaignDebriefScreen({

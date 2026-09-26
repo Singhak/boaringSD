@@ -4,6 +4,7 @@ import React, { useEffect, useState } from "react";
 import { AlertTriangle, ArrowRight, CheckCircle2, ShieldCheck, Sparkles, X, XCircle } from "lucide-react";
 import { playBlipSound, playErrorSound, playSuccessSound } from "@/lib/sound";
 import { deterministicShuffle } from "@/lib/shuffle";
+import { useFocusTrap } from "@/lib/useFocusTrap";
 import type { TradeoffCardOption } from "@/types";
 
 interface ArchitecturalDefenseModalProps {
@@ -27,6 +28,7 @@ export default function ArchitecturalDefenseModal({
   const [q2Error, setQ2Error] = useState<string | null>(null);
   // null until the first submission; the score keeps the first attempt.
   const [firstTry, setFirstTry] = useState<boolean | null>(null);
+  const dialogRef = useFocusTrap<HTMLDivElement>(isOpen);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -102,6 +104,7 @@ export default function ArchitecturalDefenseModal({
   return (
     <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto animate-fadeIn">
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="defense-title"
