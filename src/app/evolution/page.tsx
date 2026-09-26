@@ -114,7 +114,7 @@ export default function EvolutionPage() {
                   >
                     <div className="flex items-center gap-1.5">
                       <span aria-hidden className={`dot ${past || active ? STAGE_DOT[s.status] : "text-slate-600"}`} />
-                      <span className="eyebrow !text-[10px]">Stage {s.stage}</span>
+                      <span className="eyebrow !text-[11px]">Stage {s.stage}</span>
                     </div>
                     <div className={`num text-[12px] sm:text-[13px] mt-1 truncate ${active ? "text-white" : "text-slate-400"}`}>
                       {s.userCountLabel.replace(" Users", "")}

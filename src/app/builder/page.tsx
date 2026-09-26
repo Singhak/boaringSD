@@ -38,6 +38,7 @@ import {
   Zap,
 } from "lucide-react";
 import Navbar from "@/components/Navbar";
+import FeatureGate from "@/components/FeatureGate";
 import { ArchNode } from "@/components/builder/CustomNodes";
 import { RemovableEdge } from "@/components/builder/RemovableEdge";
 import QuestionCard from "@/components/run/QuestionCard";
@@ -46,9 +47,11 @@ import { playBlipSound, playErrorSound, playSuccessSound } from "@/lib/sound";
 import {
   ScenarioEvaluation,
   applySimulation,
+  designMonthlyCost,
   evaluateArchitectureScore,
   evaluateScenario,
   sandboxWorkload,
+  scenarioBudget,
   simulateTopology,
 } from "@/lib/builderScore";
 import { getAllBuilderScenarios, getBuilderScenarioById } from "@/data/builderScenarios";
@@ -63,7 +66,7 @@ import {
 } from "@/lib/storage";
 import { ProgressionOutcome, getEvidence, isPatternCleared } from "@/lib/progression";
 import { useUserStats } from "@/lib/useUserStats";
-import type { ArchitectureNodeType, BuilderScenario, UserStats } from "@/types";
+import type { ArchitectureNodeType, BuilderScenario, CustomNodeData, UserStats } from "@/types";
 
 const nodeTypes = { customNode: ArchNode };
 const edgeTypes = { removableEdge: RemovableEdge };
@@ -156,7 +159,7 @@ function designToEdges(design: SavedDesign): Edge[] {
 
 type SearchParams = Promise<{ [key: string]: string | string[] | undefined }>;
 
-export default function BuilderPage({ searchParams }: { searchParams: SearchParams }) {
+function BuilderPageContent({ searchParams }: { searchParams: SearchParams }) {
   const sp = use(searchParams);
   const allBosses = getAllBuilderScenarios();
   const scenarioId = typeof sp.scenario === "string" ? sp.scenario : undefined;
@@ -253,6 +256,8 @@ function Workspace({ scenario, stats }: { scenario?: BuilderScenario; stats: Use
 
   const [selected, setSelected] = useState<{ type: "node" | "edge"; id: string; label?: string } | null>(null);
   const [trafficRps, setTrafficRps] = useState<number>(scenario?.trafficRps ?? 10000);
+  const [chaosSurge, setChaosSurge] = useState(false);
+  const prevOverloadedRef = useRef(false);
   const [designVersion, setDesignVersion] = useState(0); // topology changes (invalidate a stress test)
   const [layoutVersion, setLayoutVersion] = useState(0); // node moves (only saved to the draft)
   const [tested, setTested] = useState<{ version: number; evaluation: ScenarioEvaluation } | null>(null);
@@ -270,9 +275,14 @@ function Workspace({ scenario, stats }: { scenario?: BuilderScenario; stats: Use
   const [nodes, setNodes] = useState<Node[]>(() => {
     const start = designToNodes(initial.design);
     if (baseline) return applySimulation(start, baseline.simulation);
-    return applySimulation(start, simulateTopology(start, sandboxWorkload(10000)));
+    return applySimulation(start, simulateTopology(start, sandboxWorkload(10000), initial.design.edges));
   });
   const [edges, setEdges] = useState<Edge[]>(() => designToEdges(initial.design));
+  // Latest wiring for the sandbox simulation, which runs from a state updater.
+  const edgesRef = useRef(edges);
+  useEffect(() => {
+    edgesRef.current = edges;
+  }, [edges]);
 
   const removeNode = useCallback((nodeId: string) => {
     playBlipSound();
@@ -294,10 +304,28 @@ function Workspace({ scenario, stats }: { scenario?: BuilderScenario; stats: Use
     () => nodes.map((n) => ({ ...n, data: { ...n.data, onRemove: outcome ? undefined : () => removeNode(n.id) } })),
     [nodes, removeNode, outcome]
   );
-  const displayEdges = useMemo(
-    () => edges.map((e) => ({ ...e, data: { ...e.data, onRemove: (id: string) => removeEdge(id) } })),
-    [edges, removeEdge]
-  );
+
+  const displayEdges = useMemo(() => {
+    const nodeMap = new Map(nodes.map((n) => [n.id, n.data as unknown as CustomNodeData | undefined]));
+    return edges.map((e) => {
+      const targetData = nodeMap.get(e.target);
+      const isTargetOverloaded = targetData?.status === "overloaded";
+      const isTargetWarning = targetData?.status === "warning";
+      return {
+        ...e,
+        style: isTargetOverloaded
+          ? { stroke: "#f43f5e", strokeWidth: 2.5 }
+          : isTargetWarning
+          ? { stroke: "#fbbf24", strokeWidth: 2 }
+          : undefined,
+        animated: true,
+        data: {
+          ...e.data,
+          onRemove: outcome ? undefined : () => removeEdge(e.id),
+        },
+      };
+    });
+  }, [nodes, edges, removeEdge, outcome]);
 
   const currentDesign = useCallback(
     (): SavedDesign => ({
@@ -361,11 +389,46 @@ function Workspace({ scenario, stats }: { scenario?: BuilderScenario; stats: Use
 
   // ---------------- Sandbox evaluation ----------------
 
-  const runSandbox = (rps: number) => {
-    setNodes((prev) => applySimulation(prev, simulateTopology(prev, sandboxWorkload(rps))));
-  };
+  const runSandbox = useCallback((rps: number) => {
+    setNodes((prev) => {
+      const sim = simulateTopology(prev, sandboxWorkload(rps), edgesRef.current);
+      const nextNodes = applySimulation(prev, sim);
+      const isOverloaded = nextNodes.some((n) => (n.data as unknown as CustomNodeData)?.status === "overloaded");
+      if (isOverloaded && !prevOverloadedRef.current) {
+        playErrorSound();
+        prevOverloadedRef.current = true;
+      } else if (!isOverloaded && prevOverloadedRef.current) {
+        playSuccessSound();
+        prevOverloadedRef.current = false;
+      }
+      return nextNodes;
+    });
+  }, []);
 
-  const sandboxScore = useMemo(() => evaluateArchitectureScore(nodes, trafficRps), [nodes, trafficRps]);
+  // Automatically recalculate simulation in sandbox whenever topology changes
+  useEffect(() => {
+    if (scenario) return;
+    runSandbox(trafficRps);
+  }, [designVersion, scenario, trafficRps, runSandbox]);
+
+  const triggerChaosSpike = useCallback(() => {
+    setChaosSurge(true);
+    playErrorSound();
+    setTrafficRps(120000);
+    runSandbox(120000);
+    const timer = setTimeout(() => {
+      setChaosSurge(false);
+    }, 4500);
+    return () => clearTimeout(timer);
+  }, [runSandbox]);
+
+  const sandboxScore = useMemo(
+    () => evaluateArchitectureScore(nodes, trafficRps, {}, edges),
+    [nodes, trafficRps, edges]
+  );
+  // Cloud credits: live monthly cost of the design against the boss budget.
+  const monthlyCost = designMonthlyCost(nodes);
+  const budget = scenario ? scenarioBudget(scenario) : null;
 
   // ---------------- Boss evaluation ----------------
 
@@ -408,7 +471,7 @@ function Workspace({ scenario, stats }: { scenario?: BuilderScenario; stats: Use
     setNodes(
       scenario
         ? applySimulation(start, evaluateScenario(start, design.edges, scenario).simulation)
-        : applySimulation(start, simulateTopology(start, sandboxWorkload(10000)))
+        : applySimulation(start, simulateTopology(start, sandboxWorkload(10000), design.edges))
     );
     setEdges(designToEdges(design));
     setSelected(null);
@@ -432,6 +495,15 @@ function Workspace({ scenario, stats }: { scenario?: BuilderScenario; stats: Use
   ];
   const activeStep = steps.findIndex((s) => !s.done);
   const alreadyPassed = scenario && stats ? getEvidence(stats, scenario.patternId).scenariosPassed.includes(scenario.id) : false;
+
+  const overloadedNodes = useMemo(
+    () => nodes.filter((n) => (n.data as unknown as CustomNodeData)?.status === "overloaded" && !(n.data as unknown as CustomNodeData)?.down),
+    [nodes]
+  );
+  const warningNodes = useMemo(
+    () => nodes.filter((n) => (n.data as unknown as CustomNodeData)?.status === "warning" && !(n.data as unknown as CustomNodeData)?.down),
+    [nodes]
+  );
 
   return (
     <>
@@ -461,11 +533,8 @@ function Workspace({ scenario, stats }: { scenario?: BuilderScenario; stats: Use
             playBlipSound();
             runSandbox(trafficRps);
           }}
-          onChaos={() => {
-            playErrorSound();
-            setTrafficRps(100000);
-            runSandbox(100000);
-          }}
+          onChaos={triggerChaosSpike}
+          chaosActive={chaosSurge}
           onReset={resetDesign}
           onClear={() => {
             setNodes([]);
@@ -494,7 +563,7 @@ function Workspace({ scenario, stats }: { scenario?: BuilderScenario; stats: Use
                       }`}
                     />
                     <span
-                      className={`block text-[10px] font-medium truncate ${
+                      className={`block text-[11px] font-medium truncate ${
                         s.done ? "text-emerald-300/80" : i === activeStep ? "text-white" : "text-slate-500"
                       }`}
                     >
@@ -542,6 +611,8 @@ function Workspace({ scenario, stats }: { scenario?: BuilderScenario; stats: Use
                       />
                     </div>
                   )}
+
+                  {budget !== null && <CloudCredits cost={monthlyCost} budget={budget} />}
 
                   {/* One primary action */}
                   {!freshTest || !freshTest.canPass ? (
@@ -615,12 +686,73 @@ function Workspace({ scenario, stats }: { scenario?: BuilderScenario; stats: Use
         </div>
 
         {/* Canvas */}
-        <div className="lg:col-span-8 h-[440px] sm:h-[600px] surface overflow-hidden relative !bg-[#080b12]">
+        <div className={`lg:col-span-8 h-[440px] sm:h-[600px] surface overflow-hidden relative !bg-[#080b12] transition-all duration-300 ${
+          chaosSurge ? "ring-2 ring-rose-500/80 shadow-[0_0_40px_rgba(244,63,94,0.35)]" : ""
+        }`}>
+          {chaosSurge && (
+            <div className="absolute inset-x-0 top-0 z-30 py-2 px-4 bg-rose-600/95 text-white text-center text-xs font-mono font-bold tracking-wider uppercase animate-pulse shadow-lg flex items-center justify-center gap-2 backdrop-blur-md">
+              <Flame className="w-4 h-4 text-amber-300 animate-flame" />
+              CHAOS SURGE INJECTED: 120,000 req/s FLASH SALE FLOODING THE CLUSTER!
+              <Flame className="w-4 h-4 text-amber-300 animate-flame" />
+            </div>
+          )}
+
+          {!selected && !chaosSurge && overloadedNodes.length > 0 && (
+            <div className="absolute top-3 left-3 right-3 sm:left-auto sm:right-3 z-10 flex items-center gap-2.5 px-3.5 py-2 rounded-xl bg-[#140a12]/95 border border-rose-500/70 shadow-[0_0_24px_rgba(244,63,94,0.45)] backdrop-blur-md animate-fadeIn text-xs max-w-md">
+              <span className="w-6 h-6 rounded-lg bg-rose-500/20 border border-rose-500/40 grid place-items-center shrink-0">
+                <Flame className="w-3.5 h-3.5 text-rose-400 animate-flame" />
+              </span>
+              <div className="min-w-0">
+                <div className="font-bold text-rose-200 font-mono text-[11px] leading-tight">
+                  P0 CRITICAL OUTAGE ({overloadedNodes.length} NODE{overloadedNodes.length > 1 ? "S" : ""} SATURATED)
+                </div>
+                <div className="text-[11px] text-rose-300/90 leading-tight mt-0.5 truncate">
+                  {overloadedNodes.map((n) => (n.data as unknown as CustomNodeData)?.label).join(", ")} queue full · 504 Timeouts!
+                </div>
+              </div>
+            </div>
+          )}
+
+          {!selected && !chaosSurge && overloadedNodes.length === 0 && warningNodes.length === 0 && !isBoss && trafficRps >= 15000 && (
+            <div className="absolute top-3 left-3 right-3 sm:left-auto sm:right-3 z-10 hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-900/90 border border-emerald-500/40 backdrop-blur-md text-[11px] text-emerald-300 animate-fadeIn pointer-events-none">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+              <span className="font-mono text-white font-medium">{trafficRps.toLocaleString()} req/s</span>
+              <span>smoothly balanced · 0 drops</span>
+            </div>
+          )}
+
           {selected && (
             <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-3 pl-4 pr-2 py-1.5 surface !rounded-full shadow-2xl text-xs animate-fadeIn">
               <span className="text-slate-400">
                 {selected.type === "node" ? "Node" : "Connection"} <span className="num text-white">{selected.label}</span>
               </span>
+              {selected.type === "node" && outcome === null && (
+                // Keyboard/touch alternative to dragging a connection handle.
+                <label className="flex items-center gap-1.5 text-slate-400">
+                  <span className="sr-only">Connect {selected.label} to</span>
+                  <span aria-hidden>→</span>
+                  <select
+                    value=""
+                    onChange={(e) => {
+                      if (!e.target.value) return;
+                      onConnect({ source: selected.id, target: e.target.value, sourceHandle: null, targetHandle: null });
+                    }}
+                    className="bg-black/50 border border-[var(--line-strong)] rounded-full px-2 py-1 text-xs text-white"
+                  >
+                    <option value="">Connect to…</option>
+                    {nodes
+                      .filter(
+                        (n) =>
+                          n.id !== selected.id && !edges.some((e) => e.source === selected.id && e.target === n.id)
+                      )
+                      .map((n) => (
+                        <option key={n.id} value={n.id}>
+                          {String((n.data as { label?: string })?.label ?? n.id)}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+              )}
               <button
                 type="button"
                 onClick={() => (selected.type === "node" ? removeNode(selected.id) : removeEdge(selected.id))}
@@ -715,7 +847,7 @@ function ScenarioBrief({
       <dl className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 rounded-xl overflow-hidden border border-[var(--line)] divide-y sm:divide-y-0 sm:divide-x divide-[var(--line)] bg-black/10">
         {facts.map((f) => (
           <div key={f.label} className="p-3.5">
-            <dt className="eyebrow !text-[10px]">{f.label}</dt>
+            <dt className="eyebrow !text-[11px]">{f.label}</dt>
             <dd className="text-[13px] text-slate-200 mt-1 leading-snug">{f.value}</dd>
           </div>
         ))}
@@ -727,12 +859,12 @@ function ScenarioBrief({
 function MetricPair({ label, before, now, unit, bad }: { label: string; before?: number; now?: number; unit: string; bad: boolean }) {
   return (
     <div className="p-3 bg-[var(--surface)]">
-      <div className="flex items-center gap-1.5"><span aria-hidden className={`dot ${bad ? "text-rose-400" : "text-emerald-400"}`} /><span className="eyebrow !text-[10px]">{label}</span></div>
+      <div className="flex items-center gap-1.5"><span aria-hidden className={`dot ${bad ? "text-rose-400" : "text-emerald-400"}`} /><span className="eyebrow !text-[11px]">{label}</span></div>
       <div className={`num text-lg mt-1 ${bad ? "text-rose-300" : "text-white"}`}>
         {now !== undefined ? `${now.toLocaleString()}${unit}` : "—"}
       </div>
       {before !== undefined && now !== undefined && before !== now && (
-        <div className="num text-[10px] text-slate-500">
+        <div className="num text-[11px] text-slate-500">
           start: {before.toLocaleString()}
           {unit}
         </div>
@@ -875,6 +1007,7 @@ function SandboxHeader({
   onChaos,
   onReset,
   onClear,
+  chaosActive,
 }: {
   trafficRps: number;
   onTraffic: (rps: number) => void;
@@ -882,55 +1015,111 @@ function SandboxHeader({
   onChaos: () => void;
   onReset: () => void;
   onClear: () => void;
+  chaosActive?: boolean;
 }) {
+  const isHighTraffic = trafficRps >= 35000;
+  const isExtremeTraffic = trafficRps >= 70000;
+
   return (
     <section className="flex flex-wrap items-end justify-between gap-5">
       <div>
         <div className="space-y-1.5">
-          <span className="eyebrow text-cyan-300/80">Sandbox · not graded</span>
+          <div className="flex items-center gap-2">
+            <span className="eyebrow text-cyan-300/80">Sandbox · Interactive Flight Simulator</span>
+            {isExtremeTraffic ? (
+              <span className="chip chip-bad !py-0 !text-[11px] animate-pulse">🔥 FLASH SURGE</span>
+            ) : isHighTraffic ? (
+              <span className="chip chip-warn !py-0 !text-[11px]">⚡ HEAVY LOAD</span>
+            ) : null}
+          </div>
           <h1 className="text-3xl display">Architecture Sandbox</h1>
         </div>
-        <p className="text-[13px] text-slate-400 mt-1.5">Build anything, change the traffic, and see what breaks. Nothing here is graded.</p>
+        <p className="text-[13px] text-slate-400 mt-1.5">
+          Drag the traffic throttle live, watch servers heat up and melt down, and test your scaling under pressure.
+        </p>
       </div>
-      <label className="flex items-center gap-4 surface !rounded-xl px-4 py-2">
-        <span className="flex flex-col">
-          <span className="eyebrow !text-[10px]">Traffic</span>
-          <span className="num text-sm text-white">{trafficRps.toLocaleString()} req/s</span>
-        </span>
-        <input
-          type="range"
-          min="500"
-          max="100000"
-          step="500"
-          value={trafficRps}
-          onChange={(e) => onTraffic(Number(e.target.value))}
-          className="w-32 accent-cyan-400 cursor-pointer"
-          aria-label="Traffic in requests per second"
-        />
-      </label>
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={onSimulate}
-          className="btn btn-primary"
-        >
-          <Play className="w-3.5 h-3.5" /> Simulate
-        </button>
-        <button
-          type="button"
-          onClick={onChaos}
-          className="btn btn-danger"
-        >
-          <Flame className="w-3.5 h-3.5" /> Inject 10x spike
-        </button>
-        <button type="button" onClick={onReset} className="btn btn-secondary !px-2.5" aria-label="Reset to template">
-          <RotateCcw className="w-4 h-4" />
-        </button>
-        <button type="button" onClick={onClear} className="btn btn-secondary !px-2.5" aria-label="Clear canvas">
-          <Trash2 className="w-4 h-4" />
-        </button>
+
+      <div className="flex flex-wrap items-center gap-3">
+        <label className={`flex items-center gap-4 surface !rounded-xl px-4 py-2 border transition-all ${
+          isExtremeTraffic
+            ? "border-rose-500/60 shadow-[0_0_20px_rgba(244,63,94,0.3)] bg-rose-950/20"
+            : isHighTraffic
+            ? "border-amber-400/40 bg-amber-950/20"
+            : "border-[var(--line)]"
+        }`}>
+          <span className="flex flex-col">
+            <span className="eyebrow !text-[11px]">Traffic Throttle</span>
+            <span className={`num text-sm font-bold transition-colors ${
+              isExtremeTraffic ? "text-rose-300" : isHighTraffic ? "text-amber-300" : "text-white"
+            }`}>
+              {trafficRps.toLocaleString()} <span className="text-xs font-normal text-slate-400">req/s</span>
+            </span>
+          </span>
+          <input
+            type="range"
+            min="1000"
+            max="120000"
+            step="1000"
+            value={trafficRps}
+            onChange={(e) => onTraffic(Number(e.target.value))}
+            className={`w-36 sm:w-48 cursor-pointer transition-all ${
+              isExtremeTraffic ? "accent-rose-500" : isHighTraffic ? "accent-amber-400" : "accent-cyan-400"
+            }`}
+            aria-label="Traffic in requests per second"
+          />
+        </label>
+
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onSimulate}
+            className="btn btn-primary"
+            title="Recalculate architecture metrics"
+          >
+            <Play className="w-3.5 h-3.5" /> Simulate
+          </button>
+          <button
+            type="button"
+            onClick={onChaos}
+            disabled={chaosActive}
+            className={`btn btn-danger relative overflow-hidden ${
+              chaosActive ? "animate-pulse" : ""
+            }`}
+            title="Inject a 120,000 req/s flash sale flood"
+          >
+            <Flame className="w-3.5 h-3.5 text-amber-300 animate-flame" />
+            <span>{chaosActive ? "Surging 120k RPS…" : "Inject 10x Spike"}</span>
+          </button>
+          <button type="button" onClick={onReset} className="btn btn-secondary !px-2.5" aria-label="Reset to template" title="Reset template">
+            <RotateCcw className="w-4 h-4" />
+          </button>
+          <button type="button" onClick={onClear} className="btn btn-secondary !px-2.5" aria-label="Clear canvas" title="Clear canvas">
+            <Trash2 className="w-4 h-4" />
+          </button>
+        </div>
       </div>
     </section>
+  );
+}
+
+/** Budget meter: every component costs credits; finishing lean is part of the win. */
+function CloudCredits({ cost, budget }: { cost: number; budget: number }) {
+  const ratio = cost / budget;
+  const tone = ratio > 1.5 ? "bg-rose-400" : ratio > 1 ? "bg-amber-400" : "bg-emerald-400";
+  const label = ratio > 1.5 ? "Credits blown" : ratio > 1 ? "Over budget" : "Within budget";
+  return (
+    <div className="rounded-xl border border-[var(--line)] bg-black/20 p-3 space-y-1.5" aria-label="Cloud credits">
+      <div className="flex items-center justify-between text-xs">
+        <span className="eyebrow !text-[11px]">Cloud credits</span>
+        <span className="num text-slate-200">
+          ${cost.toLocaleString()} <span className="text-slate-500">/ ${budget.toLocaleString()} per month</span>
+        </span>
+      </div>
+      <div className="h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
+        <div className={`h-full rounded-full transition-all ${tone}`} style={{ width: `${Math.min(100, ratio * 100)}%` }} />
+      </div>
+      <p className="text-[11px] text-slate-400">{label}: every component costs credits, so build only what the traffic needs.</p>
+    </div>
   );
 }
 
@@ -982,7 +1171,7 @@ function ScenarioLibrary({ stats }: { stats: UserStats | null }) {
                   {passed ? "Replay" : "Start"} <ArrowRight className="w-3 h-3" />
                 </Link>
               ) : (
-                <span className="text-[10px] text-slate-600">Clear L{pattern?.levelNumber} run</span>
+                <span className="text-[11px] text-slate-600">Clear L{pattern?.levelNumber} run</span>
               )}
             </li>
           );
@@ -990,5 +1179,13 @@ function ScenarioLibrary({ stats }: { stats: UserStats | null }) {
       </ul>
       <p className="text-[11px] text-slate-500">Each boss unlocks after its level run.</p>
     </section>
+  );
+}
+
+export default function BuilderPage(props: { searchParams: SearchParams }) {
+  return (
+    <FeatureGate lab="builder">
+      <BuilderPageContent {...props} />
+    </FeatureGate>
   );
 }

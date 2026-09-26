@@ -185,7 +185,7 @@ function LessonRun({ lesson }: { lesson: Lesson }) {
                 return (
                   <li key={i} aria-current={active ? "step" : undefined} className={`flex gap-3 ${!done && !active ? "opacity-50" : ""}`}>
                     <span
-                      className={`w-6 h-6 rounded-full grid place-items-center shrink-0 border text-[10px] num ${
+                      className={`w-6 h-6 rounded-full grid place-items-center shrink-0 border text-[11px] num ${
                         done
                           ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-300"
                           : active

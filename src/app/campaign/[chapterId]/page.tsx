@@ -23,7 +23,7 @@ import PostMortemCard from "@/components/run/PostMortemCard";
 import { MetricsStrip, RunStepper, RunTopology } from "@/components/run/RunVisuals";
 import { getAllCampaignChapters, getCampaignChapterById } from "@/data/campaign";
 import { getPatternByChapterId, getPatternById, getAllPatterns } from "@/data/patterns";
-import { getCanonicalIncident, getPatternReplayVariant } from "@/data/scenarioPacks";
+import { getPatternReplayVariant, getWarRoomIncident } from "@/data/scenarioPacks";
 import IncidentWarRoom from "@/components/incident/IncidentWarRoom";
 import SystemFlightSim from "@/components/simulation/SystemFlightSim";
 
@@ -34,6 +34,7 @@ import {
   markFixApplied,
   markRunStarted,
   markTransferMiss,
+  nextShuffleSeed,
   readScenarioRotationState,
   saveRunProgress,
   saveScenarioRotationState,
@@ -77,10 +78,10 @@ export default function CampaignChapterPage({
   const [simMode, setSimMode] = useState<"warroom" | "flight">("warroom");
 
   if (stats !== null && isPatternUnlocked(stats, pattern) && mode !== "review") {
-    const isGuided = mode === "guided";
+    const isGuided = mode === "study" || mode === "guided"; // "guided" kept for old links
 
     return (
-      <div className="h-screen max-h-screen overflow-hidden text-slate-100 flex flex-col bg-[#080d19]">
+      <div className="min-h-dvh lg:h-screen lg:max-h-screen lg:overflow-hidden text-slate-100 flex flex-col bg-[#080d19]">
         <Navbar />
 
         {/* Compact Navigation Bar */}
@@ -97,7 +98,7 @@ export default function CampaignChapterPage({
             <span className="font-mono text-cyan-300 font-semibold tracking-wide text-xs truncate">
               LEVEL {pattern.levelNumber} OF {total}: {pattern.title.toUpperCase()} {isGuided ? "(GUIDED STUDY)" : ""}
             </span>
-            <span className="chip chip-warn !text-[9px] !py-0 !px-1.5 shrink-0 hidden sm:inline-flex">
+            <span className="chip chip-warn !text-[11px] !py-0 !px-1.5 shrink-0 hidden sm:inline-flex">
               <Zap className="w-2.5 h-2.5 mr-0.5" /> {isPatternCleared(stats, pattern) ? `Replay +${pattern.rewards.replayXp} XP` : `+${pattern.rewards.firstClearXp} XP`}
             </span>
           </div>
@@ -139,7 +140,7 @@ export default function CampaignChapterPage({
               </Link>
             ) : (
               <Link
-                href={`/campaign/${chapter.id}?mode=guided`}
+                href={`/campaign/${chapter.id}?mode=study`}
                 className="btn btn-ghost !py-1 !px-2.5 text-xs text-slate-400 hover:text-white"
               >
                 Switch to Guided Mode
@@ -148,30 +149,26 @@ export default function CampaignChapterPage({
           </div>
         </div>
 
-        <main className="flex-1 min-h-0 w-full max-w-7xl mx-auto p-2 sm:p-3 flex flex-col overflow-hidden">
+        <main className="flex-1 min-h-0 w-full max-w-7xl mx-auto p-2 sm:p-3 flex flex-col lg:overflow-hidden">
           {isGuided ? (
             <PatternRun chapter={chapter} pattern={pattern} stats={stats} isCompactView={true} />
           ) : simMode === "flight" && pattern.levelNumber <= 2 ? (
             <SystemFlightSim
               initialIncidentId={pattern.levelNumber === 1 ? "hs-01" : "lb-01"}
-              onAllCompleted={() => {
+              onAllCompleted={({ firstTry }) => {
+                // The flight sim has no transfer question, so it earns no transfer evidence.
                 completePatternRun(pattern, {
                   patternId: pattern.id,
-                  diagnosisFirstTry: true,
-                  interventionFirstTry: true,
-                  transferFirstTry: true,
+                  diagnosisFirstTry: firstTry,
+                  interventionFirstTry: firstTry,
+                  transferFirstTry: null,
                   hintsUsed: 0,
-                  failureReasons: [],
+                  failureReasons: firstTry ? [] : ["intervention"],
                 });
               }}
             />
           ) : (
-            <IncidentWarRoom
-              key={`warroom-${pattern.id}`}
-              pattern={pattern}
-              chapter={chapter}
-              initialIncidentId={getCanonicalIncident(pattern.levelNumber)?.id || "hs-01"}
-            />
+            <WarRoomLevel key={pattern.id} pattern={pattern} chapter={chapter} stats={stats} />
           )}
         </main>
       </div>
@@ -226,6 +223,43 @@ export default function CampaignChapterPage({
 
       </main>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// War Room: first clear plays the canonical incident, replays rotate
+// ---------------------------------------------------------------------------
+
+function WarRoomLevel({
+  pattern,
+  chapter,
+  stats,
+}: {
+  pattern: SystemDesignPattern;
+  chapter: CampaignChapter;
+  stats: UserStats;
+}) {
+  const rotationKey = `warroom:${pattern.id}`;
+  // Rendered only after stats load, so localStorage reads are safe here.
+  const [runIndex, setRunIndex] = useState(() =>
+    isPatternCleared(stats, pattern) ? (readScenarioRotationState()[rotationKey] ?? 0) + 1 : 0
+  );
+
+  useEffect(() => {
+    saveScenarioRotationState(rotationKey, runIndex);
+  }, [rotationKey, runIndex]);
+
+  const incident = getWarRoomIncident(pattern.id, runIndex);
+
+  return (
+    <IncidentWarRoom
+      key={`warroom-${pattern.id}-${runIndex}`}
+      pattern={pattern}
+      chapter={chapter}
+      initialIncidentId={incident?.id || "hs-01"}
+      skinSeed={runIndex > 0 ? `${pattern.id}#${runIndex}` : undefined}
+      onNewRun={() => setRunIndex((i) => i + 1)}
+    />
   );
 }
 
@@ -308,40 +342,16 @@ function freshRun(chapterId: string): RunProgress {
   };
 }
 
-function deterministicShuffle<T>(items: T[], seed: string): T[] {
-  let hash = 0;
-  for (let i = 0; i < seed.length; i++) {
-    hash = (hash << 5) - hash + seed.charCodeAt(i);
-    hash |= 0;
-  }
-  const arr = [...items];
-  for (let i = arr.length - 1; i > 0; i--) {
-    hash = (hash * 9301 + 49297) % 233280;
-    const j = Math.floor((Math.abs(hash) / 233280) * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
-  }
-  return arr;
-}
-
 function toReplayQuestion(variant: ReturnType<typeof getPatternReplayVariant>): PatternQuestion {
-  const rawOptions = [
-    {
-      id: `${variant.id}-expected`,
-      label: variant.expectedPattern,
-      isCorrect: true,
-      explanation: `Correct: Specifically resolves the bottleneck "${variant.constraint}" by applying ${variant.expectedPattern.toLowerCase().replace(/\.$/, "")}.`,
-    },
-    ...variant.wrongChoices.map((label, index) => ({
-      id: `${variant.id}-wrong-${index}`,
-      label,
-      isCorrect: false,
-      explanation: `Does not resolve the root bottleneck under "${variant.constraint}".`,
-    })),
-  ];
-
+  // Options come straight from the incident; QuestionCard shuffles their order.
   return {
     question: variant.question,
-    options: deterministicShuffle(rawOptions, variant.id),
+    options: variant.choices.map((c) => ({
+      id: `${variant.id}-${c.id}`,
+      label: c.label,
+      isCorrect: c.correct,
+      explanation: c.explanation,
+    })),
   };
 }
 
@@ -374,6 +384,7 @@ function PatternRun({
   const [outcome, setOutcome] = useState<ProgressionOutcome | null>(null);
   const [levelUp, setLevelUp] = useState<number | null>(null);
   const [rotationOffset, setRotationOffset] = useState<number>(() => readScenarioRotationState()[`pattern:${pattern.id}`] ?? 0);
+  const [shuffleSeed, setShuffleSeed] = useState(() => nextShuffleSeed(`run:${pattern.id}`));
 
   const cleared = isPatternCleared(stats, pattern);
   const reward = cleared ? `Replay: +${pattern.rewards.replayXp} XP (once a day)` : `+${pattern.rewards.firstClearXp} XP first clear`;
@@ -410,6 +421,7 @@ function PatternRun({
       saveScenarioRotationState(`pattern:${pattern.id}`, next);
       return next;
     });
+    setShuffleSeed(nextShuffleSeed(`run:${pattern.id}`));
     setRun(freshRun(chapter.id));
   };
 
@@ -451,7 +463,7 @@ function PatternRun({
               <h2 className="eyebrow flex items-center gap-1.5 !text-[11px]">
                 <Sparkles className="w-3 h-3 text-cyan-300" /> Live system
               </h2>
-              <span className={`chip !py-0 !text-[10px] ${fixed ? "chip-ok" : "chip-bad"}`}>
+              <span className={`chip !py-0 !text-[11px] ${fixed ? "chip-ok" : "chip-bad"}`}>
                 <span className={`dot ${fixed ? "" : "animate-pulse-glow"}`} aria-hidden />
                 {fixed ? "Stabilized" : "Degraded"}
               </span>
@@ -476,21 +488,20 @@ function PatternRun({
               isCompactView ? (
                 <div className="space-y-2 flex-1 min-h-0 flex flex-col justify-between">
                   <div className="space-y-0.5 shrink-0">
-                    <span className="eyebrow text-cyan-300/80 !text-[10px]">Observe · New Constraint</span>
+                    <span className="eyebrow text-cyan-300/80 !text-[11px]">Observe · New Constraint</span>
                     <h2 className="text-lg sm:text-xl display font-bold leading-tight text-white">{pattern.levelGoal}</h2>
                     <p className="text-[12px] sm:text-[13px] text-slate-300 leading-snug line-clamp-2">{chapter.scenario}</p>
                     <p className="text-[11px] text-slate-400">Constraint: <span className="text-slate-200">{pattern.newConstraint}</span></p>
                   </div>
                   <div className="rounded-xl border border-cyan-400/20 bg-cyan-400/[0.04] p-2.5 space-y-1 flex-1 min-h-0 overflow-y-auto">
                     <div className="flex items-center justify-between">
-                      <p className="eyebrow text-cyan-300/80 !text-[10px]">Fresh replay variant</p>
-                      <button type="button" onClick={nextScenario} className="btn btn-ghost !px-1.5 !py-0.5 text-[10px]">
+                      <p className="eyebrow text-cyan-300/80 !text-[11px]">Fresh replay variant</p>
+                      <button type="button" onClick={nextScenario} className="btn btn-ghost !px-1.5 !py-0.5 text-[11px]">
                         Next scenario
                       </button>
                     </div>
                     <h3 className="text-sm font-semibold text-white leading-tight">{replayVariant.title}</h3>
                     <p className="text-xs text-slate-300 leading-snug line-clamp-2">{replayVariant.context}</p>
-                    <p className="text-[11px] text-emerald-200">Expected: {replayVariant.expectedPattern}</p>
                   </div>
                   {cleared && (
                     <p className="shrink-0 text-[11px] text-emerald-200/90 px-2.5 py-1 rounded-lg bg-emerald-400/[0.06] border border-emerald-400/20">
@@ -528,7 +539,6 @@ function PatternRun({
                     <h3 className="mt-2 text-base font-semibold text-white">{replayVariant.title}</h3>
                     <p className="mt-1 text-sm text-slate-300">{replayVariant.context}</p>
                     <p className="mt-2 text-[12px] text-slate-400">Constraint: {replayVariant.constraint}</p>
-                    <p className="mt-2 text-[12px] text-emerald-200">Expected fix: {replayVariant.expectedPattern}</p>
                   </div>
                   {cleared && (
                     <p className="text-[13px] text-emerald-200/90 px-3 py-2.5 rounded-lg bg-emerald-400/[0.06] border border-emerald-400/20">
@@ -554,6 +564,7 @@ function PatternRun({
               <div className={isCompactView ? "flex-1 min-h-0 overflow-y-auto pr-0.5" : ""}>
                 <QuestionCard
                   key={`diagnose-${replayVariant.id}`}
+                  shuffleSeed={shuffleSeed}
                   eyebrow={`Diagnose · Incident: ${replayVariant.title}`}
                   context={replayVariant.context}
                   question={replayQuestion}
@@ -574,6 +585,7 @@ function PatternRun({
               <div className={isCompactView ? "flex-1 min-h-0 overflow-y-auto pr-0.5" : ""}>
                 <QuestionCard
                   key="choose"
+                  shuffleSeed={shuffleSeed}
                   eyebrow="Deploy a fix"
                   question={pattern.intervention}
                   submitLabel="Deploy this change"
@@ -609,6 +621,7 @@ function PatternRun({
               <div className={isCompactView ? "flex-1 min-h-0 overflow-y-auto pr-0.5" : ""}>
                 <QuestionCard
                   key="counter"
+                  shuffleSeed={shuffleSeed}
                   eyebrow="Tradeoff counter-strike"
                   title={chapter.challenge.title}
                   context={chapter.challenge.scenario}
@@ -632,6 +645,7 @@ function PatternRun({
               <div className={isCompactView ? "flex-1 min-h-0 overflow-y-auto pr-0.5" : ""}>
                 <QuestionCard
                   key="transfer"
+                  shuffleSeed={shuffleSeed}
                   eyebrow="Transfer: same pattern, different product"
                   question={pattern.transfer}
                   submitLabel="Check my answer"
@@ -840,6 +854,7 @@ function ReviewRun({
     { eyebrow: `Recall 2 of 2 · Incident: ${reviewVariant.title}`, q: reviewVariantQuestion },
   ];
   const [index, setIndex] = useState(0);
+  const [shuffleSeed] = useState(() => nextShuffleSeed(`review:${pattern.id}`));
   const [allFirstTry, setAllFirstTry] = useState(true);
   const [result, setResult] = useState<ReturnType<typeof submitReview> | null>(null);
   const [passed, setPassed] = useState(false);
@@ -903,6 +918,7 @@ function ReviewRun({
         <div className="surface p-5 sm:p-7">
           <QuestionCard
             key={index}
+            shuffleSeed={shuffleSeed}
             eyebrow={questions[index].eyebrow}
             question={questions[index].q}
             submitLabel="Submit"

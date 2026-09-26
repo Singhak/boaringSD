@@ -150,7 +150,7 @@ export default function CampaignPage() {
                       {action.ctaLabel}
                       <ArrowRight className="w-4 h-4 ml-0.5 transition-transform group-hover:translate-x-1" />
                     </Link>
-                    <Link href="/mission" className="btn btn-secondary btn-lg">
+                    <Link href="/" className="btn btn-secondary btn-lg">
                       <RotateCcw className="w-3.5 h-3.5 text-slate-400" />
                       Replay tutorial
                     </Link>
@@ -163,7 +163,7 @@ export default function CampaignPage() {
                   {/* 4 Metric Quick-Stats Deck */}
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-2">
                     <div className="p-3 rounded-xl bg-white/[0.02] border border-[var(--line)] space-y-1">
-                      <span className="text-[10px] font-mono uppercase tracking-wider text-slate-500 block">
+                      <span className="text-[11px] font-mono uppercase tracking-wider text-slate-500 block">
                         Stabilized
                       </span>
                       <div className="flex items-baseline gap-1.5">
@@ -179,7 +179,7 @@ export default function CampaignPage() {
                     </div>
 
                     <div className="p-3 rounded-xl bg-white/[0.02] border border-[var(--line)] space-y-1">
-                      <span className="text-[10px] font-mono uppercase tracking-wider text-slate-500 block">
+                      <span className="text-[11px] font-mono uppercase tracking-wider text-slate-500 block">
                         Current Tier
                       </span>
                       <span className="text-sm font-semibold text-cyan-300 block truncate">
@@ -191,7 +191,7 @@ export default function CampaignPage() {
                     </div>
 
                     <div className="p-3 rounded-xl bg-white/[0.02] border border-[var(--line)] space-y-1">
-                      <span className="text-[10px] font-mono uppercase tracking-wider text-slate-500 block">
+                      <span className="text-[11px] font-mono uppercase tracking-wider text-slate-500 block">
                         Architect Rank
                       </span>
                       <div className="flex items-baseline gap-1">
@@ -205,7 +205,7 @@ export default function CampaignPage() {
                     </div>
 
                     <div className="p-3 rounded-xl bg-white/[0.02] border border-[var(--line)] space-y-1">
-                      <span className="text-[10px] font-mono uppercase tracking-wider text-slate-500 block">
+                      <span className="text-[11px] font-mono uppercase tracking-wider text-slate-500 block">
                         Reliability
                       </span>
                       <div className="flex items-baseline gap-1">
@@ -308,7 +308,7 @@ export default function CampaignPage() {
                           }`}
                         >
                           <span className="block truncate">{t.name}</span>
-                          <span className="text-[10px] text-slate-500 font-mono">
+                          <span className="text-[11px] text-slate-500 font-mono">
                             {tierCleared}/{tierSlice.length} · {t.range}
                           </span>
                         </button>
@@ -405,7 +405,7 @@ export default function CampaignPage() {
                       const tierSlice = patterns.slice(tier.start, tier.end);
                       return (
                         <div key={tier.id} className="space-y-1">
-                          <div className="flex items-center justify-between text-[10px] text-slate-500 font-mono px-1">
+                          <div className="flex items-center justify-between text-[11px] text-slate-500 font-mono px-1">
                             <span>Stage {tier.id}: {tier.name}</span>
                             <span>{tier.range}</span>
                           </div>
@@ -456,7 +456,7 @@ export default function CampaignPage() {
                     <div className="p-3 rounded-xl bg-black/40 border border-cyan-500/25 space-y-2">
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2">
-                          <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-cyan-400/20 text-cyan-300 font-semibold">
+                          <span className="px-1.5 py-0.5 rounded text-[11px] font-mono bg-cyan-400/20 text-cyan-300 font-semibold">
                             LV {String(inspectedPattern.levelNumber).padStart(2, "0")}
                           </span>
                           <span className="text-xs font-semibold text-white">
@@ -464,13 +464,13 @@ export default function CampaignPage() {
                           </span>
                         </div>
                         {inspectedCleared ? (
-                          <span className="chip chip-ok !text-[10px] !py-0">Stabilized</span>
+                          <span className="chip chip-ok !text-[11px] !py-0">Stabilized</span>
                         ) : isInspectedCurrent ? (
-                          <span className="chip chip-accent !text-[10px] !py-0">Next Up</span>
+                          <span className="chip chip-accent !text-[11px] !py-0">Next Up</span>
                         ) : inspectedUnlocked ? (
-                          <span className="chip !text-[10px] !py-0">Unlocked</span>
+                          <span className="chip !text-[11px] !py-0">Unlocked</span>
                         ) : (
-                          <span className="text-[10px] text-slate-500 flex items-center gap-1">
+                          <span className="text-[11px] text-slate-500 flex items-center gap-1">
                             <Lock className="w-3 h-3" /> Locked
                           </span>
                         )}

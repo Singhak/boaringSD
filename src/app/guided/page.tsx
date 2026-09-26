@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, ArrowRight, Check, Clock, RotateCcw, X, Zap } from "lucide-react";
 import Navbar from "@/components/Navbar";
+import FeatureGate from "@/components/FeatureGate";
 import LevelUpModal from "@/components/LevelUpModal";
 import QuestionCard from "@/components/run/QuestionCard";
 import ScenarioTabs from "@/components/run/ScenarioTabs";
@@ -34,7 +35,7 @@ const COMPONENTS: { type: ArchitectureNodeType; label: string; desc: string }[] 
 
 const stripStep = (s: string) => s.replace(/^Step \d+:\s*/i, "");
 
-export default function GuidedThinkingPage() {
+function GuidedThinkingPageContent() {
   const router = useRouter();
   const [scenarioId, setScenarioId] = useState(GUIDED_SCENARIOS[0].id);
   const [attempt, setAttempt] = useState(0); // bump to remount the steps on reset
@@ -140,7 +141,7 @@ export default function GuidedThinkingPage() {
                 content: (
                   <span className="flex items-start gap-3">
                     <span
-                      className={`num text-[10px] font-semibold px-1.5 py-0.5 rounded border shrink-0 ${
+                      className={`num text-[11px] font-semibold px-1.5 py-0.5 rounded border shrink-0 ${
                         a.method === "GET" ? "border-cyan-300/30 text-cyan-200" : "border-amber-300/30 text-amber-200"
                       }`}
                     >
@@ -416,5 +417,13 @@ function ArchitectureStep({ scenario, onPass, done }: { scenario: GuidedScenario
         </div>
       )}
     </div>
+  );
+}
+
+export default function GuidedThinkingPage() {
+  return (
+    <FeatureGate lab="caseStudies">
+      <GuidedThinkingPageContent />
+    </FeatureGate>
   );
 }

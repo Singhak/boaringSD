@@ -17,6 +17,7 @@ import Navbar from "@/components/Navbar";
 import LevelUpModal from "@/components/LevelUpModal";
 import { getChallengeById, getConceptReveal, LESSONS } from "@/lib/lessons";
 import { completeChallenge } from "@/lib/storage";
+import { deterministicShuffle } from "@/lib/shuffle";
 import { playSuccessSound, playErrorSound, playBlipSound } from "@/lib/sound";
 
 export default function ChallengePage() {
@@ -103,22 +104,22 @@ export default function ChallengePage() {
         {/* Live Crash Status Telemetry (Crash-First Learning) */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-4 rounded-xl bg-rose-950/30 border border-rose-500/40 font-mono text-xs">
           <div className="flex flex-col">
-            <span className="text-[10px] text-rose-300/70 uppercase">Telemetry Status</span>
+            <span className="text-[11px] text-rose-300/70 uppercase">Telemetry Status</span>
             <span className="text-rose-400 font-bold flex items-center gap-1.5 mt-0.5">
               <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping" />
               💥 SYSTEM CRASHED
             </span>
           </div>
           <div className="flex flex-col">
-            <span className="text-[10px] text-slate-400 uppercase">Incoming Traffic</span>
+            <span className="text-[11px] text-slate-400 uppercase">Incoming Traffic</span>
             <span className="text-white font-bold mt-0.5">10,000 req/sec</span>
           </div>
           <div className="flex flex-col">
-            <span className="text-[10px] text-slate-400 uppercase">Compute CPU Load</span>
+            <span className="text-[11px] text-slate-400 uppercase">Compute CPU Load</span>
             <span className="text-rose-400 font-bold mt-0.5">99.8% (Redline)</span>
           </div>
           <div className="flex flex-col">
-            <span className="text-[10px] text-slate-400 uppercase">Error Rate</span>
+            <span className="text-[11px] text-slate-400 uppercase">Error Rate</span>
             <span className="text-rose-400 font-bold mt-0.5">42.4% Drop</span>
           </div>
         </div>
@@ -131,7 +132,7 @@ export default function ChallengePage() {
             </div>
             <div className="flex-1">
               <div className="flex items-center gap-2 mb-1">
-                <span className="px-2 py-0.5 rounded bg-rose-500/30 text-rose-300 font-mono text-[10px] font-black uppercase tracking-wider">
+                <span className="px-2 py-0.5 rounded bg-rose-500/30 text-rose-300 font-mono text-[11px] font-black uppercase tracking-wider">
                   Incident Triage
                 </span>
                 <span className="text-xs text-amber-400 font-bold flex items-center gap-1">
@@ -154,7 +155,7 @@ export default function ChallengePage() {
             <div className="flex items-center gap-2">
               <Lightbulb className="w-4 h-4 text-amber-400" />
               <span className="text-xs font-bold text-slate-200">Progressive Hint System</span>
-              <span className="text-[10px] text-slate-400 font-mono">
+              <span className="text-[11px] text-slate-400 font-mono">
                 ({revealedHints}/{hintsList.length} unlocked)
               </span>
             </div>
@@ -191,7 +192,7 @@ export default function ChallengePage() {
           </h2>
 
           <div className="space-y-3">
-            {challenge.options.map((option, idx) => {
+            {deterministicShuffle(challenge.options, challenge.question).map((option, idx) => {
               const letter = String.fromCharCode(65 + idx);
               const isSelected = selectedOptionId === option.id;
 
@@ -265,7 +266,7 @@ export default function ChallengePage() {
 
           {isSubmitted && (
             <div className="p-4 rounded-xl border border-cyan-500/30 bg-cyan-500/5">
-              <div className="text-[10px] font-black uppercase tracking-[0.18em] text-cyan-300">Concept Reveal</div>
+              <div className="text-[11px] font-black uppercase tracking-[0.18em] text-cyan-300">Concept Reveal</div>
               <h3 className="mt-2 text-lg font-black text-white">{conceptReveal.title}</h3>
               <p className="mt-2 text-sm text-slate-300 leading-relaxed">{conceptReveal.principle}</p>
               <div className="mt-3 grid gap-3 sm:grid-cols-2 text-xs text-slate-200">

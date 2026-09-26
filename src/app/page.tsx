@@ -34,7 +34,7 @@ export default function RootPage() {
     return (
       <div
         className={`text-slate-100 flex flex-col items-center justify-center relative overflow-hidden ${
-          inFixMode ? "h-screen max-h-screen p-2 sm:p-4" : "min-h-screen px-4 py-8"
+          inFixMode ? "min-h-dvh lg:h-screen lg:max-h-screen p-2 sm:p-4" : "min-h-screen px-4 py-8"
         }`}
       >
         <div
@@ -78,7 +78,7 @@ export default function RootPage() {
                       <div key={m.label} className="p-4 bg-black/10">
                         <dt className="flex items-center gap-1.5">
                           {m.bad && <span aria-hidden className="dot text-rose-400 animate-pulse-glow" />}
-                          <span className="eyebrow !text-[10px]">{m.label}</span>
+                          <span className="eyebrow !text-[11px]">{m.label}</span>
                         </dt>
                         <dd className={`num text-2xl mt-1.5 ${m.tone}`}>
                           {m.value}
@@ -121,7 +121,7 @@ export default function RootPage() {
   const streak = getCurrentStreak(stats, new Date());
 
   return (
-    <div className={`text-slate-100 flex flex-col ${inFixMode ? "h-screen max-h-screen overflow-hidden" : "min-h-screen"}`}>
+    <div className={`text-slate-100 flex flex-col ${inFixMode ? "min-h-dvh lg:h-screen lg:max-h-screen lg:overflow-hidden" : "min-h-screen"}`}>
       <header className="shrink-0 border-b border-[var(--line)] px-4 sm:px-8 h-14 flex items-center justify-between">
         <span className="text-[15px] font-semibold tracking-tight text-white">
           System Design <span className="text-slate-400 font-normal">Quest</span>

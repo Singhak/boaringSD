@@ -2,13 +2,15 @@
 
 import React from "react";
 import Link from "next/link";
-import { ArrowRight, Award, Check, Compass, Flame, GitBranch, Lock, Play, Sparkles, Trophy } from "lucide-react";
+import { ArrowRight, Check, Flame, Lock, Play, Trophy } from "lucide-react";
 import Navbar from "@/components/Navbar";
 import PatternMap from "@/components/PatternMap";
+import SkillRadarChart from "@/components/dashboard/SkillRadarChart";
 import { BADGES } from "@/lib/lessons";
-import { getAllRunProgress, getFeatureUnlockStatus } from "@/lib/storage";
+import { getAllRunProgress } from "@/lib/storage";
+import { getPracticeLabs } from "@/lib/labs";
 import { getAllPatterns } from "@/data/patterns";
-import { NextActionKind, getDailyObjective, getEvidence, getMasteryState } from "@/lib/progression";
+import { NextActionKind, calculateSkillRadar, getDailyObjective, getEvidence, getMasteryState } from "@/lib/progression";
 import { useUserStats } from "@/lib/useUserStats";
 
 const KIND_LABELS: Record<NextActionKind, string> = {
@@ -49,15 +51,10 @@ export default function DashboardPage() {
   const reliableCount = states.filter((s) => s === "reliable").length;
   const clearedCount = patterns.filter((p) => getEvidence(stats, p.id).runsCleared > 0).length;
   const reviewsDue = states.filter((s) => s === "needs_review").length;
-  const unlockStatus = getFeatureUnlockStatus(stats);
   const xpIntoLevel = stats.currentXp % 150;
+  const radar = calculateSkillRadar(stats);
 
-  const labs = [
-    { name: "Architecture Sandbox", desc: "Build any topology, change traffic, and watch what breaks.", href: "/builder", icon: Sparkles, unlocked: unlockStatus.builder.unlocked, hint: "Level 2" },
-    { name: "Interview Arena", desc: "Design a system against the clock and get graded on failure points.", href: "/interview", icon: Award, unlocked: unlockStatus.interview.unlocked, hint: "Level 2" },
-    { name: "Challenge Lab", desc: "Requirements → entities → APIs → architecture, one step at a time.", href: "/guided", icon: Compass, unlocked: true, hint: "" },
-    { name: "Architecture Evolution", desc: "See how one architecture changes from 100 to 10M users.", href: "/evolution", icon: GitBranch, unlocked: true, hint: "" },
-  ];
+  const labs = getPracticeLabs(stats);
 
   return (
     <div className="min-h-screen text-slate-100 flex flex-col">
@@ -125,12 +122,17 @@ export default function DashboardPage() {
                 { k: "Reviews due", v: reviewsDue, tone: reviewsDue > 0 ? "text-amber-300" : "text-white" },
               ].map((s) => (
                 <div key={s.k} className="p-3">
-                  <dt className="eyebrow !text-[10px]">{s.k}</dt>
+                  <dt className="eyebrow !text-[11px]">{s.k}</dt>
                   <dd className={`num text-xl mt-1 ${s.tone}`}>{s.v}</dd>
                 </div>
               ))}
             </dl>
           </div>
+        </section>
+
+        {/* ================= 6-AXIS SKILL RADAR ================= */}
+        <section className="space-y-4">
+          <SkillRadarChart radar={radar} />
         </section>
 
         {/* ================= LEVEL MAP ================= */}
@@ -199,8 +201,8 @@ export default function DashboardPage() {
                       <Icon className={`w-4 h-4 ${lab.unlocked ? "text-cyan-300" : "text-slate-600"}`} />
                     </span>
                     {!lab.unlocked && (
-                      <span className="chip !text-[10px]">
-                        <Lock className="w-3 h-3" /> {lab.hint}
+                      <span className="chip !text-[11px]">
+                        <Lock className="w-3 h-3" /> {lab.unlockHint}
                       </span>
                     )}
                   </div>
@@ -255,7 +257,7 @@ export default function DashboardPage() {
                     <Trophy className="w-4 h-4" />
                   </span>
                   <div className="text-xs font-medium text-white leading-tight">{badge.title}</div>
-                  <div className="text-[10px] text-slate-500 leading-snug line-clamp-2">{badge.description}</div>
+                  <div className="text-[11px] text-slate-500 leading-snug line-clamp-2">{badge.description}</div>
                   <span className="sr-only">{isUnlocked ? "Unlocked" : "Locked"}</span>
                 </div>
               );

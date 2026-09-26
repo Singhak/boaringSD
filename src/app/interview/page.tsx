@@ -6,8 +6,12 @@ import {
   ArrowLeft,
   ArrowRight,
   Award,
+  Calculator,
   Check,
+  FileCheck,
+  Layers,
   Lightbulb,
+  MessageSquare,
   Minus,
   Plus,
   RotateCcw,
@@ -17,37 +21,23 @@ import {
   Zap,
 } from "lucide-react";
 import Navbar from "@/components/Navbar";
+import FeatureGate from "@/components/FeatureGate";
 import LevelUpModal from "@/components/LevelUpModal";
 import ScenarioTabs from "@/components/run/ScenarioTabs";
 import SelectTile from "@/components/run/SelectTile";
 import { T, Topology } from "@/components/run/RunVisuals";
 import type { Tier } from "@/components/run/RunVisuals";
 import { INTERVIEW_PROBLEMS } from "@/data/interview";
-import { completeInterview } from "@/lib/storage";
+import InterviewScopeStep from "@/components/interview/InterviewScopeStep";
+import InterviewMathStep from "@/components/interview/InterviewMathStep";
+import { completeInterview, saveInterviewResult } from "@/lib/storage";
+import { deterministicShuffle } from "@/lib/shuffle";
+import ReasoningCard from "@/components/run/ReasoningCard";
+import { getInterviewReasoningPrompt } from "@/data/reasoningPrompts";
 import { playBlipSound, playErrorSound, playLevelUpSound } from "@/lib/sound";
-import type { InterviewProblem } from "@/types";
+import { EMPTY_DESIGN, evaluateArchitecture, type Design } from "@/lib/interviewDesign";
 
 const MAX_SERVERS = 4;
-
-interface Design {
-  hasCDN: boolean;
-  hasLB: boolean;
-  serverCount: number;
-  hasCache: boolean;
-  hasQueue: boolean;
-  hasDatabase: boolean;
-  hasReplica: boolean;
-}
-
-const EMPTY_DESIGN: Design = {
-  hasCDN: false,
-  hasLB: false,
-  serverCount: 1,
-  hasCache: false,
-  hasQueue: false,
-  hasDatabase: true,
-  hasReplica: false,
-};
 
 type Toggle = "hasCDN" | "hasLB" | "hasCache" | "hasQueue" | "hasDatabase" | "hasReplica";
 
@@ -62,86 +52,15 @@ const TOGGLES: { key: Toggle; label: string; on: string; off: string }[] = [
 
 const formatTime = (secs: number) => `${Math.floor(secs / 60)}:${(secs % 60).toString().padStart(2, "0")}`;
 
-function evaluateArchitecture(problem: InterviewProblem, d: Design) {
-  const req = problem.requiredDesign ?? {};
-  const criteria: { passed: boolean; penalty: number; strength: string; issue: string }[] = [];
+type InterviewStage = "scope" | "math" | "design" | "followup" | "scorecard";
 
-  // Database check
-  criteria.push({
-    passed: d.hasDatabase,
-    penalty: 30,
-    strength: "Durable persistent database stores system records securely.",
-    issue: "Critical failure: No primary database selected. All user data is volatile and lost on crash.",
-  });
-
-  // Load Balancer check
-  if (req.needsLB) {
-    criteria.push({
-      passed: d.hasLB,
-      penalty: 20,
-      strength: "Reverse proxy load balancer distributes ingress across the server fleet.",
-      issue: "No load balancer: incoming traffic concentrates onto a single listener without failover.",
-    });
-  }
-
-  // Server scaling check
-  const minSrv = req.minServers ?? 2;
-  criteria.push({
-    passed: d.serverCount >= minSrv,
-    penalty: 20,
-    strength: `Horizontal autoscaling: ${d.serverCount} stateless application server instances.`,
-    issue: `Insufficient compute: only ${d.serverCount} server(s). Needs at least ${minSrv} to survive peak load and prevent SPOF.`,
-  });
-
-  // Cache check
-  if (req.needsCache) {
-    criteria.push({
-      passed: d.hasCache,
-      penalty: 20,
-      strength: "In-memory RAM cache shields the database from read storms.",
-      issue: "No cache: high-frequency reads will saturate database connection pools and disk IOPS.",
-    });
-  }
-
-  // CDN check
-  if (req.needsCDN) {
-    criteria.push({
-      passed: d.hasCDN,
-      penalty: 15,
-      strength: "Edge CDN terminates SSL and serves media/static chunks worldwide.",
-      issue: "No CDN: origin servers must serve static files and media across international links, violating latency SLOs.",
-    });
-  }
-
-  // Queue check
-  if (req.needsQueue) {
-    criteria.push({
-      passed: d.hasQueue,
-      penalty: 15,
-      strength: "Distributed queue decouples heavy asynchronous background processing.",
-      issue: "No message queue: synchronous processing risks connection timeouts under heavy write spikes.",
-    });
-  }
-
-  // Replica check
-  if (req.needsReplica) {
-    criteria.push({
-      passed: d.hasReplica,
-      penalty: 15,
-      strength: "Read replicas offload query volume from primary database.",
-      issue: "No read replicas: read queries compete with write transactions on the primary node.",
-    });
-  }
-
-  const score = Math.max(0, criteria.reduce((tot, c) => (c.passed ? tot : tot - c.penalty), 100));
-
-  return {
-    score,
-    passed: score >= 70,
-    strengths: criteria.filter((c) => c.passed).map((c) => c.strength),
-    issues: criteria.filter((c) => !c.passed).map((c) => c.issue),
-  };
-}
+const STAGES: { key: InterviewStage; label: string; icon: React.ElementType }[] = [
+  { key: "scope", label: "1. Scope & Constraints", icon: FileCheck },
+  { key: "math", label: "2. Capacity Math", icon: Calculator },
+  { key: "design", label: "3. Topology Design", icon: Layers },
+  { key: "followup", label: "4. Staff Deep Dive", icon: MessageSquare },
+  { key: "scorecard", label: "Scorecard", icon: Award },
+];
 
 function toTiers(d: Design): Tier[] {
   const tiers: Tier[] = [[T("Global Users")]];
@@ -175,16 +94,30 @@ function toTiers(d: Design): Tier[] {
   return tiers;
 }
 
-export default function InterviewPage() {
+/** Points deducted from the final score when the pager countdown hits zero. */
+const OVERTIME_PENALTY = 10;
+
+function InterviewPageContent() {
   const [problemId, setProblemId] = useState(INTERVIEW_PROBLEMS[0].id);
   const problem = INTERVIEW_PROBLEMS.find((p) => p.id === problemId) ?? INTERVIEW_PROBLEMS[0];
 
   const [secondsLeft, setSecondsLeft] = useState(problem.durationMinutes * 60);
   const [hintsShown, setHintsShown] = useState(0);
   const [design, setDesign] = useState<Design>(EMPTY_DESIGN);
-  const [stage, setStage] = useState<"design" | "followup" | "scorecard">("design");
+  const [stage, setStage] = useState<InterviewStage>(
+    problem.scopeItems && problem.scopeItems.length > 0 ? "scope" : "design"
+  );
+
+  // 4 Pillar Scores
+  const [scopeScore, setScopeScore] = useState<number>(100);
+  const [mathScore, setMathScore] = useState<number>(100);
+  const [followUpScore, setFollowUpScore] = useState<number>(100);
+
   const [selectedFollowUps, setSelectedFollowUps] = useState<Record<string, string>>({});
   const [followUpErrors, setFollowUpErrors] = useState<Record<string, string>>({});
+  // Follow-ups are scored on the first submission; after that the learner sees feedback and can finish.
+  const [followUpsGraded, setFollowUpsGraded] = useState(false);
+  const [defenseDone, setDefenseDone] = useState(false);
   const [celebrate, setCelebrate] = useState(false);
 
   // Countdown timer runs until final scorecard or time expires
@@ -200,9 +133,15 @@ export default function InterviewPage() {
     setSecondsLeft(target.durationMinutes * 60);
     setHintsShown(0);
     setDesign(EMPTY_DESIGN);
-    setStage("design");
+    setStage(target.scopeItems && target.scopeItems.length > 0 ? "scope" : "design");
+    setScopeScore(100);
+    setMathScore(100);
+    setFollowUpScore(100);
     setSelectedFollowUps({});
     setFollowUpErrors({});
+    setFollowUpsGraded(false);
+    setDefenseDone(false);
+    setCelebrate(false);
   };
 
   const edit = (fn: (d: Design) => Design) => {
@@ -213,13 +152,29 @@ export default function InterviewPage() {
 
   const archEvaluation = evaluateArchitecture(problem, design);
 
-  // Handle Architecture Submission -> proceeds to follow-up interview questions or direct scorecard
+  // Stage 1 -> Stage 2
+  const handleScopeComplete = (score: number) => {
+    setScopeScore(score);
+    if (problem.estimationTargets && problem.estimationTargets.length > 0) {
+      setStage("math");
+    } else {
+      setStage("design");
+    }
+  };
+
+  // Stage 2 -> Stage 3
+  const handleMathComplete = (score: number) => {
+    setMathScore(score);
+    setStage("design");
+  };
+
+  // Stage 3 -> Stage 4
   const handleProceedToFollowUps = () => {
     if (problem.followUpQuestions && problem.followUpQuestions.length > 0) {
       playBlipSound();
       setStage("followup");
     } else {
-      finishInterview();
+      finishInterview(100);
     }
   };
 
@@ -235,35 +190,89 @@ export default function InterviewPage() {
 
   const submitFollowUps = () => {
     const followUps = problem.followUpQuestions ?? [];
-    let hasError = false;
-    const newErrors: Record<string, string> = {};
 
-    followUps.forEach((q) => {
-      const picked = selectedFollowUps[q.id];
-      if (!picked) {
-        newErrors[q.id] = "Please select an answer to demonstrate your architectural reasoning.";
-        hasError = true;
-      } else {
-        const opt = q.options.find((o) => o.id === picked);
-        if (!opt?.isCorrect) {
-          newErrors[q.id] = opt?.feedback || "Not quite right. Reconsider the engineering tradeoffs.";
-          hasError = true;
-        }
-      }
-    });
+    // Second click after feedback: finish with the first-attempt score.
+    if (followUpsGraded) {
+      finishInterview(followUpScore);
+      return;
+    }
 
-    if (hasError) {
+    const unanswered = followUps.filter((q) => !selectedFollowUps[q.id]);
+    if (unanswered.length > 0) {
+      const newErrors: Record<string, string> = {};
+      unanswered.forEach((q) => {
+        newErrors[q.id] = "Pick an answer to defend your design.";
+      });
       playErrorSound();
       setFollowUpErrors(newErrors);
       return;
     }
 
-    finishInterview();
+    let correctCount = 0;
+    const newErrors: Record<string, string> = {};
+    followUps.forEach((q) => {
+      const opt = q.options.find((o) => o.id === selectedFollowUps[q.id]);
+      if (opt?.isCorrect) correctCount++;
+      else newErrors[q.id] = opt?.feedback || "Not quite right. Reconsider the engineering tradeoffs.";
+    });
+
+    const firstAttemptScore = Math.round((correctCount / Math.max(followUps.length, 1)) * 100);
+    setFollowUpScore(firstAttemptScore);
+
+    if (Object.keys(newErrors).length > 0) {
+      // Show why, and let them finish; the score keeps what they got right first time.
+      playErrorSound();
+      setFollowUpErrors(newErrors);
+      setFollowUpsGraded(true);
+      return;
+    }
+    finishInterview(firstAttemptScore);
   };
 
-  const finishInterview = () => {
+  // Overall Score calculation: 25% scope, 25% math, 25% architecture, 25% follow-up defense
+  const hasScope = !!(problem.scopeItems && problem.scopeItems.length > 0);
+  const hasMath = !!(problem.estimationTargets && problem.estimationTargets.length > 0);
+  const hasFollowUp = !!(problem.followUpQuestions && problem.followUpQuestions.length > 0);
+
+  let activeWeightsSum = 25; // architecture is always present
+  if (hasScope) activeWeightsSum += 25;
+  if (hasMath) activeWeightsSum += 25;
+  if (hasFollowUp) activeWeightsSum += 25;
+
+  const totalPoints =
+    (hasScope ? scopeScore * 0.25 : 0) +
+    (hasMath ? mathScore * 0.25 : 0) +
+    archEvaluation.score * 0.25 +
+    (hasFollowUp ? followUpScore * 0.25 : 0);
+
+  // Pager countdown: running out of time costs points but never blocks finishing.
+  const overtimePenalty = secondsLeft === 0 ? OVERTIME_PENALTY : 0;
+  const finalWeightedScore = Math.max(0, Math.round((totalPoints / activeWeightsSum) * 100) - overtimePenalty);
+
+  const finishInterview = (currentFollowUpScore?: number) => {
     setStage("scorecard");
-    if (archEvaluation.passed) {
+    const deepDive = currentFollowUpScore ?? followUpScore;
+    const evaluatedFinalScore = Math.max(
+      0,
+      Math.round(
+        (((hasScope ? scopeScore * 0.25 : 0) +
+          (hasMath ? mathScore * 0.25 : 0) +
+          archEvaluation.score * 0.25 +
+          (hasFollowUp ? deepDive * 0.25 : 0)) /
+          activeWeightsSum) *
+          100
+      ) - overtimePenalty
+    );
+
+    saveInterviewResult(problem.id, {
+      ...(hasScope ? { scope: scopeScore } : {}),
+      ...(hasMath ? { math: mathScore } : {}),
+      design: archEvaluation.score,
+      ...(hasFollowUp ? { deepDive } : {}),
+      total: evaluatedFinalScore,
+    });
+
+    if (evaluatedFinalScore >= 70 && archEvaluation.passed) {
       playLevelUpSound();
       completeInterview(problem.id, problem.rewardXp);
       setTimeout(() => setCelebrate(true), 700);
@@ -272,17 +281,17 @@ export default function InterviewPage() {
     }
   };
 
+  const interviewPrompt = getInterviewReasoningPrompt(problem.id);
   const lowTime = secondsLeft < 120;
   const timeUp = secondsLeft === 0;
 
-  // Determine candidate recommendation level
-  const finalScore = archEvaluation.score;
+  // Determine candidate recommendation level based on 4-pillar final score
   const hireRecommendation =
-    finalScore >= 90
-      ? { label: "Strong Hire · Staff Engineer", color: "chip-ok", desc: "Exemplary architectural breadth, zero single points of failure, and proactive edge-case defense." }
-      : finalScore >= 75
-      ? { label: "Hire · Senior Systems Engineer", color: "chip-ok", desc: "Solid production-grade design satisfying all core availability and latency constraints." }
-      : { label: "Needs Improvement", color: "chip-bad", desc: "Design contains critical bottlenecks or unaddressed single points of failure under peak load." };
+    finalWeightedScore >= 90
+      ? { label: "Interview-ready on this problem", color: "chip-ok", desc: "Tight scope, sound estimates, no single points of failure, and a confident tradeoff defense. Try a harder problem next." }
+      : finalWeightedScore >= 75
+      ? { label: "Solid practice run", color: "chip-ok", desc: "The core design holds. Your weakest pillar below is the fastest way to a higher score." }
+      : { label: "Needs another pass", color: "chip-bad", desc: "Something important slipped: a capacity bottleneck, scope creep, or an unhandled single point of failure. Check the pillars below." };
 
   return (
     <div className="min-h-screen text-slate-100 flex flex-col">
@@ -293,7 +302,7 @@ export default function InterviewPage() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <Link href="/dashboard" className="btn btn-ghost !px-1 text-xs">
             <ArrowLeft className="w-4 h-4" />
-            Progress
+            Dashboard
           </Link>
           <ScenarioTabs
             items={INTERVIEW_PROBLEMS.map((p) => ({
@@ -305,11 +314,44 @@ export default function InterviewPage() {
           />
         </div>
 
+        {/* 4-Stage Stepper Bar */}
+        <nav aria-label="Interview Progress" className="surface p-2.5 rounded-xl border border-[var(--line)]">
+          <div className="flex items-center justify-between overflow-x-auto gap-2 text-xs">
+            {STAGES.map((s, idx) => {
+              const Icon = s.icon;
+              const isCurrent = stage === s.key;
+              const stageOrder = ["scope", "math", "design", "followup", "scorecard"];
+              const currentIndex = stageOrder.indexOf(stage);
+              const stepIndex = stageOrder.indexOf(s.key);
+              const isCompleted = stepIndex < currentIndex;
+
+              return (
+                <div key={s.key} className="flex items-center gap-2 shrink-0">
+                  <div
+                    className={`flex items-center gap-2 px-3 py-1.5 rounded-lg font-medium transition-all ${
+                      isCurrent
+                        ? "bg-cyan-500/20 text-cyan-300 border border-cyan-400/50 shadow-[0_0_15px_-4px_rgba(6,182,212,0.4)]"
+                        : isCompleted
+                        ? "text-emerald-400 bg-emerald-500/10"
+                        : "text-slate-500"
+                    }`}
+                  >
+                    <Icon className="w-3.5 h-3.5" />
+                    <span>{s.label}</span>
+                    {isCompleted && <Check className="w-3 h-3 text-emerald-400" />}
+                  </div>
+                  {idx < STAGES.length - 1 && <span className="text-slate-700">──►</span>}
+                </div>
+              );
+            })}
+          </div>
+        </nav>
+
         {/* Problem Header */}
         <header className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-5 items-start">
           <div className="space-y-2 max-w-3xl">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="eyebrow text-cyan-300/80">Interview Arena · {problem.tier}</span>
+              <span className="eyebrow text-cyan-300/80">FAANG Mock Interview Arena · {problem.tier}</span>
               <span className="chip text-[11px] font-medium">{problem.difficulty}</span>
             </div>
             <h1 className="text-3xl sm:text-4xl display">{problem.title}</h1>
@@ -319,8 +361,8 @@ export default function InterviewPage() {
                 <Zap className="w-3 h-3" /> <span className="num">+{problem.rewardXp} XP</span>
               </span>
               <span className="chip">Pass Benchmark: 70/100</span>
-              <span className="chip">
-                Stage: {stage === "design" ? "1. High-Level Design" : stage === "followup" ? "2. Deep-Dive Follow-ups" : "3. Evaluation Scorecard"}
+              <span className="chip chip-accent">
+                Stage: {stage.toUpperCase()}
               </span>
             </div>
           </div>
@@ -334,11 +376,18 @@ export default function InterviewPage() {
           >
             <span className="eyebrow flex items-center gap-1.5">
               <Timer className="w-3 h-3" aria-hidden />
-              {stage === "scorecard" ? "Interview Finished" : timeUp ? "Time Expired" : "Time Remaining"}
+              {stage === "scorecard" ? "Interview Finished" : timeUp ? `Time's up · −${OVERTIME_PENALTY} pts` : "Time Remaining"}
             </span>
             <div className={`num text-3xl mt-1 ${stage === "scorecard" ? "text-slate-500" : lowTime ? "text-rose-300" : "text-white"}`}>
               {formatTime(secondsLeft)}
             </div>
+            {stage !== "scorecard" && (
+              <div className="pt-2">
+                <span className="text-[11px] text-slate-400 font-mono">
+                  Target: {problem.durationMinutes}m Session
+                </span>
+              </div>
+            )}
           </div>
         </header>
 
@@ -357,7 +406,25 @@ export default function InterviewPage() {
         </dl>
 
         {/* ========================================================================= */}
-        {/* STAGE 1: High-Level Architecture Design */}
+        {/* STAGE 1: Scope & Clarification */}
+        {/* ========================================================================= */}
+        {stage === "scope" && (
+          <InterviewScopeStep problem={problem} onComplete={handleScopeComplete} />
+        )}
+
+        {/* ========================================================================= */}
+        {/* STAGE 2: Capacity Estimation */}
+        {/* ========================================================================= */}
+        {stage === "math" && (
+          <InterviewMathStep
+            problem={problem}
+            onBack={() => setStage("scope")}
+            onComplete={handleMathComplete}
+          />
+        )}
+
+        {/* ========================================================================= */}
+        {/* STAGE 3: High-Level Architecture Design */}
         {/* ========================================================================= */}
         {stage === "design" && (
           <div className="grid grid-cols-1 lg:grid-cols-[1.5fr_1fr] gap-4 items-start animate-fadeIn">
@@ -366,7 +433,7 @@ export default function InterviewPage() {
               <div className="flex items-start justify-between gap-3">
                 <div className="space-y-1">
                   <div className="flex items-center gap-2">
-                    <span className="chip text-[11px]">Step 1 of 2</span>
+                    <span className="chip text-[11px]">Step 3 of 4</span>
                     <h2 className="text-lg display">Assemble Your Architecture</h2>
                   </div>
                   <p className="text-[13px] text-slate-500">
@@ -434,9 +501,13 @@ export default function InterviewPage() {
               <Topology tiers={toTiers(design)} caption={<span className="eyebrow">Your architectural topology</span>} />
 
               <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-[var(--line)]">
-                <span className="text-xs text-slate-500">
-                  Ready to defend? Next: Deep-dive follow-up questions from the interviewer.
-                </span>
+                <button
+                  type="button"
+                  onClick={() => setStage(hasMath ? "math" : "scope")}
+                  className="btn btn-ghost text-xs"
+                >
+                  <ArrowLeft className="w-3.5 h-3.5" /> Back to Math
+                </button>
                 <button onClick={handleProceedToFollowUps} className="btn btn-primary">
                   Submit Architecture & Defend
                   <ArrowRight className="w-4 h-4" />
@@ -502,14 +573,14 @@ export default function InterviewPage() {
         )}
 
         {/* ========================================================================= */}
-        {/* STAGE 2: Deep-Dive Follow-Up Questions from Interviewer */}
+        {/* STAGE 4: Deep-Dive Follow-Up Questions from Interviewer */}
         {/* ========================================================================= */}
         {stage === "followup" && (
           <section className="surface p-6 sm:p-8 space-y-6 animate-fadeIn" aria-label="Follow up round">
             <header className="space-y-2 border-b border-[var(--line)] pb-5">
               <div className="flex items-center gap-2">
-                <span className="chip chip-warn text-[11px]">Step 2 of 2 · Interactive Interview Round</span>
-                <span className="chip">Interviewer Probing</span>
+                <span className="chip chip-warn text-[11px]">Stage 4 of 4 · Staff Defense</span>
+                <span className="chip">Failure Modes & Concurrency</span>
               </div>
               <h2 className="text-2xl display">Interviewer Deep-Dive Questions</h2>
               <p className="text-sm text-slate-400 max-w-3xl leading-relaxed">
@@ -533,7 +604,7 @@ export default function InterviewPage() {
                     </div>
 
                     <div className="grid grid-cols-1 gap-2.5 pl-0 sm:pl-10">
-                      {q.options.map((opt) => {
+                      {deterministicShuffle(q.options, q.id).map((opt) => {
                         const isSelected = picked === opt.id;
                         return (
                           <button
@@ -548,7 +619,7 @@ export default function InterviewPage() {
                           >
                             <span
                               className={`w-4 h-4 rounded-full border shrink-0 mt-0.5 flex items-center justify-center ${
-                                isSelected ? "border-cyan-400 bg-cyan-400 text-slate-950 font-bold text-[10px]" : "border-slate-500"
+                                isSelected ? "border-cyan-400 bg-cyan-400 text-slate-950 font-bold text-[11px]" : "border-slate-500"
                               }`}
                             >
                               {isSelected ? "✓" : ""}
@@ -576,7 +647,7 @@ export default function InterviewPage() {
                 Back to Architecture
               </button>
               <button onClick={submitFollowUps} className="btn btn-primary">
-                Finalize & Generate Scorecard
+                {followUpsGraded ? "Finish with this score" : "Finalize & Generate Scorecard"}
                 <Sparkles className="w-4 h-4" />
               </button>
             </div>
@@ -584,15 +655,14 @@ export default function InterviewPage() {
         )}
 
         {/* ========================================================================= */}
-        {/* STAGE 3: Comprehensive Interview Scorecard & Feedback Report */}
+        {/* STAGE 5: Comprehensive 4-Pillar Interview Scorecard */}
         {/* ========================================================================= */}
         {stage === "scorecard" && (
           <section className="space-y-6 animate-fadeIn" aria-label="Interview scorecard">
-            {/* Scorecard Hero */}
             <article className="surface p-6 sm:p-8 rounded-2xl space-y-6 border border-cyan-400/30 shadow-[0_20px_60px_-20px_rgba(6,182,212,0.2)]">
               <div className="flex flex-wrap items-start justify-between gap-4 border-b border-[var(--line)] pb-6">
                 <div className="space-y-2">
-                  <span className="eyebrow text-cyan-300">Interview Evaluation Report</span>
+                  <span className="eyebrow text-cyan-300">FAANG Hiring Committee Evaluation Report</span>
                   <h2 className="text-2xl sm:text-3xl display">{problem.title}</h2>
                   <p className="text-sm text-slate-400 max-w-xl">{hireRecommendation.desc}</p>
                 </div>
@@ -601,13 +671,42 @@ export default function InterviewPage() {
                   <div className="text-right">
                     <span className="eyebrow">Overall Score</span>
                     <div className="num text-4xl text-white font-bold mt-1">
-                      {finalScore}
+                      {finalWeightedScore}
                       <span className="text-sm text-slate-500 font-normal"> / 100</span>
                     </div>
                   </div>
                   <span className={`chip ${hireRecommendation.color} text-sm px-3 py-1.5 font-semibold`}>
                     {hireRecommendation.label}
                   </span>
+                </div>
+              </div>
+
+              {/* 4-Pillar Competency Breakdown */}
+              <div className="space-y-3">
+                <h3 className="eyebrow text-slate-300">4-Pillar Evaluation Breakdown</h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                  {[
+                    { label: "1. Scoping Discipline", score: scopeScore, desc: "Clarified constraints & rejected distractor scope" },
+                    { label: "2. Capacity Estimation", score: mathScore, desc: "QPS, 5-yr storage & RAM cache sizing" },
+                    { label: "3. Architecture & SPOF", score: archEvaluation.score, desc: "Redundancy, stateless fleet & cache protection" },
+                    { label: "4. Staff Deep Dive", score: followUpScore, desc: "Tradeoff defenses, race conditions & scaling" },
+                  ].map((pillar) => (
+                    <div key={pillar.label} className="p-4 rounded-xl surface-2 border border-[var(--line)] space-y-2">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-semibold text-white">{pillar.label}</span>
+                        <span className="num font-bold text-cyan-300">{pillar.score}%</span>
+                      </div>
+                      <div className="h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-all duration-500 ${
+                            pillar.score >= 80 ? "bg-emerald-400" : pillar.score >= 60 ? "bg-cyan-400" : "bg-rose-400"
+                          }`}
+                          style={{ width: `${pillar.score}%` }}
+                        />
+                      </div>
+                      <p className="text-[11px] text-slate-400 leading-snug">{pillar.desc}</p>
+                    </div>
+                  ))}
                 </div>
               </div>
 
@@ -670,15 +769,23 @@ export default function InterviewPage() {
                 </p>
               </div>
 
+              {/* Optional: defend the key tradeoff in your own words (bonus XP, feeds Tradeoff Defense) */}
+              {interviewPrompt && !defenseDone && (
+                <div className="pt-4 border-t border-[var(--line)] space-y-2">
+                  <span className="eyebrow text-cyan-300/90">Bonus round · Defend your design</span>
+                  <ReasoningCard key={interviewPrompt.id} prompt={interviewPrompt} onDone={() => setDefenseDone(true)} />
+                </div>
+              )}
+
               {/* Action Buttons */}
               <div className="flex flex-wrap items-center justify-between gap-3 pt-4 border-t border-[var(--line)]">
-                <button onClick={() => setStage("design")} className="btn btn-secondary">
+                <button onClick={() => reset()} className="btn btn-secondary">
                   <RotateCcw className="w-3.5 h-3.5" />
                   Redesign & Retake Interview
                 </button>
                 <div className="flex items-center gap-2">
-                  <Link href="/guided" className="btn btn-ghost">
-                    Try Guided Challenges
+                  <Link href="/dashboard" className="btn btn-ghost">
+                    Back to Dashboard
                   </Link>
                   <Link href="/builder" className="btn btn-primary">
                     Build Topology in Sandbox
@@ -703,5 +810,13 @@ export default function InterviewPage() {
         onNext={() => setCelebrate(false)}
       />
     </div>
+  );
+}
+
+export default function InterviewPage() {
+  return (
+    <FeatureGate lab="interview">
+      <InterviewPageContent />
+    </FeatureGate>
   );
 }
