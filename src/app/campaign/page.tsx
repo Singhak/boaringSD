@@ -56,6 +56,17 @@ const TIERS = [
     accentBorder: "border-emerald-500/30",
     badgeColor: "bg-emerald-500/10 text-emerald-300 border-emerald-500/30",
   },
+  {
+    id: 4,
+    name: "Depth",
+    range: "16–18",
+    tagline: "Theory Under Pressure",
+    subtitle: "CAP & PACELC, consensus & quorums, storage engines & indexing.",
+    start: 15,
+    end: 18,
+    accentBorder: "border-violet-500/30",
+    badgeColor: "bg-violet-500/10 text-violet-300 border-violet-500/30",
+  },
 ];
 
 export default function CampaignPage() {
@@ -124,7 +135,7 @@ export default function CampaignPage() {
               <div className="space-y-3">
                 <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-cyan-400/10 border border-cyan-400/25 text-cyan-300 text-[11px] font-mono font-medium tracking-wider uppercase">
                   <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
-                  LEVEL MAP · 15 ARCHITECTURAL TIERS
+                  LEVEL MAP · 18 LEVELS · 4 TIERS
                 </div>
 
                 <h1 className="text-4xl sm:text-5xl display leading-[1.1]">
@@ -291,7 +302,7 @@ export default function CampaignPage() {
               {viewMode === "tiers" && (
                 <div className="space-y-3">
                   {/* Tier Switcher Tabs */}
-                  <div className="grid grid-cols-3 gap-1.5 p-1 bg-[var(--surface-2)] rounded-xl border border-[var(--line)]">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 p-1 bg-[var(--surface-2)] rounded-xl border border-[var(--line)]">
                     {TIERS.map((t, idx) => {
                       const isSelected = activeTier === idx;
                       const tierSlice = patterns.slice(t.start, t.end);

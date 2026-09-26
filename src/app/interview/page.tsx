@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -12,8 +12,6 @@ import {
   Layers,
   Lightbulb,
   MessageSquare,
-  Minus,
-  Plus,
   RotateCcw,
   Sparkles,
   Timer,
@@ -24,9 +22,8 @@ import Navbar from "@/components/Navbar";
 import FeatureGate from "@/components/FeatureGate";
 import LevelUpModal from "@/components/LevelUpModal";
 import ScenarioTabs from "@/components/run/ScenarioTabs";
-import SelectTile from "@/components/run/SelectTile";
-import { T, Topology } from "@/components/run/RunVisuals";
-import type { Tier } from "@/components/run/RunVisuals";
+import ArchitectureCanvas, { makeArchNode } from "@/components/builder/ArchitectureCanvas";
+import type { Edge, Node } from "@xyflow/react";
 import { INTERVIEW_PROBLEMS } from "@/data/interview";
 import InterviewScopeStep from "@/components/interview/InterviewScopeStep";
 import InterviewMathStep from "@/components/interview/InterviewMathStep";
@@ -35,19 +32,22 @@ import { deterministicShuffle } from "@/lib/shuffle";
 import ReasoningCard from "@/components/run/ReasoningCard";
 import { getInterviewReasoningPrompt } from "@/data/reasoningPrompts";
 import { playBlipSound, playErrorSound, playLevelUpSound } from "@/lib/sound";
-import { EMPTY_DESIGN, evaluateArchitecture, type Design } from "@/lib/interviewDesign";
+import { designFromGraph, evaluateArchitecture, unwiredNodeIds, type Design } from "@/lib/interviewDesign";
 
-const MAX_SERVERS = 4;
+/** Every interview starts from users and a database; the candidate draws the rest. */
+const START_NODES: Node[] = [
+  makeArchNode("users", "client", "Users", 0, 120),
+  makeArchNode("primary-db", "database", "Primary DB", 720, 120),
+];
+const START_GRAPH: { nodes: Node[]; edges: Edge[] } = { nodes: START_NODES, edges: [] };
 
-type Toggle = "hasCDN" | "hasLB" | "hasCache" | "hasQueue" | "hasDatabase" | "hasReplica";
-
-const TOGGLES: { key: Toggle; label: string; on: string; off: string }[] = [
-  { key: "hasCDN", label: "Edge CDN", on: "Caches media and assets close to users", off: "All requests cross internet to origin" },
-  { key: "hasLB", label: "Load balancer", on: "Spreading traffic across stateless fleet", off: "Direct connections: single point of failure" },
-  { key: "hasCache", label: "In-memory cache", on: "Hot keys served from RAM (<5ms)", off: "Every read hits persistent database" },
-  { key: "hasQueue", label: "Message queue", on: "Asynchronous decoupling & worker fan-out", off: "Synchronous blocking request threads" },
-  { key: "hasDatabase", label: "Primary database", on: "Durable ACID storage of truth", off: "No durable persistence layer" },
-  { key: "hasReplica", label: "Read replicas", on: "Reads split horizontally from writes", off: "Single database handles all read & write IOPS" },
+const READOUT: { label: string; on: (d: Design) => boolean }[] = [
+  { label: "CDN", on: (d) => d.hasCDN },
+  { label: "Load balancer", on: (d) => d.hasLB },
+  { label: "Cache", on: (d) => d.hasCache },
+  { label: "Queue", on: (d) => d.hasQueue },
+  { label: "Database", on: (d) => d.hasDatabase },
+  { label: "Replicas", on: (d) => d.hasReplica },
 ];
 
 const formatTime = (secs: number) => `${Math.floor(secs / 60)}:${(secs % 60).toString().padStart(2, "0")}`;
@@ -62,38 +62,6 @@ const STAGES: { key: InterviewStage; label: string; icon: React.ElementType }[] 
   { key: "scorecard", label: "Scorecard", icon: Award },
 ];
 
-function toTiers(d: Design): Tier[] {
-  const tiers: Tier[] = [[T("Global Users")]];
-
-  if (d.hasCDN) {
-    tiers.push([T("Edge CDN", "new", "global POPs")]);
-  }
-
-  if (d.hasLB) {
-    tiers.push([T("Load Balancer", "ok", "traffic distribution")]);
-  }
-
-  const servers = Array.from({ length: d.serverCount }, (_, i) =>
-    T(
-      d.serverCount === 1 ? "App server" : `App server ${i + 1}`,
-      d.serverCount === 1 ? "warn" : "ok",
-      d.serverCount === 1 ? "single point of failure" : "stateless"
-    )
-  );
-  tiers.push(servers);
-
-  const middleTier = [];
-  if (d.hasCache) middleTier.push(T("Redis Cluster", "new", "RAM cache"));
-  if (d.hasQueue) middleTier.push(T("Message Queue", "new", "async buffer"));
-  if (middleTier.length > 0) tiers.push(middleTier);
-
-  const storageTier = [d.hasDatabase ? T("Primary Database", "ok", "ACID writes") : T("No database", "hot", "data lost")];
-  if (d.hasReplica) storageTier.push(T("Read Replicas", "new", "read pool"));
-  tiers.push(storageTier);
-
-  return tiers;
-}
-
 /** Points deducted from the final score when the pager countdown hits zero. */
 const OVERTIME_PENALTY = 10;
 
@@ -103,7 +71,12 @@ function InterviewPageContent() {
 
   const [secondsLeft, setSecondsLeft] = useState(problem.durationMinutes * 60);
   const [hintsShown, setHintsShown] = useState(0);
-  const [design, setDesign] = useState<Design>(EMPTY_DESIGN);
+  // The drawn topology survives stage switches; the graded Design is derived from its wiring.
+  const [graph, setGraph] = useState(START_GRAPH);
+  const design: Design = useMemo(() => designFromGraph(graph.nodes, graph.edges), [graph]);
+  const unwired = useMemo(() => unwiredNodeIds(graph.nodes, graph.edges).length, [graph]);
+  // Bumped on reset so the canvas remounts from the starting graph.
+  const [canvasKey, setCanvasKey] = useState(0);
   const [stage, setStage] = useState<InterviewStage>(
     problem.scopeItems && problem.scopeItems.length > 0 ? "scope" : "design"
   );
@@ -132,7 +105,8 @@ function InterviewPageContent() {
     if (id) setProblemId(id);
     setSecondsLeft(target.durationMinutes * 60);
     setHintsShown(0);
-    setDesign(EMPTY_DESIGN);
+    setGraph(START_GRAPH);
+    setCanvasKey((k) => k + 1);
     setStage(target.scopeItems && target.scopeItems.length > 0 ? "scope" : "design");
     setScopeScore(100);
     setMathScore(100);
@@ -144,11 +118,7 @@ function InterviewPageContent() {
     setCelebrate(false);
   };
 
-  const edit = (fn: (d: Design) => Design) => {
-    if (stage !== "design") return;
-    playBlipSound();
-    setDesign(fn);
-  };
+  const onGraphChange = (nodes: Node[], edges: Edge[]) => setGraph({ nodes, edges });
 
   const archEvaluation = evaluateArchitecture(problem, design);
 
@@ -437,7 +407,7 @@ function InterviewPageContent() {
                     <h2 className="text-lg display">Assemble Your Architecture</h2>
                   </div>
                   <p className="text-[13px] text-slate-500">
-                    Add the components you will defend in front of the interview panel.
+                    Draw the topology you will defend. Only components wired into the path from Users count.
                   </p>
                 </div>
                 <button onClick={() => reset()} className="btn btn-ghost !py-1 text-xs shrink-0">
@@ -446,59 +416,26 @@ function InterviewPageContent() {
                 </button>
               </div>
 
-              {/* Component Toggles */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {TOGGLES.map((t) => {
-                  const on = design[t.key];
-                  return (
-                    <SelectTile
-                      key={t.key}
-                      state={on ? "selected" : "idle"}
-                      pressed={on}
-                      onClick={() => edit((d) => ({ ...d, [t.key]: !d[t.key] }))}
-                    >
-                      <span className="block text-[13px] font-semibold text-white">{t.label}</span>
-                      <span className="block text-xs text-slate-500 mt-0.5">{on ? t.on : t.off}</span>
-                    </SelectTile>
-                  );
-                })}
+              <ArchitectureCanvas key={`${problem.id}-${canvasKey}`} initialNodes={graph.nodes} initialEdges={graph.edges} onChange={onGraphChange} />
 
-                {/* Server Fleet Stepper */}
-                <div className="choice !cursor-default sm:col-span-2 !items-center" role="group" aria-label="App servers">
-                  <span className="min-w-0">
-                    <span className="block text-[13px] font-semibold text-white">App servers</span>
-                    <span className="block text-xs text-slate-500 mt-0.5">
-                      {design.serverCount === 1 ? "1 server: single point of failure" : `${design.serverCount} stateless worker instances`}
-                    </span>
+              {/* What the panel grades: only components wired into the request path */}
+              <div className="flex flex-wrap items-center gap-1.5 text-[11px]" aria-live="polite">
+                <span className="eyebrow mr-1">Panel sees</span>
+                <span className={`chip ${design.serverCount >= 2 ? "chip-ok" : design.serverCount === 1 ? "chip-warn" : ""}`}>
+                  <span className="num">{design.serverCount}</span> server{design.serverCount === 1 ? "" : "s"}
+                </span>
+                {READOUT.map((r) => (
+                  <span key={r.label} className={`chip ${r.on(design) ? "chip-ok" : "opacity-50"}`}>
+                    {r.on(design) ? <Check className="w-3 h-3" aria-hidden /> : <X className="w-3 h-3" aria-hidden />}
+                    {r.label}
                   </span>
-                  <span className="flex items-center gap-1 shrink-0">
-                    <button
-                      type="button"
-                      className="btn btn-secondary !p-1.5"
-                      aria-label="Remove a server"
-                      disabled={design.serverCount <= 1}
-                      onClick={() => edit((d) => ({ ...d, serverCount: d.serverCount - 1 }))}
-                    >
-                      <Minus className="w-3.5 h-3.5" />
-                    </button>
-                    <span className="num text-sm text-white w-6 text-center" aria-live="polite">
-                      {design.serverCount}
-                    </span>
-                    <button
-                      type="button"
-                      className="btn btn-secondary !p-1.5"
-                      aria-label="Add a server"
-                      disabled={design.serverCount >= MAX_SERVERS}
-                      onClick={() => edit((d) => ({ ...d, serverCount: d.serverCount + 1 }))}
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                    </button>
+                ))}
+                {unwired > 0 && (
+                  <span className="chip chip-warn">
+                    {unwired} unwired component{unwired === 1 ? "" : "s"} earn nothing
                   </span>
-                </div>
+                )}
               </div>
-
-              {/* Live Topology Diagram */}
-              <Topology tiers={toTiers(design)} caption={<span className="eyebrow">Your architectural topology</span>} />
 
               <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-[var(--line)]">
                 <button
