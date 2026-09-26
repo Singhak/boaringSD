@@ -363,7 +363,10 @@ export type PatternId =
   | "backpressure"
   | "idempotency"
   | "multi-region"
-  | "health-checks";
+  | "health-checks"
+  | "cap-pacelc"
+  | "consensus-quorums"
+  | "storage-engines";
 
 /**
  * Honest progress labels. A pattern is never "mastered" after one activity:
@@ -605,7 +608,7 @@ export interface IncidentPackV2 {
   patternId: string;
   patternName: string;
   level: number;
-  phase: "Foundation" | "Resilience" | "Mastery";
+  phase: "Foundation" | "Resilience" | "Mastery" | "Depth";
   canonicalId: string;
   nextCanonicalId?: string | null;
   incidents: IncidentV2[];
