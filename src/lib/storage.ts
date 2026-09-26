@@ -1,18 +1,28 @@
-// Browser persistence for player progress. localStorage is the source of truth.
-//
-// NOTE: /api/progress is a best-effort mirror to a single demo user. It is not
-// authenticated and does not merge progress, so there is no cross-device sync.
-// Do not advertise account-backed progress until auth and server semantics exist.
+// Browser persistence for player progress. localStorage is the only store:
+// there are no accounts or cross-device sync yet, so don't advertise either.
 
-import type { BuilderScenario, PatternId, PatternRunResult, RunProgress, SystemDesignPattern, UserStats } from "@/types";
+import type {
+  BuilderScenario,
+  InterviewResult,
+  PatternId,
+  PatternRunResult,
+  ReasoningResult,
+  RunProgress,
+  SystemDesignPattern,
+  UserStats,
+} from "@/types";
 import {
   DEFAULT_STATS,
   ProgressionOutcome,
   completeActivity,
   migrateStats,
   recordBuilderResult,
+  recordDefense,
+  recordEstimate,
   recordFixApplied,
+  recordInterviewResult,
   recordPatternRun,
+  recordReasoning,
   recordReview,
   recordRunStarted,
   recordTransferMiss,
@@ -22,6 +32,7 @@ const STORAGE_KEY = "sd_quest_user_stats_v1"; // key kept for backward compatibi
 const RUNS_KEY = "sd_quest_run_progress_v1";
 const DESIGNS_KEY = "sd_quest_builder_designs_v1";
 const ROTATION_KEY = "sd_quest_rotation_state_v1";
+const SHUFFLE_KEY = "sd_quest_shuffle_nonce_v1";
 export const STATS_EVENT = "sd_quest_stats_updated";
 
 type Result = { stats: UserStats; leveledUp: boolean };
@@ -56,15 +67,6 @@ export function saveUserStats(stats: UserStats): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(stats));
     window.dispatchEvent(new Event(STATS_EVENT));
-
-    // Best-effort mirror; see note at top of file.
-    fetch("/api/progress", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(stats),
-    }).catch(() => {
-      // Offline or no database: local progress is already saved.
-    });
   } catch (err) {
     console.error("Failed to save user stats:", err);
   }
@@ -133,6 +135,26 @@ export function completeInterview(interviewId: string, rewardXp: number): Result
       new Date()
     )
   );
+}
+
+export function submitEstimate(problemId: string, score: number): ProgressionOutcome {
+  return commit(recordEstimate(getUserStats(), problemId, score, new Date()));
+}
+
+export function saveInterviewResult(interviewId: string, result: Omit<InterviewResult, "at">): UserStats {
+  return update((s) => recordInterviewResult(s, interviewId, result, new Date()));
+}
+
+export function saveDefenseResult(firstTry: boolean): UserStats {
+  return update((s) => recordDefense(s, firstTry));
+}
+
+export function saveReasoningResult(
+  promptId: string,
+  result: Omit<ReasoningResult, "at">,
+  bonusXp: number
+): ProgressionOutcome {
+  return commit(recordReasoning(getUserStats(), promptId, result, bonusXp, new Date()));
 }
 
 export function recordMissionComplete(missionId: string, xpReward: number): ProgressionOutcome {
@@ -261,17 +283,21 @@ export function saveScenarioRotationState(key: string, value: number): void {
   writeJson(ROTATION_KEY, next);
 }
 
-// ---------------------------------------------------------------------------
-// Account (mock) and feature unlocks
-// ---------------------------------------------------------------------------
-
-export function loginUser(email: string, name: string): UserStats {
-  return update((s) => ({ ...s, isLoggedIn: true, userEmail: email, userName: name }));
+/**
+ * Seed for option shuffling that changes on every attempt of the same content,
+ * so answer positions can't be memorised. Call once per attempt (e.g. in a
+ * lazy useState initializer of a client-only component).
+ */
+export function nextShuffleSeed(scope: string): string {
+  const all = readJson<Record<string, number>>(SHUFFLE_KEY, {});
+  const n = (all[scope] ?? 0) + 1;
+  writeJson(SHUFFLE_KEY, { ...all, [scope]: n });
+  return `${scope}#${n}`;
 }
 
-export function logoutUser(): UserStats {
-  return update((s) => ({ ...s, isLoggedIn: false, userEmail: null, userName: null }));
-}
+// ---------------------------------------------------------------------------
+// Feature unlocks
+// ---------------------------------------------------------------------------
 
 export function getFeatureUnlockStatus(stats: UserStats) {
   const level = stats.level || 1;

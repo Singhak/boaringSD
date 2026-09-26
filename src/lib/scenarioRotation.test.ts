@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { getAllScenarioPacks, getScenarioPackByPatternId, getScenarioVariantForPattern } from "@/data/scenarioPacks";
+import { deterministicShuffle } from "@/lib/shuffle";
 
 test("scenario packs exist for all 15 system patterns with non-empty variants", () => {
   const ids = [
@@ -48,21 +49,6 @@ test("variant rotation cycles without repeating immediately", () => {
 });
 
 test("deterministic shuffle distributes options without losing correct answer", () => {
-  function deterministicShuffle<T>(items: T[], seed: string): T[] {
-    let hash = 0;
-    for (let i = 0; i < seed.length; i++) {
-      hash = (hash << 5) - hash + seed.charCodeAt(i);
-      hash |= 0;
-    }
-    const arr = [...items];
-    for (let i = arr.length - 1; i > 0; i--) {
-      hash = (hash * 9301 + 49297) % 233280;
-      const j = Math.floor((Math.abs(hash) / 233280) * (i + 1));
-      [arr[i], arr[j]] = [arr[j], arr[i]];
-    }
-    return arr;
-  }
-
   const options = [
     { id: "correct", isCorrect: true },
     { id: "wrong-1", isCorrect: false },

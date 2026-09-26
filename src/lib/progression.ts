@@ -4,17 +4,23 @@
 import { getAllPatterns, getPatternByChapterId } from "@/data/patterns";
 import type {
   BuilderScenario,
+  CompetencyArea,
+  CompetencyScore,
+  CompetencyTier,
+  InterviewResult,
   MasteryState,
   PatternEvidence,
   PatternId,
   PatternRunResult,
+  ReasoningResult,
   RunProgress,
   RunStage,
   SystemDesignPattern,
+  UserSkillRadar,
   UserStats,
 } from "@/types";
 
-export const STATS_SCHEMA_VERSION = 2;
+export const STATS_SCHEMA_VERSION = 3;
 export const XP_PER_LEVEL = 150;
 const REVIEW_INTERVAL_DAYS = [1, 3, 7, 30];
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -32,9 +38,6 @@ export const DEFAULT_STATS: UserStats = {
   completedChapters: [],
   systemsSaved: 0,
   incidentsSolved: 0,
-  isLoggedIn: false,
-  userEmail: null,
-  userName: null,
   totalScore: 0,
   soundEnabled: true,
   unlockedBadges: [],
@@ -42,6 +45,10 @@ export const DEFAULT_STATS: UserStats = {
   patternProgress: {},
   awardedEvents: [],
   practiceDays: [],
+  estimationResults: {},
+  interviewResults: {},
+  reasoningResults: {},
+  defenseStats: { attempts: 0, firstTry: 0 },
 };
 
 export interface ProgressionOutcome {
@@ -252,17 +259,26 @@ export function getMasteryState(evidence: PatternEvidence | undefined, now: Date
   const reviewOverdue = evidence.reviewDueAt !== undefined && now.getTime() >= Date.parse(evidence.reviewDueAt);
   if (reviewOverdue) return "needs_review";
 
-  // Reliable = succeeded in a run, a transfer question, a builder scenario, and a later recall.
-  if (evidence.builderPasses > 0 && evidence.reviewsPassed > 0) return "reliable";
+  // Reliable = succeeded in a run, a transfer question, a builder scenario, a later recall,
+  // and defended the call in their own words.
+  if (evidence.builderPasses > 0 && evidence.reviewsPassed > 0 && hasDefendedCall(evidence)) return "reliable";
   return "passed_transfer";
 }
 
-/** The three pieces of evidence a pattern needs beyond the run itself. */
+/** Score a "defend your call" answer must reach to count toward Reliable. */
+export const DEFENDED_CALL_SCORE = 60;
+
+function hasDefendedCall(evidence: PatternEvidence): boolean {
+  return (evidence.reasoningBest ?? 0) >= DEFENDED_CALL_SCORE;
+}
+
+/** The pieces of evidence a pattern needs beyond the run itself. */
 export function getEvidenceChecklist(evidence: PatternEvidence) {
   return [
     { id: "transfer", label: "Transfer question", done: evidence.transferPasses > 0 },
     { id: "builder", label: "Builder scenario", done: evidence.builderPasses > 0 },
     { id: "review", label: "Later recall", done: evidence.reviewsPassed > 0 },
+    { id: "reasoning", label: "Defend your call", done: hasDefendedCall(evidence) },
   ];
 }
 
@@ -289,6 +305,7 @@ export function getNextWeakness(evidence: PatternEvidence, now: Date): string | 
   if (evidence.transferPasses === 0) return "Pass the transfer question";
   if (evidence.builderPasses === 0) return "Pass the builder scenario";
   if (evidence.reviewsPassed === 0) return "Pass a later review";
+  if (!hasDefendedCall(evidence)) return "Defend your call after a fix";
   return null;
 }
 
@@ -328,8 +345,9 @@ export function recordTransferMiss(stats: UserStats, patternId: PatternId): User
 }
 
 /**
- * Completes a run. Only call after diagnosis, fix, counter-strike, and transfer
- * all succeeded. Safe to call twice: the first-clear reward is keyed per pattern.
+ * Completes a run. Report what actually happened: first-try flags drive the
+ * mastery evidence and radar. Safe to call twice: the first-clear reward is
+ * keyed per pattern.
  */
 export function recordPatternRun(
   stats: UserStats,
@@ -356,8 +374,9 @@ export function recordPatternRun(
       runsCleared: e.runsCleared + 1,
       diagnosisFirstTry: e.diagnosisFirstTry + (result.diagnosisFirstTry ? 1 : 0),
       interventionFirstTry: e.interventionFirstTry + (result.interventionFirstTry ? 1 : 0),
-      transferAttempts: e.transferAttempts + 1,
-      transferPasses: e.transferPasses + 1,
+      // Earlier misses were already counted by recordTransferMiss; this adds the final attempt.
+      transferAttempts: e.transferAttempts + (result.transferFirstTry === null ? 0 : 1),
+      transferPasses: e.transferPasses + (result.transferFirstTry === true ? 1 : 0),
       hintsUsed: e.hintsUsed + result.hintsUsed,
       failureReasons: addFailureReasons(e.failureReasons, result.failureReasons),
       firstClearedAt: e.firstClearedAt ?? now.toISOString(),
@@ -379,6 +398,85 @@ export function recordPatternRun(
   next = recordPractice(next, now);
   const granted = grantXp(next, award.xp);
   return { stats: granted.stats, xpAwarded: award.xp, leveledUp: granted.leveledUp, firstClear: award.firstClear };
+}
+
+// ---------------------------------------------------------------------------
+// Measured practice results (estimation gym, interviews, defenses, reasoning)
+// ---------------------------------------------------------------------------
+
+const ESTIMATE_PASS_SCORE = 85;
+
+/**
+ * Records one estimation attempt. Every attempt is kept as evidence; XP is paid
+ * only for a passing estimate, once per problem plus a small daily replay bonus.
+ */
+export function recordEstimate(stats: UserStats, problemId: string, score: number, now: Date): ProgressionOutcome {
+  const prev = stats.estimationResults?.[problemId];
+  let next: UserStats = {
+    ...stats,
+    estimationResults: {
+      ...(stats.estimationResults ?? {}),
+      [problemId]: {
+        best: Math.max(prev?.best ?? 0, score),
+        last: score,
+        attempts: (prev?.attempts ?? 0) + 1,
+      },
+    },
+  };
+  next = recordPractice(next, now);
+
+  if (score < ESTIMATE_PASS_SCORE) return { stats: next, xpAwarded: 0, leveledUp: false, firstClear: false };
+  const award = awardFirstOrReplay(next, `estimate:${problemId}`, Math.round(score / 5), 5, now);
+  const granted = grantXp(award.stats, award.xp);
+  return { stats: granted.stats, xpAwarded: award.xp, leveledUp: granted.leveledUp, firstClear: award.firstClear };
+}
+
+/** Stores the latest pillar scores for an interview problem. XP stays with completeActivity. */
+export function recordInterviewResult(
+  stats: UserStats,
+  interviewId: string,
+  result: Omit<InterviewResult, "at">,
+  now: Date
+): UserStats {
+  return {
+    ...recordPractice(stats, now),
+    interviewResults: { ...(stats.interviewResults ?? {}), [interviewId]: { ...result, at: now.toISOString() } },
+  };
+}
+
+/** Counts an architecture defense and whether every answer was right on the first try. */
+export function recordDefense(stats: UserStats, firstTry: boolean): UserStats {
+  const d = stats.defenseStats ?? { attempts: 0, firstTry: 0 };
+  return { ...stats, defenseStats: { attempts: d.attempts + 1, firstTry: d.firstTry + (firstTry ? 1 : 0) } };
+}
+
+/** Records a graded "defend your call" answer; bonus XP once per prompt for a solid answer. */
+export function recordReasoning(
+  stats: UserStats,
+  promptId: string,
+  result: Omit<ReasoningResult, "at">,
+  bonusXp: number,
+  now: Date
+): ProgressionOutcome {
+  const prev = stats.reasoningResults?.[promptId];
+  // Keep the best graded answer; a self-assessment never overwrites a graded one.
+  const keepPrev = prev && (prev.score > result.score || (!prev.selfAssessed && result.selfAssessed));
+  let next: UserStats = keepPrev
+    ? stats
+    : { ...stats, reasoningResults: { ...(stats.reasoningResults ?? {}), [promptId]: { ...result, at: now.toISOString() } } };
+  if (result.patternId) {
+    // Self-assessment counts half toward the pattern's evidence.
+    const credited = result.selfAssessed ? Math.round(result.score / 2) : result.score;
+    const e = getEvidence(next, result.patternId);
+    next = withEvidence(next, result.patternId, { ...e, reasoningBest: Math.max(e.reasoningBest ?? 0, credited) });
+  }
+  next = recordPractice(next, now);
+
+  if (result.score < 60) return { stats: next, xpAwarded: 0, leveledUp: false, firstClear: false };
+  const claim = claimEvent(next, `reasoning:${promptId}:first`);
+  const xp = claim.awarded ? bonusXp : 0;
+  const granted = grantXp(claim.stats, xp);
+  return { stats: granted.stats, xpAwarded: xp, leveledUp: granted.leveledUp, firstClear: claim.awarded };
 }
 
 /** Records a builder submission. Rewards only on pass; failures are kept as evidence. */
@@ -505,7 +603,7 @@ export function selectNextAction(
       kind: "onboarding",
       title: "Incident 001: Twitter Feed Is Down",
       description: "Server CPU is at 98% under 100,000 req/s. Stabilize it to start your first level.",
-      href: "/mission",
+      href: "/",
       ctaLabel: "Fix the incident",
       xpReward: 150,
       badge: "Tutorial incident",
@@ -657,15 +755,33 @@ export function migrateStats(raw: unknown, now: Date): UserStats {
     awardedEvents: asStringArray(r.awardedEvents),
     practiceDays: asStringArray(r.practiceDays),
     soundEnabled: typeof r.soundEnabled === "boolean" ? r.soundEnabled : true,
-    patternProgress:
-      r.patternProgress && typeof r.patternProgress === "object"
-        ? (r.patternProgress as UserStats["patternProgress"])
-        : {},
+    patternProgress: asRecord<NonNullable<UserStats["patternProgress"]>>(r.patternProgress),
+    estimationResults: asRecord<NonNullable<UserStats["estimationResults"]>>(r.estimationResults),
+    interviewResults: asRecord<NonNullable<UserStats["interviewResults"]>>(r.interviewResults),
+    reasoningResults: asRecord<NonNullable<UserStats["reasoningResults"]>>(r.reasoningResults),
+    defenseStats: {
+      attempts: asNumber((r.defenseStats as Record<string, unknown> | undefined)?.attempts, 0),
+      firstTry: asNumber((r.defenseStats as Record<string, unknown> | undefined)?.firstTry, 0),
+    },
   };
 
-  if (asNumber(r.schemaVersion, 1) >= STATS_SCHEMA_VERSION) return stats;
+  const fromVersion = asNumber(r.schemaVersion, 1);
+  if (fromVersion >= STATS_SCHEMA_VERSION) return stats;
 
-  // v1 → v2
+  const v2 = fromVersion < 2 ? migrateV1toV2(stats, now) : stats;
+  // v2 → v3: the new result collections were defaulted above; drop the mock account fields.
+  const v3: UserStats = { ...v2, schemaVersion: STATS_SCHEMA_VERSION };
+  delete v3.isLoggedIn;
+  delete v3.userEmail;
+  delete v3.userName;
+  return v3;
+}
+
+function asRecord<T extends object>(value: unknown): T {
+  return (value && typeof value === "object" && !Array.isArray(value) ? value : {}) as T;
+}
+
+function migrateV1toV2(stats: UserStats, now: Date): UserStats {
   const events = new Set(stats.awardedEvents);
   const collections: ActivityCollection[] = [
     "completedLessons",
@@ -701,6 +817,148 @@ export function migrateStats(raw: unknown, now: Date): UserStats {
     streakDays: stats.lastPracticeDate ? stats.streakDays : 0,
     awardedEvents: [...events],
     patternProgress: progress,
-    schemaVersion: STATS_SCHEMA_VERSION,
+    schemaVersion: 2,
   };
 }
+
+// ---------------------------------------------------------------------------
+// 6-Axis Engineering Competency Radar (Pillar 6)
+// ---------------------------------------------------------------------------
+
+/** Evidence for one radar axis: success weight earned over attempts measured. */
+interface AxisEvidence {
+  successes: number;
+  samples: number;
+}
+
+// Shrinks small samples toward 0: 2/2 reads 40, 10/10 reads 77, 30/30 reads 91.
+const RADAR_PRIOR = 3;
+export const RADAR_MIN_SAMPLES = 3;
+
+function sumAxes(...parts: AxisEvidence[]): AxisEvidence {
+  return parts.reduce((a, b) => ({ successes: a.successes + b.successes, samples: a.samples + b.samples }), {
+    successes: 0,
+    samples: 0,
+  });
+}
+
+function axisScore({ successes, samples }: AxisEvidence): number {
+  return Math.round((100 * successes) / (samples + RADAR_PRIOR));
+}
+
+/**
+ * Competency radar built only from measured results: first-try diagnoses and
+ * fixes, transfer passes, estimate accuracy, defenses, builder passes, reviews
+ * and interview pillars. Activity alone (streaks, XP, levels) never raises it.
+ */
+export function calculateSkillRadar(stats: UserStats): UserSkillRadar {
+  const evidence = Object.values(stats.patternProgress ?? {});
+  const sum = (pick: (e: PatternEvidence) => number) => evidence.reduce((n, e) => n + (pick(e) || 0), 0);
+  const interviews = Object.values(stats.interviewResults ?? {});
+  const interviewPillar = (pick: (r: InterviewResult) => number | undefined): AxisEvidence => {
+    const values = interviews.map(pick).filter((v): v is number => typeof v === "number");
+    return { successes: values.reduce((n, v) => n + v / 100, 0), samples: values.length };
+  };
+
+  const estimates = Object.values(stats.estimationResults ?? {});
+  const reasoning = Object.values(stats.reasoningResults ?? {});
+  // Self-assessed answers count half: they are the learner's own judgement.
+  const reasoningAxis: AxisEvidence = reasoning.reduce(
+    (a, r) => {
+      const w = r.selfAssessed ? 0.5 : 1;
+      return { successes: a.successes + (w * r.score) / 100, samples: a.samples + w };
+    },
+    { successes: 0, samples: 0 }
+  );
+  const defense = stats.defenseStats ?? { attempts: 0, firstTry: 0 };
+
+  const axes: Record<CompetencyArea, { label: string; tip: string; scout: string; evidence: AxisEvidence }> = {
+    bottleneck_diagnosis: {
+      label: "Bottleneck Diagnosis",
+      tip: "Spotting the real bottleneck on the first try",
+      scout: "Clear War Room incidents without a wrong deploy",
+      evidence: { successes: sum((e) => e.diagnosisFirstTry), samples: sum((e) => e.runsCleared) },
+    },
+    pattern_selection: {
+      label: "Pattern Selection",
+      tip: "Picking the right fix, and reusing it on a new system",
+      scout: "Nail the Aftershock question at the end of a level",
+      evidence: sumAxes(
+        { successes: sum((e) => e.interventionFirstTry), samples: sum((e) => e.runsCleared) },
+        { successes: sum((e) => e.transferPasses), samples: sum((e) => e.transferAttempts) }
+      ),
+    },
+    capacity_estimation: {
+      label: "Capacity Estimation",
+      tip: "QPS, storage and cache sizing within the right order of magnitude",
+      scout: "Solve problems in the Estimation gym",
+      evidence: sumAxes(
+        { successes: estimates.reduce((n, r) => n + r.best / 100, 0), samples: estimates.length },
+        interviewPillar((r) => r.math)
+      ),
+    },
+    tradeoff_defense: {
+      label: "Tradeoff Defense",
+      tip: "Justifying a choice over the alternatives and predicting the 10x failure",
+      scout: "Defend your call after a fix, or finish an interview deep dive",
+      evidence: sumAxes(
+        { successes: defense.firstTry, samples: defense.attempts },
+        reasoningAxis,
+        interviewPillar((r) => r.deepDive)
+      ),
+    },
+    end_to_end_design: {
+      label: "End-to-End Design",
+      tip: "Assembling a working architecture without single points of failure",
+      scout: "Pass a Builder boss or an interview design stage",
+      evidence: sumAxes(
+        { successes: sum((e) => e.builderPasses), samples: sum((e) => e.builderAttempts) },
+        interviewPillar((r) => r.design)
+      ),
+    },
+    resilience_recovery: {
+      label: "Resilience & Recovery",
+      tip: "Remembering fixes days later, when it counts",
+      scout: "Complete spaced reviews when they come due",
+      evidence: { successes: sum((e) => e.reviewsPassed), samples: sum((e) => e.reviewsPassed + e.reviewsFailed) },
+    },
+  };
+
+  const getTier = (score: number): CompetencyTier => {
+    if (score >= 90) return "Staff Architect";
+    if (score >= 75) return "Advanced";
+    if (score >= 50) return "Proficient";
+    return "Novice";
+  };
+
+  const areas = Object.keys(axes) as CompetencyArea[];
+  const scores = {} as Record<CompetencyArea, CompetencyScore>;
+  for (const area of areas) {
+    const a = axes[area];
+    const score = axisScore(a.evidence);
+    const hasEnoughData = a.evidence.samples >= RADAR_MIN_SAMPLES;
+    scores[area] = {
+      area,
+      label: a.label,
+      score,
+      tier: getTier(score),
+      evidencesCount: Math.round(a.evidence.samples),
+      hasEnoughData,
+      highlightTip: hasEnoughData ? a.tip : `Scouting: ${a.scout} to get a reading`,
+    };
+  }
+
+  const overallIndex = Math.round(areas.reduce((n, a) => n + scores[a].score, 0) / areas.length);
+  // Strongest/growth only consider axes with real readings; scouting axes are the growth area.
+  const measured = areas.filter((a) => scores[a].hasEnoughData);
+  const byScore = [...(measured.length > 0 ? measured : areas)].sort((a, b) => scores[b].score - scores[a].score);
+  const unmeasured = areas.filter((a) => !scores[a].hasEnoughData);
+
+  return {
+    scores,
+    overallIndex,
+    strongestArea: byScore[0],
+    growthArea: unmeasured[0] ?? byScore[byScore.length - 1],
+  };
+}
+

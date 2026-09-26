@@ -160,3 +160,65 @@ test("without a load balancer the first server receives all traffic", () => {
   assert.deepEqual(sim.metrics.serverShares, [100, 0]);
   assert.ok(sim.nodeStates.a.cpu > sim.nodeStates.b.cpu);
 });
+
+// ---------------------------------------------------------------------------
+// Wiring and cloud credits
+// ---------------------------------------------------------------------------
+
+test("a cache dropped on the canvas but not wired to a serving server does nothing", () => {
+  const s = scenario("boss-cache");
+  const wired = startingDesign(s);
+  add(wired, "cache", "cache", ["server-1"]);
+  const unwired = startingDesign(s);
+  unwired.nodes.push({ id: "cache", data: { type: "cache", label: "cache" } });
+
+  const a = evaluateScenario(wired.nodes, wired.edges, s).simulation.metrics;
+  const b = evaluateScenario(unwired.nodes, unwired.edges, s).simulation.metrics;
+  assert.ok(a.dbReadsPerSec < b.dbReadsPerSec, "only the wired cache offloads database reads");
+  assert.ok(a.maxDbCpu < b.maxDbCpu);
+});
+
+test("a load balancer only spreads traffic to the servers it is connected to", () => {
+  const s = scenario("boss-scale");
+  const d = startingDesign(s);
+  d.edges = [{ source: "server-1", target: "db" }];
+  add(d, "lb", "load_balancer", ["server-1"]);
+  add(d, "server-2", "server", ["db"]); // never connected to the LB
+  d.edges.push({ source: "users", target: "lb" });
+  const result = evaluateScenario(d.nodes, d.edges, s);
+  assert.equal(result.canPass, false);
+  assert.deepEqual(result.simulation.metrics.serverShares, [100]);
+});
+
+test("placing every component blows the cloud-credit budget and fails", () => {
+  const s = scenario("boss-scale");
+  const d = startingDesign(s);
+  d.edges = [{ source: "server-1", target: "db" }];
+  add(d, "lb", "load_balancer", ["server-1"]);
+  d.edges.push({ source: "users", target: "lb" });
+  for (let i = 2; i <= 6; i++) {
+    add(d, `server-${i}`, "server", ["db"]);
+    d.edges.push({ source: "lb", target: `server-${i}` });
+  }
+  add(d, "cache", "cache", ["server-1"]);
+  add(d, "replica", "replica", ["db"]);
+  add(d, "cdn", "cdn", ["users"]);
+  add(d, "queue", "queue", ["server-1"]);
+
+  const result = evaluateScenario(d.nodes, d.edges, s);
+  assert.ok(result.cost > result.budget * 1.5);
+  assert.equal(result.canPass, false);
+  assert.ok(result.failureReasons.includes("budget"));
+});
+
+test("a lean passing design stays within budget", () => {
+  const s = scenario("boss-scale");
+  const d = startingDesign(s);
+  d.edges = [{ source: "server-1", target: "db" }];
+  add(d, "lb", "load_balancer", ["server-1"]);
+  add(d, "server-2", "server", ["db"]);
+  d.edges.push({ source: "users", target: "lb" }, { source: "lb", target: "server-2" });
+  const result = evaluateScenario(d.nodes, d.edges, s);
+  assert.ok(result.cost <= result.budget, `${result.cost} > ${result.budget}`);
+  assert.equal(result.checks.find((c) => c.id === "budget")?.status, "pass");
+});

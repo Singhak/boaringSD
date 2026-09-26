@@ -1,4 +1,6 @@
-import type { ArchitectureNodeType, BuilderScenario } from "@/types";
+import type { ArchitectureNodeType, ArchitecturalArchetype, BuilderScenario } from "@/types";
+import { buildAdjacency, nodeId, reachableFrom, type BuilderEdgeLike, type BuilderNodeLike } from "./graph";
+import { validateWhiteboardTopology } from "./topologyValidator";
 
 export interface BuilderScoreResult {
   score: number;
@@ -6,43 +8,49 @@ export interface BuilderScoreResult {
   summary: string;
   findings: string[];
   canPass: boolean;
+  matchedArchetype?: ArchitecturalArchetype;
 }
 
-interface BuilderNodeLike {
-  id?: string;
-  data?: {
-    type?: string;
-    label?: string;
-    cpu?: number;
-    status?: string;
-    down?: boolean;
-  };
-}
-
-interface BuilderEdgeLike {
-  source: string;
-  target: string;
-}
 
 /** Optional scenario context. Without it, cache/replica needs are inferred from traffic. */
 export interface ScoreExpectations {
   cacheExpected?: boolean;
   replicaExpected?: boolean;
+  acceptedArchetypes?: ArchitecturalArchetype[];
 }
 
+/** Ids of nodes that touch at least one edge. */
+function connectedNodeIds(nodes: BuilderNodeLike[], edges: BuilderEdgeLike[]): Set<string> {
+  const ids = new Set(nodes.map((n, i) => nodeId(n, i)));
+  const connected = new Set<string>();
+  edges.forEach((e) => {
+    if (ids.has(e.source) && ids.has(e.target)) {
+      connected.add(e.source);
+      connected.add(e.target);
+    }
+  });
+  return connected;
+}
+
+/**
+ * @param edges when given, only components wired into the system count; a
+ * component dropped on the canvas but never connected earns nothing.
+ */
 export function evaluateArchitectureScore(
   nodes: BuilderNodeLike[],
   trafficRps: number,
-  expectations: ScoreExpectations = {}
+  expectations: ScoreExpectations = {},
+  edges?: BuilderEdgeLike[]
 ): BuilderScoreResult {
   const cacheExpected = expectations.cacheExpected ?? trafficRps > 12000;
   const replicaExpected = expectations.replicaExpected ?? trafficRps > 25000;
-  const serverNodes = nodes.filter((node) => node.data?.type === "server");
-  const hasLB = nodes.some((node) => node.data?.type === "load_balancer");
-  const hasCache = nodes.some((node) => node.data?.type === "cache");
-  const hasDatabase = nodes.some((node) => node.data?.type === "database");
-  const hasReplica = nodes.some((node) => node.data?.type === "replica");
-  const hasCDN = nodes.some((node) => node.data?.type === "cdn");
+  const wired = edges ? connectedNodeIds(nodes, edges) : null;
+  const counted = nodes.filter((node, i) => !wired || wired.has(nodeId(node, i)));
+  const serverNodes = counted.filter((node) => node.data?.type === "server");
+  const hasLB = counted.some((node) => node.data?.type === "load_balancer");
+  const hasCache = counted.some((node) => node.data?.type === "cache");
+  const hasDatabase = counted.some((node) => node.data?.type === "database");
+  const hasReplica = counted.some((node) => node.data?.type === "replica");
   const overloadedNodes = nodes.filter((node) => (node.data?.status ?? "healthy") === "overloaded").length;
   const averageCpu = nodes.reduce((sum, node) => sum + (node.data?.cpu ?? 0), 0) / Math.max(nodes.length, 1);
 
@@ -81,17 +89,14 @@ export function evaluateArchitectureScore(
     findings.push("No database tier means the architecture cannot persist state.");
   }
 
-  if (hasReplica) {
+  // Replicas only earn points where the workload needs them; CDN value shows up
+  // (or doesn't) in the simulated latency rather than as a flat bonus.
+  if (hasReplica && replicaExpected) {
     score += 8;
     findings.push("Read replicas improve query throughput for read-heavy workloads.");
   } else if (replicaExpected) {
     score -= 8;
     findings.push("Large read-heavy traffic should use replicas to keep the primary stable.");
-  }
-
-  if (hasCDN) {
-    score += 6;
-    findings.push("Edge delivery reduces load for static assets.");
   }
 
   if (averageCpu > 75) {
@@ -111,6 +116,24 @@ export function evaluateArchitectureScore(
     findings.push("Monolith pattern: this design lacks horizontal scaling and cache protection.");
   }
 
+  // Multi-Path Archetype Matching (Pillar 5)
+  let matchedArchetype: ArchitecturalArchetype | undefined;
+  if (expectations.acceptedArchetypes && expectations.acceptedArchetypes.length > 0) {
+    const presentTypes = new Set(nodes.map((n) => n.data?.type).filter(Boolean));
+    matchedArchetype = expectations.acceptedArchetypes.find((arch) => {
+      const hasAllRequired = arch.requiredComponents.every((rc) => presentTypes.has(rc));
+      const hasNoForbidden =
+        !arch.forbiddenComponents ||
+        !arch.forbiddenComponents.some((fc) => presentTypes.has(fc));
+      return hasAllRequired && hasNoForbidden;
+    });
+
+    if (matchedArchetype) {
+      score += 15;
+      findings.unshift(`Verified valid architecture path: ${matchedArchetype.name}.`);
+    }
+  }
+
   const clamped = Math.max(0, Math.min(100, Math.round(score)));
 
   let grade: BuilderScoreResult["grade"] = "F";
@@ -120,7 +143,10 @@ export function evaluateArchitectureScore(
   else if (clamped >= 60) grade = "C";
   else if (clamped >= 45) grade = "D";
 
-  const canPass = clamped >= 70 && hasLB && hasDatabase && (hasCache || !cacheExpected);
+  const archetypePassed = matchedArchetype !== undefined;
+  const canPass =
+    (clamped >= 70 && hasLB && hasDatabase && (hasCache || !cacheExpected)) ||
+    (archetypePassed && clamped >= 70);
 
   const summary =
     clamped >= 90
@@ -137,6 +163,7 @@ export function evaluateArchitectureScore(
     summary,
     findings: findings.slice(0, 4),
     canPass,
+    matchedArchetype,
   };
 }
 
@@ -168,7 +195,7 @@ export interface SimulationMetrics {
 }
 
 export interface SimulationResult {
-  nodeStates: Record<string, { cpu: number; status: SimStatus; down?: boolean }>;
+  nodeStates: Record<string, { cpu: number; status: SimStatus; down?: boolean; queueDepth?: number }>;
   metrics: SimulationMetrics;
 }
 
@@ -215,36 +242,98 @@ function latencyPenalty(cpu: number): number {
 
 const round1 = (n: number) => Math.round(n * 10) / 10;
 
-export function simulateTopology(nodes: BuilderNodeLike[], workload: WorkloadProfile): SimulationResult {
+/**
+ * How traffic actually flows. With edges and at least one client node, only
+ * wired components take effect: the LB feeds just the servers it connects to,
+ * a cache offloads reads only if a serving app server uses it, replicas only if
+ * they replicate from the database, the CDN only if clients reach it. Without
+ * edges (legacy callers), every component on the canvas is assumed wired.
+ */
+function trafficWiring(nodes: BuilderNodeLike[], edges: BuilderEdgeLike[] | undefined) {
   const typeOf = (n: BuilderNodeLike) => n.data?.type;
-  const idOf = (n: BuilderNodeLike, i: number) => n.id ?? `node-${i}`;
-  const has = (t: ArchitectureNodeType) => nodes.some((n) => typeOf(n) === t);
+  const ids = nodes.map((n, i) => nodeId(n, i));
+  const idsOfType = (t: ArchitectureNodeType) => ids.filter((_, i) => typeOf(nodes[i]) === t);
+  const clients = idsOfType("client");
 
-  const hasLB = has("load_balancer");
-  const hasCache = has("cache");
-  const hasCDN = has("cdn");
-  const hasQueue = has("queue");
+  if (!edges || clients.length === 0) {
+    const has = (t: ArchitectureNodeType) => idsOfType(t).length > 0;
+    return {
+      lbTargets: has("load_balancer") ? new Set(idsOfType("server")) : null,
+      directServers: idsOfType("server"),
+      cacheUsed: has("cache"),
+      replicaIds: idsOfType("replica"),
+      cdnUsed: has("cdn"),
+      queueUsed: has("queue"),
+    };
+  }
+
+  const { outgoing, incoming } = buildAdjacency(nodes, edges);
+  const neighbours = (id: string) => [...(outgoing.get(id) ?? []), ...(incoming.get(id) ?? [])];
+  const typeById = new Map(ids.map((id, i) => [id, typeOf(nodes[i])]));
+  const reachable = reachableFrom(clients, outgoing);
+
+  // Servers behind a reachable LB share traffic; otherwise clients hit servers they point at.
+  const lbTargets = new Set<string>();
+  idsOfType("load_balancer")
+    .filter((lb) => reachable.has(lb))
+    .forEach((lb) =>
+      (outgoing.get(lb) ?? []).forEach((t) => {
+        if (typeById.get(t) === "server") lbTargets.add(t);
+      })
+    );
+  const directServers = clients.flatMap((c) => (outgoing.get(c) ?? []).filter((t) => typeById.get(t) === "server"));
+  const servingServers = new Set([...lbTargets, ...directServers]);
+
+  return {
+    lbTargets: lbTargets.size > 0 ? lbTargets : null,
+    directServers,
+    cacheUsed: idsOfType("cache").some((c) => neighbours(c).some((n) => servingServers.has(n))),
+    replicaIds: idsOfType("replica").filter((r) => neighbours(r).some((n) => typeById.get(n) === "database")),
+    cdnUsed: idsOfType("cdn").some((c) => reachable.has(c) || neighbours(c).some((n) => typeById.get(n) === "client")),
+    queueUsed: idsOfType("queue").some((q) => neighbours(q).some((n) => servingServers.has(n))),
+  };
+}
+
+export function simulateTopology(
+  nodes: BuilderNodeLike[],
+  workload: WorkloadProfile,
+  edges?: BuilderEdgeLike[]
+): SimulationResult {
+  const typeOf = (n: BuilderNodeLike) => n.data?.type;
+  const idOf = (n: BuilderNodeLike, i: number) => nodeId(n, i);
+  const wiring = trafficWiring(nodes, edges);
+
+  const lbTargets = wiring.lbTargets;
+  const hasCache = wiring.cacheUsed;
+  const hasCDN = wiring.cdnUsed;
+  const hasQueue = wiring.queueUsed;
 
   const servers = nodes.map((n, i) => ({ n, id: idOf(n, i) })).filter(({ n }) => typeOf(n) === "server");
   const killedId = workload.killOneServer && servers.length > 0 ? servers[servers.length - 1].id : null;
-  const alive = servers.filter((s) => s.id !== killedId);
+  // Only servers that traffic can reach take load.
+  const routable = new Set([...(lbTargets ?? []), ...wiring.directServers]);
+  const alive = servers.filter((s) => s.id !== killedId && routable.has(s.id));
 
   const staticRps = workload.rps * workload.staticAssetShare;
   const dynamicRps = workload.rps - staticRps;
   const serverRps = dynamicRps + (hasCDN ? 0 : staticRps);
   const workFactor = workload.slowDownstream && !hasQueue ? 2 : 1;
 
-  // Without a load balancer, every client hits the first server.
+  // Behind an LB, traffic splits across the servers it feeds; without one, every client hits the first server.
   const perServerRps = new Map<string, number>();
+  const balanced = lbTargets ? alive.filter((s) => lbTargets.has(s.id)) : [];
   alive.forEach((s, idx) => {
-    const share = hasLB ? serverRps / alive.length : idx === 0 ? serverRps : 0;
+    let share = 0;
+    if (lbTargets) share = lbTargets.has(s.id) ? serverRps / balanced.length : 0;
+    else if (idx === 0) share = serverRps;
     perServerRps.set(s.id, share);
   });
 
   const reads = dynamicRps * workload.readRatio;
   const writes = dynamicRps - reads;
   const dbReads = hasCache ? reads * (1 - workload.cacheHitRate) : reads;
-  const replicaCount = nodes.filter((n) => typeOf(n) === "replica").length;
+  const replicaIds = new Set(wiring.replicaIds);
+  const replicaCount = replicaIds.size;
   const primaryLoad = replicaCount > 0 ? writes : writes + dbReads;
   const replicaLoad = replicaCount > 0 ? dbReads / replicaCount : 0;
 
@@ -276,7 +365,7 @@ export function simulateTopology(nodes: BuilderNodeLike[], workload: WorkloadPro
       primaryDbCpu = Math.max(primaryDbCpu, raw);
       maxDbCpu = Math.max(maxDbCpu, raw);
     } else if (type === "replica") {
-      raw = rawReplicaCpu;
+      raw = replicaIds.has(id) ? rawReplicaCpu : 3;
       maxDbCpu = Math.max(maxDbCpu, raw);
     } else if (type === "load_balancer") {
       raw = Math.min(70, (workload.rps / 100000) * 70);
@@ -292,7 +381,15 @@ export function simulateTopology(nodes: BuilderNodeLike[], workload: WorkloadPro
       errorLoad += Math.max(0, raw - 85) * 1.5;
     }
     const cpu = Math.min(100, Math.round(raw));
-    nodeStates[id] = { cpu, status: statusFor(raw) };
+    let queueDepth = 0;
+    if (cpu > 85) {
+      queueDepth = Math.min(100, Math.round(40 + (cpu - 85) * 4));
+    } else if (cpu > 60) {
+      queueDepth = Math.round(5 + ((cpu - 60) / 25) * 35);
+    } else {
+      queueDepth = Math.round((cpu / 60) * 5);
+    }
+    nodeStates[id] = { cpu, status: statusFor(raw), queueDepth };
   });
 
   let latencyMs: number;
@@ -333,7 +430,16 @@ export function applySimulation<T extends BuilderNodeLike>(nodes: T[], sim: Simu
   return nodes.map((n, i) => {
     const state = sim.nodeStates[n.id ?? `node-${i}`];
     if (!state) return n;
-    return { ...n, data: { ...n.data, cpu: state.cpu, status: state.status, down: state.down ?? false } };
+    return {
+      ...n,
+      data: {
+        ...n.data,
+        cpu: state.cpu,
+        status: state.status,
+        down: state.down ?? false,
+        queueDepth: state.queueDepth,
+      },
+    };
   });
 }
 
@@ -352,6 +458,9 @@ export interface ScenarioCheck {
 export interface ScenarioEvaluation {
   score: BuilderScoreResult;
   checks: ScenarioCheck[];
+  /** Monthly cost of the design and the scenario's budget, in cloud credits. */
+  cost: number;
+  budget: number;
   canPass: boolean;
   simulation: SimulationResult;
   failureReasons: string[];
@@ -368,12 +477,63 @@ export const COMPONENT_LABELS: Record<ArchitectureNodeType, string> = {
   queue: "message queue",
 };
 
+// ============================================================================
+// Cloud credits: every component costs money, so "place everything" loses
+// ============================================================================
+
+/** Rough monthly cost per component, in cloud credits (≈ USD). */
+export const COMPONENT_MONTHLY_COST: Record<ArchitectureNodeType, number> = {
+  client: 0,
+  load_balancer: 300,
+  server: 400,
+  cache: 350,
+  database: 900,
+  replica: 700,
+  cdn: 250,
+  queue: 200,
+};
+
+export function designMonthlyCost(nodes: BuilderNodeLike[]): number {
+  return nodes.reduce((sum, n) => sum + (COMPONENT_MONTHLY_COST[n.data?.type as ArchitectureNodeType] ?? 0), 0);
+}
+
+/**
+ * The scenario's budget: its explicit `budget`, or the cost of a lean passing
+ * design (required components plus enough servers at ~75% CPU, N+1 when a
+ * server is killed) with 30% headroom.
+ */
+export function scenarioBudget(scenario: BuilderScenario): number {
+  if (scenario.budget !== undefined) return scenario.budget;
+  const serverRps = scenario.trafficRps * (scenario.requiredComponents.includes("cdn") ? 1 - scenario.staticAssetShare : 1);
+  const sized = Math.ceil(serverRps / (SERVER_CAPACITY_RPS * 0.75)) + (scenario.killOneServer ? 1 : 0);
+  const servers = Math.max(scenario.targets.minServers ?? 1, sized);
+  const others = scenario.requiredComponents
+    .filter((t) => t !== "server")
+    .reduce((sum, t) => sum + COMPONENT_MONTHLY_COST[t], 0);
+  const lean = others + servers * COMPONENT_MONTHLY_COST.server + (scenario.requiredComponents.includes("database") ? 0 : COMPONENT_MONTHLY_COST.database);
+  return Math.round((lean * 1.3) / 50) * 50;
+}
+
+/** Optional components this workload gains nothing from. */
+function unneededComponents(scenario: BuilderScenario, nodes: BuilderNodeLike[]): ArchitectureNodeType[] {
+  const required = new Set(scenario.requiredComponents);
+  const present = new Set(nodes.map((n) => n.data?.type as ArchitectureNodeType));
+  const useless: ArchitectureNodeType[] = [];
+  if (present.has("cdn") && !required.has("cdn") && scenario.staticAssetShare < 0.1 && !scenario.globalUsers) useless.push("cdn");
+  if (present.has("queue") && !required.has("queue") && !scenario.slowDownstream) useless.push("queue");
+  if (present.has("replica") && !required.has("replica") && scenario.readRatio < 0.5) useless.push("replica");
+  return useless;
+}
+
+const OVER_BUDGET_PENALTY = 10;
+const UNNEEDED_PENALTY = 5;
+
 export function evaluateScenario(
   nodes: BuilderNodeLike[],
   edges: BuilderEdgeLike[],
   scenario: BuilderScenario
 ): ScenarioEvaluation {
-  const simulation = simulateTopology(nodes, scenarioWorkload(scenario));
+  const simulation = simulateTopology(nodes, scenarioWorkload(scenario), edges);
   const simulated = applySimulation(nodes, simulation);
   const { metrics } = simulation;
   const checks: ScenarioCheck[] = [];
@@ -385,7 +545,19 @@ export function evaluateScenario(
   });
   const nodesOfType = (t: ArchitectureNodeType) => nodes.filter((n) => n.data?.type === t);
 
-  for (const type of scenario.requiredComponents) {
+  // Multi-path bosses: a design matching an accepted archetype is judged on that
+  // archetype's components instead of the scenario's default list.
+  const wiredTypes = new Set(
+    nodes.filter((n) => n.id && connectedIds.has(n.id)).map((n) => n.data?.type as ArchitectureNodeType)
+  );
+  const matchedPath = scenario.acceptedArchetypes?.find(
+    (arch) =>
+      arch.requiredComponents.every((t) => wiredTypes.has(t)) &&
+      !(arch.forbiddenComponents ?? []).some((t) => wiredTypes.has(t))
+  );
+  const requiredComponents = matchedPath?.requiredComponents ?? scenario.requiredComponents;
+
+  for (const type of requiredComponents) {
     const label = COMPONENT_LABELS[type];
     const present = nodesOfType(type);
     if (present.length === 0) {
@@ -398,7 +570,7 @@ export function evaluateScenario(
   }
 
   // Components that exist but carry no traffic are a warning, not a failure.
-  const requiredSet = new Set(scenario.requiredComponents);
+  const requiredSet = new Set(requiredComponents);
   (["cache", "replica", "cdn", "queue", "load_balancer"] as ArchitectureNodeType[]).forEach((type) => {
     if (requiredSet.has(type)) return;
     const present = nodesOfType(type);
@@ -462,15 +634,84 @@ export function evaluateScenario(
     });
   }
 
-  const score = evaluateArchitectureScore(simulated, scenario.trafficRps, {
-    cacheExpected: requiredSet.has("cache"),
-    replicaExpected: requiredSet.has("replica"),
+  // Directed Graph Topology & Flow Validation
+  const topoResult = validateWhiteboardTopology(nodes, edges);
+  topoResult.violations.forEach((v) => {
+    checks.push({
+      id: `topo-${v.code.toLowerCase()}`,
+      status: v.severity === "critical" ? "fail" : "warn",
+      message: `${v.severity === "critical" ? "Fail" : "Warning"}: ${v.message} (${v.recommendation})`,
+    });
   });
+
+  const baseScore = evaluateArchitectureScore(
+    simulated,
+    scenario.trafficRps,
+    {
+      cacheExpected: requiredSet.has("cache"),
+      replicaExpected: requiredSet.has("replica"),
+      acceptedArchetypes: scenario.acceptedArchetypes,
+    },
+    edges
+  );
+
+  // Cloud credits: over budget costs points; far over budget fails the boss.
+  const cost = designMonthlyCost(nodes);
+  const budget = scenarioBudget(scenario);
+  let budgetPenalty = 0;
+  if (cost > budget * 1.5) {
+    checks.push({
+      id: "budget",
+      status: "fail",
+      message: `Fail: cloud credits blown, $${cost.toLocaleString()}/mo against a $${budget.toLocaleString()} budget. Remove what the workload doesn't need.`,
+    });
+    budgetPenalty += OVER_BUDGET_PENALTY;
+  } else if (cost > budget) {
+    checks.push({
+      id: "budget",
+      status: "warn",
+      message: `Warning: over budget, $${cost.toLocaleString()}/mo of $${budget.toLocaleString()} (−${OVER_BUDGET_PENALTY} pts).`,
+    });
+    budgetPenalty += OVER_BUDGET_PENALTY;
+  } else {
+    checks.push({
+      id: "budget",
+      status: "pass",
+      message: `Pass: $${cost.toLocaleString()}/mo of $${budget.toLocaleString()} cloud credits.`,
+    });
+  }
+  unneededComponents(scenario, nodes).forEach((type) => {
+    budgetPenalty += UNNEEDED_PENALTY;
+    checks.push({
+      id: `unneeded-${type}`,
+      status: "warn",
+      message: `Warning: this workload gains nothing from a ${COMPONENT_LABELS[type]} (−${UNNEEDED_PENALTY} pts).`,
+    });
+  });
+
+  const adjustedScoreVal = Math.max(0, baseScore.score - topoResult.scorePenalty - budgetPenalty);
+  let adjustedGrade = baseScore.grade;
+  if (adjustedScoreVal >= 90) adjustedGrade = "S";
+  else if (adjustedScoreVal >= 80) adjustedGrade = "A";
+  else if (adjustedScoreVal >= 70) adjustedGrade = "B";
+  else if (adjustedScoreVal >= 60) adjustedGrade = "C";
+  else if (adjustedScoreVal >= 50) adjustedGrade = "D";
+  else adjustedGrade = "F";
+
+  const score: BuilderScoreResult = {
+    ...baseScore,
+    score: adjustedScoreVal,
+    grade: adjustedGrade,
+    findings: [
+      ...baseScore.findings,
+      ...topoResult.violations.map((v) => `[${v.severity.toUpperCase()}] ${v.message}`),
+    ],
+  };
 
   const failing = checks.filter((c) => c.status === "fail");
   const canPass = failing.length === 0 && score.score >= scenario.passThreshold;
   const failureReasons = failing.map((c) => c.id);
   if (failing.length === 0 && !canPass) failureReasons.push("score-below-threshold");
 
-  return { score, checks, canPass, simulation, failureReasons };
+  return { score, checks, canPass, simulation, failureReasons, cost, budget };
 }

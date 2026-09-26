@@ -3,14 +3,18 @@ import assert from "node:assert/strict";
 
 import {
   DEFAULT_STATS,
+  STATS_SCHEMA_VERSION,
   completeActivity,
   getCurrentStreak,
   getEvidence,
   getMasteryState,
   migrateStats,
   recordBuilderResult,
+  recordDefense,
+  recordEstimate,
   recordFixApplied,
   recordPatternRun,
+  recordReasoning,
   recordPractice,
   recordReview,
   recordRunStarted,
@@ -147,6 +151,12 @@ test("mastery moves unseen → introduced → applied once → passed transfer �
   assert.equal(getMasteryState(getEvidence(s, p.id), at(1)), "needs_review");
 
   s = recordReview(s, p, true, at(1)).stats;
+  assert.equal(getMasteryState(getEvidence(s, p.id), at(1)), "passed_transfer", "no reliable without defending the call");
+
+  // A self-assessed 100 counts half (50), below the bar; a graded 70 clears it.
+  s = recordReasoning(s, `${p.id}-why`, { score: 100, selfAssessed: true, patternId: p.id }, 30, at(1)).stats;
+  assert.equal(getMasteryState(getEvidence(s, p.id), at(1)), "passed_transfer");
+  s = recordReasoning(s, `${p.id}-10x`, { score: 70, selfAssessed: false, patternId: p.id }, 30, at(1)).stats;
   assert.equal(getMasteryState(getEvidence(s, p.id), at(1)), "reliable");
 });
 
@@ -258,7 +268,7 @@ test("v1 stats migrate: cleared chapters become cleared runs and are not re-rewa
     unlockedBadges: ["cache_master"],
   };
   const s = migrateStats(v1, T0);
-  assert.equal(s.schemaVersion, 2);
+  assert.equal(s.schemaVersion, STATS_SCHEMA_VERSION);
   assert.equal(s.soundEnabled, false);
   assert.equal(s.streakDays, 0, "untracked v1 streak is not trusted");
   assert.equal(getEvidence(s, "horizontal-scaling").runsCleared, 1);
@@ -278,4 +288,70 @@ test("migration tolerates garbage and is stable for v2 data", () => {
   const once = migrateStats({ completedChapters: ["chapter-1"] }, T0);
   const twice = migrateStats(once, at(5));
   assert.deepEqual(twice.patternProgress, once.patternProgress);
+});
+
+test("v2 stats upgrade to v3: progress kept, mock account fields dropped, result collections added", () => {
+  const v2 = {
+    ...DEFAULT_STATS,
+    schemaVersion: 2,
+    currentXp: 400,
+    isLoggedIn: true,
+    userEmail: "someone@example.com",
+    userName: "Someone",
+    completedChapters: ["chapter-1"],
+    patternProgress: { "horizontal-scaling": { ...getEvidence(DEFAULT_STATS, "horizontal-scaling"), runsCleared: 2 } },
+  };
+  const s = migrateStats(v2, T0);
+  assert.equal(s.schemaVersion, 3);
+  assert.equal(s.currentXp, 400);
+  assert.equal(getEvidence(s, "horizontal-scaling").runsCleared, 2);
+  assert.equal(s.isLoggedIn, undefined);
+  assert.equal(s.userEmail, undefined);
+  assert.deepEqual(s.estimationResults, {});
+  assert.deepEqual(s.defenseStats, { attempts: 0, firstTry: 0 });
+});
+
+// ---------------------------------------------------------------------------
+// Honest evidence
+// ---------------------------------------------------------------------------
+
+test("transfer evidence only counts a first-try pass, and a run without a transfer question adds none", () => {
+  const p = pattern("horizontal-scaling");
+  const noTransfer = recordPatternRun(onboarded(), p, { ...cleanRun(p.id), transferFirstTry: null }, T0).stats;
+  assert.equal(getEvidence(noTransfer, p.id).transferAttempts, 0);
+  assert.equal(getEvidence(noTransfer, p.id).transferPasses, 0);
+
+  const missed = recordPatternRun(onboarded(), p, { ...cleanRun(p.id), transferFirstTry: false }, T0).stats;
+  assert.equal(getEvidence(missed, p.id).transferAttempts, 1);
+  assert.equal(getEvidence(missed, p.id).transferPasses, 0);
+
+  const passed = recordPatternRun(onboarded(), p, cleanRun(p.id), T0).stats;
+  assert.equal(getEvidence(passed, p.id).transferPasses, 1);
+});
+
+test("estimates: every attempt is evidence, XP only for a pass and only once per day", () => {
+  const miss = recordEstimate(DEFAULT_STATS, "math-dau-qps-1", 50, T0);
+  assert.equal(miss.xpAwarded, 0);
+  assert.deepEqual(miss.stats.estimationResults?.["math-dau-qps-1"], { best: 50, last: 50, attempts: 1 });
+
+  const pass = recordEstimate(miss.stats, "math-dau-qps-1", 100, T0);
+  assert.equal(pass.xpAwarded, 20);
+  assert.equal(pass.stats.estimationResults?.["math-dau-qps-1"]?.best, 100);
+
+  const replay = recordEstimate(pass.stats, "math-dau-qps-1", 100, T0);
+  assert.equal(replay.xpAwarded, 5, "a same-day replay pays the small replay bonus once");
+  const farm = recordEstimate(replay.stats, "math-dau-qps-1", 100, T0);
+  assert.equal(farm.xpAwarded, 0, "further resubmits the same day pay nothing");
+  assert.equal(farm.stats.level, farm.stats.currentXp >= 150 ? 2 : 1, "XP goes through grantXp so level stays in sync");
+});
+
+test("defense and reasoning results are recorded; a self-assessment never overwrites a graded answer", () => {
+  const d = recordDefense(recordDefense(DEFAULT_STATS, true), false);
+  assert.deepEqual(d.defenseStats, { attempts: 2, firstTry: 1 });
+
+  const graded = recordReasoning(DEFAULT_STATS, "caching-why", { score: 70, selfAssessed: false }, 30, T0);
+  assert.equal(graded.xpAwarded, 30);
+  const self = recordReasoning(graded.stats, "caching-why", { score: 90, selfAssessed: true }, 30, T0);
+  assert.equal(self.stats.reasoningResults?.["caching-why"]?.selfAssessed, false);
+  assert.equal(self.xpAwarded, 0, "bonus is paid once per prompt");
 });
