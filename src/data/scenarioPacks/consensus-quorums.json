@@ -256,7 +256,7 @@
       "choices": [
         {
           "id": "odd-five",
-          "label": "Run five nodes across three racks so any rack can fail",
+          "label": "Five nodes over three racks so any rack can fail",
           "correct": true,
           "metricsAfter": [
             {
@@ -988,7 +988,7 @@
       "choices": [
         {
           "id": "commit-majority",
-          "label": "Ack only after a majority of nodes have the entry in their logs",
+          "label": "Ack only once a majority has the entry in its log",
           "correct": true,
           "metricsAfter": [
             {
@@ -1083,6 +1083,254 @@
         "Who has the write when the leader dies?",
         "The next leader comes from a majority.",
         "Make the ack depend on the same majority."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "cq-upsize-01",
+      "incidentCode": "INC-017",
+      "level": 17,
+      "patternId": "consensus-quorums",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
+      "title": "etcd leader changes 40 times an hour",
+      "brief": "KubeCo's 3-member etcd cluster runs on burstable 2-vCPU VMs with network disks. WAL fsync p99 is 180 ms, heartbeats arrive late, and the API server's p99 is 2.4 s.",
+      "constraint": "The control plane must stay on etcd, and there is one maintenance window tonight.",
+      "question": "What stops the leader churn?",
+      "metricsBefore": [
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 82,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "fsync",
+          "label": "WAL fsync p99",
+          "value": 180,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "elections",
+          "label": "Leader changes",
+          "value": 40,
+          "unit": "per hour",
+          "tone": "bad"
+        },
+        {
+          "key": "p99",
+          "label": "API p99",
+          "value": 2400,
+          "unit": "ms",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Kubernetes API"
+          },
+          {
+            "id": "e1",
+            "kind": "db",
+            "label": "etcd-1 (leader)",
+            "tone": "bad",
+            "cpu": 82,
+            "sub": "fsync p99 180 ms"
+          },
+          {
+            "id": "e2",
+            "kind": "db",
+            "label": "etcd-2",
+            "tone": "bad",
+            "cpu": 74,
+            "sub": "fsync p99 180 ms"
+          },
+          {
+            "id": "e3",
+            "kind": "db",
+            "label": "etcd-3",
+            "tone": "bad",
+            "cpu": 74,
+            "sub": "fsync p99 180 ms"
+          }
+        ],
+        "edges": [
+          {
+            "from": "api",
+            "to": "e1"
+          },
+          {
+            "from": "e1",
+            "to": "e2"
+          },
+          {
+            "from": "e1",
+            "to": "e3"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "bigger-nodes",
+          "label": "Move each etcd member to a larger instance with fast SSD",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 450,
+            "latencyP99DeltaMs": -2300,
+            "complexityScore": 2,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "Pay for dedicated cores and low-latency disks; the consensus design was never the problem."
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Kubernetes API"
+              },
+              {
+                "id": "e1",
+                "kind": "db",
+                "label": "etcd-1 (leader)",
+                "tone": "good",
+                "cpu": 30,
+                "sub": "fsync p99 4 ms"
+              },
+              {
+                "id": "e2",
+                "kind": "db",
+                "label": "etcd-2",
+                "tone": "good",
+                "cpu": 22,
+                "sub": "fsync p99 4 ms"
+              },
+              {
+                "id": "e3",
+                "kind": "db",
+                "label": "etcd-3",
+                "tone": "good",
+                "cpu": 22,
+                "sub": "fsync p99 4 ms"
+              }
+            ],
+            "edges": [
+              {
+                "from": "api",
+                "to": "e1"
+              },
+              {
+                "from": "e1",
+                "to": "e2"
+              },
+              {
+                "from": "e1",
+                "to": "e3"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "fsync",
+              "label": "WAL fsync p99",
+              "value": 4,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "elections",
+              "label": "Leader changes",
+              "value": 0,
+              "unit": "per hour",
+              "tone": "good"
+            },
+            {
+              "key": "p99",
+              "label": "API p99",
+              "value": 90,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Fast disks, one steady leader",
+          "resultBody": "Replacing members one at a time keeps quorum throughout. On fixed-performance instances with local SSD, fsync p99 falls from 180 ms to about 4 ms, heartbeats go out on time, and the leader stops changing. API p99 drops to 90 ms."
+        },
+        {
+          "id": "five-members",
+          "label": "Grow the cluster from three to five members for safety",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "fsync",
+              "label": "WAL fsync p99",
+              "value": 180,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "elections",
+              "label": "Leader changes",
+              "value": 45,
+              "unit": "per hour",
+              "tone": "bad"
+            },
+            {
+              "key": "p99",
+              "label": "API p99",
+              "value": 3100,
+              "unit": "ms",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "More members, slower commits",
+          "resultBody": "Each write now needs three fsyncs instead of two on the same slow network disks, so commit latency rises. Two more slow members also mean more late heartbeats, and leader changes creep up to 45 an hour."
+        },
+        {
+          "id": "long-timeouts",
+          "label": "Raise the election timeout to 5 s and heartbeats to 500 ms",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "fsync",
+              "label": "WAL fsync p99",
+              "value": 180,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "elections",
+              "label": "Leader changes",
+              "value": 6,
+              "unit": "per hour",
+              "tone": "warn"
+            },
+            {
+              "key": "p99",
+              "label": "API p99",
+              "value": 2200,
+              "unit": "ms",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Fewer elections, same slow writes",
+          "resultBody": "Leader changes drop to 6 an hour, but every write still waits on a 180 ms fsync, so API p99 stays above 2 s. A real leader failure now takes 5 s to detect."
+        }
+      ],
+      "hints": [
+        "etcd wants WAL fsync p99 well under 10 ms.",
+        "Adding members adds more of the same slow disks to every commit.",
+        "Is the problem the protocol, or the hardware it runs on?"
       ],
       "nextId": null,
       "reviewed": true

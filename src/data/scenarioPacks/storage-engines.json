@@ -75,7 +75,7 @@
       "choices": [
         {
           "id": "lsm",
-          "label": "Use an LSM-tree engine that appends writes and compacts later",
+          "label": "Move to an LSM-tree engine with sequential flushes",
           "correct": true,
           "metricsAfter": [
             {
@@ -105,7 +105,7 @@
         },
         {
           "id": "more-indexes",
-          "label": "Add secondary indexes on device_id and timestamp",
+          "label": "Add secondary indexes on device_id and timestamp columns",
           "correct": false,
           "metricsAfter": [
             {
@@ -241,7 +241,7 @@
       "choices": [
         {
           "id": "bloom",
-          "label": "Add a Bloom filter per SSTable so absent keys skip the file",
+          "label": "Add a Bloom filter per SSTable to skip absent keys",
           "correct": true,
           "metricsAfter": [
             {
@@ -408,7 +408,7 @@
       "choices": [
         {
           "id": "throttle-compaction",
-          "label": "Rate-limit compaction I/O and schedule it off peak",
+          "label": "Rate-limit compaction I/O and run heavy merges off peak",
           "correct": true,
           "metricsAfter": [
             {
@@ -438,7 +438,7 @@
         },
         {
           "id": "disable-compaction",
-          "label": "Pause compaction entirely until the weekend",
+          "label": "Pause compaction entirely until the weekend window",
           "correct": false,
           "metricsAfter": [
             {
@@ -469,7 +469,7 @@
         },
         {
           "id": "sync-writes",
-          "label": "Make every write wait until compaction finishes its current pass",
+          "label": "Make writes wait for the current compaction pass",
           "correct": false,
           "metricsAfter": [
             {
@@ -909,7 +909,7 @@
       "choices": [
         {
           "id": "composite-key",
-          "label": "Key rows by device, then time, so a range is one contiguous scan",
+          "label": "Key rows by device, then time, for one contiguous scan",
           "correct": true,
           "metricsAfter": [
             {
@@ -939,7 +939,7 @@
         },
         {
           "id": "more-partitions",
-          "label": "Increase the hash partitions from 64 to 256",
+          "label": "Increase hash(timestamp) partitions from 64 to 256",
           "correct": false,
           "metricsAfter": [
             {
@@ -970,7 +970,7 @@
         },
         {
           "id": "time-only",
-          "label": "Key rows purely by timestamp so recent data is together",
+          "label": "Key rows purely by timestamp to group recent data",
           "correct": false,
           "metricsAfter": [
             {
@@ -1004,6 +1004,207 @@
         "Where do one device's recent rows live today?",
         "Hashing destroys order.",
         "Put the range you read next to itself."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "se-upsize-01",
+      "incidentCode": "INC-018-07",
+      "level": 18,
+      "patternId": "storage-engines",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
+      "title": "etcd leader elections every few minutes",
+      "brief": "Kubelane's 3-node etcd runs on burstable t3.small VMs with gp2 volumes. Burst credits ran out; WAL fsync p99 is 180 ms (target under 10 ms) and leader elections fire every few minutes.",
+      "constraint": "The database is only 2 GB and write volume hasn't changed; the cluster must be stable before tonight's upgrade window.",
+      "question": "What brings fsync latency back under 10 ms today?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Writes",
+          "value": 800,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 88,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "fsync",
+          "label": "WAL fsync p99",
+          "value": 180,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "elections",
+          "label": "Leader elections",
+          "value": 12,
+          "unit": "/hour",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Kubernetes API servers",
+            "tone": "warn",
+            "cpu": 40
+          },
+          {
+            "id": "leader",
+            "kind": "db",
+            "label": "etcd leader (t3.small)",
+            "tone": "bad",
+            "cpu": 88,
+            "sub": "burst credits: 0"
+          },
+          {
+            "id": "f1",
+            "kind": "replica",
+            "label": "etcd follower",
+            "tone": "bad",
+            "cpu": 84
+          },
+          {
+            "id": "f2",
+            "kind": "replica",
+            "label": "etcd follower",
+            "tone": "bad",
+            "cpu": 85
+          }
+        ],
+        "edges": [
+          {
+            "from": "api",
+            "to": "leader"
+          },
+          {
+            "from": "leader",
+            "to": "f1"
+          },
+          {
+            "from": "leader",
+            "to": "f2"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "upsize",
+          "label": "Upsize the etcd nodes to m6i with provisioned gp3 IOPS",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 150,
+            "latencyP99DeltaMs": -175,
+            "complexityScore": 1,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "The engine was fine; the hardware under it was throttled. Fixed-performance nodes and disks remove the throttle."
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 20,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "fsync",
+              "label": "WAL fsync p99",
+              "value": 4,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "elections",
+              "label": "Leader elections",
+              "value": 0,
+              "unit": "/hour",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "No burst credits left to run out",
+          "resultBody": "Members are replaced one at a time onto m6i.large nodes with gp3 volumes, whose 3,000 baseline IOPS don't depend on credits. WAL fsync p99 drops to 4 ms and elections stop. Cost: about $150 more a month; with 2 GB of data and steady writes, nothing about the engine needed to change."
+        },
+        {
+          "id": "defrag",
+          "label": "Defragment the bbolt file every hour to keep it small",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 90,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "fsync",
+              "label": "WAL fsync p99",
+              "value": 200,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "elections",
+              "label": "Leader elections",
+              "value": 14,
+              "unit": "/hour",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Smaller file, same throttled disk",
+          "resultBody": "Defragmentation reclaims some free pages but blocks writes on each member while it runs, adding its own latency spikes. Every commit still fsyncs the WAL on a volume with no burst credits, so p99 stays near 200 ms."
+        },
+        {
+          "id": "lsm",
+          "label": "Swap etcd's bbolt backend for an LSM engine with batching",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 88,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "fsync",
+              "label": "WAL fsync p99",
+              "value": 180,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "elections",
+              "label": "Leader elections",
+              "value": 12,
+              "unit": "/hour",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "A fork for a hardware problem",
+          "resultBody": "etcd's storage backend isn't pluggable, so this means forking it or migrating Kubernetes to another store: weeks, not tonight. An LSM engine must also fsync its log on every commit, so a throttled gp2 volume would stall it the same way."
+        }
+      ],
+      "hints": [
+        "The data is tiny and the write rate hasn't changed.",
+        "Burstable instances and gp2 volumes both slow down when credits run out.",
+        "Is the engine the problem, or what it runs on?"
       ],
       "nextId": null,
       "reviewed": true

@@ -378,7 +378,7 @@
         },
         {
           "id": "own-group",
-          "label": "Give each pod its own consumer group id",
+          "label": "Give each pod its own consumer group id to parallelize",
           "correct": false,
           "metricsAfter": [
             {
@@ -416,7 +416,7 @@
         },
         {
           "id": "bigger-pods",
-          "label": "Double the pod count again to 80",
+          "label": "Double the consumer pod count again, from 40 to 80",
           "correct": false,
           "metricsAfter": [
             {
@@ -594,7 +594,7 @@
         },
         {
           "id": "session-timeout",
-          "label": "Raise session.timeout.ms from 10 s to 60 s",
+          "label": "Raise session.timeout.ms from 10 s to 60 s for slow pods",
           "correct": false,
           "metricsAfter": [
             {
@@ -973,7 +973,7 @@
         },
         {
           "id": "commit-first",
-          "label": "Commit the offset before writing each credit",
+          "label": "Commit the Kafka offset first, then write each credit",
           "correct": false,
           "metricsAfter": [
             {
@@ -1203,7 +1203,7 @@
         },
         {
           "id": "resend",
-          "label": "Ask upstream services to resend the last 72 hours",
+          "label": "Ask upstream services to resend 72 hours",
           "correct": false,
           "metricsAfter": [
             {
@@ -1244,6 +1244,194 @@
         "Retention is 7 days and the bug lasted 3.",
         "Offsets are per consumer group; replay does not have to touch the live one.",
         "Seek a separate group to a timestamp and rebuild beside the live table."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "strm-upsize-01",
+      "incidentCode": "INC-021",
+      "level": 21,
+      "patternId": "stream-processing",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
+      "title": "Election-night results fall 3M events behind",
+      "brief": "Votecast streams precinct results through 24 partitions to 24 consumer pods on 2 vCPUs each. Election night brings 60k events/s; parsing pins pods at 97% CPU and lag hits 3M.",
+      "constraint": "The spike lasts one night, and each precinct's updates must stay in order.",
+      "question": "What clears the lag before the networks call the race?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 60000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 97,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 41000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "lag",
+          "label": "Consumer lag",
+          "value": 3000000,
+          "unit": "msgs",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "feeds",
+            "kind": "server",
+            "label": "Precinct feeds",
+            "cpu": 35
+          },
+          {
+            "id": "log",
+            "kind": "queue",
+            "label": "results (24 parts)",
+            "cpu": 48
+          },
+          {
+            "id": "cons",
+            "kind": "worker",
+            "label": "24 consumer pods",
+            "cpu": 97,
+            "tone": "bad",
+            "sub": "2 vCPU, pool = cores"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Results store",
+            "cpu": 30
+          }
+        ],
+        "edges": [
+          {
+            "from": "feeds",
+            "to": "log"
+          },
+          {
+            "from": "log",
+            "to": "cons"
+          },
+          {
+            "from": "cons",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "upsize-pods",
+          "label": "Upsize the consumer pods from 2 to 8 vCPUs for tonight",
+          "correct": true,
+          "resultTitle": "Four times the cores, lag gone in a minute",
+          "resultBody": "Each pod's worker pool is sized to its cores and keyed by precinct, so 8 vCPUs run four times as many parse workers while each precinct stays in order. CPU falls to 45% and the 3M backlog drains in about a minute. Tomorrow you size back down, paying for one night.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 45,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 600,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "lag",
+              "label": "Consumer lag",
+              "value": 20000,
+              "unit": "msgs",
+              "tone": "good"
+            }
+          ]
+        },
+        {
+          "id": "repartition",
+          "label": "Repartition the topic to 96 and quadruple the consumer group",
+          "correct": false,
+          "retry": true,
+          "resultTitle": "Keys remap mid-count",
+          "resultBody": "Adding partitions changes which partition each precinct hashes to, so updates already queued on the old partition race new ones on the new partition. 1,400 precinct totals briefly go backwards on air, and the rebalance stalls consumption for 4 minutes.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 60,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 9000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Out-of-order totals",
+              "value": 1400,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ]
+        },
+        {
+          "id": "parse-stage",
+          "label": "Split parsing into its own stream stage and intermediate topic",
+          "correct": false,
+          "retry": true,
+          "resultTitle": "A new pipeline that lands next week",
+          "resultBody": "A separate parse stage is a new service, a new topic and a new deploy path. It cannot be built and tested tonight, so the old pods stay pinned at 97% and lag keeps growing past 5M while the team writes code.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 97,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 70000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "lag",
+              "label": "Consumer lag",
+              "value": 5200000,
+              "unit": "msgs",
+              "tone": "bad"
+            }
+          ]
+        }
+      ],
+      "hints": [
+        "Every partition already has a consumer, and every consumer is CPU-bound.",
+        "The load is a one-night spike, not a new normal.",
+        "Each pod's worker pool grows with the cores it is given."
       ],
       "nextId": null,
       "reviewed": true

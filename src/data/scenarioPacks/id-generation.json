@@ -95,7 +95,7 @@
       "choices": [
         {
           "id": "snowflake",
-          "label": "Snowflake IDs: 41-bit millisecond time, 10-bit worker, 12-bit sequence",
+          "label": "Snowflake IDs: 41-bit ms time, 10-bit worker, 12-bit sequence",
           "correct": true,
           "metricsAfter": [
             {
@@ -302,7 +302,7 @@
         },
         {
           "id": "more-ram",
-          "label": "Double the buffer pool from 64 GB to 128 GB of RAM",
+          "label": "Double the InnoDB buffer pool from 64 GB to 128 GB of RAM",
           "correct": false,
           "metricsAfter": [
             {
@@ -333,7 +333,7 @@
         },
         {
           "id": "hash-partition",
-          "label": "Hash-partition the table into 16 partitions by the UUID",
+          "label": "Hash-partition the table into 16 partitions keyed by the UUID",
           "correct": false,
           "metricsAfter": [
             {
@@ -450,7 +450,7 @@
       "choices": [
         {
           "id": "refuse-backwards",
-          "label": "Track the last timestamp and wait or fail while the clock is behind",
+          "label": "Track the last timestamp; wait or fail while the clock is behind",
           "correct": true,
           "metricsAfter": [
             {
@@ -480,7 +480,7 @@
         },
         {
           "id": "wider-sequence",
-          "label": "Widen the sequence field from 12 bits to 16 bits",
+          "label": "Widen the Snowflake sequence field from 12 bits to 16 bits",
           "correct": false,
           "metricsAfter": [
             {
@@ -511,7 +511,7 @@
         },
         {
           "id": "retry-on-conflict",
-          "label": "Catch duplicate-key errors in the DB and regenerate the ID",
+          "label": "Catch duplicate-key errors in the DB and regenerate the event ID",
           "correct": false,
           "metricsAfter": [
             {
@@ -672,7 +672,7 @@
         },
         {
           "id": "random-id",
-          "label": "Pick a random worker ID between 0 and 1023 at startup",
+          "label": "Pick a random worker ID between 0 and 1023 at pod startup",
           "correct": false,
           "metricsAfter": [
             {
@@ -703,7 +703,7 @@
         },
         {
           "id": "ip-octet",
-          "label": "Use the last octet of the pod IP address as the worker ID",
+          "label": "Use the last octet of the pod's IP as its worker ID",
           "correct": false,
           "metricsAfter": [
             {
@@ -1065,7 +1065,7 @@
         },
         {
           "id": "rate-limit",
-          "label": "Rate-limit invoice pages to 100 requests per minute per IP",
+          "label": "Rate-limit invoice pages to 100 requests per minute for each IP",
           "correct": false,
           "metricsAfter": [
             {
@@ -1101,6 +1101,193 @@
         "Separate the internal key from what goes in the URL."
       ],
       "nextId": null
+    },
+    {
+      "id": "idg-upsize-01",
+      "incidentCode": "INC-019-07",
+      "level": 19,
+      "patternId": "id-generation",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
+      "title": "Worker-ID leases lapse and ID minting stalls",
+      "brief": "RideNow's 3-node etcd leases Snowflake worker IDs from 2-vCPU burstable VMs on gp2 disks. WAL fsync p99 hit 180 ms, heartbeats miss, leases lapse, and ID pods pause minting 14 times an hour.",
+      "constraint": "etcd holds only 40 MB of leases, and the lease protocol has never issued a duplicate ID.",
+      "question": "What stops the leases from lapsing?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "ID requests",
+          "value": 60000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 88,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "fsync",
+          "label": "WAL fsync p99",
+          "value": 180,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "stalls",
+          "label": "Minting pauses",
+          "value": 14,
+          "unit": "per hour",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Trip services"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "ID pods",
+            "tone": "warn",
+            "cpu": 40
+          },
+          {
+            "id": "etcd",
+            "kind": "db",
+            "label": "etcd x3 (burstable, gp2)",
+            "tone": "bad",
+            "cpu": 88
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "etcd"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "upsize",
+          "label": "Move etcd to larger instances with provisioned-IOPS SSDs",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "fsync",
+              "label": "WAL fsync p99",
+              "value": 4,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "stalls",
+              "label": "Minting pauses",
+              "value": 0,
+              "unit": "per hour",
+              "tone": "good"
+            }
+          ],
+          "tradeoffs": {
+            "costMonthlyDelta": 350,
+            "latencyP99DeltaMs": -176,
+            "complexityScore": 1,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "The design is sound; the hardware under it was not. Buy the disk before redesigning."
+          },
+          "resultTitle": "etcd gets the disk it was designed for",
+          "resultBody": "etcd needs fast, steady fsync on its WAL. On 4-vCPU non-burstable nodes with provisioned-IOPS SSDs, fsync p99 falls to 4 ms, heartbeats land on time and leases stop lapsing. Members were replaced one at a time, so quorum held throughout. Cost: about $350 a month."
+        },
+        {
+          "id": "long-ttl",
+          "label": "Raise the worker-ID lease TTL from 10 seconds to 5 minutes",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 86,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "fsync",
+              "label": "WAL fsync p99",
+              "value": 180,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "stalls",
+              "label": "Minting pauses",
+              "value": 4,
+              "unit": "per hour",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Fewer lapses, slower recycling",
+          "resultBody": "Leases lapse less often, but etcd still logs slow-fsync warnings and loses its leader a few times an hour, pausing every lease grant. Dead pods now hold their worker ID for 5 minutes, so fast scale-ups run short of free IDs."
+        },
+        {
+          "id": "five-members",
+          "label": "Grow the etcd cluster from 3 to 5 members to share the load",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 90,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "fsync",
+              "label": "WAL fsync p99",
+              "value": 190,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "stalls",
+              "label": "Minting pauses",
+              "value": 19,
+              "unit": "per hour",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "More members, slower commits",
+          "resultBody": "Every etcd write must be fsynced by a quorum of 3 out of 5 members, all on the same slow gp2 disks. Nothing is shared out, commit latency rises, and minting pauses climb from 14 to 19 an hour."
+        }
+      ],
+      "hints": [
+        "The lease logic is correct; look at what etcd needs from its hardware.",
+        "Compare the WAL fsync latency with the few milliseconds etcd expects.",
+        "Burstable VMs and gp2 volumes both throttle once their credits run out."
+      ],
+      "nextId": null,
+      "reviewed": true
     }
   ]
 }

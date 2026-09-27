@@ -114,7 +114,7 @@
         },
         {
           "id": "btree",
-          "label": "Add a B-tree index on the product title column",
+          "label": "Add a standard B-tree index on the product title column",
           "correct": false,
           "metricsAfter": [
             {
@@ -145,7 +145,7 @@
         },
         {
           "id": "redis",
-          "label": "Cache each query's results in Redis for 10 minutes",
+          "label": "Cache each query's results in Redis for ten minutes",
           "correct": false,
           "metricsAfter": [
             {
@@ -314,7 +314,7 @@
         },
         {
           "id": "query-only",
-          "label": "Stem only the query text and leave stored tokens untouched",
+          "label": "Stem only the query text and leave the stored tokens untouched",
           "correct": false,
           "metricsAfter": [
             {
@@ -352,7 +352,7 @@
         },
         {
           "id": "fuzzy",
-          "label": "Match every query term with fuzzy edit distance two",
+          "label": "Match every query term with a fuzzy edit distance of two",
           "correct": false,
           "metricsAfter": [
             {
@@ -688,7 +688,7 @@
       "choices": [
         {
           "id": "by-doc",
-          "label": "Partition by document ID and scatter each query to all shards",
+          "label": "Shard by document ID and scatter each query to all shards",
           "correct": true,
           "metricsAfter": [
             {
@@ -718,7 +718,7 @@
         },
         {
           "id": "replicas",
-          "label": "Add three replicas behind the hot 'e-f' term shard",
+          "label": "Add three read replicas behind the hot 'e-f' term shard",
           "correct": false,
           "metricsAfter": [
             {
@@ -749,7 +749,7 @@
         },
         {
           "id": "cache-terms",
-          "label": "Cache posting lists for the 100 most frequent terms",
+          "label": "Cache posting lists for the 100 hottest terms",
           "correct": false,
           "metricsAfter": [
             {
@@ -906,7 +906,7 @@
         },
         {
           "id": "more-shards",
-          "label": "Split the index into 24 shards so each returns fewer hits",
+          "label": "Split the index into 24 shards so each one returns fewer hits",
           "correct": false,
           "metricsAfter": [
             {
@@ -937,7 +937,7 @@
         },
         {
           "id": "heap",
-          "label": "Raise the coordinator heap from 8 GB to 32 GB",
+          "label": "Raise the coordinator's JVM heap from 8 GB to 32 GB",
           "correct": false,
           "metricsAfter": [
             {
@@ -1187,6 +1187,193 @@
         "Feed the index from the database's change stream, not the app."
       ],
       "nextId": null
+    },
+    {
+      "id": "srch-upsize-01",
+      "incidentCode": "INC-020-07",
+      "level": 20,
+      "patternId": "search-indexing",
+      "canonical": false,
+      "severity": "P2",
+      "xp": 50,
+      "title": "Docs search reads from disk on every query",
+      "brief": "Stackdocs runs one OpenSearch node with 8 GB RAM and a 4 GB heap. New API reference pages grew the index to 9 GB, so queries now read from disk: 3,000 IOPS, p95 2.8 s.",
+      "constraint": "Search must recover today; the index grows about 1 GB a year and traffic is a steady 300 searches/s.",
+      "question": "What brings search latency back?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Searches",
+          "value": 300,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 72,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 2800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "iops",
+          "label": "Disk reads",
+          "value": 3000,
+          "unit": "IOPS",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Developers"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Docs site",
+            "tone": "good",
+            "cpu": 18
+          },
+          {
+            "id": "idx",
+            "kind": "db",
+            "label": "OpenSearch (8 GB RAM)",
+            "tone": "bad",
+            "cpu": 72
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "idx"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "upsize",
+          "label": "Upsize to a 32 GB RAM node so the index fits in page cache",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 20,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 60,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "iops",
+              "label": "Disk reads",
+              "value": 40,
+              "unit": "IOPS",
+              "tone": "good"
+            }
+          ],
+          "tradeoffs": {
+            "costMonthlyDelta": 180,
+            "latencyP99DeltaMs": -2700,
+            "complexityScore": 1,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "A 9 GB index on one node just needs enough RAM to cache it; sharding solves a size problem this index does not have."
+          },
+          "resultTitle": "The whole index lives in memory again",
+          "resultBody": "Lucene reads segments through the OS page cache, not the JVM heap. With 32 GB of RAM and the heap still at 4 GB, all 9 GB of segments stay cached, disk reads fall to about 40 IOPS and p95 to 60 ms. Cost: about $180 more a month, with years of headroom."
+        },
+        {
+          "id": "new-cluster",
+          "label": "Split the index into six primaries on a new three-node cluster",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 72,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2800,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "iops",
+              "label": "Disk reads",
+              "value": 3000,
+              "unit": "IOPS",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Right-sized in two weeks, not today",
+          "resultBody": "Three nodes would eventually cache the index between them, but provisioning the cluster and reindexing takes the team about two weeks while p95 stays at 2.8 s. The result costs three times as much and fans every query out to six small shards."
+        },
+        {
+          "id": "bigger-heap",
+          "label": "Raise the JVM heap from 4 GB to 6 GB so more of the index fits",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 80,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 4100,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "iops",
+              "label": "Disk reads",
+              "value": 3000,
+              "unit": "IOPS",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Less page cache, more disk reads",
+          "resultBody": "The heap does not hold the segments. Growing it squeezes the page cache on the 8 GB box from about 4 GB to 2 GB, so more queries miss memory, the disk stays pinned at its 3,000 IOPS limit and p95 climbs to 4.1 s."
+        }
+      ],
+      "hints": [
+        "Compare the index size with the memory left over after the heap.",
+        "Lucene relies on the operating system to keep segment files in memory.",
+        "This index is small and grows slowly; it doesn't need more nodes, it needs room."
+      ],
+      "nextId": null,
+      "reviewed": true
     }
   ]
 }

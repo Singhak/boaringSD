@@ -264,7 +264,7 @@
       "choices": [
         {
           "id": "per-feature",
-          "label": "Classify features: AP with merge rules for likes, CP for payments",
+          "label": "CP for payments only; AP with merge rules for the rest",
           "correct": true,
           "metricsAfter": [
             {
@@ -990,7 +990,7 @@
       "choices": [
         {
           "id": "union-merge",
-          "label": "Merge conflicting carts as a union of adds, then reconcile removes",
+          "label": "Merge conflicting carts as a union of adds, reconcile removes",
           "correct": true,
           "metricsAfter": [
             {
@@ -1085,6 +1085,245 @@
         "What does keeping the newest copy throw away?",
         "Adds from two sides can be combined.",
         "Choose a merge that never loses an add."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "cap-restart-01",
+      "incidentCode": "INC-016",
+      "level": 16,
+      "patternId": "cap-pacelc",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
+      "title": "Payments reject writes as if partitioned",
+      "brief": "CoinPurse's CP payments store runs 3 replicas in one region. Leader C leaks memory, and its 9 s GC pauses trip the 5 s election timeout, so every pause rejects writes for about 12 s.",
+      "constraint": "The network is healthy, the leak fix ships Monday, and a fresh process takes two days to fill its heap again.",
+      "question": "What stops the write rejections before Monday?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Payment writes",
+          "value": 4000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 91,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p99",
+          "label": "p99 write latency",
+          "value": 9000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Rejected writes",
+          "value": 7,
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Payment API"
+          },
+          {
+            "id": "a",
+            "kind": "db",
+            "label": "Replica A",
+            "cpu": 40
+          },
+          {
+            "id": "b",
+            "kind": "db",
+            "label": "Replica B",
+            "cpu": 40
+          },
+          {
+            "id": "c",
+            "kind": "db",
+            "label": "Replica C (leader)",
+            "tone": "bad",
+            "cpu": 91,
+            "sub": "heap full, 9 s GC pauses"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "c"
+          },
+          {
+            "from": "c",
+            "to": "a"
+          },
+          {
+            "from": "c",
+            "to": "b"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "restart-leader",
+          "label": "Hand off leadership, then restart the leaking replica",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "complexityScore": 1,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "One planned leader handoff and a restart; it treats the symptom until Monday's fix and keeps payments CP."
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Payment API"
+              },
+              {
+                "id": "a",
+                "kind": "db",
+                "label": "Replica A",
+                "cpu": 40
+              },
+              {
+                "id": "b",
+                "kind": "db",
+                "label": "Replica B",
+                "cpu": 40
+              },
+              {
+                "id": "c",
+                "kind": "db",
+                "label": "Replica C (leader)",
+                "tone": "good",
+                "cpu": 45,
+                "sub": "fresh heap, follower"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "c"
+              },
+              {
+                "from": "c",
+                "to": "a"
+              },
+              {
+                "from": "c",
+                "to": "b"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 45,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p99",
+              "label": "p99 write latency",
+              "value": 40,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Rejected writes",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Pauses gone, payments stay consistent",
+          "resultBody": "A planned leadership transfer to replica A costs one sub-second blip instead of a 12 s election. Replica C restarts with an empty heap, the GC pauses stop, and rejected writes drop to zero. Nothing about the consistency model had to change."
+        },
+        {
+          "id": "flip-ap",
+          "label": "Switch payment writes to AP and merge balances on heal",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 91,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p99",
+              "label": "p99 write latency",
+              "value": 200,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Rejected writes",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Writes accepted, balances diverge",
+          "resultBody": "Writes stop failing, but there was never a partition to survive. Now any replica accepts debits on its own, and within a day two concurrent spends against the same wallet both succeed and one is lost on merge."
+        },
+        {
+          "id": "long-election",
+          "label": "Raise the election timeout from 5 s to 30 s to ride out pauses",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 91,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p99",
+              "label": "p99 write latency",
+              "value": 9000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Rejected writes",
+              "value": 3,
+              "unit": "%",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "No elections, same frozen leader",
+          "resultBody": "Pauses no longer trigger elections, but while the leader is frozen for 9 s no write can commit, so p99 stays at 9 s. A real leader crash would now take 30 s to fail over."
+        }
+      ],
+      "hints": [
+        "Check whether the network actually split, or a node just stopped answering.",
+        "Losing availability does not always mean you need a different consistency model.",
+        "The fix for the leak is already written. What resets a full heap tonight?"
       ],
       "nextId": null,
       "reviewed": true

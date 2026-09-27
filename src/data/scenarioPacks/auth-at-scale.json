@@ -94,7 +94,7 @@
       "choices": [
         {
           "id": "short-plus-denylist",
-          "label": "Cut access tokens to 10 minutes and denylist the jti in Redis",
+          "label": "10-minute access tokens plus a Redis jti denylist",
           "correct": true,
           "metricsAfter": [
             {
@@ -290,7 +290,7 @@
       "choices": [
         {
           "id": "cache-introspect",
-          "label": "Cache introspection results in each service for one hour",
+          "label": "Cache introspection results per service for an hour",
           "correct": false,
           "metricsAfter": [
             {
@@ -321,7 +321,7 @@
         },
         {
           "id": "gateway-verify",
-          "label": "Verify JWT signatures at the gateway with cached public keys",
+          "label": "Verify JWT signatures at the gateway with cached keys",
           "correct": true,
           "metricsAfter": [
             {
@@ -538,7 +538,7 @@
         },
         {
           "id": "refetch-on-kid",
-          "label": "Refetch the JWKS on an unknown kid, at most once a minute",
+          "label": "Refetch JWKS on an unknown kid, at most once a minute",
           "correct": true,
           "metricsAfter": [
             {
@@ -723,7 +723,7 @@
         },
         {
           "id": "cache-hash",
-          "label": "Cache verified password hashes in Redis for an hour",
+          "label": "Cache verified password hashes in Redis",
           "correct": false,
           "metricsAfter": [
             {
@@ -910,7 +910,7 @@
         },
         {
           "id": "risk-challenge",
-          "label": "Challenge risky logins and reject known-breached passwords",
+          "label": "Challenge risky logins, reject breached passwords",
           "correct": true,
           "metricsAfter": [
             {
@@ -1132,6 +1132,246 @@
       ],
       "nextId": null,
       "reviewed": true
+    },
+    {
+      "id": "auth-restart-01",
+      "incidentCode": "INC-023",
+      "level": 23,
+      "patternId": "auth-at-scale",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 110,
+      "title": "Token refreshes fail on long-lived signer pods",
+      "brief": "Since an HSM client SDK upgrade, Keyring's token-signer pods leak file descriptors. After about 20 hours a pod hits its 65k limit, and 1 in 6 token refreshes fails.",
+      "constraint": "The vendor's patched SDK ships Friday, and access tokens must stay at 10 minutes.",
+      "question": "What keeps refreshes working until Friday?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Token refreshes",
+          "value": 3300,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 42,
+          "unit": "%",
+          "tone": "neutral"
+        },
+        {
+          "key": "fds",
+          "label": "Open files per pod",
+          "value": 64000,
+          "unit": "fds",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Refreshes failed",
+          "value": 17,
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "App clients"
+          },
+          {
+            "id": "gw",
+            "kind": "lb",
+            "label": "API gateway",
+            "cpu": 30
+          },
+          {
+            "id": "signer",
+            "kind": "server",
+            "label": "Token signer (8 pods)",
+            "cpu": 45,
+            "sub": "EMFILE: too many open files",
+            "tone": "bad"
+          },
+          {
+            "id": "hsm",
+            "kind": "server",
+            "label": "HSM",
+            "cpu": 20
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "gw"
+          },
+          {
+            "from": "gw",
+            "to": "signer"
+          },
+          {
+            "from": "signer",
+            "to": "hsm"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "longer-tokens",
+          "label": "Extend access tokens from 10 minutes to 12 hours",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "resultTitle": "Fewer signings, revocation broken",
+          "resultBody": "Signings drop 72x, so the leak slows to a crawl, but a revoked or stolen token now stays valid for up to 12 hours, which breaks the 10-minute revocation promise.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 10,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "fds",
+              "label": "Open files per pod",
+              "value": 20000,
+              "unit": "fds",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Refreshes failed",
+              "value": 0.1,
+              "unit": "%",
+              "tone": "good"
+            }
+          ]
+        },
+        {
+          "id": "rolling-restart",
+          "label": "Rolling restart of token-signer pods every 12 hours",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 1,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "A temporary scheduled restart that must be deleted when the patched SDK lands."
+          },
+          "resultTitle": "No pod lives long enough to leak out",
+          "resultBody": "A scheduled rollout replaces one signer pod at a time every 12 hours, so descriptors peak near 40k and never reach the limit; failed refreshes fall to 0.05%. Cost: each new pod spends ~2 s opening HSM sessions before it is ready.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 40,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "fds",
+              "label": "Open files per pod",
+              "value": 40000,
+              "unit": "fds",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Refreshes failed",
+              "value": 0.05,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "App clients"
+              },
+              {
+                "id": "gw",
+                "kind": "lb",
+                "label": "API gateway",
+                "cpu": 30
+              },
+              {
+                "id": "signer",
+                "kind": "server",
+                "label": "Token signer (8 pods)",
+                "cpu": 40,
+                "sub": "restarted every 12 h",
+                "tone": "good"
+              },
+              {
+                "id": "hsm",
+                "kind": "server",
+                "label": "HSM",
+                "cpu": 20
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "gw"
+              },
+              {
+                "from": "gw",
+                "to": "signer"
+              },
+              {
+                "from": "signer",
+                "to": "hsm"
+              }
+            ]
+          }
+        },
+        {
+          "id": "signing-service",
+          "label": "Move signing into a new dedicated signing microservice",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "resultTitle": "Two sprints later, the same leak",
+          "resultBody": "Building the service takes two sprints, refreshes keep failing until it ships, and it links the same HSM SDK, so its pods leak descriptors and hit the 65k limit the same way.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 44,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "fds",
+              "label": "Open files per pod",
+              "value": 64000,
+              "unit": "fds",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Refreshes failed",
+              "value": 16,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ]
+        }
+      ],
+      "hints": [
+        "CPU and latency look normal; count something else on the signer.",
+        "The descriptor count starts near zero every time a pod starts.",
+        "Friday is close; you only need to keep any pod from reaching 20 hours of uptime."
+      ],
+      "nextId": null
     }
   ]
 }
