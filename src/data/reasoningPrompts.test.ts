@@ -30,10 +30,15 @@ const PATTERN_IDS: PatternId[] = [
   "cap-pacelc",
   "consensus-quorums",
   "storage-engines",
+  "id-generation",
+  "search-indexing",
+  "stream-processing",
+  "observability",
+  "auth-at-scale",
 ];
 
-test("has 40 prompts with unique ids", () => {
-  assert.equal(REASONING_PROMPTS.length, 40);
+test("has 50 prompts with unique ids", () => {
+  assert.equal(REASONING_PROMPTS.length, 50);
   const ids = new Set(REASONING_PROMPTS.map((p) => p.id));
   assert.equal(ids.size, REASONING_PROMPTS.length);
 });

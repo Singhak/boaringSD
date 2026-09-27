@@ -679,6 +679,170 @@ export const REASONING_PROMPTS: ReasoningPrompt[] = [
     modelAnswer:
       "At 10x, flushes outpace compaction: level-0 files pile up, reads check more files, and the engine eventually stalls writes. I'd alert on pending compaction bytes and L0 file count. Add disk bandwidth or shards, and tune the compaction strategy for the write rate.",
   },
+  // ── ID generation ─────────────────────────────────────────────────────
+  {
+    id: "id-generation-why",
+    patternId: "id-generation",
+    kind: "why_this",
+    askedBy: "Priya · Incident commander",
+    prompt:
+      "You picked Snowflake IDs over plain UUIDv4. UUIDs never collide and need no worker IDs. Why take on the extra moving parts?",
+    starters: ["UUIDv4 is random…", "Snowflake gives us…", "The cost is…"],
+    rubric: [
+      { id: "locality", criterion: "Explains random UUIDv4 keys scatter B-tree inserts (poor index locality), while time-prefixed IDs append", weight: 3 },
+      { id: "fit", criterion: "Notes Snowflake fits in 64 bits and sorts by time, unlike 128-bit random UUIDs", weight: 2 },
+      { id: "cost", criterion: "Names the cost: unique worker IDs must be leased and the clock must never go backwards", weight: 2 },
+    ],
+    modelAnswer:
+      "UUIDv4 is random, so every insert hits a cold B-tree page and it's 128 bits. Snowflake packs time, worker and sequence into 64 bits, sorts by time and appends to the index. The cost: leased worker IDs, and refusing to mint if the clock steps back.",
+  },
+  {
+    id: "id-generation-10x",
+    patternId: "id-generation",
+    kind: "ten_x",
+    askedBy: "Jordan · CTO",
+    prompt:
+      "We're going from 50k to 500k IDs a second across 300 pods. What breaks first in our Snowflake setup, and how will we notice?",
+    starters: ["Per worker…", "I'd watch…", "To fix it…"],
+    rubric: [
+      { id: "limit", criterion: "Identifies a limit: 4,096 IDs/ms per worker sequence exhaustion, or 1,024 worker IDs versus pod count and lease churn", weight: 3 },
+      { id: "signal", criterion: "Names a signal: sequence-wait stalls, worker-lease failures or free-ID pool size, clock-backwards events", weight: 2 },
+      { id: "mitigate", criterion: "Proposes a mitigation: rebalance bits (more worker or sequence bits), fewer bigger generators, or ID blocks", weight: 2 },
+    ],
+    modelAnswer:
+      "500k/s is ~1,700/s per pod, far below 4,096/ms, so sequence is fine. The 10-bit worker space is the limit: 300 pods plus churn can drain 1,024 leases. I'd alert on free leases and clock-back stalls, and move bits from time or sequence to worker.",
+  },
+  // ── Search & inverted indexes ─────────────────────────────────────────
+  {
+    id: "search-indexing-why",
+    patternId: "search-indexing",
+    kind: "why_this",
+    askedBy: "Priya · Incident commander",
+    prompt:
+      "Postgres already has indexes. Why run a separate search cluster and a CDC pipeline instead of just indexing the title column?",
+    starters: ["A leading wildcard…", "An inverted index…", "Dual writes…"],
+    rubric: [
+      { id: "scan", criterion: "Explains a B-tree can't serve '%term%' because a leading wildcard can't seek a sorted index, so it scans every row", weight: 3 },
+      { id: "inverted", criterion: "Describes an inverted index mapping each analyzed term to a posting list of documents, with relevance ranking like BM25", weight: 2 },
+      { id: "cdc", criterion: "Notes feeding it from the change stream avoids lost updates from dual writes and keeps search load off the primary", weight: 2 },
+    ],
+    modelAnswer:
+      "A B-tree is sorted by prefix, so '%boots%' scans all 40M rows. An inverted index maps each term to its documents and ranks them with BM25. Feeding it from the WAL via a queue means no dual-write gaps and no search load on the primary.",
+  },
+  {
+    id: "search-indexing-10x",
+    patternId: "search-indexing",
+    kind: "ten_x",
+    askedBy: "Jordan · CTO",
+    prompt:
+      "The catalog grows 10x to 900M documents and query volume triples. What breaks first in search, and how would we see it coming?",
+    starters: ["Each query fans…", "I'd watch…", "To scale…"],
+    rubric: [
+      { id: "fanout", criterion: "Identifies that document-sharded queries fan out to every shard, so tail latency and top-k merge cost grow with shard count and deep pages", weight: 3 },
+      { id: "signal", criterion: "Names a signal: per-shard p99, coordinator merge time, indexing lag behind the CDC queue, or segment merge backlog", weight: 2 },
+      { id: "mitigate", criterion: "Proposes a mitigation: add replicas for query load, size shards deliberately, route by tenant/category, cap deep pagination, reindex via alias", weight: 2 },
+    ],
+    modelAnswer:
+      "Every query hits every shard, so the slowest shard sets p99 and deep pages grow the merge. I'd watch per-shard p99 and CDC indexing lag. Add replicas for reads, reshard into a new index behind an alias, route by category and cap deep paging.",
+  },
+  {
+    id: "stream-processing-why",
+    patternId: "stream-processing",
+    kind: "why_this",
+    askedBy: "Priya · Incident commander",
+    prompt:
+      "Partition 17 is 4.2M behind. Why not just add 64 more consumers instead of re-keying the whole topic by driver_id?",
+    starters: ["A partition is read…", "The key decides…", "driver_id keeps…"],
+    rubric: [
+      { id: "one-reader", criterion: "Explains a partition is read by only one consumer per group, so extra consumers stay idle", weight: 3 },
+      { id: "skew", criterion: "Identifies the low-cardinality city_id key as the cause of the hot partition", weight: 2 },
+      { id: "order", criterion: "Notes driver_id spreads load evenly and still keeps each driver's updates in order", weight: 2 },
+    ],
+    modelAnswer:
+      "Each partition gets one consumer per group, so new ones would idle while p17 stays hot. The skew comes from the key: city_id has few values, and NYC dominates. driver_id has millions of values and hashes evenly, and each driver's updates still share a partition, so order holds.",
+  },
+  {
+    id: "stream-processing-10x",
+    patternId: "stream-processing",
+    kind: "ten_x",
+    askedBy: "Jordan · CTO",
+    prompt:
+      "Event volume goes 10x next year on a 64-partition topic. What breaks first, and what would you watch?",
+    starters: ["Parallelism stops at…", "I'd alert on…", "Before the growth…"],
+    rubric: [
+      { id: "ceiling", criterion: "Identifies the partition count as the ceiling on consumer parallelism, and notes that repartitioning remaps keys", weight: 3 },
+      { id: "signal", criterion: "Names a signal: consumer lag per partition, lag growth rate, or rebalance frequency", weight: 2 },
+      { id: "plan", criterion: "Proposes a plan: raise partitions early in a quiet window, or cut per-event cost with batching or idempotent bulk writes", weight: 2 },
+    ],
+    modelAnswer:
+      "A group can't run more than 64 consumers, so at 10x, per-partition lag grows without bound. I'd alert on per-partition lag and its growth rate, plus rebalance counts. Raise partitions early in a quiet window, since keys remap, and batch idempotent writes to cut per-event cost.",
+  },
+  // ── Observability & SLOs ──────────────────────────────────────────────
+  {
+    id: "observability-why",
+    patternId: "observability",
+    kind: "why_this",
+    askedBy: "Priya · Incident commander",
+    prompt:
+      "You deleted our 80% CPU page and replaced it with an error-budget burn alert. Isn't high CPU the earliest warning we get?",
+    starters: ["Users don't feel…", "At 41% CPU…", "A burn-rate alert…"],
+    rubric: [
+      { id: "symptom", criterion: "Explains CPU is a cause, not a symptom: many outages (bad deploys, broken dependencies) happen at normal CPU while busy hosts can be fine", weight: 3 },
+      { id: "budget", criterion: "Explains the burn-rate alert pages when the SLO's error budget is being spent fast, e.g. 2% errors burns a 99.9% budget 20x", weight: 2 },
+      { id: "keep", criterion: "Notes CPU still belongs on capacity dashboards or tickets, just not on the pager", weight: 2 },
+    ],
+    modelAnswer:
+      "CPU is a cause, not what users feel: checkout failed 2% at 41% CPU and nothing paged. A burn-rate alert fires when the 99.9% budget is spent fast (2% errors is 20x) and stays quiet at busy-but-healthy load. CPU moves to capacity dashboards.",
+  },
+  {
+    id: "observability-10x",
+    patternId: "observability",
+    kind: "ten_x",
+    askedBy: "Jordan · CTO",
+    prompt:
+      "Traffic goes 10x next year. What breaks first in our metrics, logs and traces, and how do we keep the bill sane?",
+    starters: ["Series count…", "For traces I'd…", "Telemetry must…"],
+    rubric: [
+      { id: "card", criterion: "Identifies metric cardinality (unbounded labels like user_id) and raw log/trace volume as what grows and breaks the store or bill", weight: 3 },
+      { id: "sample", criterion: "Proposes tail sampling (keep errors and slow traces, a small baseline of the rest) or log level/sampling controls", weight: 2 },
+      { id: "path", criterion: "Keeps telemetry off the request path, e.g. buffered through a queue that can drop excess, so a spike can't take down serving", weight: 2 },
+    ],
+    modelAnswer:
+      "10x requests means 10x spans and log lines; any unbounded label multiplies series. Keep metric labels bounded, ids on traces and logs. Tail-sample: every error and slow trace, 1% of the rest. Ship telemetry via a queue that sheds load so a spike never blocks requests.",
+  },
+  // ── Auth at scale ─────────────────────────────────────────────────────
+  {
+    id: "auth-at-scale-why",
+    patternId: "auth-at-scale",
+    kind: "why_this",
+    askedBy: "Priya · Security lead",
+    prompt:
+      "You cut access tokens to 10 minutes and added a Redis denylist. Why not just check every token in the database? That's instant revocation.",
+    starters: ["At 90k req/s…", "The denylist only…", "Short tokens mean…"],
+    rubric: [
+      { id: "load", criterion: "Explains a DB lookup per request puts all traffic on the database and adds latency, undoing stateless validation", weight: 3 },
+      { id: "small", criterion: "Notes the denylist only holds revoked tokens until they expire, so it stays tiny and sub-millisecond", weight: 2 },
+      { id: "refresh", criterion: "Mentions revoking the refresh token so the session can't renew after the access token expires", weight: 2 },
+    ],
+    modelAnswer:
+      "A DB check per call sends all 90k req/s to Postgres. JWTs verify locally; only revoked jtis go in Redis, and just until exp, so the list stays tiny and sub-ms. Revoking the refresh token stops renewal, so a stolen token dies in 10 min at worst.",
+  },
+  {
+    id: "auth-at-scale-10x",
+    patternId: "auth-at-scale",
+    kind: "ten_x",
+    askedBy: "Jordan · CTO",
+    prompt:
+      "A TV ad will bring 10x logins in one evening. What breaks first in auth, and how will we see it coming?",
+    starters: ["Password hashing…", "I'd watch…", "To absorb it…"],
+    rubric: [
+      { id: "hash", criterion: "Identifies password hashing (bcrypt/argon2) CPU on the login path as the first bottleneck", weight: 3 },
+      { id: "signal", criterion: "Names a signal: login pool CPU, login p95/queue depth, or hash time per request", weight: 2 },
+      { id: "mitigate", criterion: "Proposes isolating and autoscaling the login pool, keeping hash cost tuned, and long refresh sessions so users don't re-login", weight: 2 },
+    ],
+    modelAnswer:
+      "Hashing: each login burns ~250 ms of CPU, so 10x logins means 10x cores. I'd alert on login-pool CPU and login p95. Run logins on their own autoscaled pool so API calls aren't starved, and keep refresh sessions long so existing users skip re-hashing.",
+  },
 ];
 
 const BY_ID = new Map(REASONING_PROMPTS.map((p) => [p.id, p]));

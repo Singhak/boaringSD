@@ -16,6 +16,11 @@ import healthChecksPack from "@/data/scenarioPacks/health-checks.json";
 import capPacelcPack from "@/data/scenarioPacks/cap-pacelc.json";
 import consensusQuorumsPack from "@/data/scenarioPacks/consensus-quorums.json";
 import storageEnginesPack from "@/data/scenarioPacks/storage-engines.json";
+import idGenerationPack from "@/data/scenarioPacks/id-generation.json";
+import searchIndexingPack from "@/data/scenarioPacks/search-indexing.json";
+import streamProcessingPack from "@/data/scenarioPacks/stream-processing.json";
+import observabilityPack from "@/data/scenarioPacks/observability.json";
+import authAtScalePack from "@/data/scenarioPacks/auth-at-scale.json";
 import indexData from "@/data/scenarioPacks/index.json";
 import type { IncidentGraph, IncidentNode, IncidentPackV2, IncidentV2 } from "@/types";
 import type { Health, Tier } from "@/components/run/RunVisuals";
@@ -85,6 +90,11 @@ const RAW_PACKS = [
   capPacelcPack,
   consensusQuorumsPack,
   storageEnginesPack,
+  idGenerationPack,
+  searchIndexingPack,
+  streamProcessingPack,
+  observabilityPack,
+  authAtScalePack,
 ] as unknown as IncidentPackV2[];
 
 export type ScenarioPackV2 = IncidentPackV2 & {
