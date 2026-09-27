@@ -280,6 +280,30 @@ const TOPOLOGIES: Record<PatternId, { before: Tier[]; after: Tier[] }> = {
     before: [[T("Ingest API")], [T("B-tree DB", "hot", "random writes, disk 95%")]],
     after: [[T("Ingest API")], [T("LSM memtable", "new")], [T("Sorted SSTables", "ok", "Bloom filters")]],
   },
+  "id-generation": {
+    before: [[T("Order API")], [T("Shard 1", "hot", "auto-inc #88,213,007"), T("Shard 2", "hot", "auto-inc #88,213,007")]],
+    after: [[T("Order API")], [T("Snowflake minter", "new", "time + worker + seq")], [T("Shard 1", "ok"), T("Shard 2", "ok", "unique IDs")]],
+  },
+  "search-indexing": {
+    before: [[T("Search API")], [T("Postgres primary", "hot", "ILIKE '%term%' scans 40M rows")]],
+    after: [
+      [T("Search API")],
+      [T("Postgres primary", "ok", "writes only"), T("CDC queue", "new", "WAL changes")],
+      [T("Shard 1", "new", "inverted index"), T("Shard 2", "new", "BM25 top-k")],
+    ],
+  },
+  "stream-processing": {
+    before: [[T("Driver apps")], [T("Partition 17", "hot", "NYC key, 4.2M lag"), T("Other partitions", "idle", "63 near-empty")], [T("Consumer p17", "hot", "98% CPU"), T("Other consumers", "idle")]],
+    after: [[T("Driver apps")], [T("64 partitions", "new", "keyed by driver_id")], [T("Consumer group", "ok", "64 consumers, lag < 5k")]],
+  },
+  "observability": {
+    before: [[T("Shoppers")], [T("Checkout API", "hot", "2% errors, 41% CPU"), T("CPU alert", "idle", "silent at 80%")], [T("Telemetry store", "warn", "inline writes")]],
+    after: [[T("Shoppers")], [T("Checkout API", "ok", "trace ids propagated"), T("Burn-rate alert", "new", "paged in 4 min")], [T("Telemetry queue", "new", "off request path")], [T("Telemetry store", "ok", "tail-sampled")]],
+  },
+  "auth-at-scale": {
+    before: [[T("Users")], [T("API gateway")], [T("12 services", "warn", "introspect every call"), T("Auth service", "hot", "96% CPU")], [T("Token DB", "warn")]],
+    after: [[T("Users")], [T("API gateway", "new", "verifies JWT via JWKS")], [T("12 services"), T("Redis", "new", "sessions + denylist")], [T("Auth service", "ok", "logins only")]],
+  },
 };
 
 const HEALTH_STYLES: Record<Health, string> = {

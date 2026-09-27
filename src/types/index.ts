@@ -366,7 +366,12 @@ export type PatternId =
   | "health-checks"
   | "cap-pacelc"
   | "consensus-quorums"
-  | "storage-engines";
+  | "storage-engines"
+  | "id-generation"
+  | "search-indexing"
+  | "stream-processing"
+  | "observability"
+  | "auth-at-scale";
 
 /**
  * Honest progress labels. A pattern is never "mastered" after one activity:

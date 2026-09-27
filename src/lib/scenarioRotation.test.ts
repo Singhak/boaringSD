@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { getAllScenarioPacks, getScenarioPackByPatternId, getScenarioVariantForPattern } from "@/data/scenarioPacks";
 import { deterministicShuffle } from "@/lib/shuffle";
 
-test("scenario packs exist for all 18 system patterns with non-empty variants", () => {
+test("scenario packs exist for all 23 system patterns with non-empty variants", () => {
   const ids = [
     "horizontal-scaling",
     "load-balancing",
@@ -24,6 +24,11 @@ test("scenario packs exist for all 18 system patterns with non-empty variants", 
     "cap-pacelc",
     "consensus-quorums",
     "storage-engines",
+    "id-generation",
+    "search-indexing",
+    "stream-processing",
+    "observability",
+    "auth-at-scale",
   ];
 
   for (const id of ids) {
@@ -33,7 +38,7 @@ test("scenario packs exist for all 18 system patterns with non-empty variants", 
   }
 
   const all = getAllScenarioPacks();
-  assert.equal(all.length, 18);
+  assert.equal(all.length, 23);
 });
 
 test("variant rotation cycles without repeating immediately", () => {
