@@ -3,13 +3,17 @@
 import React, { useEffect, useState } from "react";
 import { AlertTriangle, ArrowRight, CheckCircle2, ShieldCheck, Sparkles, X, XCircle } from "lucide-react";
 import { playBlipSound, playErrorSound, playSuccessSound } from "@/lib/sound";
-import { deterministicShuffle } from "@/lib/shuffle";
+import { buildDefenseQuestions } from "@/lib/defenseQuestions";
 import { useFocusTrap } from "@/lib/useFocusTrap";
 import type { TradeoffCardOption } from "@/types";
 
 interface ArchitecturalDefenseModalProps {
   isOpen: boolean;
   option: TradeoffCardOption;
+  /** Label of the choice the player deployed; question 1 is framed around it. */
+  deployedLabel: string;
+  /** Changes per attempt so the option order moves between attempts. */
+  shuffleSeed: string;
   /** firstTry: both answers were right on the first submission. */
   onSuccess: (firstTry: boolean) => void;
   onClose: () => void;
@@ -18,6 +22,8 @@ interface ArchitecturalDefenseModalProps {
 export default function ArchitecturalDefenseModal({
   isOpen,
   option,
+  deployedLabel,
+  shuffleSeed,
   onSuccess,
   onClose,
 }: ArchitecturalDefenseModalProps) {
@@ -41,8 +47,7 @@ export default function ArchitecturalDefenseModal({
 
   if (!isOpen) return null;
 
-  const q1 = option.tradeoffDefenseQuestion;
-  const q2 = option.stressTest10xQuestion;
+  const { q1, q2 } = buildDefenseQuestions(option, deployedLabel, shuffleSeed);
 
   const handleVerify = () => {
     playBlipSound();
@@ -139,7 +144,8 @@ export default function ArchitecturalDefenseModal({
         <div className="p-3.5 rounded-xl bg-cyan-950/30 border border-cyan-400/20 text-xs flex items-center justify-between gap-3">
           <div>
             <span className="eyebrow !text-[11px] text-cyan-300">Selected Intervention:</span>
-            <div className="text-[13px] font-semibold text-white mt-0.5">{option.title}</div>
+            <div className="text-[13px] font-semibold text-white mt-0.5">{deployedLabel}</div>
+            <div className="text-[11px] text-slate-400 mt-0.5">Pattern: {option.title}</div>
           </div>
           <span className="chip chip-accent text-[11px]">
             +${option.costEstimateDeltaUsd}/mo · {option.latencyProfileMs}ms
@@ -157,7 +163,7 @@ export default function ArchitecturalDefenseModal({
             </div>
 
             <div className="grid grid-cols-1 gap-2 pl-0 sm:pl-8">
-              {deterministicShuffle(q1.options, `${option.id}|q1`).map((opt) => {
+              {q1.options.map((opt) => {
                 const isSelected = q1Selected === opt.id;
                 return (
                   <button
@@ -205,7 +211,7 @@ export default function ArchitecturalDefenseModal({
             </div>
 
             <div className="grid grid-cols-1 gap-2 pl-0 sm:pl-8">
-              {deterministicShuffle(q2.options, `${option.id}|q2`).map((opt) => {
+              {q2.options.map((opt) => {
                 const isSelected = q2Selected === opt.id;
                 return (
                   <button

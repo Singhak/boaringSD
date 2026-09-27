@@ -222,3 +222,8 @@ Probing:  [ App ] ─── HALF-OPEN ─► Sends 1 Canary Probe to check if re
 export function getConceptIntel(id: string): ConceptIntel | undefined {
   return CONCEPT_INTEL_REGISTRY[id];
 }
+
+/** The first candidate id that has intel, or null so callers can hide the button. */
+export function resolveConceptIntelId(...candidates: (string | undefined)[]): string | null {
+  return candidates.find((id): id is string => !!id && id in CONCEPT_INTEL_REGISTRY) ?? null;
+}

@@ -38,6 +38,8 @@ import {
   playSuccessSound,
 } from "@/lib/sound";
 import { recordMissionComplete } from "@/lib/storage";
+import { BAND_AID_HOLD_MS, flightFixSpec, flightVictory } from "@/lib/flightSimFix";
+import type { FlightFixKey } from "@/lib/flightSimFix";
 
 import { ComponentKind } from "@/types";
 
@@ -72,6 +74,50 @@ interface SimParticle {
   isResolved: boolean;
 }
 
+interface FixButton {
+  key: FlightFixKey;
+  label: string;
+  desc: string;
+  cost: number;
+  icon: React.ElementType;
+}
+
+// Neutral copy: each button says what it does, not whether it works.
+// The order differs between the two incidents so the answer has no fixed slot.
+const HS_FIXES: FixButton[] = [
+  {
+    key: "restart",
+    label: "Reboot Overloaded Node",
+    desc: "Restart the app process to clear memory and drop stuck connections.",
+    cost: flightFixSpec("restart").monthlyCost,
+    icon: RotateCcw,
+  },
+  {
+    key: "scale_out",
+    label: "Scale Out: Deploy App Server 2",
+    desc: "Add a second stateless app server and send traffic to both.",
+    cost: flightFixSpec("scale_out").monthlyCost,
+    icon: Server,
+  },
+];
+
+const LB_FIXES: FixButton[] = [
+  {
+    key: "deploy_lb",
+    label: "Deploy Nginx Load Balancer",
+    desc: "Put a reverse proxy between users and the fleet, using round-robin.",
+    cost: flightFixSpec("deploy_lb").monthlyCost,
+    icon: Layers,
+  },
+  {
+    key: "upgrade_core",
+    label: "Upgrade Server 1 to 64 Cores",
+    desc: "Move Server 1 to a much bigger machine so it can absorb the spike.",
+    cost: flightFixSpec("upgrade_core").monthlyCost,
+    icon: Cpu,
+  },
+];
+
 interface Explosion {
   id: number;
   x: number;
@@ -94,7 +140,10 @@ export default function SystemFlightSim({
   const [isSystemDown, setIsSystemDown] = useState(false);
 
   // Deployed tactical fixes
-  const [appliedFix, setAppliedFix] = useState<string | null>(null);
+  const [appliedFix, setAppliedFix] = useState<FlightFixKey | null>(null);
+  // The fix the stabilise loop settled on; the victory screen reads stars and copy from it.
+  const [resolvedFix, setResolvedFix] = useState<FlightFixKey | null>(null);
+  const [xpAwarded, setXpAwarded] = useState(0);
 
   // Stabilization state (hold green for 5.0 seconds)
   const [stabilizeProgress, setStabilizeProgress] = useState(0); // 0 to 5
@@ -138,15 +187,18 @@ export default function SystemFlightSim({
   // Determine dynamic system state based on incident & fix
   const isHs = incidentId === "hs-01";
   const isLb = incidentId === "lb-01";
+  // A band-aid is "applied" for a moment but the metrics never recover.
+  const fixWorking = !!appliedFix && flightFixSpec(appliedFix).stabilizes;
 
   // System metrics calculations
   const trafficRps = 100000;
-  const server1Cpu = isHs ? (appliedFix === "scale_out" ? 45 : 98) : (appliedFix === "deploy_lb" ? 42 : 98);
-  const server2Cpu = isHs
-    ? (appliedFix === "scale_out" ? 45 : 0)
-    : (appliedFix === "deploy_lb" ? 42 : appliedFix === "upgrade_core" ? 38 : 0);
-  const errorRate = appliedFix ? 0 : isHs ? 48 : 50;
-  const p95Latency = appliedFix ? (isHs ? 38 : 34) : 4200;
+  // 64 cores absorb the whole load on Server 1; Server 2 stays idle behind the skew.
+  const server1Cpu = isHs
+    ? (appliedFix === "scale_out" ? 45 : 98)
+    : (appliedFix === "deploy_lb" ? 42 : appliedFix === "upgrade_core" ? 38 : 98);
+  const server2Cpu = isHs ? (appliedFix === "scale_out" ? 45 : 0) : (appliedFix === "deploy_lb" ? 42 : 0);
+  const errorRate = fixWorking ? 0 : isHs ? 48 : 50;
+  const p95Latency = fixWorking ? (isHs ? 38 : 34) : 4200;
   const hasLb = isLb && appliedFix === "deploy_lb";
   const hasServer2 = (isHs && appliedFix === "scale_out") || isLb;
 
@@ -201,7 +253,7 @@ export default function SystemFlightSim({
     queueDepth: server1Cpu > 80 ? 5 : 1,
     maxQueue: 5,
     healthy: server1Cpu < 80,
-    statusText: server1Cpu > 80 ? "Saturated 98% CPU" : "Stable 45% CPU",
+    statusText: server1Cpu > 80 ? "Saturated 98% CPU" : `Stable ${server1Cpu}% CPU`,
     icon: Server,
   });
 
@@ -222,7 +274,7 @@ export default function SystemFlightSim({
       queueDepth: server2Cpu > 80 ? 5 : server2Cpu > 0 ? 1 : 0,
       maxQueue: 5,
       healthy: server2Cpu > 0 && server2Cpu < 80,
-      statusText: server2Cpu === 0 ? "Idle (0 req/s)" : "Stable 45% CPU",
+      statusText: server2Cpu === 0 ? "Idle (0 req/s)" : `Stable ${server2Cpu}% CPU`,
       icon: Server,
     });
   }
@@ -234,8 +286,8 @@ export default function SystemFlightSim({
     role: "db",
     x: 0.92,
     y: 0.5,
-    cpu: appliedFix ? 40 : 25,
-    rps: appliedFix ? 45000 : 25000,
+    cpu: fixWorking ? 40 : 25,
+    rps: fixWorking ? 45000 : 25000,
     queueDepth: 1,
     maxQueue: 5,
     healthy: true,
@@ -280,8 +332,11 @@ export default function SystemFlightSim({
   useEffect(() => {
     if (isResolved || isSystemDown) return;
 
+    const spec = appliedFix ? flightFixSpec(appliedFix) : null;
     const interval = setInterval(() => {
-      if (!appliedFix) {
+      // A band-aid only buys time: the burn pauses, but nothing stabilises.
+      if (spec?.kind === "band_aid") return;
+      if (!spec) {
         // Error budget burn down
         if (errorBudgetRef.current <= 0) return;
         const next = Math.max(0, errorBudgetRef.current - 1.2);
@@ -298,11 +353,12 @@ export default function SystemFlightSim({
         const next = Math.min(5.0, stabilizeRef.current + 0.5);
         stabilizeRef.current = next;
         setStabilizeProgress(next);
-        if (next >= 5.0) {
+        if (next >= 5.0 && appliedFix) {
           setIsResolved(true);
+          setResolvedFix(appliedFix);
           playSuccessSound();
           confetti({ particleCount: 100, spread: 70, origin: { y: 0.6 } });
-          recordMissionComplete(incidentId, 150);
+          setXpAwarded(recordMissionComplete(incidentId, 150).xpAwarded);
         }
       }
     }, 500);
@@ -352,9 +408,9 @@ export default function SystemFlightSim({
         ctx.bezierCurveTo(cpX, from.y, cpX, to.y, to.x, to.y);
 
         ctx.lineWidth = 2.5;
-        if (appliedFix) {
+        if (fixWorking) {
           ctx.strokeStyle = "rgba(52, 211, 153, 0.35)"; // green stable
-        } else if (path.from === "users" && !appliedFix) {
+        } else if (path.from === "users") {
           ctx.strokeStyle = "rgba(244, 63, 94, 0.4)"; // red overloaded
         } else {
           ctx.strokeStyle = "rgba(34, 211, 238, 0.25)";
@@ -366,7 +422,7 @@ export default function SystemFlightSim({
       if (Math.random() < 0.35 && paths.length > 0) {
         const pathIdx = Math.floor(Math.random() * paths.length);
         const p = paths[pathIdx];
-        const isErr = !appliedFix && (p.to === "server-1" || p.from === "server-1");
+        const isErr = !fixWorking && (p.to === "server-1" || p.from === "server-1");
 
         particlesRef.current.push({
           id: nextParticleId.current++,
@@ -374,7 +430,7 @@ export default function SystemFlightSim({
           progress: 0,
           speed: 0.012 + Math.random() * 0.008,
           isError: isErr && Math.random() < 0.6,
-          isResolved: !!appliedFix,
+          isResolved: fixWorking,
         });
       }
 
@@ -470,14 +526,22 @@ export default function SystemFlightSim({
       isRunning = false;
       if (animFrameId.current) cancelAnimationFrame(animFrameId.current);
     };
-  }, [paths, nodes, appliedFix]);
+  }, [paths, nodes, fixWorking]);
 
   // Tactical Actions
-  const handleDeployFix = (fixKey: string) => {
-    if (fixKey === "upgrade_core") setMistakes((m) => m + 1);
+  const handleDeployFix = (fixKey: FlightFixKey) => {
+    const spec = flightFixSpec(fixKey);
+    if (spec.kind !== "root_cause") setMistakes((m) => m + 1);
+    resetStabilize();
+    if (spec.kind === "band_aid") {
+      // Clears memory for a moment, then the same load slams the node again.
+      playErrorSound();
+      setAppliedFix(fixKey);
+      setTimeout(() => setAppliedFix((f) => (f === fixKey ? null : f)), BAND_AID_HOLD_MS);
+      return;
+    }
     playDeploySound();
     setAppliedFix(fixKey);
-    resetStabilize();
     setTimeout(() => {
       if (soundEnabled) playBlipSound();
     }, 300);
@@ -486,6 +550,8 @@ export default function SystemFlightSim({
   const handleRollback = () => {
     playBlipSound();
     setAppliedFix(null);
+    setResolvedFix(null);
+    setIsResolved(false);
     resetStabilize();
     resetBudget();
     setIsSystemDown(false);
@@ -498,6 +564,7 @@ export default function SystemFlightSim({
       resetStabilize();
       setIsSystemDown(false);
       setAppliedFix(null);
+      setResolvedFix(null);
       setIsResolved(false);
     } else {
       if (onAllCompleted) {
@@ -507,6 +574,8 @@ export default function SystemFlightSim({
       }
     }
   };
+
+  const victory = resolvedFix ? flightVictory(incidentId, resolvedFix, mistakes) : null;
 
   return (
     <div className="surface !rounded-2xl border border-rose-400/30 overflow-hidden shadow-[0_20px_80px_-20px_rgba(244,63,94,0.35)] flex flex-col h-full max-h-full w-full relative animate-fadeIn">
@@ -702,7 +771,7 @@ export default function SystemFlightSim({
         </div>
 
         {/* Tactical Stabilization Overlay (when fix is applied and stabilizing) */}
-        {appliedFix && !isResolved && (
+        {fixWorking && !isResolved && (
           <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 surface !rounded-full px-5 py-2 border border-emerald-400/40 bg-black/80 backdrop-blur-md flex items-center gap-3 shadow-[0_0_30px_rgba(52,211,153,0.3)] animate-fadeIn">
             <span className="dot animate-pulse-glow text-emerald-400" />
             <span className="text-xs text-emerald-300 font-medium font-mono">
@@ -718,7 +787,7 @@ export default function SystemFlightSim({
         )}
 
         {/* System Down / Outage Alert (if error budget hit 0) */}
-        {isSystemDown && !appliedFix && (
+        {isSystemDown && !fixWorking && (
           <div className="absolute inset-0 z-30 bg-black/85 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center space-y-4 animate-fadeIn">
             <div className="w-14 h-14 rounded-full bg-rose-500/20 border border-rose-500/40 grid place-items-center text-rose-400 shadow-[0_0_40px_rgba(244,63,94,0.5)]">
               <AlertOctagon className="w-8 h-8" />
@@ -737,24 +806,23 @@ export default function SystemFlightSim({
         )}
 
         {/* Victory Screen (Incident Resolved) */}
-        {isResolved && (
+        {isResolved && victory && (
           <div className="absolute inset-0 z-30 bg-black/90 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center space-y-6 animate-fadeIn">
             <div className="w-16 h-16 rounded-full bg-emerald-400/20 border border-emerald-400/40 grid place-items-center text-emerald-300 shadow-[0_0_50px_rgba(52,211,153,0.5)]">
               <ShieldCheck className="w-9 h-9" />
             </div>
 
             <div className="space-y-2 max-w-md">
-              <div className="flex items-center justify-center gap-1.5 text-amber-300">
-                <Star className="w-5 h-5 fill-amber-300" />
-                <Star className="w-5 h-5 fill-amber-300" />
-                <Star className="w-5 h-5 fill-amber-300" />
+              <div
+                className="flex items-center justify-center gap-1.5 text-amber-300"
+                aria-label={`${victory.stars} of 3 stars`}
+              >
+                {[1, 2, 3].map((n) => (
+                  <Star key={n} className={`w-5 h-5 ${n <= victory.stars ? "fill-amber-300" : "text-slate-600"}`} />
+                ))}
               </div>
-              <h3 className="text-3xl display text-white">Incident Resolved!</h3>
-              <p className="text-sm text-slate-300 leading-relaxed">
-                {isHs
-                  ? "Horizontal Scaling distributed the 100k req/s load evenly across 2 stateless app servers. CPU dropped from 98% to 45%."
-                  : "Deploying an Nginx Reverse Proxy balanced traffic 50/50, eliminating the severe traffic skew on Server 1."}
-              </p>
+              <h3 className="text-3xl display text-white">{victory.title}</h3>
+              <p className="text-sm text-slate-300 leading-relaxed">{victory.body}</p>
             </div>
 
             {/* Scorecard Strip */}
@@ -771,7 +839,7 @@ export default function SystemFlightSim({
               </div>
               <div>
                 <span className="text-slate-400 block text-[11px]">Reward</span>
-                <span className="num font-semibold text-amber-300 text-sm">+150 XP</span>
+                <span className="num font-semibold text-amber-300 text-sm">+{xpAwarded} XP</span>
               </div>
             </div>
 
@@ -783,6 +851,13 @@ export default function SystemFlightSim({
                 <Lightbulb className="w-3.5 h-3.5 text-cyan-300" />
                 Read ELI5 Analogy & Tradeoffs
               </button>
+
+              {victory.stars < 3 && (
+                <button onClick={handleRollback} className="btn btn-ghost border border-white/10 text-xs flex items-center gap-1.5">
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  Roll back &amp; try another fix
+                </button>
+              )}
 
               <button onClick={handleNextIncident} className="btn btn-primary btn-lg flex items-center gap-2">
                 <span>
@@ -816,109 +891,38 @@ export default function SystemFlightSim({
           </button>
         </div>
 
-        {/* Action Choice Cards */}
+        {/* Action Choice Cards: no ratings; the outcome shows only once a fix is deployed */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          {isHs ? (
-            <>
-              {/* Scale Out Fix (Optimal) */}
+          {(isHs ? HS_FIXES : LB_FIXES).map((fix) => {
+            const Icon = fix.icon;
+            const active = appliedFix === fix.key;
+            return (
               <button
+                key={fix.key}
                 type="button"
-                onClick={() => handleDeployFix("scale_out")}
-                disabled={appliedFix === "scale_out"}
+                onClick={() => handleDeployFix(fix.key)}
+                disabled={active}
                 className={`p-2.5 sm:p-3 rounded-xl border text-left transition-all flex items-start gap-2.5 group cursor-pointer ${
-                  appliedFix === "scale_out"
-                    ? "border-emerald-400 bg-emerald-400/10 text-emerald-100"
+                  active
+                    ? "border-cyan-400 bg-cyan-400/10 text-cyan-50"
                     : "border-[var(--line)] bg-black/25 hover:border-cyan-400/60 hover:bg-white/[0.04] text-slate-200"
                 }`}
               >
-                <div className="w-7 h-7 rounded-lg bg-emerald-400/20 grid place-items-center shrink-0 text-emerald-300 mt-0.5">
-                  <Server className="w-3.5 h-3.5" />
+                <div className="w-7 h-7 rounded-lg bg-cyan-400/15 grid place-items-center shrink-0 text-cyan-300 mt-0.5">
+                  <Icon className="w-3.5 h-3.5" />
                 </div>
                 <div className="space-y-0.5 flex-1 min-w-0">
                   <div className="flex items-center justify-between gap-1">
-                    <span className="font-semibold text-xs sm:text-sm truncate">Scale Out: Deploy App Server 2</span>
-                    <span className="chip chip-ok !text-[11px] !py-0 shrink-0">Optimal</span>
+                    <span className="font-semibold text-xs sm:text-sm truncate">{fix.label}</span>
+                    <span className="num text-[11px] text-slate-400 shrink-0">
+                      {fix.cost > 0 ? `+$${fix.cost}/mo` : "$0/mo"}
+                    </span>
                   </div>
-                  <p className="text-[11px] text-slate-400 leading-tight">
-                    Forks incoming traffic across 2 parallel nodes. Cuts CPU saturation in half (+ $120/mo).
-                  </p>
+                  <p className="text-[11px] text-slate-400 leading-tight">{fix.desc}</p>
                 </div>
               </button>
-
-              {/* Fragile Fix (Anti-Pattern / Band-aid) */}
-              <button
-                type="button"
-                onClick={() => {
-                  playErrorSound();
-                  setMistakes((m) => m + 1);
-                  setAppliedFix("restart");
-                  setTimeout(() => setAppliedFix(null), 2000);
-                }}
-                className="p-2.5 sm:p-3 rounded-xl border border-[var(--line)] bg-black/25 hover:border-rose-400/60 hover:bg-white/[0.04] text-left transition-all flex items-start gap-2.5 group cursor-pointer text-slate-300"
-              >
-                <div className="w-7 h-7 rounded-lg bg-rose-400/20 grid place-items-center shrink-0 text-rose-300 mt-0.5">
-                  <RotateCcw className="w-3.5 h-3.5" />
-                </div>
-                <div className="space-y-0.5 flex-1 min-w-0">
-                  <div className="flex items-center justify-between gap-1">
-                    <span className="font-semibold text-xs sm:text-sm truncate">Reboot Overloaded Node</span>
-                    <span className="chip chip-bad !text-[11px] !py-0 shrink-0">Band-Aid</span>
-                  </div>
-                  <p className="text-[11px] text-slate-400 leading-tight">
-                    Clears memory momentarily, but 100k req/s instantly slams the server back to 98% CPU.
-                  </p>
-                </div>
-              </button>
-            </>
-          ) : (
-            <>
-              {/* Deploy Load Balancer Fix (Optimal) */}
-              <button
-                type="button"
-                onClick={() => handleDeployFix("deploy_lb")}
-                disabled={appliedFix === "deploy_lb"}
-                className={`p-2.5 sm:p-3 rounded-xl border text-left transition-all flex items-start gap-2.5 group cursor-pointer ${
-                  appliedFix === "deploy_lb"
-                    ? "border-emerald-400 bg-emerald-400/10 text-emerald-100"
-                    : "border-[var(--line)] bg-black/25 hover:border-cyan-400/60 hover:bg-white/[0.04] text-slate-200"
-                }`}
-              >
-                <div className="w-7 h-7 rounded-lg bg-emerald-400/20 grid place-items-center shrink-0 text-emerald-300 mt-0.5">
-                  <Layers className="w-3.5 h-3.5" />
-                </div>
-                <div className="space-y-0.5 flex-1 min-w-0">
-                  <div className="flex items-center justify-between gap-1">
-                    <span className="font-semibold text-xs sm:text-sm truncate">Deploy Nginx Load Balancer</span>
-                    <span className="chip chip-ok !text-[11px] !py-0 shrink-0">Optimal</span>
-                  </div>
-                  <p className="text-[11px] text-slate-400 leading-tight">
-                    Places reverse proxy between Users & Fleet. Uses round-robin to balance load 50/50.
-                  </p>
-                </div>
-              </button>
-
-              {/* Vertical Scale Fix (Overkill / Tradeoff) */}
-              <button
-                type="button"
-                onClick={() => handleDeployFix("upgrade_core")}
-                disabled={appliedFix === "upgrade_core"}
-                className="p-2.5 sm:p-3 rounded-xl border border-[var(--line)] bg-black/25 hover:border-amber-400/60 hover:bg-white/[0.04] text-left transition-all flex items-start gap-2.5 group cursor-pointer text-slate-300"
-              >
-                <div className="w-7 h-7 rounded-lg bg-amber-400/20 grid place-items-center shrink-0 text-amber-300 mt-0.5">
-                  <Cpu className="w-3.5 h-3.5" />
-                </div>
-                <div className="space-y-0.5 flex-1 min-w-0">
-                  <div className="flex items-center justify-between gap-1">
-                    <span className="font-semibold text-xs sm:text-sm truncate">Upgrade Server 1 to 64 Cores</span>
-                    <span className="chip chip-warn !text-[11px] !py-0 shrink-0">Overkill</span>
-                  </div>
-                  <p className="text-[11px] text-slate-400 leading-tight">
-                    Absorbs spike vertically, but leaves Server 1 as Single Point of Failure (+$800/mo).
-                  </p>
-                </div>
-              </button>
-            </>
-          )}
+            );
+          })}
         </div>
       </footer>
 

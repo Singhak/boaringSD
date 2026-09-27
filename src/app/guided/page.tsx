@@ -12,7 +12,8 @@ import ScenarioTabs from "@/components/run/ScenarioTabs";
 import SelectTile, { TileState } from "@/components/run/SelectTile";
 import { Stepper, T, Topology } from "@/components/run/RunVisuals";
 import { GUIDED_SCENARIOS } from "@/data/guided";
-import { completeGuided } from "@/lib/storage";
+import { completeGuided, nextShuffleSeed } from "@/lib/storage";
+import { checkPicks, orderPicks } from "@/lib/guidedPicks";
 import { playBlipSound, playErrorSound, playLevelUpSound, playSuccessSound } from "@/lib/sound";
 import type { ArchitectureNodeType, GuidedScenario } from "@/types";
 
@@ -42,6 +43,9 @@ function GuidedThinkingPageContent() {
   const [step, setStep] = useState(0);
   const [celebrate, setCelebrate] = useState(false);
   const scenario = GUIDED_SCENARIOS.find((s) => s.id === scenarioId) ?? GUIDED_SCENARIOS[0];
+  // Rendered client-side only (behind FeatureGate), so the seed can come from localStorage.
+  const [baseSeed] = useState(() => nextShuffleSeed("guided"));
+  const seed = `${baseSeed}|${scenario.id}|${attempt}`;
 
   const reset = (id?: string) => {
     if (id) setScenarioId(id);
@@ -113,7 +117,7 @@ function GuidedThinkingPageContent() {
               help="Pick only what the MVP needs. Extra tables are extra work you'll have to defend."
               noun="entity"
               exact
-              items={scenario.entitiesDiscovery.availableEntities.map((e) => ({
+              items={orderPicks(scenario.entitiesDiscovery.availableEntities, `${seed}|entities`).map((e) => ({
                 id: e.id,
                 content: (
                   <span className="block space-y-2">
@@ -136,7 +140,7 @@ function GuidedThinkingPageContent() {
               help="One endpoint per core write and read. Leave nice-to-haves for later."
               noun="endpoint"
               exact
-              items={scenario.apiDesignDiscovery.availableApis.map((a) => ({
+              items={orderPicks(scenario.apiDesignDiscovery.availableApis, `${seed}|apis`).map((a) => ({
                 id: a.id,
                 content: (
                   <span className="flex items-start gap-3">
@@ -160,7 +164,7 @@ function GuidedThinkingPageContent() {
               onPass={advance}
             />
           )}
-          {step >= 3 && <ArchitectureStep scenario={scenario} onPass={finish} done={done} />}
+          {step >= 3 && <ArchitectureStep scenario={scenario} seed={seed} onPass={finish} done={done} />}
         </section>
       </main>
 
@@ -253,11 +257,9 @@ function PickStep({
   };
 
   const check = () => {
-    const missing = correctIds.filter((id) => !selected.includes(id)).length;
-    const extra = exact ? selected.filter((id) => !correctIds.includes(id)).length : 0;
-    const pass = missing === 0 && extra === 0;
-    setResult({ pass, missing, extra });
-    if (pass) playSuccessSound();
+    const outcome = checkPicks(selected, correctIds, exact);
+    setResult(outcome);
+    if (outcome.pass) playSuccessSound();
     else playErrorSound();
   };
 
@@ -346,16 +348,30 @@ function PickStep({
   );
 }
 
-function ArchitectureStep({ scenario, onPass, done }: { scenario: GuidedScenario; onPass: () => void; done: boolean }) {
+function ArchitectureStep({
+  scenario,
+  seed,
+  onPass,
+  done,
+}: {
+  scenario: GuidedScenario;
+  seed: string;
+  onPass: () => void;
+  done: boolean;
+}) {
   const a = scenario.architectureDiscovery;
   return (
     <div className="space-y-5">
       <PickStep
         eyebrow="Step 4 of 4 · Architecture"
         title={stripStep(a.instruction)}
-        help="Pick the building blocks a fault-tolerant, horizontally scalable version needs. The diagram updates as you go."
+        help="Pick only the building blocks this system needs to be fault-tolerant and horizontally scalable. Extra components are rejected. The diagram updates as you go."
         noun="component"
-        items={COMPONENTS.map((c) => ({
+        exact
+        items={orderPicks(
+          COMPONENTS.map((c) => ({ ...c, id: c.type })),
+          `${seed}|architecture`
+        ).map((c) => ({
           id: c.type,
           content: (
             <span className="block">

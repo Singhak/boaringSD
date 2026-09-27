@@ -53,6 +53,12 @@ import { getPatternReasoningPrompt } from "@/data/reasoningPrompts";
 import { deterministicShuffle, hashSeed } from "@/lib/shuffle";
 import { applySkin, pickSkin } from "@/lib/incidentSkin";
 import { useUserStats } from "@/lib/useUserStats";
+import { approachRating, visibleChoiceChips } from "@/lib/choiceChips";
+import type { ChipTone } from "@/lib/choiceChips";
+import { buildDebriefSummary } from "@/lib/debriefSummary";
+import type { DebriefSummary } from "@/lib/debriefSummary";
+import { pickDefenseOption } from "@/lib/defenseQuestions";
+import { resolveConceptIntelId } from "@/data/conceptIntel";
 import type { CampaignChapter, ComponentKind, IncidentChoice, IncidentGraph, IncidentMetric, IncidentV2, SystemDesignPattern } from "@/types";
 
 interface IncidentWarRoomProps {
@@ -95,6 +101,8 @@ export default function IncidentWarRoom({
   const [wrongDeploys, setWrongDeploys] = useState(0);
   const [hintsUsedTotal, setHintsUsedTotal] = useState(0);
   const [fixRecorded, setFixRecorded] = useState(false);
+  const [runXp, setRunXp] = useState(0);
+  const [transferPassed, setTransferPassed] = useState(false);
   const [cascadePendingId, setCascadePendingId] = useState<string | null>(null);
   const [cascadeCountdown, setCascadeCountdown] = useState<number | null>(null);
   const [survivedCascades, setSurvivedCascades] = useState<string[]>([]);
@@ -138,8 +146,12 @@ export default function IncidentWarRoom({
   const [defenseModalOpen, setDefenseModalOpen] = useState(false);
   const [defenseVerified, setDefenseVerified] = useState(false);
   const [pendingSuccessChoice, setPendingSuccessChoice] = useState<IncidentChoice | null>(null);
+  // Bumped on every defense opening so its options move between attempts.
+  const [defenseAttempt, setDefenseAttempt] = useState(0);
   const tradeoffSet = pattern ? getTradeoffsForPattern(pattern.id) : undefined;
-  const activeDefenseOption = tradeoffSet?.options.find((o) => o.id === tradeoffSet.recommendedOptionId) || tradeoffSet?.options[0];
+  // The defense is about what the player deployed, not the set's recommended option.
+  const activeDefenseOption =
+    tradeoffSet && pendingSuccessChoice ? pickDefenseOption(tradeoffSet, pendingSuccessChoice.label) : undefined;
 
   // Synchronize graph and metrics during render when incidentId changes
   const [prevIncidentId, setPrevIncidentId] = useState(incidentId);
@@ -253,6 +265,7 @@ export default function IncidentWarRoom({
       // If an architectural tradeoff scenario exists and defense not yet verified, open defense modal
       if (tradeoffSet && !defenseVerified) {
         setPendingSuccessChoice(choice);
+        setDefenseAttempt((n) => n + 1);
         setDefenseModalOpen(true);
         return;
       }
@@ -302,7 +315,8 @@ export default function IncidentWarRoom({
   const finishCampaignRun = (transferFirstTry: boolean) => {
     if (!pattern) return;
     const firstTryFix = wrongDeploys === 0;
-    completePatternRun(pattern, {
+    setTransferPassed(transferFirstTry);
+    const outcome = completePatternRun(pattern, {
       patternId: pattern.id,
       diagnosisFirstTry: firstTryFix,
       interventionFirstTry: firstTryFix,
@@ -310,6 +324,7 @@ export default function IncidentWarRoom({
       hintsUsed: hintsUsedTotal,
       failureReasons: [...(firstTryFix ? [] : ["intervention"]), ...(transferFirstTry ? [] : ["transfer"])],
     });
+    setRunXp(outcome.xpAwarded);
     setIsAftershock(false);
     if (reasoningPrompt) {
       setIsDefendingCall(true);
@@ -424,6 +439,8 @@ export default function IncidentWarRoom({
       })).concat([{ id: "debrief", label: "Debrief" }]);
 
   const totalXp = Object.values(solvedIncidents).reduce((a, b) => a + b, 0);
+  // Only offer the ELI5 drawer when there is intel to show; it must never silently do nothing.
+  const intelId = resolveConceptIntelId(incident.conceptIntelId, incident.patternId, pattern?.id);
 
   return (
     <article
@@ -550,23 +567,7 @@ export default function IncidentWarRoom({
                     <span className="eyebrow text-cyan-300 flex items-center gap-1.5 !text-[11px]">
                       <Scale className="w-3.5 h-3.5" /> Architectural Tradeoff Ledger
                     </span>
-                    {selectedChoice.approach && (
-                      <span
-                        className={`chip !py-0 !text-[11px] ${
-                          selectedChoice.approach === "optimal"
-                            ? "chip-ok"
-                            : selectedChoice.approach === "viable_with_tradeoffs"
-                            ? "chip-warn"
-                            : "chip-bad"
-                        }`}
-                      >
-                        {selectedChoice.approach === "optimal"
-                          ? "Optimal Pattern"
-                          : selectedChoice.approach === "viable_with_tradeoffs"
-                          ? "Viable with Tradeoffs"
-                          : "Anti-Pattern"}
-                      </span>
-                    )}
+                    <SeniorRating choice={selectedChoice} />
                   </div>
 
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
@@ -680,6 +681,7 @@ export default function IncidentWarRoom({
               <div className="space-y-1.5 flex-1 min-h-0 overflow-y-auto pr-0.5">
                 {orderedChoices.map((choice) => {
                   const isSelected = selectedChoiceId === choice.id;
+                  const chips = visibleChoiceChips(choice, isSelected && isSubmitted);
                   let stateClass = "border-[var(--line)] bg-[var(--surface-2)] text-slate-200 hover:border-slate-500 hover:bg-white/[0.04]";
 
                   if (isSelected && isSubmitted) {
@@ -721,43 +723,19 @@ export default function IncidentWarRoom({
                         </span>
                       </div>
 
-                      {/* Tradeoff Vector & Approach Micro-badges */}
-                      {(choice.approach || choice.tradeoffs) && (
+                      {/* Trade-off chips; the approach rating waits until this card is deployed */}
+                      {chips.length > 0 && (
                         <div className="flex flex-wrap items-center gap-1.5 pl-7 text-[11px]">
-                          {choice.approach && (
+                          {chips.map((chip) => (
                             <span
-                              className={`px-1.5 py-0.5 rounded font-mono font-medium ${
-                                choice.approach === "optimal"
-                                  ? "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
-                                  : choice.approach === "viable_with_tradeoffs"
-                                  ? "bg-amber-500/15 text-amber-300 border border-amber-500/30"
-                                  : "bg-rose-500/15 text-rose-300 border border-rose-500/30"
+                              key={chip.kind}
+                              className={`px-1.5 py-0.5 rounded font-mono border ${CARD_CHIP_CLASS[chip.tone]} ${
+                                chip.kind === "consistency" ? "capitalize" : ""
                               }`}
                             >
-                              {choice.approach === "optimal"
-                                ? "Optimal"
-                                : choice.approach === "viable_with_tradeoffs"
-                                ? "Viable"
-                                : "Anti-Pattern"}
+                              {chip.kind === "approach" ? `Senior engineer's rating: ${chip.label}` : chip.label}
                             </span>
-                          )}
-                          {choice.tradeoffs?.costMonthlyDelta !== undefined && (
-                            <span className="text-slate-400 font-mono bg-black/30 px-1.5 py-0.5 rounded border border-white/[0.04]">
-                              {choice.tradeoffs.costMonthlyDelta > 0
-                                ? `+$${choice.tradeoffs.costMonthlyDelta}/mo`
-                                : "$0/mo"}
-                            </span>
-                          )}
-                          {choice.tradeoffs?.consistencyGuarantee && (
-                            <span className="text-slate-400 font-mono bg-black/30 px-1.5 py-0.5 rounded border border-white/[0.04] capitalize">
-                              {choice.tradeoffs.consistencyGuarantee}
-                            </span>
-                          )}
-                          {choice.cascadeIncidentId && (
-                            <span className="text-amber-400/90 font-mono bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20 flex items-center gap-1">
-                              <AlertTriangle className="w-2.5 h-2.5 text-amber-400" /> Cascade Risk
-                            </span>
-                          )}
+                          ))}
                         </div>
                       )}
                     </button>
@@ -783,14 +761,16 @@ export default function IncidentWarRoom({
                   ) : null
                 )}
 
-                <button
-                  type="button"
-                  onClick={() => setSelectedIntelId(incident.patternId || pattern?.id || "caching")}
-                  className="text-xs text-amber-300/90 hover:text-amber-200 flex items-center gap-1 cursor-pointer"
-                >
-                  <Lightbulb className="w-3.5 h-3.5 text-amber-400" />
-                  30s ELI5 Concept Intel
-                </button>
+                {intelId && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedIntelId(intelId)}
+                    className="text-xs text-amber-300/90 hover:text-amber-200 flex items-center gap-1 cursor-pointer"
+                  >
+                    <Lightbulb className="w-3.5 h-3.5 text-amber-400" />
+                    30s ELI5 Concept Intel
+                  </button>
+                )}
               </div>
 
               {hintsRevealed > 0 && incident.hints && (
@@ -832,14 +812,19 @@ export default function IncidentWarRoom({
                     </span>
                     {isSolved && (
                       <span className="num text-xs text-amber-300 font-semibold flex items-center gap-1">
-                        <Zap className="w-3 h-3" /> +{incident.xp} XP
+                        <Zap className="w-3 h-3" /> +{solvedIncidents[incident.id] ?? 0} XP
                       </span>
                     )}
                   </div>
 
-                  <p className="text-xs text-slate-300 leading-relaxed line-clamp-3">
-                    {selectedChoice.resultBody}
-                  </p>
+                  {!selectedChoice.tradeoffs && <SeniorRating choice={selectedChoice} />}
+
+                  <details open className="text-xs">
+                    <summary className="cursor-pointer text-[11px] font-mono uppercase tracking-wider text-slate-400 hover:text-slate-200 select-none">
+                      Read why
+                    </summary>
+                    <p className="mt-1 text-slate-300 leading-relaxed">{selectedChoice.resultBody}</p>
+                  </details>
 
                   {/* Actions */}
                   {cascadePendingId ? (
@@ -904,7 +889,11 @@ export default function IncidentWarRoom({
                 chapter={chapter}
                 incident={incident}
                 selectedChoice={selectedChoice}
-                totalXp={totalXp || incident.xp}
+                summary={buildDebriefSummary({
+                  incidentXp: Object.values(solvedIncidents),
+                  runXp,
+                  transferFirstTry: transferPassed,
+                })}
                 survivedCascades={survivedCascades}
                 onReplay={onNewRun ?? handleRollback}
                 replayLabel={onNewRun ? "Next incident" : "Replay Incident"}
@@ -929,6 +918,8 @@ export default function IncidentWarRoom({
         <ArchitecturalDefenseModal
           isOpen={defenseModalOpen}
           option={activeDefenseOption}
+          deployedLabel={pendingSuccessChoice?.label ?? activeDefenseOption.title}
+          shuffleSeed={`${shuffleSeed}|${incident.id}|defense#${defenseAttempt}`}
           onSuccess={handleDefenseSuccess}
           onClose={() => {
             // Backing out of the defense cancels the deploy; the fix only lands once defended.
@@ -940,6 +931,25 @@ export default function IncidentWarRoom({
         />
       )}
     </article>
+  );
+}
+
+const CARD_CHIP_CLASS: Record<ChipTone, string> = {
+  ok: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
+  warn: "bg-amber-500/10 text-amber-300 border-amber-500/25",
+  bad: "bg-rose-500/15 text-rose-300 border-rose-500/30",
+  neutral: "bg-black/30 text-slate-400 border-white/[0.04]",
+};
+
+/** The approach badge, shown only after a deploy, as the senior engineer's verdict. */
+function SeniorRating({ choice }: { choice: IncidentChoice }) {
+  const rating = approachRating(choice.approach);
+  if (!rating) return null;
+  const tone = rating.tone === "ok" ? "chip-ok" : rating.tone === "warn" ? "chip-warn" : "chip-bad";
+  return (
+    <span className={`chip !py-0 !text-[11px] ${tone}`}>
+      Senior engineer&apos;s rating: {rating.label}
+    </span>
   );
 }
 
@@ -1042,7 +1052,7 @@ function CampaignDebriefScreen({
   pattern,
   incident,
   selectedChoice,
-  totalXp,
+  summary,
   survivedCascades,
   onReplay,
   replayLabel,
@@ -1051,7 +1061,7 @@ function CampaignDebriefScreen({
   chapter?: CampaignChapter;
   incident: IncidentV2;
   selectedChoice?: IncidentChoice;
-  totalXp: number;
+  summary: DebriefSummary;
   survivedCascades?: string[];
   onReplay: () => void;
   replayLabel: string;
@@ -1075,7 +1085,10 @@ function CampaignDebriefScreen({
         <section className="surface !rounded-xl overflow-hidden" aria-label="Architecture Upgrades">
           <header className="px-5 py-3 border-b border-[var(--line)] flex items-center justify-between gap-2">
             <span className="eyebrow">Stabilized Component</span>
-            <span className="num text-xs text-amber-200/90">+{totalXp || incident.xp} XP</span>
+            <span className="num text-xs text-amber-200/90">
+              {summary.xpLabel}
+              {summary.xpNote && <span className="text-slate-400"> ({summary.xpNote})</span>}
+            </span>
           </header>
           <div className="p-5 space-y-3">
             <div className="flex items-start gap-3">
@@ -1126,10 +1139,10 @@ function CampaignDebriefScreen({
         {/* Practice and Progression */}
         <section className="surface !rounded-xl p-5 space-y-4" aria-label="Next Actions">
           <div className="space-y-1">
-            <h3 className="text-[15px] font-semibold text-white">Mastery Verified</h3>
-            <p className="text-[13px] text-slate-400 leading-relaxed">
-              Progress saved. You can advance directly to the next level or stress-test your design in the architecture sandbox.
-            </p>
+            <h3 className={`text-[15px] font-semibold ${summary.masteryVerified ? "text-emerald-300" : "text-white"}`}>
+              {summary.masteryTitle}
+            </h3>
+            <p className="text-[13px] text-slate-400 leading-relaxed">{summary.masteryBody}</p>
           </div>
           <div className="flex flex-col gap-2 pt-1">
             <button
@@ -1164,7 +1177,7 @@ function CampaignDebriefScreen({
             All Levels Completed! Explore Map
           </Link>
         )}
-        <Link href={`/campaign/${pattern.chapterId}`} className="btn btn-ghost">
+        <Link href={`/campaign/${pattern.chapterId}?mode=study`} className="btn btn-ghost">
           Guided Mode
         </Link>
         <Link href="/campaign" className="btn btn-ghost">
