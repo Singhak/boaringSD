@@ -2325,37 +2325,37 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "gRPC clients pin to one pod",
-      "brief": "A gRPC client pool opens long-lived connections and 80% of RPCs stay on the first pod.",
-      "constraint": "The balancer only sees connection count, not RPC rate.",
-      "question": "What restores even RPC distribution?",
+      "title": "gRPC clients pin to two of eight pods",
+      "brief": "RideNow's pricing service takes 24,000 gRPC calls/s through a Kubernetes ClusterIP. HTTP/2 connections live for hours, so after a scale-up 2 of 8 pods sit at 94% CPU while 6 idle near 10%.",
+      "constraint": "The calling services can't be redeployed this week; only infrastructure changes are allowed.",
+      "question": "Where should the balancing decision happen so the idle pods get work?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 12000,
+          "value": 24000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 80,
+          "value": 94,
           "unit": "%",
           "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 2800,
+          "value": 850,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 100,
-          "unit": "errors",
+          "label": "Deadline exceeded",
+          "value": 6,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -2364,91 +2364,97 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Dispatch API"
           },
           {
-            "id": "s1",
+            "id": "svc",
+            "kind": "lb",
+            "label": "ClusterIP",
+            "tone": "warn",
+            "sub": "per-connection"
+          },
+          {
+            "id": "hot",
             "kind": "server",
-            "label": "Server 1",
+            "label": "Pods 1-2",
             "tone": "bad",
-            "cpu": 90
+            "cpu": 94
           },
           {
-            "id": "s2",
+            "id": "idle",
             "kind": "server",
-            "label": "Server 2",
-            "tone": "neutral"
-          },
-          {
-            "id": "s3",
-            "kind": "server",
-            "label": "Server 3",
-            "tone": "neutral"
+            "label": "Pods 3-8",
+            "tone": "neutral",
+            "cpu": 10
           }
         ],
         "edges": [
           {
             "from": "users",
-            "to": "s1"
+            "to": "svc"
+          },
+          {
+            "from": "svc",
+            "to": "hot"
+          },
+          {
+            "from": "svc",
+            "to": "idle"
           }
         ]
       },
       "choices": [
         {
-          "id": "fresh-reads",
-          "label": "Fresh reads",
+          "id": "l7-grpc",
+          "label": "Per-request L7 balancing through an Envoy gRPC proxy",
           "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "latencyP99DeltaMs": 1,
+            "complexityScore": 3,
+            "tradeoffSummary": "Even load per call for an extra proxy hop."
+          },
           "graphAfter": {
             "nodes": [
               {
                 "id": "users",
                 "kind": "users",
-                "label": "Users"
+                "label": "Dispatch API"
               },
               {
-                "id": "lb",
+                "id": "svc",
                 "kind": "lb",
-                "label": "Load balancer",
-                "tone": "good"
+                "label": "Envoy",
+                "tone": "good",
+                "sub": "per-request"
               },
               {
-                "id": "s1",
+                "id": "hot",
                 "kind": "server",
-                "label": "Server 1",
+                "label": "Pods 1-2",
                 "tone": "good",
-                "cpu": 34
+                "cpu": 39
               },
               {
-                "id": "s2",
+                "id": "idle",
                 "kind": "server",
-                "label": "Server 2",
+                "label": "Pods 3-8",
                 "tone": "good",
-                "cpu": 36
-              },
-              {
-                "id": "s3",
-                "kind": "server",
-                "label": "Server 3",
-                "tone": "good",
-                "cpu": 33
+                "cpu": 37
               }
             ],
             "edges": [
               {
                 "from": "users",
-                "to": "lb"
+                "to": "svc"
               },
               {
-                "from": "lb",
-                "to": "s1"
+                "from": "svc",
+                "to": "hot"
               },
               {
-                "from": "lb",
-                "to": "s2"
-              },
-              {
-                "from": "lb",
-                "to": "s3"
+                "from": "svc",
+                "to": "idle"
               }
             ]
           },
@@ -2456,97 +2462,100 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 26,
+              "value": 38,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 186,
-              "unit": "ms",
-              "tone": "good"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
-              "tone": "good"
-            }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Balance at request level or refresh backends so long-lived connections do not pin load."
-        },
-        {
-          "id": "add-more-database",
-          "label": "Add more database",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 84,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 3500,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 140,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Still pinned",
-          "resultBody": "Traffic never left the hot node."
-        },
-        {
-          "id": "increase-http-timeouts",
-          "label": "Increase HTTP timeouts",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 82,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 3080,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
               "value": 120,
-              "unit": "errors",
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Deadline exceeded",
+              "value": 0.1,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Streams spread across all eight pods",
+          "resultBody": "Envoy terminates the HTTP/2 connections and sends each gRPC stream to the least-loaded pod, so all 8 pods settle near 38% CPU and deadline errors fall to 0.1%. Cost: one extra proxy hop of about 0.5 ms and another component to run."
+        },
+        {
+          "id": "more-pods",
+          "label": "Add four more pricing pods to the Deployment",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 93,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 820,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Deadline exceeded",
+              "value": 5.8,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Still pinned",
-          "resultBody": "Increase HTTP timeouts"
+          "resultTitle": "New pods sit idle",
+          "resultBody": "The four new pods pass readiness, but the existing HTTP/2 connections never reconnect, so they receive almost no calls. Pods 1-2 stay at 93% CPU and deadline errors hold near 6%."
+        },
+        {
+          "id": "ipvs-lc",
+          "label": "Switch kube-proxy to IPVS least-connection scheduling",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 91,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 780,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Deadline exceeded",
+              "value": 5,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Connections balanced, calls not",
+          "resultBody": "IPVS now spreads TCP connections evenly, but one connection from the busiest caller still multiplexes 60% of all calls. Whichever pod holds it stays above 90% CPU because the scheduler never sees individual streams."
         }
       ],
       "hints": [
-        "Traffic is not shared evenly.",
-        "Healthy copies sit idle.",
-        "Put a balancer in front."
+        "The idle pods are healthy and reachable.",
+        "kube-proxy picks a pod once per TCP connection, and gRPC reuses one connection for thousands of calls.",
+        "The decision has to be made per HTTP/2 stream, which needs something that understands HTTP/2."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "lb-12",
@@ -2557,36 +2566,36 @@
       "severity": "P0",
       "xp": 50,
       "title": "Health checks pass on a dying node",
-      "brief": "A node answers /health in 5ms but its request queue is 12 seconds deep.",
-      "constraint": "The probe does not measure real work capacity.",
-      "question": "What should the balancer use instead?",
+      "brief": "ShopFast's 10-node checkout fleet serves 18,000 req/s. Node 7's NVMe is failing: /healthz answers 200 in 2 ms, but 40% of real checkouts on node 7 time out after 5 s.",
+      "constraint": "The /healthz endpoint belongs to another team and can't be changed today.",
+      "question": "How does the balancer stop sending checkouts to node 7?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 12000,
+          "value": 18000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 90,
+          "value": 62,
           "unit": "%",
-          "tone": "bad"
+          "tone": "warn"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 2800,
+          "value": 1200,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 100,
-          "unit": "errors",
+          "label": "Checkout failures",
+          "value": 4,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -2595,73 +2604,83 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Shoppers"
           },
           {
-            "id": "s1",
+            "id": "lb",
+            "kind": "lb",
+            "label": "Envoy",
+            "tone": "neutral",
+            "sub": "healthz every 10 s"
+          },
+          {
+            "id": "ok",
             "kind": "server",
-            "label": "Server 1",
+            "label": "Nodes 1-6, 8-10",
+            "tone": "good",
+            "cpu": 62
+          },
+          {
+            "id": "n7",
+            "kind": "server",
+            "label": "Node 7",
             "tone": "bad",
-            "cpu": 90
-          },
-          {
-            "id": "s2",
-            "kind": "server",
-            "label": "Server 2",
-            "tone": "neutral"
-          },
-          {
-            "id": "s3",
-            "kind": "server",
-            "label": "Server 3",
-            "tone": "neutral"
+            "cpu": 30,
+            "sub": "40% timeouts"
           }
         ],
         "edges": [
           {
             "from": "users",
-            "to": "s1"
+            "to": "lb"
+          },
+          {
+            "from": "lb",
+            "to": "ok"
+          },
+          {
+            "from": "lb",
+            "to": "n7"
           }
         ]
       },
       "choices": [
         {
-          "id": "health-checks",
-          "label": "Health checks",
+          "id": "outlier",
+          "label": "Passive outlier ejection on consecutive 5xx and timeouts",
           "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "complexityScore": 2,
+            "tradeoffSummary": "Catches gray failures from live traffic; needs an ejection cap."
+          },
           "graphAfter": {
             "nodes": [
               {
                 "id": "users",
                 "kind": "users",
-                "label": "Users"
+                "label": "Shoppers"
               },
               {
                 "id": "lb",
                 "kind": "lb",
-                "label": "Load balancer",
-                "tone": "good"
+                "label": "Envoy",
+                "tone": "good",
+                "sub": "outlier detection"
               },
               {
-                "id": "s1",
+                "id": "ok",
                 "kind": "server",
-                "label": "Server 1",
+                "label": "Nodes 1-6, 8-10",
                 "tone": "good",
-                "cpu": 34
+                "cpu": 67
               },
               {
-                "id": "s2",
+                "id": "n7",
                 "kind": "server",
-                "label": "Server 2",
-                "tone": "good",
-                "cpu": 36
-              },
-              {
-                "id": "s3",
-                "kind": "server",
-                "label": "Server 3",
-                "tone": "good",
-                "cpu": 33
+                "label": "Node 7",
+                "tone": "neutral",
+                "sub": "ejected"
               }
             ],
             "edges": [
@@ -2671,15 +2690,7 @@
               },
               {
                 "from": "lb",
-                "to": "s1"
-              },
-              {
-                "from": "lb",
-                "to": "s2"
-              },
-              {
-                "from": "lb",
-                "to": "s3"
+                "to": "ok"
               }
             ]
           },
@@ -2687,97 +2698,100 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 30,
+              "value": 67,
               "unit": "%",
-              "tone": "good"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 186,
+              "value": 180,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
+              "label": "Checkout failures",
+              "value": 0.1,
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Health checks that include queue depth, error rate, or dependency readiness."
+          "resultTitle": "Node 7 ejected by its own responses",
+          "resultBody": "Envoy counts real failures: after 5 consecutive timeouts node 7 is ejected for 30 s, and re-ejected each time it returns, so checkout failures drop to 0.1%. Cost: cap ejections at 20% of the fleet so a bad deploy can't eject everything."
         },
         {
-          "id": "ping-operating-system",
-          "label": "Ping operating system",
+          "id": "fast-check",
+          "label": "Run the active health check every second instead of 10",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 94,
+              "value": 63,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 3500,
+              "value": 1200,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 140,
-              "unit": "errors",
+              "label": "Checkout failures",
+              "value": 4,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Still pinned",
-          "resultBody": "Traffic never left the hot node."
+          "resultTitle": "Faster checks, same blind spot",
+          "resultBody": "The probe now runs ten times as often, but /healthz never touches the failing disk and keeps returning 200. Node 7 stays in rotation and 4% of checkouts still hang for 5 s."
         },
         {
-          "id": "disable-health-checks",
-          "label": "Disable health checks",
+          "id": "retry",
+          "label": "Retry timed-out checkout requests on another node",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 92,
+              "value": 68,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 3080,
+              "value": 5400,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 120,
-              "unit": "errors",
+              "label": "Checkout failures",
+              "value": 1.5,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Still pinned",
-          "resultBody": "Disable health checks"
+          "resultTitle": "Errors hidden behind 5-second stalls",
+          "resultBody": "Retries mask some failures, but each one waits the full 5 s timeout first, so p95 jumps past 5 s. Non-idempotent checkout POSTs retried mid-write also create duplicate orders."
         }
       ],
       "hints": [
-        "Traffic is not shared evenly.",
-        "Healthy copies sit idle.",
-        "Put a balancer in front."
+        "Node 7 reports healthy every time it is asked.",
+        "The health endpoint doesn't touch the disk that is failing.",
+        "The balancer already sees every real response and how long it took."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "lb-13",
@@ -2787,37 +2801,37 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Canary takes all production traffic",
-      "brief": "A 5% canary is deployed, but weighted routing is misconfigured and the canary receives 100%.",
-      "constraint": "The canary has far less capacity than the stable pool.",
-      "question": "What did the balancing layer fail to do?",
+      "title": "Canary pods take half of production traffic",
+      "brief": "StreamBox shipped playback API v2.3 as a canary meant to get 5% of 30,000 req/s. Both target groups are weighted 100, so the canary's 2 pods get 15,000 req/s and hit 97% CPU.",
+      "constraint": "v2.3 must keep taking some live traffic so the release can still be evaluated.",
+      "question": "How do you give the canary the slice it was meant to have?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 12000,
+          "value": 30000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 100,
+          "value": 97,
           "unit": "%",
           "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 2800,
+          "value": 1900,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 100,
-          "unit": "errors",
+          "label": "Playback errors",
+          "value": 9,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -2826,73 +2840,82 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Viewers"
           },
           {
-            "id": "s1",
+            "id": "lb",
+            "kind": "lb",
+            "label": "ALB listener",
+            "tone": "warn",
+            "sub": "weights 100 / 100"
+          },
+          {
+            "id": "v1",
             "kind": "server",
-            "label": "Server 1",
+            "label": "v2.2 x20 pods",
+            "tone": "good",
+            "cpu": 35
+          },
+          {
+            "id": "v2",
+            "kind": "server",
+            "label": "v2.3 canary x2",
             "tone": "bad",
-            "cpu": 90
-          },
-          {
-            "id": "s2",
-            "kind": "server",
-            "label": "Server 2",
-            "tone": "neutral"
-          },
-          {
-            "id": "s3",
-            "kind": "server",
-            "label": "Server 3",
-            "tone": "neutral"
+            "cpu": 97
           }
         ],
         "edges": [
           {
             "from": "users",
-            "to": "s1"
+            "to": "lb"
+          },
+          {
+            "from": "lb",
+            "to": "v1"
+          },
+          {
+            "from": "lb",
+            "to": "v2"
           }
         ]
       },
       "choices": [
         {
-          "id": "load-balancer",
-          "label": "Load balancer",
+          "id": "weights",
+          "label": "Weighted target groups at 95/5 with a stepped ramp",
           "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "complexityScore": 2,
+            "tradeoffSummary": "Small blast radius; slower signal on rare bugs."
+          },
           "graphAfter": {
             "nodes": [
               {
                 "id": "users",
                 "kind": "users",
-                "label": "Users"
+                "label": "Viewers"
               },
               {
                 "id": "lb",
                 "kind": "lb",
-                "label": "Load balancer",
-                "tone": "good"
+                "label": "ALB listener",
+                "tone": "good",
+                "sub": "weights 95 / 5"
               },
               {
-                "id": "s1",
+                "id": "v1",
                 "kind": "server",
-                "label": "Server 1",
+                "label": "v2.2 x20 pods",
                 "tone": "good",
-                "cpu": 34
+                "cpu": 60
               },
               {
-                "id": "s2",
+                "id": "v2",
                 "kind": "server",
-                "label": "Server 2",
+                "label": "v2.3 canary x2",
                 "tone": "good",
-                "cpu": 36
-              },
-              {
-                "id": "s3",
-                "kind": "server",
-                "label": "Server 3",
-                "tone": "good",
-                "cpu": 33
+                "cpu": 45
               }
             ],
             "edges": [
@@ -2902,15 +2925,11 @@
               },
               {
                 "from": "lb",
-                "to": "s1"
+                "to": "v1"
               },
               {
                 "from": "lb",
-                "to": "s2"
-              },
-              {
-                "from": "lb",
-                "to": "s3"
+                "to": "v2"
               }
             ]
           },
@@ -2918,97 +2937,100 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 33,
+              "value": 60,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 186,
-              "unit": "ms",
-              "tone": "good"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
-              "tone": "good"
-            }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Honor traffic weights so only a small share reaches the canary."
-        },
-        {
-          "id": "delete-stable-pool",
-          "label": "Delete stable pool",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 100,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 3500,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
               "value": 140,
-              "unit": "errors",
-              "tone": "bad"
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Playback errors",
+              "value": 0.3,
+              "unit": "%",
+              "tone": "good"
             }
           ],
-          "resultTitle": "Still pinned",
-          "resultBody": "Traffic never left the hot node."
+          "resultTitle": "Canary back to a 5% slice",
+          "resultBody": "The listener now splits 95/5 per request: the canary's 2 pods get 1,500 req/s at about 45% CPU and v2.2 absorbs the rest at 60%. A ramp of 5, 25 and 50% with rollback on error rate follows. Cost: rare v2.3 bugs take longer to surface at 5%."
         },
         {
-          "id": "increase-canary-cpu",
-          "label": "Increase canary CPU",
+          "id": "scale-canary",
+          "label": "Scale the canary to 20 pods to absorb its half",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 100,
+              "value": 38,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 160,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Playback errors",
+              "value": 2,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Half of all viewers now on the canary",
+          "resultBody": "CPU recovers, but 50% of viewers now run unproven v2.3, and its codec regression fails 4% of its streams. Global playback errors settle at 2%, which is no longer a canary but a half-rollout."
+        },
+        {
+          "id": "lor",
+          "label": "Set both groups to least-outstanding-requests routing",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 96,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 3080,
+              "value": 1850,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 120,
-              "unit": "errors",
+              "label": "Playback errors",
+              "value": 8.8,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Still pinned",
-          "resultBody": "Increase canary CPU after the spike"
+          "resultTitle": "Algorithm changed, split unchanged",
+          "resultBody": "Least-outstanding-requests picks a pod inside each target group; it does not change the 100/100 weights between groups. The 2 canary pods still receive 15,000 req/s and stay at 96% CPU."
         }
       ],
       "hints": [
-        "Traffic is not shared evenly.",
-        "Healthy copies sit idle.",
-        "Put a balancer in front."
+        "Count the pods behind each target group.",
+        "Weights split traffic between groups, not between pods.",
+        "The canary's share is set on the listener rule and should grow in steps."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "lb-14",
@@ -3018,37 +3040,37 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Least-connections prefers a slow node",
-      "brief": "A slow instance holds connections longer, so least-connections keeps sending it more work.",
-      "constraint": "Connection count is a poor proxy for remaining capacity.",
-      "question": "How should routing adapt?",
+      "title": "Least-connections floods a fast-failing node",
+      "brief": "PayLink's 6 API nodes use least-connections at 15,000 req/s. Node 4 lost its database credentials and returns 500 in 3 ms, so it always has the fewest open connections and now gets 45% of requests.",
+      "constraint": "Node 4 answers its TCP port check, so the balancer considers it healthy.",
+      "question": "What keeps a node that fails fast from attracting traffic?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 12000,
+          "value": 15000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 90,
+          "value": 41,
           "unit": "%",
-          "tone": "bad"
+          "tone": "good"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 2800,
+          "value": 70,
           "unit": "ms",
-          "tone": "bad"
+          "tone": "good"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 100,
-          "unit": "errors",
+          "label": "5xx rate",
+          "value": 44,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -3057,73 +3079,83 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Merchants"
           },
           {
-            "id": "s1",
+            "id": "lb",
+            "kind": "lb",
+            "label": "HAProxy",
+            "tone": "warn",
+            "sub": "leastconn, TCP check"
+          },
+          {
+            "id": "ok",
             "kind": "server",
-            "label": "Server 1",
+            "label": "Nodes 1-3, 5-6",
+            "tone": "good",
+            "cpu": 41
+          },
+          {
+            "id": "n4",
+            "kind": "server",
+            "label": "Node 4",
             "tone": "bad",
-            "cpu": 90
-          },
-          {
-            "id": "s2",
-            "kind": "server",
-            "label": "Server 2",
-            "tone": "neutral"
-          },
-          {
-            "id": "s3",
-            "kind": "server",
-            "label": "Server 3",
-            "tone": "neutral"
+            "cpu": 22,
+            "sub": "500 in 3 ms"
           }
         ],
         "edges": [
           {
             "from": "users",
-            "to": "s1"
+            "to": "lb"
+          },
+          {
+            "from": "lb",
+            "to": "ok"
+          },
+          {
+            "from": "lb",
+            "to": "n4"
           }
         ]
       },
       "choices": [
         {
-          "id": "load-balancer",
-          "label": "Load balancer",
+          "id": "deep-ready",
+          "label": "HTTP readiness check that runs a real database query",
           "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "complexityScore": 2,
+            "tradeoffSummary": "Probe detects broken dependencies; a shared-DB outage would fail every node at once."
+          },
           "graphAfter": {
             "nodes": [
               {
                 "id": "users",
                 "kind": "users",
-                "label": "Users"
+                "label": "Merchants"
               },
               {
                 "id": "lb",
                 "kind": "lb",
-                "label": "Load balancer",
-                "tone": "good"
+                "label": "HAProxy",
+                "tone": "good",
+                "sub": "leastconn, /ready check"
               },
               {
-                "id": "s1",
+                "id": "ok",
                 "kind": "server",
-                "label": "Server 1",
+                "label": "Nodes 1-3, 5-6",
                 "tone": "good",
-                "cpu": 34
+                "cpu": 58
               },
               {
-                "id": "s2",
+                "id": "n4",
                 "kind": "server",
-                "label": "Server 2",
-                "tone": "good",
-                "cpu": 36
-              },
-              {
-                "id": "s3",
-                "kind": "server",
-                "label": "Server 3",
-                "tone": "good",
-                "cpu": 33
+                "label": "Node 4",
+                "tone": "neutral",
+                "sub": "out of pool"
               }
             ],
             "edges": [
@@ -3133,15 +3165,7 @@
               },
               {
                 "from": "lb",
-                "to": "s1"
-              },
-              {
-                "from": "lb",
-                "to": "s2"
-              },
-              {
-                "from": "lb",
-                "to": "s3"
+                "to": "ok"
               }
             ]
           },
@@ -3149,97 +3173,100 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 30,
+              "value": 58,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 186,
+              "value": 85,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
+              "label": "5xx rate",
+              "value": 0.05,
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Use latency-aware or utilization-aware balancing, not connection count alone."
+          "resultTitle": "Broken node fails its readiness probe",
+          "resultBody": "HAProxy now calls /ready every 2 s, which runs SELECT 1 with the node's own credentials. Node 4 fails 3 probes and leaves the pool within 6 s; the other 5 nodes rise to 58% CPU and 5xx falls to 0.05%. Cost: keep the probe cheap and dependency-light."
         },
         {
-          "id": "always-use-source-ip",
-          "label": "Always use source-IP",
+          "id": "round-robin",
+          "label": "Switch HAProxy from leastconn to plain round-robin",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 94,
+              "value": 48,
               "unit": "%",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 3500,
+              "value": 75,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 140,
-              "unit": "errors",
+              "label": "5xx rate",
+              "value": 16,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Still pinned",
-          "resultBody": "Traffic never left the hot node."
+          "resultTitle": "Black hole shrinks to one sixth",
+          "resultBody": "Round-robin stops rewarding node 4 for failing fast, so its share drops from 45% to about 17%. That is still one merchant payment in six returning 500, because the node remains in the pool."
         },
         {
-          "id": "turn-off-fast",
-          "label": "Turn off fast",
+          "id": "add-nodes",
+          "label": "Add two more API nodes to dilute the bad one",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 92,
+              "value": 34,
               "unit": "%",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 3080,
+              "value": 68,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 120,
-              "unit": "errors",
+              "label": "5xx rate",
+              "value": 40,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Still pinned",
-          "resultBody": "Turn off the fast nodes"
+          "resultTitle": "New nodes lose the race to node 4",
+          "resultBody": "The two new nodes hold real, slower connections, while node 4 still frees its connections in 3 ms. Leastconn keeps picking it, and 5xx only dips to 40%."
         }
       ],
       "hints": [
-        "Traffic is not shared evenly.",
-        "Healthy copies sit idle.",
-        "Put a balancer in front."
+        "A node that errors instantly always looks idle to least-connections.",
+        "An open TCP port says nothing about whether the node can reach its database.",
+        "The check that decides pool membership should exercise the dependency that broke."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "lb-15",
@@ -3249,130 +3276,115 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Internal services skip the mesh",
-      "brief": "Public traffic is balanced, but service-to-service calls go to hardcoded IPs.",
-      "constraint": "One internal host becomes a hidden hotspot.",
-      "question": "What completes the architecture?",
+      "title": "Orders service hammers one inventory pod",
+      "brief": "The orders service resolves inventory.internal once at startup and caches the first IP forever. All 9,000 req/s land on 1 of 6 inventory pods at 98% CPU; the other five sit near 5%.",
+      "constraint": "Inventory pods are replaced several times a day by the autoscaler.",
+      "question": "How should orders spread its calls across inventory pods?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 12000,
+          "value": 9000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 90,
+          "value": 98,
           "unit": "%",
           "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 2800,
+          "value": 2100,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 100,
-          "unit": "errors",
+          "label": "Order timeouts",
+          "value": 12,
+          "unit": "%",
           "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "users",
-            "kind": "users",
-            "label": "Users"
+            "id": "orders",
+            "kind": "server",
+            "label": "Orders service",
+            "tone": "neutral",
+            "cpu": 40,
+            "sub": "cached 1 IP"
           },
           {
-            "id": "s1",
+            "id": "p1",
             "kind": "server",
-            "label": "Server 1",
+            "label": "Inventory pod 1",
             "tone": "bad",
-            "cpu": 90
+            "cpu": 98
           },
           {
-            "id": "s2",
+            "id": "rest",
             "kind": "server",
-            "label": "Server 2",
-            "tone": "neutral"
-          },
-          {
-            "id": "s3",
-            "kind": "server",
-            "label": "Server 3",
-            "tone": "neutral"
+            "label": "Inventory pods 2-6",
+            "tone": "neutral",
+            "cpu": 5
           }
         ],
         "edges": [
           {
-            "from": "users",
-            "to": "s1"
+            "from": "orders",
+            "to": "p1"
           }
         ]
       },
       "choices": [
         {
-          "id": "load-balancer",
-          "label": "Load balancer",
+          "id": "client-lb",
+          "label": "Client-side balancing over live service-discovery endpoints",
           "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "complexityScore": 3,
+            "tradeoffSummary": "Per-call balancing that follows pod churn; adds a discovery dependency."
+          },
           "graphAfter": {
             "nodes": [
               {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "lb",
-                "kind": "lb",
-                "label": "Load balancer",
-                "tone": "good"
-              },
-              {
-                "id": "s1",
+                "id": "orders",
                 "kind": "server",
-                "label": "Server 1",
+                "label": "Orders + sidecar",
                 "tone": "good",
-                "cpu": 34
+                "cpu": 42,
+                "sub": "watches endpoints"
               },
               {
-                "id": "s2",
+                "id": "p1",
                 "kind": "server",
-                "label": "Server 2",
+                "label": "Inventory pod 1",
                 "tone": "good",
-                "cpu": 36
+                "cpu": 31
               },
               {
-                "id": "s3",
+                "id": "rest",
                 "kind": "server",
-                "label": "Server 3",
+                "label": "Inventory pods 2-6",
                 "tone": "good",
-                "cpu": 33
+                "cpu": 30
               }
             ],
             "edges": [
               {
-                "from": "users",
-                "to": "lb"
+                "from": "orders",
+                "to": "p1"
               },
               {
-                "from": "lb",
-                "to": "s1"
-              },
-              {
-                "from": "lb",
-                "to": "s2"
-              },
-              {
-                "from": "lb",
-                "to": "s3"
+                "from": "orders",
+                "to": "rest"
               }
             ]
           },
@@ -3387,90 +3399,93 @@
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 186,
+              "value": 45,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Order timeouts",
               "value": 0,
-              "unit": "errors",
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Send east-west traffic through a balancer or service mesh with health-aware routing."
+          "resultTitle": "Calls spread over all live pods",
+          "resultBody": "A sidecar watches the endpoint list and balances each call with least-request, adding and dropping pods as the autoscaler replaces them. All six pods settle near 30% CPU and timeouts reach 0. Cost: every client now depends on the discovery system being healthy."
         },
         {
-          "id": "hardcode-second-ip",
-          "label": "Hardcode second IP",
+          "id": "low-ttl",
+          "label": "Lower the DNS TTL on inventory.internal to 5 seconds",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 94,
+              "value": 98,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 3500,
+              "value": 2100,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 140,
-              "unit": "errors",
+              "label": "Order timeouts",
+              "value": 12,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Still pinned",
-          "resultBody": "Traffic never left the hot node."
+          "resultTitle": "TTL ignored by the client",
+          "resultBody": "The DNS server now hands out a fresh answer every 5 s, but the orders JVM caches lookups forever and never asks again. Pod 1 still takes all 9,000 req/s at 98% CPU."
         },
         {
-          "id": "add-cdn-front",
-          "label": "Add CDN front",
+          "id": "big-pod",
+          "label": "Vertically scale the hot inventory pod to 8 vCPUs",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 92,
+              "value": 55,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 3080,
+              "value": 900,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 120,
-              "unit": "errors",
+              "label": "Order timeouts",
+              "value": 33,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Still pinned",
-          "resultBody": "Add a CDN in front of internal RPCs"
+          "resultTitle": "Bigger pod, same single target",
+          "resultBody": "CPU falls to 55% at first, but the resize reschedules the pod onto a new IP that orders never looks up. Orders keeps connecting to the old address, and a third of order calls now fail with connection refused."
         }
       ],
       "hints": [
-        "Traffic is not shared evenly.",
-        "Healthy copies sit idle.",
-        "Put a balancer in front."
+        "The other five pods are healthy and idle.",
+        "The client resolved a name once and never looked again.",
+        "Something on the calling side needs to track the current set of pods and pick one per request."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "lb-16",
@@ -3480,37 +3495,37 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Draining a node still receives writes",
-      "brief": "An instance is marked for deploy, but new requests keep landing on it until it is killed.",
-      "constraint": "The balancer has no connection-drain or weight-zero path.",
-      "question": "What should happen before shutdown?",
+      "title": "Every deploy wave cuts 2% of uploads",
+      "brief": "CloudDocs deploys by removing a node from HAProxy and killing it 5 s later. Clients hold keep-alive connections for 60 s and uploads run up to 40 s, so each wave fails about 2% of 11,000 req/s.",
+      "constraint": "The team deploys 15 times a day and won't stop shipping.",
+      "question": "How do you take a node out without cutting live requests?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 12000,
+          "value": 11000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 90,
+          "value": 55,
           "unit": "%",
-          "tone": "bad"
+          "tone": "good"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 2800,
+          "value": 300,
           "unit": "ms",
-          "tone": "bad"
+          "tone": "good"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 100,
-          "unit": "errors",
+          "label": "Failed uploads",
+          "value": 2,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -3519,73 +3534,84 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Editors"
           },
           {
-            "id": "s1",
-            "kind": "server",
-            "label": "Server 1",
-            "tone": "bad",
-            "cpu": 90
+            "id": "lb",
+            "kind": "lb",
+            "label": "HAProxy",
+            "tone": "neutral",
+            "sub": "remove, kill after 5 s"
           },
           {
-            "id": "s2",
+            "id": "live",
             "kind": "server",
-            "label": "Server 2",
-            "tone": "neutral"
+            "label": "Nodes 1-5",
+            "tone": "good",
+            "cpu": 55
           },
           {
-            "id": "s3",
+            "id": "n6",
             "kind": "server",
-            "label": "Server 3",
-            "tone": "neutral"
+            "label": "Node 6",
+            "tone": "warn",
+            "cpu": 40,
+            "sub": "being deployed"
           }
         ],
         "edges": [
           {
             "from": "users",
-            "to": "s1"
+            "to": "lb"
+          },
+          {
+            "from": "lb",
+            "to": "live"
+          },
+          {
+            "from": "lb",
+            "to": "n6"
           }
         ]
       },
       "choices": [
         {
-          "id": "load-balancer",
-          "label": "Load balancer",
+          "id": "drain",
+          "label": "Drain with a 90 s deregistration delay before shutdown",
           "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "complexityScore": 1,
+            "tradeoffSummary": "Clean deploys in exchange for slower rollouts."
+          },
           "graphAfter": {
             "nodes": [
               {
                 "id": "users",
                 "kind": "users",
-                "label": "Users"
+                "label": "Editors"
               },
               {
                 "id": "lb",
                 "kind": "lb",
-                "label": "Load balancer",
-                "tone": "good"
+                "label": "HAProxy",
+                "tone": "good",
+                "sub": "drain 90 s"
               },
               {
-                "id": "s1",
+                "id": "live",
                 "kind": "server",
-                "label": "Server 1",
+                "label": "Nodes 1-5",
                 "tone": "good",
-                "cpu": 34
+                "cpu": 57
               },
               {
-                "id": "s2",
+                "id": "n6",
                 "kind": "server",
-                "label": "Server 2",
-                "tone": "good",
-                "cpu": 36
-              },
-              {
-                "id": "s3",
-                "kind": "server",
-                "label": "Server 3",
-                "tone": "good",
-                "cpu": 33
+                "label": "Node 6",
+                "tone": "neutral",
+                "cpu": 5,
+                "sub": "draining"
               }
             ],
             "edges": [
@@ -3595,15 +3621,11 @@
               },
               {
                 "from": "lb",
-                "to": "s1"
+                "to": "live"
               },
               {
                 "from": "lb",
-                "to": "s2"
-              },
-              {
-                "from": "lb",
-                "to": "s3"
+                "to": "n6"
               }
             ]
           },
@@ -3611,97 +3633,100 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 30,
+              "value": 57,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 186,
+              "value": 300,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
+              "label": "Failed uploads",
+              "value": 0.02,
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Take the node out of rotation, drain in-flight work, then stop the process."
+          "resultTitle": "Nodes leave only when idle",
+          "resultBody": "HAProxy stops sending new requests to the draining node, which answers with Connection: close and finishes in-flight uploads. The process exits once its connections hit zero or 90 s pass, so deploy failures fall to 0.02%. Cost: each wave takes 90 s longer."
         },
         {
-          "id": "kill-process-immediately",
-          "label": "Kill process immediately",
+          "id": "short-keepalive",
+          "label": "Lower the keep-alive timeout to 5 seconds everywhere",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 94,
+              "value": 70,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 3500,
+              "value": 340,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 140,
-              "unit": "errors",
+              "label": "Failed uploads",
+              "value": 1.2,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Still pinned",
-          "resultBody": "Traffic never left the hot node."
+          "resultTitle": "Handshakes up, long uploads still cut",
+          "resultBody": "Idle connections close sooner, but every reconnect now pays a TLS handshake and balancer CPU climbs to 70%. Uploads running 20-40 s are still in flight when the node is killed, so 1.2% of uploads keep failing."
         },
         {
-          "id": "lower-dns-ttl",
-          "label": "Lower DNS TTL",
+          "id": "night-deploys",
+          "label": "Batch all deploys into the 3 a.m. traffic trough",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 92,
+              "value": 55,
               "unit": "%",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 3080,
+              "value": 300,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 120,
-              "unit": "errors",
+              "label": "Failed uploads",
+              "value": 1.8,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Still pinned",
-          "resultBody": "Lower DNS TTL only"
+          "resultTitle": "Fewer victims, same broken deploys",
+          "resultBody": "At 3 a.m. traffic is a quarter of peak, so fewer uploads are killed, but APAC users working at that hour still lose 2% of theirs. Fifteen changes now ship in one risky batch each night."
         }
       ],
       "hints": [
-        "Traffic is not shared evenly.",
-        "Healthy copies sit idle.",
-        "Put a balancer in front."
+        "The node is removed from the pool, yet it is still working when it dies.",
+        "Existing keep-alive connections and long uploads outlive a 5-second grace period.",
+        "Shutdown should wait on what the node is still doing, not on a fixed timer."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "lb-17",
@@ -3711,37 +3736,37 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Layer-4 balancer hides HTTP errors",
-      "brief": "TCP health checks stay green while the app returns 503 on every request.",
-      "constraint": "The balancer only knows the port is open.",
-      "question": "What check is missing?",
+      "title": "TLS errors on one in four new connections",
+      "brief": "FinTrack's layer-4 NLB passes TLS straight through to 12 nodes that each hold their own certificate. Rotation failed on 3 nodes and their certificates expired at midnight; TCP health checks still pass.",
+      "constraint": "Certificates rotate every 60 days, and the rotation script has failed twice this year.",
+      "question": "What removes per-node certificates as a failure point?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 503,
+          "value": 26000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 90,
+          "value": 72,
           "unit": "%",
-          "tone": "bad"
+          "tone": "warn"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 2800,
+          "value": 140,
           "unit": "ms",
-          "tone": "bad"
+          "tone": "good"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 100,
-          "unit": "errors",
+          "label": "TLS handshake failures",
+          "value": 25,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -3750,73 +3775,84 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Banking app"
           },
           {
-            "id": "s1",
+            "id": "lb",
+            "kind": "lb",
+            "label": "NLB",
+            "tone": "warn",
+            "sub": "TCP passthrough"
+          },
+          {
+            "id": "ok",
             "kind": "server",
-            "label": "Server 1",
+            "label": "9 nodes",
+            "tone": "good",
+            "cpu": 72
+          },
+          {
+            "id": "bad",
+            "kind": "server",
+            "label": "3 nodes",
             "tone": "bad",
-            "cpu": 90
-          },
-          {
-            "id": "s2",
-            "kind": "server",
-            "label": "Server 2",
-            "tone": "neutral"
-          },
-          {
-            "id": "s3",
-            "kind": "server",
-            "label": "Server 3",
-            "tone": "neutral"
+            "cpu": 60,
+            "sub": "cert expired"
           }
         ],
         "edges": [
           {
             "from": "users",
-            "to": "s1"
+            "to": "lb"
+          },
+          {
+            "from": "lb",
+            "to": "ok"
+          },
+          {
+            "from": "lb",
+            "to": "bad"
           }
         ]
       },
       "choices": [
         {
-          "id": "health-checks",
-          "label": "Health checks",
+          "id": "terminate",
+          "label": "Terminate TLS at the balancer with one managed certificate",
           "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "latencyP99DeltaMs": 5,
+            "complexityScore": 2,
+            "tradeoffSummary": "Central certificate and HTTP visibility; balancer sees decrypted traffic."
+          },
           "graphAfter": {
             "nodes": [
               {
                 "id": "users",
                 "kind": "users",
-                "label": "Users"
+                "label": "Banking app"
               },
               {
                 "id": "lb",
                 "kind": "lb",
-                "label": "Load balancer",
-                "tone": "good"
+                "label": "ALB",
+                "tone": "good",
+                "sub": "TLS terminated"
               },
               {
-                "id": "s1",
+                "id": "ok",
                 "kind": "server",
-                "label": "Server 1",
+                "label": "9 nodes",
                 "tone": "good",
-                "cpu": 34
+                "cpu": 70
               },
               {
-                "id": "s2",
+                "id": "bad",
                 "kind": "server",
-                "label": "Server 2",
+                "label": "3 nodes",
                 "tone": "good",
-                "cpu": 36
-              },
-              {
-                "id": "s3",
-                "kind": "server",
-                "label": "Server 3",
-                "tone": "good",
-                "cpu": 33
+                "cpu": 70
               }
             ],
             "edges": [
@@ -3826,15 +3862,11 @@
               },
               {
                 "from": "lb",
-                "to": "s1"
+                "to": "ok"
               },
               {
                 "from": "lb",
-                "to": "s2"
-              },
-              {
-                "from": "lb",
-                "to": "s3"
+                "to": "bad"
               }
             ]
           },
@@ -3842,97 +3874,100 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 30,
+              "value": 70,
               "unit": "%",
-              "tone": "good"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 186,
+              "value": 145,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "TLS handshake failures",
               "value": 0,
-              "unit": "errors",
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Application-level health checks that fail when the service cannot serve correctly."
+          "resultTitle": "One auto-renewed certificate at the edge",
+          "resultBody": "An L7 balancer now holds a single auto-renewed certificate and re-encrypts to the nodes with an internal CA, so handshake failures drop to 0. It can also see HTTP status codes for health and routing. Cost: about 15% more balancer CPU for handshakes."
         },
         {
-          "id": "more-tcp-connections",
-          "label": "More TCP connections",
+          "id": "http80",
+          "label": "Switch health checks from TCP to HTTP on port 80",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 94,
+              "value": 72,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 3500,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
               "value": 140,
-              "unit": "errors",
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "TLS handshake failures",
+              "value": 25,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Still pinned",
-          "resultBody": "Traffic never left the hot node."
+          "resultTitle": "Probe checks the wrong port",
+          "resultBody": "Plain HTTP on port 80 never performs a TLS handshake, so the 3 nodes with expired certificates answer 200 and stay in the pool. One new connection in four still fails."
         },
         {
-          "id": "a-larger-syn",
-          "label": "A larger SYN",
+          "id": "pull-three",
+          "label": "Pull the three bad nodes and run on the other nine",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 92,
+              "value": 96,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 3080,
+              "value": 1100,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 120,
-              "unit": "errors",
+              "label": "TLS handshake failures",
+              "value": 3,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Still pinned",
-          "resultBody": "A larger SYN backlog"
+          "resultTitle": "Nine nodes can't carry twelve's load",
+          "resultBody": "Handshake errors stop, but 26,000 req/s now land on 9 nodes and CPU climbs from 72% to 96%. p95 reaches 1.1 s, 3% of requests time out, and the next failed rotation repeats the incident."
         }
       ],
       "hints": [
-        "Traffic is not shared evenly.",
-        "Healthy copies sit idle.",
-        "Put a balancer in front."
+        "A TCP check only proves the port accepts connections.",
+        "Twelve copies of a certificate means twelve chances for rotation to fail.",
+        "A balancer that speaks HTTP could own the certificate itself."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "lb-18",
@@ -3942,37 +3977,37 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Sticky sessions after node loss",
-      "brief": "A node dies and users bound to it get errors until their sticky cookie expires.",
-      "constraint": "Affinity outlives the backend.",
-      "question": "How should the balancer behave?",
+      "title": "Node crash empties 12% of carts mid on-sale",
+      "brief": "TicketHub pins each shopper to 1 of 8 nodes with a cookie, and carts live in node memory. Node 3 crashed during a 20,000 req/s on-sale, logging out 12% of shoppers and emptying their carts.",
+      "constraint": "Nodes will crash again; the fix must survive the next one without losing carts.",
+      "question": "What lets any node serve a shopper after their node dies?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 12000,
+          "value": 20000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 90,
+          "value": 78,
           "unit": "%",
-          "tone": "bad"
+          "tone": "warn"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 2800,
+          "value": 420,
           "unit": "ms",
-          "tone": "bad"
+          "tone": "warn"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 100,
-          "unit": "errors",
+          "label": "Lost carts",
+          "value": 12,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -3981,73 +4016,84 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Shoppers"
           },
           {
-            "id": "s1",
+            "id": "lb",
+            "kind": "lb",
+            "label": "Load balancer",
+            "tone": "warn",
+            "sub": "cookie affinity"
+          },
+          {
+            "id": "live",
             "kind": "server",
-            "label": "Server 1",
+            "label": "7 nodes + carts",
+            "tone": "warn",
+            "cpu": 78
+          },
+          {
+            "id": "n3",
+            "kind": "server",
+            "label": "Node 3",
             "tone": "bad",
-            "cpu": 90
-          },
-          {
-            "id": "s2",
-            "kind": "server",
-            "label": "Server 2",
-            "tone": "neutral"
-          },
-          {
-            "id": "s3",
-            "kind": "server",
-            "label": "Server 3",
-            "tone": "neutral"
+            "sub": "crashed"
           }
         ],
         "edges": [
           {
             "from": "users",
-            "to": "s1"
+            "to": "lb"
+          },
+          {
+            "from": "lb",
+            "to": "live"
+          },
+          {
+            "from": "lb",
+            "to": "n3"
           }
         ]
       },
       "choices": [
         {
-          "id": "load-balancer",
-          "label": "Load balancer",
+          "id": "redis-carts",
+          "label": "Store carts in Redis so any node can serve any user",
           "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "latencyP99DeltaMs": 1,
+            "complexityScore": 2,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "Stateless nodes; Redis becomes a dependency to replicate."
+          },
           "graphAfter": {
             "nodes": [
               {
                 "id": "users",
                 "kind": "users",
-                "label": "Users"
+                "label": "Shoppers"
               },
               {
                 "id": "lb",
                 "kind": "lb",
                 "label": "Load balancer",
-                "tone": "good"
+                "tone": "good",
+                "sub": "least-request"
               },
               {
-                "id": "s1",
+                "id": "live",
                 "kind": "server",
-                "label": "Server 1",
+                "label": "8 stateless nodes",
                 "tone": "good",
-                "cpu": 34
+                "cpu": 70
               },
               {
-                "id": "s2",
-                "kind": "server",
-                "label": "Server 2",
+                "id": "redis",
+                "kind": "cache",
+                "label": "Redis carts",
                 "tone": "good",
-                "cpu": 36
-              },
-              {
-                "id": "s3",
-                "kind": "server",
-                "label": "Server 3",
-                "tone": "good",
-                "cpu": 33
+                "cpu": 35
               }
             ],
             "edges": [
@@ -4057,15 +4103,11 @@
               },
               {
                 "from": "lb",
-                "to": "s1"
+                "to": "live"
               },
               {
-                "from": "lb",
-                "to": "s2"
-              },
-              {
-                "from": "lb",
-                "to": "s3"
+                "from": "live",
+                "to": "redis"
               }
             ]
           },
@@ -4073,32 +4115,65 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 30,
+              "value": 70,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 186,
+              "value": 190,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Lost carts",
               "value": 0,
-              "unit": "errors",
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Drop affinity for dead targets and reassign those users to healthy nodes."
+          "resultTitle": "Carts survive a node crash",
+          "resultBody": "Carts and sessions move to a replicated Redis cluster, and affinity is turned off. When a node dies, its shoppers land on another node with their carts intact, and load evens out at 70% CPU. Cost: about 0.5 ms per request for the Redis round trip."
         },
         {
-          "id": "keep-sending-them",
-          "label": "Keep sending them",
+          "id": "chash",
+          "label": "Rehash affinity with consistent hashing on node loss",
           "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 78,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 410,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Lost carts",
+              "value": 12,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Fewer users moved, carts still lost",
+          "resultBody": "Consistent hashing moves only node 3's shoppers instead of reshuffling everyone, but their carts were in node 3's memory. The 12% still arrive at a node that has never seen them."
+        },
+        {
+          "id": "all-to-all",
+          "label": "Replicate every session to all eight nodes",
+          "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
@@ -4111,59 +4186,29 @@
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 3500,
+              "value": 1600,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 140,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Still pinned",
-          "resultBody": "Traffic never left the hot node."
-        },
-        {
-          "id": "force-all-users",
-          "label": "Force all users",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 92,
+              "label": "Lost carts",
+              "value": 0,
               "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 3080,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 120,
-              "unit": "errors",
-              "tone": "bad"
+              "tone": "good"
             }
           ],
-          "resultTitle": "Still pinned",
-          "resultBody": "Force all users onto one remaining node forever"
+          "resultTitle": "Session chatter eats the fleet",
+          "resultBody": "Carts now survive a crash, but each cart update is copied to 7 peers and every node holds all sessions. During the on-sale, replication pushes CPU to 94% and p95 to 1.6 s."
         }
       ],
       "hints": [
-        "Traffic is not shared evenly.",
-        "Healthy copies sit idle.",
-        "Put a balancer in front."
+        "The balancer did route shoppers away from node 3.",
+        "Changing which node a shopper lands on doesn't bring their data along.",
+        "If no node owns the cart, losing a node can't lose it."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "lb-19",
@@ -4173,37 +4218,37 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Burst of retries overwhelms survivors",
-      "brief": "Clients retry failed calls and the remaining two nodes receive 3x traffic instantly.",
-      "constraint": "The balancer has no retry budget or overload shed.",
-      "question": "What protection belongs at the distribution layer?",
+      "title": "Retry storm buries the surviving search nodes",
+      "brief": "One of 5 search nodes died and clients retried each failed call 3 times with no delay. Load on the 4 survivors jumped from 20,000 to 52,000 req/s, and they started timing out too.",
+      "constraint": "The dead node needs 15 minutes to be replaced.",
+      "question": "How do you stop retries from multiplying the load?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 12000,
+          "value": 52000,
           "unit": "req/s",
-          "tone": "neutral"
+          "tone": "bad"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 90,
+          "value": 99,
           "unit": "%",
           "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 2800,
+          "value": 3000,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 100,
-          "unit": "errors",
+          "label": "Search errors",
+          "value": 38,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -4212,73 +4257,82 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Search clients"
           },
           {
-            "id": "s1",
+            "id": "lb",
+            "kind": "lb",
+            "label": "Envoy",
+            "tone": "warn",
+            "sub": "3 retries, no backoff"
+          },
+          {
+            "id": "live",
             "kind": "server",
-            "label": "Server 1",
+            "label": "4 search nodes",
             "tone": "bad",
-            "cpu": 90
+            "cpu": 99
           },
           {
-            "id": "s2",
+            "id": "dead",
             "kind": "server",
-            "label": "Server 2",
-            "tone": "neutral"
-          },
-          {
-            "id": "s3",
-            "kind": "server",
-            "label": "Server 3",
-            "tone": "neutral"
+            "label": "Node 5",
+            "tone": "bad",
+            "sub": "down"
           }
         ],
         "edges": [
           {
             "from": "users",
-            "to": "s1"
+            "to": "lb"
+          },
+          {
+            "from": "lb",
+            "to": "live"
+          },
+          {
+            "from": "lb",
+            "to": "dead"
           }
         ]
       },
       "choices": [
         {
-          "id": "load-balancer",
-          "label": "Load balancer",
+          "id": "budget",
+          "label": "Cap retries at 10% of traffic with jittered backoff",
           "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "complexityScore": 2,
+            "tradeoffSummary": "Bounded amplification; some failures surface to users."
+          },
           "graphAfter": {
             "nodes": [
               {
                 "id": "users",
                 "kind": "users",
-                "label": "Users"
+                "label": "Search clients"
               },
               {
                 "id": "lb",
                 "kind": "lb",
-                "label": "Load balancer",
-                "tone": "good"
+                "label": "Envoy",
+                "tone": "good",
+                "sub": "retry budget 10%"
               },
               {
-                "id": "s1",
+                "id": "live",
                 "kind": "server",
-                "label": "Server 1",
-                "tone": "good",
-                "cpu": 34
+                "label": "4 search nodes",
+                "tone": "warn",
+                "cpu": 80
               },
               {
-                "id": "s2",
+                "id": "dead",
                 "kind": "server",
-                "label": "Server 2",
-                "tone": "good",
-                "cpu": 36
-              },
-              {
-                "id": "s3",
-                "kind": "server",
-                "label": "Server 3",
-                "tone": "good",
-                "cpu": 33
+                "label": "Node 5",
+                "tone": "neutral",
+                "sub": "ejected"
               }
             ],
             "edges": [
@@ -4288,113 +4342,129 @@
               },
               {
                 "from": "lb",
-                "to": "s1"
-              },
-              {
-                "from": "lb",
-                "to": "s2"
-              },
-              {
-                "from": "lb",
-                "to": "s3"
+                "to": "live"
               }
             ]
           },
           "metricsAfter": [
             {
+              "key": "rps",
+              "label": "Traffic",
+              "value": 22000,
+              "unit": "req/s",
+              "tone": "neutral"
+            },
+            {
               "key": "cpu",
               "label": "CPU",
+              "value": 80,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 180,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Search errors",
+              "value": 1,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Retries shrink back to a trickle",
+          "resultBody": "Envoy allows retries only while they stay under 10% of active requests, spaced with jittered exponential backoff. Load falls to about 22,000 req/s, the 4 nodes settle at 80% CPU, and errors drop to 1%. Cost: during a real outage some calls fail instead of being retried."
+        },
+        {
+          "id": "long-timeout",
+          "label": "Raise the per-call timeout from 1 s to 10 s",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "rps",
+              "label": "Traffic",
+              "value": 48000,
+              "unit": "req/s",
+              "tone": "bad"
+            },
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 9000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Search errors",
               "value": 30,
               "unit": "%",
-              "tone": "good"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 186,
-              "unit": "ms",
-              "tone": "good"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
-              "tone": "good"
+              "tone": "bad"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Shed load, cap retries, and keep enough healthy capacity before amplifying traffic."
+          "resultTitle": "Slow calls now hog every connection",
+          "resultBody": "Fewer calls time out, but each stuck call now holds a connection 10 times longer. Connection pools on the 4 nodes fill up, queued searches wait, and p95 climbs to 9 s while retries continue."
         },
         {
-          "id": "retry-every-failure",
-          "label": "Retry every failure",
+          "id": "autoscale",
+          "label": "Autoscale search nodes when CPU passes 70%",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
+              "key": "rps",
+              "label": "Traffic",
+              "value": 52000,
+              "unit": "req/s",
+              "tone": "bad"
+            },
+            {
               "key": "cpu",
               "label": "CPU",
-              "value": 94,
+              "value": 97,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 3500,
+              "value": 2600,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 140,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Still pinned",
-          "resultBody": "Traffic never left the hot node."
-        },
-        {
-          "id": "disable-remaining-nodes",
-          "label": "Disable remaining nodes",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 92,
+              "label": "Search errors",
+              "value": 33,
               "unit": "%",
               "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 3080,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 120,
-              "unit": "errors",
-              "tone": "bad"
             }
           ],
-          "resultTitle": "Still pinned",
-          "resultBody": "Disable the remaining nodes"
+          "resultTitle": "Capacity arrives after the meltdown",
+          "resultBody": "New nodes take 4 minutes to boot and another 3 to load the index. By then the retry storm has pushed the survivors into restart loops, and each new node is flooded with 13,000 req/s the moment it joins."
         }
       ],
       "hints": [
-        "Traffic is not shared evenly.",
-        "Healthy copies sit idle.",
-        "Put a balancer in front."
+        "Real demand is still 20,000 req/s; the rest is retries.",
+        "Every failed call can turn into four calls on already struggling nodes.",
+        "Retries need a limit tied to overall traffic, and spacing so they don't arrive together."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "lb-20",
@@ -4404,37 +4474,37 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Anycast edge sends all packets to one PoP",
-      "brief": "An Anycast VIP is announced from three PoPs, but one PoP attracts almost all users.",
-      "constraint": "Routing is based on BGP, not backend health.",
-      "question": "What should you add behind the VIP?",
+      "title": "Anycast routes players into a dead PoP",
+      "brief": "GameNet announces one anycast /24 from 14 PoPs. Frankfurt's proxies crashed on a bad config, but its routers still announce the prefix, so 18% of 350,000 player sessions hit a PoP that drops them.",
+      "constraint": "The BGP routers announce routes on their own and don't know whether the proxies are alive.",
+      "question": "How should a PoP stop attracting traffic it can't serve?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 12000,
+          "value": 350000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 90,
+          "value": 55,
           "unit": "%",
-          "tone": "bad"
+          "tone": "good"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 2800,
+          "value": 60,
           "unit": "ms",
-          "tone": "bad"
+          "tone": "good"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 100,
-          "unit": "errors",
+          "label": "Dropped sessions",
+          "value": 18,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -4443,91 +4513,93 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Players"
           },
           {
-            "id": "s1",
-            "kind": "server",
-            "label": "Server 1",
+            "id": "fra",
+            "kind": "cdn",
+            "label": "Frankfurt PoP",
             "tone": "bad",
-            "cpu": 90
+            "sub": "proxies down, route up"
           },
           {
-            "id": "s2",
-            "kind": "server",
-            "label": "Server 2",
-            "tone": "neutral"
+            "id": "ams",
+            "kind": "cdn",
+            "label": "Amsterdam PoP",
+            "tone": "good",
+            "cpu": 55
           },
           {
-            "id": "s3",
-            "kind": "server",
-            "label": "Server 3",
-            "tone": "neutral"
+            "id": "rest",
+            "kind": "cdn",
+            "label": "12 other PoPs",
+            "tone": "good",
+            "cpu": 50
           }
         ],
         "edges": [
           {
             "from": "users",
-            "to": "s1"
+            "to": "fra"
+          },
+          {
+            "from": "users",
+            "to": "ams"
+          },
+          {
+            "from": "users",
+            "to": "rest"
           }
         ]
       },
       "choices": [
         {
-          "id": "health-checks",
-          "label": "Health checks",
+          "id": "health-bgp",
+          "label": "Tie each PoP's BGP announcement to local proxy health",
           "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "latencyP99DeltaMs": 15,
+            "complexityScore": 3,
+            "tradeoffSummary": "Self-healing edge; needs dampening against flaps."
+          },
           "graphAfter": {
             "nodes": [
               {
                 "id": "users",
                 "kind": "users",
-                "label": "Users"
+                "label": "Players"
               },
               {
-                "id": "lb",
-                "kind": "lb",
-                "label": "Load balancer",
-                "tone": "good"
+                "id": "fra",
+                "kind": "cdn",
+                "label": "Frankfurt PoP",
+                "tone": "neutral",
+                "sub": "route withdrawn"
               },
               {
-                "id": "s1",
-                "kind": "server",
-                "label": "Server 1",
+                "id": "ams",
+                "kind": "cdn",
+                "label": "Amsterdam PoP",
+                "tone": "warn",
+                "cpu": 68
+              },
+              {
+                "id": "rest",
+                "kind": "cdn",
+                "label": "12 other PoPs",
                 "tone": "good",
-                "cpu": 34
-              },
-              {
-                "id": "s2",
-                "kind": "server",
-                "label": "Server 2",
-                "tone": "good",
-                "cpu": 36
-              },
-              {
-                "id": "s3",
-                "kind": "server",
-                "label": "Server 3",
-                "tone": "good",
-                "cpu": 33
+                "cpu": 56
               }
             ],
             "edges": [
               {
                 "from": "users",
-                "to": "lb"
+                "to": "ams"
               },
               {
-                "from": "lb",
-                "to": "s1"
-              },
-              {
-                "from": "lb",
-                "to": "s2"
-              },
-              {
-                "from": "lb",
-                "to": "s3"
+                "from": "users",
+                "to": "rest"
               }
             ]
           },
@@ -4535,97 +4607,100 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 30,
+              "value": 68,
               "unit": "%",
-              "tone": "good"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 186,
+              "value": 75,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
+              "label": "Dropped sessions",
+              "value": 0.2,
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Local load balancing with health checks inside each PoP, plus withdraw unhealthy announcements."
+          "resultTitle": "Frankfurt withdraws its route",
+          "resultBody": "A health daemon next to the routers withdraws the anycast prefix when local proxies fail their checks. BGP reconverges in about 60 s and Frankfurt's players shift to Amsterdam and Paris, which rise to 68% CPU. Cost: add hold-down timers so a flapping PoP doesn't churn routes."
         },
         {
-          "id": "a-single-origin",
-          "label": "A single origin",
+          "id": "dns-unicast",
+          "label": "Repoint the game hostname to Amsterdam's unicast IP",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 94,
+              "value": 80,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 3500,
+              "value": 90,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 140,
-              "unit": "errors",
+              "label": "Dropped sessions",
+              "value": 12.6,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Still pinned",
-          "resultBody": "Traffic never left the hot node."
+          "resultTitle": "Players stuck on cached answers",
+          "resultBody": "Resolvers and game clients cache the old anycast address for hours, so only 30% of affected players move. Everyone who does move now sends traffic to a single Amsterdam address, bypassing the other 12 PoPs."
         },
         {
-          "id": "manual-user-assignment",
-          "label": "Manual user assignment",
+          "id": "prepend",
+          "label": "Prepend the AS path three times from Frankfurt",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 92,
+              "value": 60,
               "unit": "%",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 3080,
+              "value": 65,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 120,
-              "unit": "errors",
+              "label": "Dropped sessions",
+              "value": 11,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Still pinned",
-          "resultBody": "Manual user assignment by country code only"
+          "resultTitle": "Route demoted, not withdrawn",
+          "resultBody": "Distant networks now prefer other PoPs, but local peers at the Frankfurt exchange set a higher local-preference for peering routes, which beats AS-path length. They keep sending players into the dead PoP, and 11% of sessions still drop."
         }
       ],
       "hints": [
-        "Traffic is not shared evenly.",
-        "Healthy copies sit idle.",
-        "Put a balancer in front."
+        "Anycast sends packets to whichever PoP BGP says is closest.",
+        "Frankfurt still looks like a valid route because the announcement never stopped.",
+        "The route announcement should depend on whether the PoP can actually serve."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     }
   ]
 }

@@ -231,36 +231,37 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Hot key in a hash range",
-      "brief": "One user or key is accessed far more than others, causing one shard to saturate.",
-      "constraint": "The shard assignment is not balanced enough.",
-      "question": "What pattern addresses the bottleneck?",
+      "nextId": null,
+      "title": "One flash-sale counter pins shard 5",
+      "brief": "A sneaker drop sends 40,000 'units sold' increments/s to a single row. Hash sharding put that row on shard 5, now at 96% CPU with lock waits; the other 11 shards idle below 20%.",
+      "constraint": "The counter must stay exact, and the product page reads it once per second.",
+      "question": "How do you spread the writes for this one key?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 9000,
+          "value": 40000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 95,
+          "value": 96,
           "unit": "%",
           "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 2100,
+          "value": 1800,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
           "label": "Errors",
-          "value": 30,
+          "value": 2400,
           "unit": "errors",
           "tone": "bad"
         }
@@ -270,76 +271,93 @@
           {
             "id": "app",
             "kind": "server",
-            "label": "App"
+            "label": "Checkout API",
+            "cpu": 35
           },
           {
-            "id": "sh1",
+            "id": "sh5",
             "kind": "db",
-            "label": "Shard 1",
+            "label": "Shard 5 (hot counter)",
             "tone": "bad",
-            "cpu": 95
+            "cpu": 96
           },
           {
-            "id": "sh2",
+            "id": "sh6",
             "kind": "db",
-            "label": "Shard 2",
-            "tone": "neutral"
+            "label": "Shard 6",
+            "cpu": 18
+          },
+          {
+            "id": "sh7",
+            "kind": "db",
+            "label": "Shard 7",
+            "cpu": 17
           }
         ],
         "edges": [
           {
             "from": "app",
-            "to": "sh1"
+            "to": "sh5"
+          },
+          {
+            "from": "app",
+            "to": "sh6"
+          },
+          {
+            "from": "app",
+            "to": "sh7"
           }
         ]
       },
       "choices": [
         {
-          "id": "reshard-data",
-          "label": "Key Salting: Append random suffix (0..N) to hot partition keys with Scatter-Gather read aggregation",
+          "id": "salt-counter",
+          "label": "Split the counter into 32 salted sub-keys and sum them on read",
           "correct": true,
+          "approach": "partition",
           "graphAfter": {
             "nodes": [
               {
                 "id": "app",
                 "kind": "server",
-                "label": "App",
-                "tone": "good"
-              },
-              {
-                "id": "sh1",
-                "kind": "db",
-                "label": "Shard 1",
+                "label": "Checkout API",
                 "tone": "good",
-                "cpu": 41
+                "cpu": 30
               },
               {
-                "id": "sh2",
+                "id": "sh5",
                 "kind": "db",
-                "label": "Shard 2",
+                "label": "Shard 5",
                 "tone": "good",
                 "cpu": 38
               },
               {
-                "id": "sh3",
+                "id": "sh6",
                 "kind": "db",
-                "label": "Shard 3",
+                "label": "Shard 6",
                 "tone": "good",
                 "cpu": 36
+              },
+              {
+                "id": "sh7",
+                "kind": "db",
+                "label": "Shard 7",
+                "tone": "good",
+                "cpu": 35
               }
             ],
             "edges": [
               {
                 "from": "app",
-                "to": "sh1"
+                "to": "sh5"
               },
               {
                 "from": "app",
-                "to": "sh2"
+                "to": "sh6"
               },
               {
                 "from": "app",
-                "to": "sh3"
+                "to": "sh7"
               }
             ]
           },
@@ -347,14 +365,14 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 31,
+              "value": 38,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 140,
+              "value": 12,
               "unit": "ms",
               "tone": "good"
             },
@@ -366,45 +384,15 @@
               "tone": "good"
             }
           ],
-          "resultTitle": "Hot Key Contention Neutralized",
-          "resultBody": "Salting splits the celebrity / trending item writes across N distinct shard partitions, preventing single-disk queue depth saturation."
+          "resultTitle": "Writes spread across shards",
+          "resultBody": "Each increment picks counter:sku-991:{0..31} at random, so the 32 sub-rows hash to different shards and no single row lock serialises 40,000 writes. The page's once-a-second read sums 32 rows, which is cheap."
         },
         {
-          "id": "replicate-hotspot",
-          "label": "Add read replicas to absorb write-heavy hot partition updates",
+          "id": "replica-counter",
+          "label": "Add two read replicas to shard 5 to absorb the load",
           "correct": false,
           "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 99,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 2625,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 70,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Replication Cannot Handle Writes",
-          "resultBody": "Read replicas are read-only and must replicate every write from the primary, amplifying replication stream lag without relieving primary disk IOPS."
-        },
-        {
-          "id": "disable-writes",
-          "label": "Disable write endpoints during peak traffic hours to protect the database",
-          "correct": false,
-          "retry": true,
+          "approach": "replicate",
           "metricsAfter": [
             {
               "key": "cpu",
@@ -416,28 +404,60 @@
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2310,
+              "value": 1900,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 50,
+              "value": 2500,
               "unit": "errors",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Unacceptable Business Outage",
-          "resultBody": "Disabling writes violates core product requirements and prevents customer orders during peak revenue hours."
+          "resultTitle": "Replicas can't take increments",
+          "resultBody": "Every increment is a write, and writes still go to shard 5's primary; the replicas just replay the same 40,000 updates/s and lag behind."
+        },
+        {
+          "id": "bigger-shard",
+          "label": "Move shard 5 to an instance with twice the cores",
+          "correct": false,
+          "retry": true,
+          "approach": "scale-up",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 88,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1900,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "One row lock, more idle cores",
+          "resultBody": "All increments contend for the same row lock, so they run one at a time no matter how many cores the box has; latency barely moves."
         }
       ],
       "hints": [
-        "One partition is a hotspot.",
-        "Key choice drives skew.",
-        "Spread the hot key."
+        "The problem is one key, not the shard layout.",
+        "A single row can only take one write at a time.",
+        "Turn one hot key into many keys and add them up on read."
       ],
-      "nextId": null
+      "reviewed": true
     },
     {
       "id": "shard-03",
@@ -447,36 +467,37 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Large user table under heavy writes",
-      "brief": "An application table keeps growing and a single database shard eventually shows 95% CPU.",
-      "constraint": "The data is still concentrated in one partition.",
-      "question": "How do you reduce the hotspot?",
+      "nextId": null,
+      "title": "Team wants to shard a 200 GB table",
+      "brief": "The users table is 200 GB with 3,000 writes/s, and the primary sits at 94% CPU. Engineers propose sharding to 8 nodes. The slow-query log shows 80% of CPU in one lookup by (org_id, email) doing a sequential scan.",
+      "constraint": "A sharding project would take the team a full quarter.",
+      "question": "What should happen first?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 9000,
+          "value": 3000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 95,
+          "value": 94,
           "unit": "%",
           "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 2100,
+          "value": 1200,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
           "label": "Errors",
-          "value": 30,
+          "value": 180,
           "unit": "errors",
           "tone": "bad"
         }
@@ -486,76 +507,51 @@
           {
             "id": "app",
             "kind": "server",
-            "label": "App"
+            "label": "Accounts API",
+            "cpu": 30
           },
           {
-            "id": "sh1",
+            "id": "db",
             "kind": "db",
-            "label": "Shard 1",
+            "label": "Users DB (seq scans)",
             "tone": "bad",
-            "cpu": 95
-          },
-          {
-            "id": "sh2",
-            "kind": "db",
-            "label": "Shard 2",
-            "tone": "neutral"
+            "cpu": 94
           }
         ],
         "edges": [
           {
             "from": "app",
-            "to": "sh1"
+            "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "reshard-data",
-          "label": "Consistent Hashing with Virtual Nodes across sharded PostgreSQL database cluster",
+          "id": "index-first",
+          "label": "Add a composite index on (org_id, email) and hold off on sharding",
           "correct": true,
+          "approach": "tune",
           "graphAfter": {
             "nodes": [
               {
                 "id": "app",
                 "kind": "server",
-                "label": "App",
-                "tone": "good"
+                "label": "Accounts API",
+                "tone": "good",
+                "cpu": 28
               },
               {
-                "id": "sh1",
+                "id": "db",
                 "kind": "db",
-                "label": "Shard 1",
+                "label": "Users DB",
                 "tone": "good",
-                "cpu": 41
-              },
-              {
-                "id": "sh2",
-                "kind": "db",
-                "label": "Shard 2",
-                "tone": "good",
-                "cpu": 38
-              },
-              {
-                "id": "sh3",
-                "kind": "db",
-                "label": "Shard 3",
-                "tone": "good",
-                "cpu": 36
+                "cpu": 22
               }
             ],
             "edges": [
               {
                 "from": "app",
-                "to": "sh1"
-              },
-              {
-                "from": "app",
-                "to": "sh2"
-              },
-              {
-                "from": "app",
-                "to": "sh3"
+                "to": "db"
               }
             ]
           },
@@ -563,14 +559,14 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 31,
+              "value": 22,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 140,
+              "value": 15,
               "unit": "ms",
               "tone": "good"
             },
@@ -582,78 +578,80 @@
               "tone": "good"
             }
           ],
-          "resultTitle": "Horizontal Write Scale Achieved",
-          "resultBody": "Consistent hashing distributes rows evenly across the sharded cluster, allowing write throughput to scale linearly with node count."
+          "resultTitle": "Not a sharding problem",
+          "resultBody": "The lookup becomes an index seek, CPU falls from 94% to about 22%, and one node handles 3,000 writes/s with years of headroom. Sharding would have spread the same bad query across 8 nodes."
         },
         {
-          "id": "keep-single-db",
-          "label": "Maintain single PostgreSQL database with table partitioning without horizontal node scaling",
+          "id": "shard-now",
+          "label": "Shard the users table by hash(user_id) across 8 nodes now",
           "correct": false,
           "retry": true,
+          "approach": "partition",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 99,
+              "value": 90,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2625,
+              "value": 1400,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 70,
+              "value": 260,
               "unit": "errors",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Disk I/O Bottleneck Remains",
-          "resultBody": "Local table partitioning organizes storage on a single disk, but all writes still compete for the same physical I/O channel and IOPS limits."
+          "resultTitle": "Eight nodes scanning instead of one",
+          "resultBody": "The lookup filters by org_id and email, not user_id, so every call now fans out to all 8 shards and each still runs the sequential scan."
         },
         {
-          "id": "route-all-traffic",
-          "label": "Route all concurrent writes to a single master and rely on read replicas",
+          "id": "read-replica",
+          "label": "Add a read replica and send the email lookup to it",
           "correct": false,
           "retry": true,
+          "approach": "replicate",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 97,
+              "value": 95,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2310,
+              "value": 1300,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 50,
+              "value": 200,
               "unit": "errors",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Master Disk Saturation",
-          "resultBody": "A single master database cannot survive 100,000 writes per second, causing transaction log write stalls and cascading connection pool drops."
+          "resultTitle": "Replica pinned by the same scan",
+          "resultBody": "The replica runs the same unindexed scan and hits 95% CPU within minutes, while the primary still pays for the scans inside write transactions."
         }
       ],
       "hints": [
-        "One partition is a hotspot.",
-        "Key choice drives skew.",
-        "Spread the hot key."
+        "What is actually using the CPU?",
+        "200 GB and 3,000 writes/s fit on one modern node.",
+        "Fix the access path before splitting the data."
       ],
-      "nextId": null
+      "reviewed": true
     },
     {
       "id": "shard-04",
@@ -663,38 +661,38 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Cross-shard fan-out gets expensive",
-      "brief": "The app starts sharding by user but some requests need data from many shards at once.",
-      "constraint": "A common query now touches multiple partitions.",
-      "question": "What is the tradeoff?",
+      "title": "Order history page fans out to 16 shards",
+      "brief": "BazaarGo shards orders by hash(order_id) over 16 Postgres shards. The 'My orders' page, 70% of order reads, needs all of one user's orders, so each of 20k views/s queries all 16 shards; p95 is 1.4 s.",
+      "constraint": "Single-order lookups by order_id must stay a one-shard read.",
+      "question": "How do you make a user's order history a one-shard query?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 9000,
+          "label": "History views",
+          "value": 20000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 95,
+          "value": 86,
           "unit": "%",
           "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 2100,
+          "value": 1400,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 30,
-          "unit": "errors",
-          "tone": "bad"
+          "label": "Query timeouts",
+          "value": 40,
+          "unit": "errors/s",
+          "tone": "warn"
         }
       ],
       "graphBefore": {
@@ -702,76 +700,94 @@
           {
             "id": "app",
             "kind": "server",
-            "label": "App"
+            "label": "Orders API"
           },
           {
-            "id": "sh1",
+            "id": "s1",
             "kind": "db",
             "label": "Shard 1",
             "tone": "bad",
-            "cpu": 95
+            "cpu": 86
           },
           {
-            "id": "sh2",
+            "id": "s2",
             "kind": "db",
             "label": "Shard 2",
-            "tone": "neutral"
+            "tone": "warn",
+            "cpu": 84
+          },
+          {
+            "id": "s3",
+            "kind": "db",
+            "label": "Shards 3-16",
+            "tone": "bad",
+            "cpu": 85,
+            "sub": "all queried per view"
           }
         ],
         "edges": [
           {
             "from": "app",
-            "to": "sh1"
+            "to": "s1"
+          },
+          {
+            "from": "app",
+            "to": "s2"
+          },
+          {
+            "from": "app",
+            "to": "s3"
           }
         ]
       },
       "choices": [
         {
-          "id": "reshard-data",
-          "label": "Align Shard Key with Query Access Patterns (Entity-Group Co-location) to eliminate Cross-Shard Joins",
+          "id": "by-user",
+          "label": "Reshard orders by hash(user_id); embed the shard in order_id",
           "correct": true,
+          "approach": "optimal",
           "graphAfter": {
             "nodes": [
               {
                 "id": "app",
                 "kind": "server",
-                "label": "App",
+                "label": "Orders API",
                 "tone": "good"
               },
               {
-                "id": "sh1",
+                "id": "s1",
                 "kind": "db",
                 "label": "Shard 1",
-                "tone": "good",
-                "cpu": 41
-              },
-              {
-                "id": "sh2",
-                "kind": "db",
-                "label": "Shard 2",
                 "tone": "good",
                 "cpu": 38
               },
               {
-                "id": "sh3",
+                "id": "s2",
                 "kind": "db",
-                "label": "Shard 3",
+                "label": "Shard 2",
                 "tone": "good",
                 "cpu": 36
+              },
+              {
+                "id": "s3",
+                "kind": "db",
+                "label": "Shards 3-16",
+                "tone": "good",
+                "cpu": 37
               }
             ],
             "edges": [
               {
                 "from": "app",
-                "to": "sh1"
+                "to": "s1"
               },
               {
                 "from": "app",
-                "to": "sh2"
+                "to": "s2"
               },
               {
                 "from": "app",
-                "to": "sh3"
+                "to": "s3"
               }
             ]
           },
@@ -779,97 +795,100 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 31,
+              "value": 38,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 140,
+              "value": 45,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Query timeouts",
               "value": 0,
-              "unit": "errors",
+              "unit": "errors/s",
               "tone": "good"
             }
           ],
-          "resultTitle": "Local Joins & Single-Shard Queries",
-          "resultBody": "Co-locating users and their related orders onto the same shard allows queries to execute locally on one node without distributed network fan-out."
+          "resultTitle": "One user, one shard",
+          "resultBody": "All of a user's orders now live together, so history is one indexed query on one shard and p95 drops to 45 ms. Encoding the shard number in each new order_id keeps lookups by order_id single-shard too. Cost: a backfill migration, and very heavy buyers can make their shard a bit hotter."
         },
         {
-          "id": "ignore-query-pattern",
-          "label": "Scatter-gather queries across 50 shards on every user request",
+          "id": "parallel",
+          "label": "Run the 16 shard queries in parallel with a 300 ms timeout",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 99,
+              "value": 85,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2625,
+              "value": 420,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Partial results",
+              "value": 900,
+              "unit": "per s",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Faster, but with missing orders",
+          "resultBody": "Latency is capped at 420 ms, but every view still costs 16 queries, CPU stays at 85%, and whenever one shard is slow the page silently drops that shard's orders."
+        },
+        {
+          "id": "redis-history",
+          "label": "Cache each user's full order history in Redis for an hour",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
               "value": 70,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Scatter-Gather Network Amplification",
-          "resultBody": "Querying 50 shards for a single user timeline causes latency to match the slowest shard (tail latency penalty), bringing down API throughput."
-        },
-        {
-          "id": "add-more-cache",
-          "label": "Cache full cross-shard join results in Redis with 1-second TTL",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 97,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2310,
+              "value": 700,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 50,
-              "unit": "errors",
+              "label": "Stale histories",
+              "value": 120,
+              "unit": "per min",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Cache Stampede & High Memory Churn",
-          "resultBody": "Frequent 1-second TTL expirations trigger massive cache stampedes where hundreds of worker threads re-query all 50 shards simultaneously."
+          "resultTitle": "New orders vanish from history",
+          "resultBody": "Repeat views are fast, but a user who just ordered sees the old list for up to an hour, and every cache miss still fans out to 16 shards, so CPU only falls to 70%."
         }
       ],
       "hints": [
-        "One partition is a hotspot.",
-        "Key choice drives skew.",
-        "Spread the hot key."
+        "Which query is the hot path, and which column does it filter on?",
+        "Data read together should be stored together.",
+        "The shard key should match the page's main filter, while still letting you find one order."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "shard-05",
@@ -879,36 +898,37 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "New tenant creates skew after launch",
-      "brief": "A new customer becomes very active overnight and one shard absorbs most traffic.",
-      "constraint": "Static shard layout is not resilient to skew.",
-      "question": "What should happen?",
+      "nextId": null,
+      "title": "One shard down, whole app down",
+      "brief": "Shard 9 of 24 loses its primary during failover. Only 4% of tenants live there, yet 100% of requests fail, because every request first loads feature flags from a table that lives only on shard 9.",
+      "constraint": "Shard 9 needs about 10 minutes to promote a replica.",
+      "question": "How do you stop one shard from taking everyone down?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 9000,
+          "value": 22000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 95,
+          "value": 12,
           "unit": "%",
-          "tone": "bad"
+          "tone": "warn"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 2100,
+          "value": 5000,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
           "label": "Errors",
-          "value": 30,
+          "value": 22000,
           "unit": "errors",
           "tone": "bad"
         }
@@ -918,76 +938,90 @@
           {
             "id": "app",
             "kind": "server",
-            "label": "App"
-          },
-          {
-            "id": "sh1",
-            "kind": "db",
-            "label": "Shard 1",
+            "label": "App fleet (waiting)",
             "tone": "bad",
-            "cpu": 95
+            "cpu": 12
           },
           {
-            "id": "sh2",
+            "id": "sh9",
             "kind": "db",
-            "label": "Shard 2",
-            "tone": "neutral"
+            "label": "Shard 9 (failing over)",
+            "tone": "bad",
+            "cpu": 0
+          },
+          {
+            "id": "sh10",
+            "kind": "db",
+            "label": "Shard 10",
+            "cpu": 8
+          },
+          {
+            "id": "sh11",
+            "kind": "db",
+            "label": "Shard 11",
+            "cpu": 9
           }
         ],
         "edges": [
           {
             "from": "app",
-            "to": "sh1"
+            "to": "sh9"
+          },
+          {
+            "from": "app",
+            "to": "sh10"
+          },
+          {
+            "from": "app",
+            "to": "sh11"
           }
         ]
       },
       "choices": [
         {
-          "id": "reshard-data",
-          "label": "Dynamic Shard Rebalancing with Consistent Hash Ring Migration without maintenance downtime",
+          "id": "isolate-shard",
+          "label": "Cache flags in each app node and fail only shard 9's tenants",
           "correct": true,
+          "approach": "isolate",
           "graphAfter": {
             "nodes": [
               {
                 "id": "app",
                 "kind": "server",
-                "label": "App",
-                "tone": "good"
+                "label": "App fleet",
+                "tone": "good",
+                "cpu": 40
               },
               {
-                "id": "sh1",
+                "id": "sh9",
                 "kind": "db",
-                "label": "Shard 1",
-                "tone": "good",
-                "cpu": 41
+                "label": "Shard 9 (failing over)",
+                "tone": "warn",
+                "cpu": 0
               },
               {
-                "id": "sh2",
+                "id": "sh10",
                 "kind": "db",
-                "label": "Shard 2",
+                "label": "Shard 10",
                 "tone": "good",
-                "cpu": 38
+                "cpu": 45
               },
               {
-                "id": "sh3",
+                "id": "sh11",
                 "kind": "db",
-                "label": "Shard 3",
+                "label": "Shard 11",
                 "tone": "good",
-                "cpu": 36
+                "cpu": 44
               }
             ],
             "edges": [
               {
                 "from": "app",
-                "to": "sh1"
+                "to": "sh10"
               },
               {
                 "from": "app",
-                "to": "sh2"
-              },
-              {
-                "from": "app",
-                "to": "sh3"
+                "to": "sh11"
               }
             ]
           },
@@ -995,97 +1029,99 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 31,
+              "value": 45,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 140,
+              "value": 90,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 0,
+              "value": 880,
               "unit": "errors",
               "tone": "good"
             }
           ],
-          "resultTitle": "Zero-Downtime Shard Migration",
-          "resultBody": "Consistent hashing allows newly provisioned shards to take over only a fraction of keys without reshuffling the entire dataset or dropping connections."
+          "resultTitle": "Blast radius back to 4%",
+          "resultBody": "Flags come from a local copy refreshed every 30 s, so requests no longer touch shard 9 unless the tenant lives there. 96% of tenants recover at once; shard 9's tenants get a clear error until promotion finishes."
         },
         {
-          "id": "wait-manual-restart",
-          "label": "Schedule 6-hour weekend maintenance downtime window to dump and reload all database tables",
+          "id": "restart-fleet",
+          "label": "Restart the whole app fleet to clear stuck database connections",
           "correct": false,
           "retry": true,
+          "approach": "restart",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 99,
+              "value": 16,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2625,
+              "value": 6000,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 70,
+              "value": 22000,
               "unit": "errors",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Massive SLA Breach & Customer Churn",
-          "resultBody": "Multi-hour maintenance windows violate 99.9% availability SLAs and inflict unacceptable business disruption on global users."
+          "resultTitle": "Fresh pods hit the same dead shard",
+          "resultBody": "New pods start, try to load flags from shard 9, and block on the same timeout; the restart adds a cold-start wave on top of the outage."
         },
         {
-          "id": "add-cache-defense",
-          "label": "Rely solely on caching while write throughput continues to exceed single disk IOPS limits",
+          "id": "raise-timeout",
+          "label": "Raise the shard query timeout from 5 s to 30 s",
           "correct": false,
           "retry": true,
+          "approach": "timeout",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 97,
+              "value": 14,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2310,
+              "value": 30000,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 50,
+              "value": 22000,
               "unit": "errors",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Silent Write Overload",
-          "resultBody": "Caching cannot defer persistent database writes indefinitely; the underlying storage still falls behind and corrupts transaction state."
+          "resultTitle": "Requests wait longer, then fail",
+          "resultBody": "Promotion takes 10 minutes, so a 30 s wait still ends in failure, and every request now ties up a worker six times longer."
         }
       ],
       "hints": [
-        "One partition is a hotspot.",
-        "Key choice drives skew.",
-        "Spread the hot key."
+        "Only 4% of tenants live on shard 9. Why is everyone failing?",
+        "Something every request needs lives on one shard.",
+        "Keep global data off a single shard and scope failures to their tenants."
       ],
-      "nextId": null
+      "reviewed": true
     },
     {
       "id": "shard-06",
@@ -1095,37 +1131,37 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Orders table struggles under broad writes",
-      "brief": "Millions of orders are stored in one table and write traffic is spread more evenly than expected, yet one shard is still overloaded.",
-      "constraint": "The partitioning key is poorly chosen.",
-      "question": "What design mistake caused it?",
+      "title": "The 'card' shard takes 85% of all orders",
+      "brief": "PayNest shards 9,000 order writes/s by payment_method: card, wallet, bank, cash. Cards are 85% of orders, so shard 'card' runs at 97% CPU while the other three idle below 15%.",
+      "constraint": "Adding hardware to the card shard is capped: it is already the largest instance type.",
+      "question": "What shard key spreads the writes evenly?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
+          "label": "Order writes",
           "value": 9000,
-          "unit": "req/s",
+          "unit": "writes/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 95,
+          "value": 97,
           "unit": "%",
           "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 2100,
+          "value": 1900,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 30,
-          "unit": "errors",
+          "label": "Write timeouts",
+          "value": 60,
+          "unit": "errors/s",
           "tone": "bad"
         }
       ],
@@ -1134,76 +1170,115 @@
           {
             "id": "app",
             "kind": "server",
-            "label": "App"
+            "label": "Checkout API"
           },
           {
-            "id": "sh1",
+            "id": "s1",
             "kind": "db",
-            "label": "Shard 1",
+            "label": "card",
             "tone": "bad",
-            "cpu": 95
+            "cpu": 97
           },
           {
-            "id": "sh2",
+            "id": "s2",
             "kind": "db",
-            "label": "Shard 2",
-            "tone": "neutral"
+            "label": "wallet",
+            "tone": "good",
+            "cpu": 12
+          },
+          {
+            "id": "s3",
+            "kind": "db",
+            "label": "bank",
+            "tone": "good",
+            "cpu": 9
+          },
+          {
+            "id": "s4",
+            "kind": "db",
+            "label": "cash",
+            "tone": "good",
+            "cpu": 6
           }
         ],
         "edges": [
           {
             "from": "app",
-            "to": "sh1"
+            "to": "s1"
+          },
+          {
+            "from": "app",
+            "to": "s2"
+          },
+          {
+            "from": "app",
+            "to": "s3"
+          },
+          {
+            "from": "app",
+            "to": "s4"
           }
         ]
       },
       "choices": [
         {
-          "id": "reshard-data",
-          "label": "Reshard data",
+          "id": "hash-customer",
+          "label": "Reshard by hash(customer_id) across 16 shards",
           "correct": true,
+          "approach": "optimal",
           "graphAfter": {
             "nodes": [
               {
                 "id": "app",
                 "kind": "server",
-                "label": "App",
+                "label": "Checkout API",
                 "tone": "good"
               },
               {
-                "id": "sh1",
+                "id": "s1",
                 "kind": "db",
                 "label": "Shard 1",
+                "tone": "good",
+                "cpu": 42
+              },
+              {
+                "id": "s2",
+                "kind": "db",
+                "label": "Shard 2",
                 "tone": "good",
                 "cpu": 41
               },
               {
-                "id": "sh2",
-                "kind": "db",
-                "label": "Shard 2",
-                "tone": "good",
-                "cpu": 38
-              },
-              {
-                "id": "sh3",
+                "id": "s3",
                 "kind": "db",
                 "label": "Shard 3",
                 "tone": "good",
-                "cpu": 36
+                "cpu": 43
+              },
+              {
+                "id": "s4",
+                "kind": "db",
+                "label": "Shards 4-16",
+                "tone": "good",
+                "cpu": 40
               }
             ],
             "edges": [
               {
                 "from": "app",
-                "to": "sh1"
+                "to": "s1"
               },
               {
                 "from": "app",
-                "to": "sh2"
+                "to": "s2"
               },
               {
                 "from": "app",
-                "to": "sh3"
+                "to": "s3"
+              },
+              {
+                "from": "app",
+                "to": "s4"
               }
             ]
           },
@@ -1211,97 +1286,100 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 31,
+              "value": 42,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 140,
+              "value": 90,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Write timeouts",
               "value": 0,
-              "unit": "errors",
+              "unit": "errors/s",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "The key choice creates uneven distribution and a hotspot despite multiple shards."
+          "resultTitle": "Millions of keys, even spread",
+          "resultBody": "customer_id has millions of values, so hashing it gives every shard about 1/16 of the writes at ~42% CPU and keeps each customer's orders together. Cost: 'all card orders' reports now scatter across shards, and the migration needs a backfill."
         },
         {
-          "id": "no-writes-should",
-          "label": "No writes should",
+          "id": "split-card",
+          "label": "Split the card shard into Visa and Mastercard shards",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 99,
+              "value": 78,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 820,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Write timeouts",
+              "value": 12,
+              "unit": "errors/s",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "The Visa shard is the new hotspot",
+          "resultBody": "Visa is 70% of card volume, so the new Visa shard runs at 78% CPU. The key still has only a handful of values, so the next growth spurt or card network promo overloads it again."
+        },
+        {
+          "id": "replicas",
+          "label": "Add three read replicas to the card shard",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 96,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2625,
+              "value": 1850,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 70,
-              "unit": "errors",
+              "label": "Write timeouts",
+              "value": 58,
+              "unit": "errors/s",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Hotspot remains",
-          "resultBody": "The same partition still takes the write flood."
-        },
-        {
-          "id": "the-table-too",
-          "label": "The table too",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 97,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 2310,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 50,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Hotspot remains",
-          "resultBody": "The table is too small"
+          "resultTitle": "Replicas cannot take writes",
+          "resultBody": "The load is 9,000 writes/s, and every replica must replay them all. The primary stays at 96% CPU and replicas start lagging behind it."
         }
       ],
       "hints": [
-        "One partition is a hotspot.",
-        "Key choice drives skew.",
-        "Spread the hot key."
+        "Count how many distinct values the shard key has.",
+        "A key with four values can never use more than four shards evenly, and only if they are equally common.",
+        "Pick a key with high cardinality that spreads writes uniformly."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "shard-07",
@@ -1311,15 +1389,15 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Heavy read and write imbalance",
-      "brief": "One shard gets all the writes and the others sit mostly idle.",
-      "constraint": "The app is horizontally scaled but the data model is still skewed.",
-      "question": "What does the system need to do?",
+      "title": "A celebrity's profile pins one shard at 95%",
+      "brief": "Chirp shards profiles by hash(user_id) over 32 shards. A pop star with 90M followers posts, and her profile row takes 180k reads/s. Shard 14 hits 95% CPU; every other user on it times out.",
+      "constraint": "Profile edits must show up within 10 seconds; the other 31 shards are near 30%.",
+      "question": "How do you absorb 180k reads/s on a single row?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 9000,
+          "label": "Profile reads",
+          "value": 180000,
           "unit": "req/s",
           "tone": "neutral"
         },
@@ -1333,15 +1411,15 @@
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 2100,
+          "value": 2400,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 30,
-          "unit": "errors",
+          "label": "Read timeouts",
+          "value": 800,
+          "unit": "errors/s",
           "tone": "bad"
         }
       ],
@@ -1350,76 +1428,105 @@
           {
             "id": "app",
             "kind": "server",
-            "label": "App"
+            "label": "Profile API"
           },
           {
-            "id": "sh1",
+            "id": "s1",
             "kind": "db",
-            "label": "Shard 1",
+            "label": "Shard 14",
             "tone": "bad",
-            "cpu": 95
+            "cpu": 95,
+            "sub": "1 hot row"
           },
           {
-            "id": "sh2",
+            "id": "s2",
             "kind": "db",
-            "label": "Shard 2",
-            "tone": "neutral"
+            "label": "Shard 15",
+            "tone": "good",
+            "cpu": 30
+          },
+          {
+            "id": "s3",
+            "kind": "db",
+            "label": "Shards 1-32",
+            "tone": "good",
+            "cpu": 28
           }
         ],
         "edges": [
           {
             "from": "app",
-            "to": "sh1"
+            "to": "s1"
+          },
+          {
+            "from": "app",
+            "to": "s2"
+          },
+          {
+            "from": "app",
+            "to": "s3"
           }
         ]
       },
       "choices": [
         {
-          "id": "reshard-data",
-          "label": "Reshard data",
+          "id": "cache",
+          "label": "Cache hot profiles in Redis and app memory for 5 seconds",
           "correct": true,
+          "approach": "optimal",
           "graphAfter": {
             "nodes": [
               {
                 "id": "app",
                 "kind": "server",
-                "label": "App",
+                "label": "Profile API",
+                "tone": "good",
+                "sub": "5 s local cache"
+              },
+              {
+                "id": "cache",
+                "kind": "cache",
+                "label": "Redis",
                 "tone": "good"
               },
               {
-                "id": "sh1",
+                "id": "s1",
                 "kind": "db",
-                "label": "Shard 1",
+                "label": "Shard 14",
                 "tone": "good",
-                "cpu": 41
+                "cpu": 32
               },
               {
-                "id": "sh2",
+                "id": "s2",
                 "kind": "db",
-                "label": "Shard 2",
+                "label": "Shard 15",
                 "tone": "good",
-                "cpu": 38
+                "cpu": 30
               },
               {
-                "id": "sh3",
+                "id": "s3",
                 "kind": "db",
-                "label": "Shard 3",
+                "label": "Shards 1-32",
                 "tone": "good",
-                "cpu": 36
+                "cpu": 28
               }
             ],
             "edges": [
               {
                 "from": "app",
-                "to": "sh1"
+                "to": "cache"
+              },
+              {
+                "from": "cache",
+                "to": "s1"
               },
               {
                 "from": "app",
-                "to": "sh2"
+                "to": "s2"
               },
               {
                 "from": "app",
-                "to": "sh3"
+                "to": "s3"
               }
             ]
           },
@@ -1427,97 +1534,100 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 31,
+              "value": 32,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 140,
+              "value": 8,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Read timeouts",
               "value": 0,
-              "unit": "errors",
+              "unit": "errors/s",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Improve partitioning strategy so the read and write workload is spread more evenly."
+          "resultTitle": "The row is read once per 5 seconds",
+          "resultBody": "Each API node holds the profile in memory for 5 s, backed by Redis, so shard 14 sees a handful of reads per second for that row and returns to 32% CPU. Edits appear within 5 s, inside the 10 s budget. Cost: another layer to invalidate and a brief window of stale profiles."
         },
         {
-          "id": "increase-app-capacity",
-          "label": "Increase app capacity",
+          "id": "reshard-64",
+          "label": "Reshard from 32 to 64 shards to spread the load",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 99,
+              "value": 94,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2625,
+              "value": 2300,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 70,
-              "unit": "errors",
+              "label": "Read timeouts",
+              "value": 760,
+              "unit": "errors/s",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Hotspot remains",
-          "resultBody": "The same partition still takes the write flood."
+          "resultTitle": "One row still lives on one shard",
+          "resultBody": "The week-long reshard halves everyone else's load, but a single user_id always hashes to exactly one shard. That shard still receives all 180k reads/s and stays at 94% CPU."
         },
         {
-          "id": "use-bigger-single",
-          "label": "Use bigger single",
+          "id": "dedicated",
+          "label": "Move the celebrity to her own largest-size instance",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 97,
+              "value": 88,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2310,
+              "value": 600,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 50,
-              "unit": "errors",
-              "tone": "bad"
+              "label": "Read timeouts",
+              "value": 90,
+              "unit": "errors/s",
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Hotspot remains",
-          "resultBody": "Use a bigger single database"
+          "resultTitle": "Isolated, still saturated",
+          "resultBody": "Other users on shard 14 recover, but one database node still has to serve 180k reads/s of the same row and runs at 88% CPU. The next viral account needs its own machine too."
         }
       ],
       "hints": [
-        "One partition is a hotspot.",
-        "Key choice drives skew.",
-        "Spread the hot key."
+        "The load is on one row, not one range of rows.",
+        "No sharding scheme can split a single key across machines.",
+        "The data barely changes; how many of those reads need to reach the database?"
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "shard-08",
@@ -1527,115 +1637,129 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Queueing data on same shard",
-      "brief": "Every new order is placed on the same partition because the sharding key is not random enough.",
-      "constraint": "Data is not evenly distributed across consumers.",
-      "question": "What should be changed?",
+      "title": "One merchant's partition lags 40 minutes",
+      "brief": "ShopRail's order-events topic has 24 partitions keyed by merchant_id. A flash sale gives one merchant 60% of 50k events/s, so partition 7 lags 40 minutes while the other 23 consumers sit idle.",
+      "constraint": "Consumers need ordering only per order_id (created, paid, shipped), not per merchant.",
+      "question": "How do you spread one merchant's events across consumers?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 9000,
-          "unit": "req/s",
+          "label": "Events",
+          "value": 50000,
+          "unit": "events/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 95,
+          "value": 98,
           "unit": "%",
           "tone": "bad"
         },
         {
-          "key": "p95",
-          "label": "p95 latency",
-          "value": 2100,
-          "unit": "ms",
+          "key": "lag",
+          "label": "Consumer lag",
+          "value": 40,
+          "unit": "min",
           "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 30,
-          "unit": "errors",
-          "tone": "bad"
+          "label": "Dropped events",
+          "value": 0,
+          "unit": "events/s",
+          "tone": "neutral"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "app",
+            "id": "api",
             "kind": "server",
-            "label": "App"
+            "label": "Order service"
           },
           {
-            "id": "sh1",
-            "kind": "db",
-            "label": "Shard 1",
+            "id": "p7",
+            "kind": "queue",
+            "label": "Partition 7",
             "tone": "bad",
-            "cpu": 95
+            "sub": "60% of events"
           },
           {
-            "id": "sh2",
-            "kind": "db",
-            "label": "Shard 2",
-            "tone": "neutral"
+            "id": "pothers",
+            "kind": "queue",
+            "label": "Partitions 1-24"
+          },
+          {
+            "id": "c7",
+            "kind": "worker",
+            "label": "Consumer 7",
+            "tone": "bad",
+            "cpu": 98
+          },
+          {
+            "id": "cothers",
+            "kind": "worker",
+            "label": "Other consumers",
+            "cpu": 12
           }
         ],
         "edges": [
           {
-            "from": "app",
-            "to": "sh1"
+            "from": "api",
+            "to": "p7"
+          },
+          {
+            "from": "api",
+            "to": "pothers"
+          },
+          {
+            "from": "p7",
+            "to": "c7"
+          },
+          {
+            "from": "pothers",
+            "to": "cothers"
           }
         ]
       },
       "choices": [
         {
-          "id": "reshard-data",
-          "label": "Reshard data",
+          "id": "by-order",
+          "label": "Key events by order_id instead of merchant_id",
           "correct": true,
+          "approach": "optimal",
           "graphAfter": {
             "nodes": [
               {
-                "id": "app",
+                "id": "api",
                 "kind": "server",
-                "label": "App",
+                "label": "Order service",
                 "tone": "good"
               },
               {
-                "id": "sh1",
-                "kind": "db",
-                "label": "Shard 1",
+                "id": "parts",
+                "kind": "queue",
+                "label": "24 partitions",
                 "tone": "good",
-                "cpu": 41
+                "sub": "keyed by order_id"
               },
               {
-                "id": "sh2",
-                "kind": "db",
-                "label": "Shard 2",
+                "id": "cons",
+                "kind": "worker",
+                "label": "24 consumers",
                 "tone": "good",
-                "cpu": 38
-              },
-              {
-                "id": "sh3",
-                "kind": "db",
-                "label": "Shard 3",
-                "tone": "good",
-                "cpu": 36
+                "cpu": 45
               }
             ],
             "edges": [
               {
-                "from": "app",
-                "to": "sh1"
+                "from": "api",
+                "to": "parts"
               },
               {
-                "from": "app",
-                "to": "sh2"
-              },
-              {
-                "from": "app",
-                "to": "sh3"
+                "from": "parts",
+                "to": "cons"
               }
             ]
           },
@@ -1643,97 +1767,79 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 31,
+              "value": 45,
               "unit": "%",
               "tone": "good"
             },
             {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 140,
-              "unit": "ms",
-              "tone": "good"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
+              "key": "lag",
+              "label": "Consumer lag",
+              "value": 0.2,
+              "unit": "min",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Choose a better sharding key or a consistent hashing strategy that spreads the load."
+          "resultTitle": "The flash sale spreads over 24 partitions",
+          "resultBody": "Each order's events still land on one partition in order, but the merchant's thousands of orders hash across all 24, so every consumer takes a share at ~45% CPU and lag drains in minutes. Cost: per-merchant aggregations must now combine data from all partitions."
         },
         {
-          "id": "move-queue-before",
-          "label": "Move queue before",
+          "id": "more-partitions",
+          "label": "Grow the topic from 24 to 96 partitions",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 99,
+              "value": 98,
               "unit": "%",
               "tone": "bad"
             },
             {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 2625,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 70,
-              "unit": "errors",
+              "key": "lag",
+              "label": "Consumer lag",
+              "value": 42,
+              "unit": "min",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Hotspot remains",
-          "resultBody": "The same partition still takes the write flood."
+          "resultTitle": "Same key, same partition",
+          "resultBody": "The merchant_id still hashes to exactly one partition, now one of 96. That partition and its single consumer keep 60% of the traffic, and adding partitions also reshuffles key placement for everyone else."
         },
         {
-          "id": "add-more-replica",
-          "label": "Add more replica",
+          "id": "more-consumers",
+          "label": "Scale the consumer group from 24 to 72 instances",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 97,
+              "value": 98,
               "unit": "%",
               "tone": "bad"
             },
             {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 2310,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 50,
-              "unit": "errors",
+              "key": "lag",
+              "label": "Consumer lag",
+              "value": 40,
+              "unit": "min",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Hotspot remains",
-          "resultBody": "Add more replica workers"
+          "resultTitle": "48 consumers with nothing to do",
+          "resultBody": "A partition is read by at most one consumer in a group, so the 48 new instances get no partitions assigned. Partition 7's consumer is still the bottleneck."
         }
       ],
       "hints": [
-        "One partition is a hotspot.",
-        "Key choice drives skew.",
-        "Spread the hot key."
+        "A partition is consumed by only one consumer in a group.",
+        "The partition key decides which events share a partition.",
+        "Choose the narrowest key that still preserves the ordering you actually need."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "shard-09",
@@ -1743,38 +1849,38 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Shard growth after customer expansion",
-      "brief": "One business customer expands quickly and all of its data starts landing in the same shard.",
-      "constraint": "A large tenant becomes the data hotspot.",
-      "question": "How do you keep the system healthy?",
+      "title": "Enterprise tenant fills shard 3's disk to 92%",
+      "brief": "LedgerLoop routes tenants to 12 shards via a directory. Acme Corp grew from 200 GB to 3.1 TB this year; shard 3's 4 TB disk is 92% full, growing 60 GB weekly, and its 70 other tenants slow down.",
+      "constraint": "Contracts require 7 years of history online; Acme's queries all filter by its tenant_id.",
+      "question": "Where should Acme's data live?",
       "metricsBefore": [
         {
-          "key": "rps",
-          "label": "Traffic",
-          "value": 9000,
-          "unit": "req/s",
-          "tone": "neutral"
-        },
-        {
-          "key": "cpu",
-          "label": "CPU",
-          "value": 95,
+          "key": "disk",
+          "label": "Shard 3 disk",
+          "value": 92,
           "unit": "%",
           "tone": "bad"
         },
         {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 74,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
           "key": "p95",
           "label": "p95 latency",
-          "value": 2100,
+          "value": 650,
           "unit": "ms",
-          "tone": "bad"
+          "tone": "warn"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 30,
-          "unit": "errors",
-          "tone": "bad"
+          "label": "Vacuum stalls",
+          "value": 3,
+          "unit": "per h",
+          "tone": "warn"
         }
       ],
       "graphBefore": {
@@ -1782,174 +1888,204 @@
           {
             "id": "app",
             "kind": "server",
-            "label": "App"
+            "label": "Ledger API"
           },
           {
-            "id": "sh1",
+            "id": "dir",
+            "kind": "cache",
+            "label": "Tenant directory"
+          },
+          {
+            "id": "s1",
             "kind": "db",
-            "label": "Shard 1",
+            "label": "Shard 3 (Acme + 70)",
             "tone": "bad",
-            "cpu": 95
+            "cpu": 74
           },
           {
-            "id": "sh2",
+            "id": "s2",
             "kind": "db",
-            "label": "Shard 2",
-            "tone": "neutral"
+            "label": "Shard 4",
+            "cpu": 35
+          },
+          {
+            "id": "s3",
+            "kind": "db",
+            "label": "Shards 1-12",
+            "cpu": 33
           }
         ],
         "edges": [
           {
             "from": "app",
-            "to": "sh1"
+            "to": "dir"
+          },
+          {
+            "from": "app",
+            "to": "s1"
+          },
+          {
+            "from": "app",
+            "to": "s2"
+          },
+          {
+            "from": "app",
+            "to": "s3"
           }
         ]
       },
       "choices": [
         {
-          "id": "reshard-data",
-          "label": "Reshard data",
+          "id": "dedicated",
+          "label": "Move Acme to its own shard, then flip its directory entry",
           "correct": true,
+          "approach": "optimal",
           "graphAfter": {
             "nodes": [
               {
                 "id": "app",
                 "kind": "server",
-                "label": "App",
+                "label": "Ledger API",
                 "tone": "good"
               },
               {
-                "id": "sh1",
-                "kind": "db",
-                "label": "Shard 1",
+                "id": "dir",
+                "kind": "cache",
+                "label": "Tenant directory",
                 "tone": "good",
-                "cpu": 41
+                "sub": "acme -> shard 13"
               },
               {
-                "id": "sh2",
+                "id": "s1",
                 "kind": "db",
-                "label": "Shard 2",
+                "label": "Shard 3 (70 tenants)",
                 "tone": "good",
-                "cpu": 38
+                "cpu": 30
               },
               {
-                "id": "sh3",
+                "id": "s2",
                 "kind": "db",
-                "label": "Shard 3",
+                "label": "Shard 13 (Acme)",
                 "tone": "good",
-                "cpu": 36
+                "cpu": 45
+              },
+              {
+                "id": "s3",
+                "kind": "db",
+                "label": "Shards 1-12",
+                "cpu": 33
               }
             ],
             "edges": [
               {
                 "from": "app",
-                "to": "sh1"
+                "to": "dir"
               },
               {
                 "from": "app",
-                "to": "sh2"
+                "to": "s1"
               },
               {
                 "from": "app",
-                "to": "sh3"
+                "to": "s2"
+              },
+              {
+                "from": "app",
+                "to": "s3"
               }
             ]
           },
           "metricsAfter": [
             {
+              "key": "disk",
+              "label": "Shard 3 disk",
+              "value": 18,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
               "key": "cpu",
               "label": "CPU",
-              "value": 31,
+              "value": 30,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 140,
+              "value": 120,
               "unit": "ms",
-              "tone": "good"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Split that tenant’s data across multiple shards or use a more granular key distribution."
+          "resultTitle": "Acme gets a home of its own",
+          "resultBody": "Acme's rows are copied to a new shard with live replication, and one directory update switches its routing, so shard 3 drops to 18% disk and its 70 neighbours stop suffering. Cost: one more shard to run, and Acme's shard must be sized and scaled on its own."
         },
         {
-          "id": "keep-all-one",
-          "label": "Keep all one",
+          "id": "hash-split",
+          "label": "Split shard 3 in two by hash(tenant_id)",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 99,
+              "key": "disk",
+              "label": "Hot half disk",
+              "value": 80,
               "unit": "%",
               "tone": "bad"
             },
             {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 2625,
-              "unit": "ms",
-              "tone": "bad"
+              "key": "cpu",
+              "label": "CPU",
+              "value": 68,
+              "unit": "%",
+              "tone": "warn"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 70,
-              "unit": "errors",
-              "tone": "bad"
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 580,
+              "unit": "ms",
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Hotspot remains",
-          "resultBody": "The same partition still takes the write flood."
+          "resultTitle": "Acme lands on one half, intact",
+          "resultBody": "Hashing tenant_id moves whole tenants, so all 3.1 TB of Acme ends up on one of the halves. That half is at 80% disk and fills again in about ten weeks."
         },
         {
-          "id": "a-single-regional",
-          "label": "A single regional",
+          "id": "archive",
+          "label": "Archive Acme's data older than 90 days to cold storage",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 97,
+              "key": "disk",
+              "label": "Shard 3 disk",
+              "value": 40,
               "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 2310,
-              "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 50,
-              "unit": "errors",
+              "label": "Missing-history tickets",
+              "value": 250,
+              "unit": "per week",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Hotspot remains",
-          "resultBody": "A single regional DB"
+          "resultTitle": "Space freed, contract broken",
+          "resultBody": "Disk drops to 40%, but auditors and Acme's finance team can no longer query history older than 90 days, which the contract requires to stay online for 7 years."
         }
       ],
       "hints": [
-        "One partition is a hotspot.",
-        "Key choice drives skew.",
-        "Spread the hot key."
+        "The issue is one tenant's size, not the total number of tenants.",
+        "Any hash of tenant_id keeps a tenant's rows together.",
+        "A directory lets you place a single tenant anywhere you like."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "shard-10",
@@ -2228,38 +2364,38 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Sharding by created_at",
-      "brief": "New rows all land in this month’s partition while older partitions sit idle.",
-      "constraint": "Write load follows time, not a hash of the entity.",
-      "question": "Why is time a risky primary shard key?",
+      "title": "Two customers received the same order number",
+      "brief": "After splitting orders across 8 MySQL shards, each shard kept its own AUTO_INCREMENT. Order #48213377 now exists on shards 2 and 5; 1,400 support tickets and duplicate invoices in 3 days.",
+      "constraint": "IDs must stay 64-bit integers and roughly time-ordered, because the mobile app paginates by id.",
+      "question": "How do you generate unique ids across shards?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 9000,
-          "unit": "req/s",
+          "label": "Order inserts",
+          "value": 30000,
+          "unit": "writes/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 95,
+          "value": 55,
           "unit": "%",
+          "tone": "neutral"
+        },
+        {
+          "key": "errors",
+          "label": "Duplicate ids",
+          "value": 470,
+          "unit": "per day",
           "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 2100,
+          "value": 40,
           "unit": "ms",
-          "tone": "bad"
-        },
-        {
-          "key": "errors",
-          "label": "Errors",
-          "value": 30,
-          "unit": "errors",
-          "tone": "bad"
+          "tone": "good"
         }
       ],
       "graphBefore": {
@@ -2267,174 +2403,197 @@
           {
             "id": "app",
             "kind": "server",
-            "label": "App"
+            "label": "Order service"
           },
           {
-            "id": "sh1",
-            "kind": "db",
-            "label": "Shard 1",
-            "tone": "bad",
-            "cpu": 95
-          },
-          {
-            "id": "sh2",
+            "id": "s1",
             "kind": "db",
             "label": "Shard 2",
-            "tone": "neutral"
+            "tone": "bad",
+            "cpu": 55,
+            "sub": "AUTO_INCREMENT"
+          },
+          {
+            "id": "s2",
+            "kind": "db",
+            "label": "Shard 5",
+            "tone": "bad",
+            "cpu": 54,
+            "sub": "AUTO_INCREMENT"
+          },
+          {
+            "id": "s3",
+            "kind": "db",
+            "label": "Shards 1-8",
+            "tone": "neutral",
+            "cpu": 52
           }
         ],
         "edges": [
           {
             "from": "app",
-            "to": "sh1"
+            "to": "s1"
+          },
+          {
+            "from": "app",
+            "to": "s2"
+          },
+          {
+            "from": "app",
+            "to": "s3"
           }
         ]
       },
       "choices": [
         {
-          "id": "reshard-data",
-          "label": "Reshard data",
+          "id": "snowflake",
+          "label": "Snowflake-style ids: timestamp, shard number, sequence",
           "correct": true,
+          "approach": "optimal",
           "graphAfter": {
             "nodes": [
               {
                 "id": "app",
                 "kind": "server",
-                "label": "App",
-                "tone": "good"
-              },
-              {
-                "id": "sh1",
-                "kind": "db",
-                "label": "Shard 1",
+                "label": "Order service",
                 "tone": "good",
-                "cpu": 41
+                "sub": "snowflake ids"
               },
               {
-                "id": "sh2",
+                "id": "s1",
                 "kind": "db",
                 "label": "Shard 2",
                 "tone": "good",
-                "cpu": 38
+                "cpu": 55
               },
               {
-                "id": "sh3",
+                "id": "s2",
                 "kind": "db",
-                "label": "Shard 3",
+                "label": "Shard 5",
                 "tone": "good",
-                "cpu": 36
+                "cpu": 54
+              },
+              {
+                "id": "s3",
+                "kind": "db",
+                "label": "Shards 1-8",
+                "tone": "good",
+                "cpu": 52
               }
             ],
             "edges": [
               {
                 "from": "app",
-                "to": "sh1"
+                "to": "s1"
               },
               {
                 "from": "app",
-                "to": "sh2"
+                "to": "s2"
               },
               {
                 "from": "app",
-                "to": "sh3"
+                "to": "s3"
               }
             ]
           },
           "metricsAfter": [
             {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 31,
-              "unit": "%",
-              "tone": "good"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 140,
-              "unit": "ms",
-              "tone": "good"
-            },
-            {
               "key": "errors",
-              "label": "Errors",
+              "label": "Duplicate ids",
               "value": 0,
-              "unit": "errors",
+              "unit": "per day",
               "tone": "good"
-            }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Monotonic keys concentrate writes on the newest shard; hash or mix another high-cardinality key."
-        },
-        {
-          "id": "time-based-keys-always",
-          "label": "Time-based keys always",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 99,
-              "unit": "%",
-              "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2625,
+              "value": 40,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "good"
             },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 70,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Hotspot remains",
-          "resultBody": "The same partition still takes the write flood."
-        },
-        {
-          "id": "add-more-old",
-          "label": "Add more old",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 97,
+              "value": 55,
               "unit": "%",
-              "tone": "bad"
+              "tone": "neutral"
+            }
+          ],
+          "resultTitle": "Unique by construction, no coordinator",
+          "resultBody": "Each id packs 41 bits of milliseconds, 10 bits of shard or worker number and a 12-bit sequence, so no two shards can ever mint the same value, ids stay 64-bit and time-sortable, and no network call is needed. Cost: clocks must be monitored, since a clock stepping backwards can repeat ids unless the generator waits."
+        },
+        {
+          "id": "central",
+          "label": "Issue every id from one central AUTO_INCREMENT table",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "errors",
+              "label": "Duplicate ids",
+              "value": 0,
+              "unit": "per day",
+              "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2310,
+              "value": 210,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 50,
-              "unit": "errors",
+              "key": "cpu",
+              "label": "ID DB CPU",
+              "value": 96,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Hotspot remains",
-          "resultBody": "Add more old partitions to absorb new writes"
+          "resultTitle": "A new single point of failure",
+          "resultBody": "Duplicates stop, but all 30,000 inserts/s now wait on one database for an id. It runs at 96% CPU, adds a network hop to every insert, and when it fails every shard stops taking orders."
+        },
+        {
+          "id": "uuid4",
+          "label": "Switch primary keys to random UUIDv4 values",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "errors",
+              "label": "Duplicate ids",
+              "value": 0,
+              "unit": "per day",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 95,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 68,
+              "unit": "%",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Unique, but breaks pagination",
+          "resultBody": "Random 128-bit ids are unique, but they are not 64-bit and not time-ordered, so the app's pagination by id breaks, and random inserts scatter across the B-tree, raising insert latency to 95 ms."
         }
       ],
       "hints": [
-        "One partition is a hotspot.",
-        "Key choice drives skew.",
-        "Spread the hot key."
+        "Each shard is counting on its own, starting from the same place.",
+        "Uniqueness can come from coordination, or from structure inside the id itself.",
+        "What if part of every id identified the shard that created it?"
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "shard-12",
@@ -2444,38 +2603,38 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Lookup without the shard key",
-      "brief": "Support search is by email, but the table is sharded by user_id, so every query fans out.",
-      "constraint": "Email lookups are frequent.",
-      "question": "What restores single-shard lookups?",
+      "title": "Currency joins turn every invoice into 2 queries",
+      "brief": "InvoiceHub shards invoices by customer across 24 shards, but the 40 MB currencies and tax_rates tables live in one central database. Every invoice render does a remote lookup; 45k lookups/s pin it at 94% CPU.",
+      "constraint": "Tax rates change a few times a month and must take effect everywhere within a minute.",
+      "question": "Where should the small reference tables live?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 9000,
+          "label": "Rate lookups",
+          "value": 45000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 95,
+          "value": 94,
           "unit": "%",
           "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 2100,
+          "value": 380,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
+          "label": "Lookup timeouts",
           "value": 30,
-          "unit": "errors",
-          "tone": "bad"
+          "unit": "errors/s",
+          "tone": "warn"
         }
       ],
       "graphBefore": {
@@ -2483,76 +2642,73 @@
           {
             "id": "app",
             "kind": "server",
-            "label": "App"
+            "label": "Invoice API"
           },
           {
-            "id": "sh1",
+            "id": "s1",
             "kind": "db",
-            "label": "Shard 1",
+            "label": "Shards 1-24",
+            "tone": "neutral",
+            "cpu": 40
+          },
+          {
+            "id": "ref",
+            "kind": "db",
+            "label": "Central ref DB",
             "tone": "bad",
-            "cpu": 95
-          },
-          {
-            "id": "sh2",
-            "kind": "db",
-            "label": "Shard 2",
-            "tone": "neutral"
+            "cpu": 94,
+            "sub": "currencies, tax_rates"
           }
         ],
         "edges": [
           {
             "from": "app",
-            "to": "sh1"
+            "to": "s1"
+          },
+          {
+            "from": "app",
+            "to": "ref"
           }
         ]
       },
       "choices": [
         {
-          "id": "reshard-data",
-          "label": "Reshard data",
+          "id": "broadcast",
+          "label": "Replicate the reference tables to every shard",
           "correct": true,
+          "approach": "optimal",
           "graphAfter": {
             "nodes": [
               {
                 "id": "app",
                 "kind": "server",
-                "label": "App",
+                "label": "Invoice API",
                 "tone": "good"
               },
               {
-                "id": "sh1",
+                "id": "s1",
                 "kind": "db",
-                "label": "Shard 1",
+                "label": "Shards 1-24",
                 "tone": "good",
-                "cpu": 41
+                "cpu": 44,
+                "sub": "+ local ref copy"
               },
               {
-                "id": "sh2",
+                "id": "ref",
                 "kind": "db",
-                "label": "Shard 2",
+                "label": "Ref source",
                 "tone": "good",
-                "cpu": 38
-              },
-              {
-                "id": "sh3",
-                "kind": "db",
-                "label": "Shard 3",
-                "tone": "good",
-                "cpu": 36
+                "cpu": 8
               }
             ],
             "edges": [
               {
                 "from": "app",
-                "to": "sh1"
+                "to": "s1"
               },
               {
-                "from": "app",
-                "to": "sh2"
-              },
-              {
-                "from": "app",
-                "to": "sh3"
+                "from": "ref",
+                "to": "s1"
               }
             ]
           },
@@ -2560,97 +2716,100 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 31,
+              "value": 44,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 140,
+              "value": 35,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Lookup timeouts",
               "value": 0,
-              "unit": "errors",
+              "unit": "errors/s",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "A lookup table or secondary index that maps email to the shard key."
+          "resultTitle": "Joins become local again",
+          "resultBody": "Each shard holds a read-only copy of the 40 MB tables, kept current by logical replication within seconds, so invoice queries join locally and the central DB only takes the rare writes. p95 drops to 35 ms. Cost: 24 copies to monitor, and a rate change applies shard by shard over a few seconds."
         },
         {
-          "id": "scatter-gather-every-ema",
-          "label": "Scatter-gather every email",
+          "id": "shard-ref",
+          "label": "Shard currencies and tax rates by code as well",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 99,
+              "value": 60,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2625,
+              "value": 520,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 70,
-              "unit": "errors",
+              "label": "Lookup timeouts",
+              "value": 45,
+              "unit": "errors/s",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Hotspot remains",
-          "resultBody": "The same partition still takes the write flood."
+          "resultTitle": "Every join is now cross-shard",
+          "resultBody": "A tiny table does not need sharding. Each invoice's customer shard rarely holds its currency or tax row, so a single render now touches two or three shards and p95 climbs to 520 ms."
         },
         {
-          "id": "store-all-emails",
-          "label": "Store all emails",
+          "id": "central-replicas",
+          "label": "Add four read replicas to the central ref DB",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 97,
+              "value": 45,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2310,
+              "value": 260,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 50,
-              "unit": "errors",
-              "tone": "bad"
+              "label": "Lookup timeouts",
+              "value": 5,
+              "unit": "errors/s",
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Hotspot remains",
-          "resultBody": "Store all emails on shard 0"
+          "resultTitle": "Load spread, round trips remain",
+          "resultBody": "CPU per node falls to 45%, but every invoice still makes an extra network round trip per lookup, often several per invoice, so p95 only improves to 260 ms and you run five databases for 40 MB of data."
         }
       ],
       "hints": [
-        "One partition is a hotspot.",
-        "Key choice drives skew.",
-        "Spread the hot key."
+        "How big are the tables everyone joins against?",
+        "Not every table in a sharded system has to be sharded.",
+        "Small, rarely changing data can be copied rather than partitioned."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "shard-13",
@@ -2660,37 +2819,37 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Resharding with downtime",
-      "brief": "Moving 8 TB to new shards requires an 11-hour write freeze.",
-      "constraint": "The product cannot take that outage.",
-      "question": "What operational pattern splits data live?",
+      "title": "Resharding plan needs an 11-hour write freeze",
+      "brief": "MealMate must split 4 shards into 16 to handle growth. The plan is dump-and-restore of 8 TB, which needs an 11-hour write freeze. The shards are at 88% CPU and orders never stop.",
+      "constraint": "Checkout can tolerate at most a few seconds of write pause, per shard range.",
+      "question": "How do you move 8 TB without stopping writes?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 9000,
-          "unit": "req/s",
+          "label": "Writes",
+          "value": 14000,
+          "unit": "writes/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 95,
+          "value": 88,
           "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "downtime",
+          "label": "Planned write freeze",
+          "value": 660,
+          "unit": "min",
           "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 2100,
+          "value": 900,
           "unit": "ms",
-          "tone": "bad"
-        },
-        {
-          "key": "errors",
-          "label": "Errors",
-          "value": 30,
-          "unit": "errors",
           "tone": "bad"
         }
       ],
@@ -2699,174 +2858,156 @@
           {
             "id": "app",
             "kind": "server",
-            "label": "App"
+            "label": "Order API"
           },
           {
-            "id": "sh1",
+            "id": "s1",
             "kind": "db",
-            "label": "Shard 1",
+            "label": "Old shards 1-4",
             "tone": "bad",
-            "cpu": 95
+            "cpu": 88
           },
           {
-            "id": "sh2",
+            "id": "s2",
             "kind": "db",
-            "label": "Shard 2",
-            "tone": "neutral"
+            "label": "New shards 1-16",
+            "tone": "neutral",
+            "cpu": 0,
+            "sub": "empty"
           }
         ],
         "edges": [
           {
             "from": "app",
-            "to": "sh1"
+            "to": "s1"
           }
         ]
       },
       "choices": [
         {
-          "id": "reshard-data",
-          "label": "Reshard data",
+          "id": "cdc",
+          "label": "Backfill new shards, stream changes via CDC, cut over per range",
           "correct": true,
+          "approach": "optimal",
           "graphAfter": {
             "nodes": [
               {
                 "id": "app",
                 "kind": "server",
-                "label": "App",
+                "label": "Order API",
                 "tone": "good"
               },
               {
-                "id": "sh1",
+                "id": "s1",
                 "kind": "db",
-                "label": "Shard 1",
+                "label": "Old shards 1-4",
                 "tone": "good",
-                "cpu": 41
+                "cpu": 20,
+                "sub": "retiring"
               },
               {
-                "id": "sh2",
+                "id": "s2",
                 "kind": "db",
-                "label": "Shard 2",
+                "label": "New shards 1-16",
                 "tone": "good",
-                "cpu": 38
-              },
-              {
-                "id": "sh3",
-                "kind": "db",
-                "label": "Shard 3",
-                "tone": "good",
-                "cpu": 36
+                "cpu": 30
               }
             ],
             "edges": [
               {
                 "from": "app",
-                "to": "sh1"
+                "to": "s2"
               },
               {
-                "from": "app",
-                "to": "sh2"
-              },
-              {
-                "from": "app",
-                "to": "sh3"
+                "from": "s1",
+                "to": "s2"
               }
             ]
           },
           "metricsAfter": [
             {
+              "key": "downtime",
+              "label": "Planned write freeze",
+              "value": 0.1,
+              "unit": "min",
+              "tone": "good"
+            },
+            {
               "key": "cpu",
               "label": "CPU",
-              "value": 31,
+              "value": 30,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 140,
+              "value": 110,
               "unit": "ms",
               "tone": "good"
-            },
+            }
+          ],
+          "resultTitle": "Moved live, paused for seconds",
+          "resultBody": "A snapshot backfills the 16 new shards while change-data-capture replays every write since the snapshot. When lag is near zero, each range pauses writes for a few seconds, flips its routing entry and resumes. Cost: weeks of tooling, verification checksums, and double storage during the move."
+        },
+        {
+          "id": "snapshot",
+          "label": "Copy a snapshot to new shards, then switch the router",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
             {
-              "key": "errors",
-              "label": "Errors",
+              "key": "downtime",
+              "label": "Planned write freeze",
               "value": 0,
-              "unit": "errors",
+              "unit": "min",
               "tone": "good"
-            }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Dual-write or consistent-hash migration with incremental copy and cutover, not a long freeze."
-        },
-        {
-          "id": "mysqldump-restore-during",
-          "label": "mysqldump restore during",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 99,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 2625,
-              "unit": "ms",
-              "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 70,
-              "unit": "errors",
+              "label": "Lost orders",
+              "value": 3200,
+              "unit": "orders",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Hotspot remains",
-          "resultBody": "The same partition still takes the write flood."
+          "resultTitle": "Eleven hours of orders vanish",
+          "resultBody": "The copy takes 11 hours, and nothing carries over the writes made during those hours. After the switch, about 3,200 orders placed mid-copy exist only on the old shards."
         },
         {
-          "id": "delete-old-shards",
-          "label": "Delete old shards",
+          "id": "dual-write",
+          "label": "Start dual-writing to old and new shards, then switch reads",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 97,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 2310,
-              "unit": "ms",
-              "tone": "bad"
+              "key": "downtime",
+              "label": "Planned write freeze",
+              "value": 0,
+              "unit": "min",
+              "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 50,
-              "unit": "errors",
+              "label": "Missing historical rows",
+              "value": 900,
+              "unit": "per min",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Hotspot remains",
-          "resultBody": "Delete old shards first"
+          "resultTitle": "New rows present, old rows missing",
+          "resultBody": "Writes from now on reach both sides, but the 8 TB of existing rows were never backfilled, so reads switched to the new shards miss every order older than the dual-write start. Partial failures between the two writes also let the copies diverge."
         }
       ],
       "hints": [
-        "One partition is a hotspot.",
-        "Key choice drives skew.",
-        "Spread the hot key."
+        "Copying takes hours; the question is what happens to writes during those hours.",
+        "You need both the existing data and a record of every change made since.",
+        "Catch up continuously, then switch each range once it is nearly in sync."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "shard-14",
@@ -3056,37 +3197,37 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Multi-tenant report across shards",
-      "brief": "A global admin report joins every tenant’s orders by scanning all shards.",
-      "constraint": "The report is rare; tenant dashboards are the hot path.",
-      "question": "How do you keep tenant traffic fast?",
+      "title": "Monthly admin report slows every tenant",
+      "brief": "CRMly's finance report sums revenue over 18 months across all 40 tenant shards. Each run scans 6 TB, takes 3 hours and pushes shards to 92% CPU; tenant dashboards hit 4 s p95 while it runs.",
+      "constraint": "Finance wants the report daily now, and customers span every time zone.",
+      "question": "Where should cross-tenant analytics run?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 9000,
+          "label": "Dashboard queries",
+          "value": 25000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 95,
+          "value": 92,
           "unit": "%",
           "tone": "bad"
         },
         {
           "key": "p95",
-          "label": "p95 latency",
-          "value": 2100,
+          "label": "Dashboard p95",
+          "value": 4000,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 30,
-          "unit": "errors",
+          "label": "Dashboard timeouts",
+          "value": 80,
+          "unit": "errors/s",
           "tone": "bad"
         }
       ],
@@ -3095,76 +3236,91 @@
           {
             "id": "app",
             "kind": "server",
-            "label": "App"
+            "label": "Dashboards"
           },
           {
-            "id": "sh1",
-            "kind": "db",
-            "label": "Shard 1",
+            "id": "report",
+            "kind": "worker",
+            "label": "Finance report",
             "tone": "bad",
-            "cpu": 95
+            "sub": "scans 6 TB"
           },
           {
-            "id": "sh2",
+            "id": "s1",
             "kind": "db",
-            "label": "Shard 2",
-            "tone": "neutral"
+            "label": "Shards 1-40",
+            "tone": "bad",
+            "cpu": 92
           }
         ],
         "edges": [
           {
             "from": "app",
-            "to": "sh1"
+            "to": "s1"
+          },
+          {
+            "from": "report",
+            "to": "s1"
           }
         ]
       },
       "choices": [
         {
-          "id": "reshard-data",
-          "label": "Reshard data",
+          "id": "warehouse",
+          "label": "Stream shard changes via CDC into a columnar warehouse",
           "correct": true,
+          "approach": "optimal",
           "graphAfter": {
             "nodes": [
               {
                 "id": "app",
                 "kind": "server",
-                "label": "App",
+                "label": "Dashboards",
                 "tone": "good"
               },
               {
-                "id": "sh1",
+                "id": "s1",
                 "kind": "db",
-                "label": "Shard 1",
-                "tone": "good",
-                "cpu": 41
-              },
-              {
-                "id": "sh2",
-                "kind": "db",
-                "label": "Shard 2",
+                "label": "Shards 1-40",
                 "tone": "good",
                 "cpu": 38
               },
               {
-                "id": "sh3",
+                "id": "cdc",
+                "kind": "queue",
+                "label": "CDC stream",
+                "tone": "good"
+              },
+              {
+                "id": "wh",
                 "kind": "db",
-                "label": "Shard 3",
+                "label": "Warehouse",
                 "tone": "good",
-                "cpu": 36
+                "sub": "columnar"
+              },
+              {
+                "id": "report",
+                "kind": "worker",
+                "label": "Finance report",
+                "tone": "good"
               }
             ],
             "edges": [
               {
                 "from": "app",
-                "to": "sh1"
+                "to": "s1"
               },
               {
-                "from": "app",
-                "to": "sh2"
+                "from": "s1",
+                "to": "cdc"
               },
               {
-                "from": "app",
-                "to": "sh3"
+                "from": "cdc",
+                "to": "wh"
+              },
+              {
+                "from": "report",
+                "to": "wh"
               }
             ]
           },
@@ -3172,97 +3328,100 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 31,
+              "value": 38,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
-              "label": "p95 latency",
-              "value": 140,
+              "label": "Dashboard p95",
+              "value": 180,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Dashboard timeouts",
               "value": 0,
-              "unit": "errors",
+              "unit": "errors/s",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Keep tenant queries single-shard; run global reports asynchronously on a warehouse or scatter-gather off the hot path."
+          "resultTitle": "Analytics leave the OLTP shards",
+          "resultBody": "Change-data-capture tails each shard's log into a columnar warehouse, so the report scans compressed columns in minutes and never touches the shards, which return to 38% CPU. Cost: warehouse spend, a pipeline to operate, and data that is a few minutes behind."
         },
         {
-          "id": "make-every-tenant",
-          "label": "Make every tenant",
+          "id": "nightly",
+          "label": "Run the scatter-gather report at 2 a.m. UTC",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 99,
+              "value": 90,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
-              "label": "p95 latency",
-              "value": 2625,
+              "label": "Dashboard p95",
+              "value": 3800,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Dashboard timeouts",
               "value": 70,
-              "unit": "errors",
+              "unit": "errors/s",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Hotspot remains",
-          "resultBody": "The same partition still takes the write flood."
+          "resultTitle": "2 a.m. is lunchtime in Sydney",
+          "resultBody": "With tenants in every time zone there is no quiet hour. The 3-hour scan now slows APAC dashboards every single day instead of once a month."
         },
         {
-          "id": "put-all-tenants",
-          "label": "Put all tenants",
+          "id": "replica-per-shard",
+          "label": "Point the report at one read replica per shard",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 97,
+              "value": 45,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
-              "label": "p95 latency",
-              "value": 2310,
+              "label": "Dashboard p95",
+              "value": 300,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 50,
-              "unit": "errors",
-              "tone": "bad"
+              "label": "Replica lag alerts",
+              "value": 12,
+              "unit": "per h",
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Hotspot remains",
-          "resultBody": "Put all tenants back on one node for reports"
+          "resultTitle": "40 new replicas for one report",
+          "resultBody": "Dashboards recover, but you now run 40 extra databases, each still scanning row-oriented tables for 3 hours, and replicas lag during the scan, so failover safety suffers."
         }
       ],
       "hints": [
-        "One partition is a hotspot.",
-        "Key choice drives skew.",
-        "Spread the hot key."
+        "The workload that hurts is rare, huge and read-only.",
+        "Transactional shards are tuned for small, indexed queries per tenant.",
+        "Give the analytics a copy of the data in a store built for scans."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "shard-16",
@@ -3272,38 +3431,38 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Chat rooms on one partition",
-      "brief": "Messages are sharded by room_id and a viral room saturates one disk.",
-      "constraint": "A single room can exceed one shard’s write capacity.",
-      "question": "How do you split a hot room?",
+      "title": "Two hottest shards share one host",
+      "brief": "GameHive runs 64 logical shards on 16 hosts. After a rebalance by disk size, shards 9 and 41, the busiest (league and tournament data), landed on host H3: 96% CPU while hosts average 40%.",
+      "constraint": "The shard key and shard count are fine; a full reshard would take weeks.",
+      "question": "What is the quickest correct fix for host H3?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 9000,
+          "value": 60000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 95,
+          "value": 96,
           "unit": "%",
           "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 2100,
+          "value": 1500,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 30,
-          "unit": "errors",
-          "tone": "bad"
+          "label": "Query timeouts",
+          "value": 35,
+          "unit": "errors/s",
+          "tone": "warn"
         }
       ],
       "graphBefore": {
@@ -3311,76 +3470,93 @@
           {
             "id": "app",
             "kind": "server",
-            "label": "App"
+            "label": "Game API"
           },
           {
-            "id": "sh1",
+            "id": "h3",
             "kind": "db",
-            "label": "Shard 1",
+            "label": "Host H3: shards 9, 41",
             "tone": "bad",
-            "cpu": 95
+            "cpu": 96
           },
           {
-            "id": "sh2",
+            "id": "h7",
             "kind": "db",
-            "label": "Shard 2",
-            "tone": "neutral"
+            "label": "Host H7",
+            "tone": "good",
+            "cpu": 22
+          },
+          {
+            "id": "hothers",
+            "kind": "db",
+            "label": "Hosts 1-16",
+            "tone": "neutral",
+            "cpu": 40
           }
         ],
         "edges": [
           {
             "from": "app",
-            "to": "sh1"
+            "to": "h3"
+          },
+          {
+            "from": "app",
+            "to": "h7"
+          },
+          {
+            "from": "app",
+            "to": "hothers"
           }
         ]
       },
       "choices": [
         {
-          "id": "reshard-data",
-          "label": "Reshard data",
+          "id": "move-shard",
+          "label": "Move shard 41 to idle host H7 and balance by load",
           "correct": true,
+          "approach": "optimal",
           "graphAfter": {
             "nodes": [
               {
                 "id": "app",
                 "kind": "server",
-                "label": "App",
+                "label": "Game API",
                 "tone": "good"
               },
               {
-                "id": "sh1",
+                "id": "h3",
                 "kind": "db",
-                "label": "Shard 1",
+                "label": "Host H3: shard 9",
                 "tone": "good",
-                "cpu": 41
+                "cpu": 55
               },
               {
-                "id": "sh2",
+                "id": "h7",
                 "kind": "db",
-                "label": "Shard 2",
+                "label": "Host H7: shard 41",
                 "tone": "good",
-                "cpu": 38
+                "cpu": 60
               },
               {
-                "id": "sh3",
+                "id": "hothers",
                 "kind": "db",
-                "label": "Shard 3",
-                "tone": "good",
-                "cpu": 36
+                "label": "Hosts 1-16",
+                "tone": "neutral",
+                "cpu": 40
               }
             ],
             "edges": [
               {
                 "from": "app",
-                "to": "sh1"
+                "to": "h3"
               },
               {
                 "from": "app",
-                "to": "sh2"
+                "to": "h7"
               },
               {
                 "from": "app",
-                "to": "sh3"
+                "to": "hothers"
               }
             ]
           },
@@ -3388,97 +3564,100 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 31,
+              "value": 55,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 140,
+              "value": 90,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Query timeouts",
               "value": 0,
-              "unit": "errors",
+              "unit": "errors/s",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Sub-partition the hot key (room plus time or hash buckets) so one room can span shards."
+          "resultTitle": "Hot shards split across hosts",
+          "resultBody": "A replica of shard 41 is built on H7, promoted, and the routing map updated, so H3 drops to 55% and H7 rises to 60%. The balancer now weighs CPU and QPS, not just disk. Cost: one shard's data copied across the network, throttled to protect live traffic."
         },
         {
-          "id": "keep-whole-room",
-          "label": "Keep whole room",
+          "id": "reshard",
+          "label": "Reshard all 64 shards onto a new league-based key",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 99,
+              "value": 96,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2625,
+              "value": 1500,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 70,
-              "unit": "errors",
-              "tone": "bad"
+              "label": "Query timeouts",
+              "value": 35,
+              "unit": "errors/s",
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Hotspot remains",
-          "resultBody": "The same partition still takes the write flood."
+          "resultTitle": "Weeks of work for a placement bug",
+          "resultBody": "The key was never the problem: the load is simply stacked on one host. The reshard project starts, and H3 stays at 96% for the weeks it takes."
         },
         {
-          "id": "cache-writes-persisting",
-          "label": "Cache writes persisting",
+          "id": "bigger-h3",
+          "label": "Upgrade host H3 to an instance with twice the cores",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 97,
+              "value": 62,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2310,
+              "value": 300,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 50,
-              "unit": "errors",
-              "tone": "bad"
+              "label": "Query timeouts",
+              "value": 4,
+              "unit": "errors/s",
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Hotspot remains",
-          "resultBody": "Cache writes without persisting them"
+          "resultTitle": "One oversized host to babysit",
+          "resultBody": "H3 recovers to 62%, but it now costs twice as much while H7 idles at 22%, and the disk-only balancer can stack hot shards together again at the next rebalance."
         }
       ],
       "hints": [
-        "One partition is a hotspot.",
-        "Key choice drives skew.",
-        "Spread the hot key."
+        "Compare load per host, not per shard.",
+        "Logical shards can move between hosts without changing any keys.",
+        "Balance on the resource that is actually saturated."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "shard-17",
@@ -3488,38 +3667,38 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Foreign keys across shards",
-      "brief": "Orders live on shard A and users on shard B, so a foreign key cannot be enforced by the database.",
-      "constraint": "Referential integrity is now an application concern.",
-      "question": "What design follows from sharding?",
+      "title": "Money vanishes between two wallet shards",
+      "brief": "CoinPocket shards wallets by user_id over 12 shards. A transfer debits the sender's shard, then credits the receiver's. When the app crashes between the two writes, money disappears: $18k across 240 transfers last week.",
+      "constraint": "Transfers may show 'pending' for a few seconds, but shard primaries must not hold locks across network calls.",
+      "question": "How do you make a cross-shard transfer never lose money?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 9000,
-          "unit": "req/s",
+          "label": "Transfers",
+          "value": 6000,
+          "unit": "per s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 95,
+          "value": 50,
           "unit": "%",
+          "tone": "neutral"
+        },
+        {
+          "key": "errors",
+          "label": "Lost transfers",
+          "value": 34,
+          "unit": "per day",
           "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 2100,
+          "value": 60,
           "unit": "ms",
-          "tone": "bad"
-        },
-        {
-          "key": "errors",
-          "label": "Errors",
-          "value": 30,
-          "unit": "errors",
-          "tone": "bad"
+          "tone": "good"
         }
       ],
       "graphBefore": {
@@ -3527,174 +3706,179 @@
           {
             "id": "app",
             "kind": "server",
-            "label": "App"
+            "label": "Transfer service",
+            "tone": "warn",
+            "sub": "debit, then credit"
           },
           {
-            "id": "sh1",
+            "id": "a",
             "kind": "db",
-            "label": "Shard 1",
-            "tone": "bad",
-            "cpu": 95
+            "label": "Sender shard",
+            "tone": "neutral",
+            "cpu": 50
           },
           {
-            "id": "sh2",
+            "id": "b",
             "kind": "db",
-            "label": "Shard 2",
-            "tone": "neutral"
+            "label": "Receiver shard",
+            "tone": "neutral",
+            "cpu": 48
           }
         ],
         "edges": [
           {
             "from": "app",
-            "to": "sh1"
+            "to": "a"
+          },
+          {
+            "from": "app",
+            "to": "b"
           }
         ]
       },
       "choices": [
         {
-          "id": "reshard-data",
-          "label": "Reshard data",
+          "id": "outbox",
+          "label": "Commit the debit with an outbox row; apply credits idempotently",
           "correct": true,
+          "approach": "optimal",
           "graphAfter": {
             "nodes": [
               {
                 "id": "app",
                 "kind": "server",
-                "label": "App",
+                "label": "Transfer service",
                 "tone": "good"
               },
               {
-                "id": "sh1",
+                "id": "a",
                 "kind": "db",
-                "label": "Shard 1",
+                "label": "Sender shard",
                 "tone": "good",
-                "cpu": 41
+                "cpu": 52,
+                "sub": "debit + outbox"
               },
               {
-                "id": "sh2",
-                "kind": "db",
-                "label": "Shard 2",
-                "tone": "good",
-                "cpu": 38
+                "id": "relay",
+                "kind": "queue",
+                "label": "Outbox relay",
+                "tone": "good"
               },
               {
-                "id": "sh3",
+                "id": "b",
                 "kind": "db",
-                "label": "Shard 3",
+                "label": "Receiver shard",
                 "tone": "good",
-                "cpu": 36
+                "cpu": 49,
+                "sub": "idempotent credit"
               }
             ],
             "edges": [
               {
                 "from": "app",
-                "to": "sh1"
+                "to": "a"
               },
               {
-                "from": "app",
-                "to": "sh2"
+                "from": "a",
+                "to": "relay"
               },
               {
-                "from": "app",
-                "to": "sh3"
+                "from": "relay",
+                "to": "b"
               }
             ]
           },
           "metricsAfter": [
             {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 31,
-              "unit": "%",
-              "tone": "good"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 140,
-              "unit": "ms",
-              "tone": "good"
-            },
-            {
               "key": "errors",
-              "label": "Errors",
+              "label": "Lost transfers",
               "value": 0,
-              "unit": "errors",
+              "unit": "per day",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 70,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 52,
+              "unit": "%",
+              "tone": "neutral"
+            }
+          ],
+          "resultTitle": "Every debit carries its own receipt",
+          "resultBody": "The debit and a 'credit pending' outbox row commit in one local transaction on the sender's shard. A relay delivers it to the receiver's shard, which applies the credit keyed by transfer_id, so crashes cause a retry, never a loss or a double credit. Cost: transfers are eventually consistent for a second or two."
+        },
+        {
+          "id": "2pc",
+          "label": "Wrap both writes in two-phase commit across the shards",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "errors",
+              "label": "Lost transfers",
+              "value": 0,
+              "unit": "per day",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 420,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 78,
+              "unit": "%",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Atomic, but locks wait on the network",
+          "resultBody": "Losses stop, but both shards now hold row locks through the prepare and commit round trips. Hot wallets queue behind each other, p95 rises to 420 ms, and a coordinator crash leaves transactions in doubt, holding locks until someone resolves them."
+        },
+        {
+          "id": "retry",
+          "label": "Retry the credit in the app until it succeeds",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "errors",
+              "label": "Lost transfers",
+              "value": 29,
+              "unit": "per day",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 65,
+              "unit": "ms",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Drop cross-shard FKs; enforce relationships in the app or keep related data on the same shard."
-        },
-        {
-          "id": "expect-database-enforce",
-          "label": "Expect database enforce",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 99,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 2625,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 70,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Hotspot remains",
-          "resultBody": "The same partition still takes the write flood."
-        },
-        {
-          "id": "duplicate-every-user",
-          "label": "Duplicate every user",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 97,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 2310,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 50,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Hotspot remains",
-          "resultBody": "Duplicate every user onto every order shard without a key"
+          "resultTitle": "The retry dies with the process",
+          "resultBody": "Retries help with network blips, but the pending credit lives only in memory. When the pod crashes or is redeployed between the two writes, nothing remembers the transfer, and money still disappears."
         }
       ],
       "hints": [
-        "One partition is a hotspot.",
-        "Key choice drives skew.",
-        "Spread the hot key."
+        "A crash can happen at any instant between the two writes.",
+        "Something durable must record the obligation in the same commit as the debit.",
+        "Record the intent locally, then deliver it until the other side confirms, safely repeatable."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "shard-18",
@@ -3704,37 +3888,37 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Modulo N and adding a shard",
-      "brief": "Keys are user_id % 4; adding a fifth shard would remap almost every row.",
-      "constraint": "Resharding must move as little data as possible.",
-      "question": "Which mapping reduces churn?",
+      "title": "Adding a fifth shard would move 80% of rows",
+      "brief": "QuizUp routes users with user_id % 4. The four shards hold 6 TB and run at 86% CPU. Switching to % 5 remaps about 80% of keys, roughly 4.8 TB of copying before shard 5 helps.",
+      "constraint": "Future growth will add shards every few months, and each move must be small and throttled.",
+      "question": "How should keys map to shards so growth moves little data?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 9000,
+          "label": "Queries",
+          "value": 22000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 95,
+          "value": 86,
           "unit": "%",
           "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 2100,
+          "value": 700,
           "unit": "ms",
-          "tone": "bad"
+          "tone": "warn"
         },
         {
-          "key": "errors",
-          "label": "Errors",
-          "value": 30,
-          "unit": "errors",
+          "key": "moved",
+          "label": "Rows moved by % 5",
+          "value": 80,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -3743,76 +3927,71 @@
           {
             "id": "app",
             "kind": "server",
-            "label": "App"
+            "label": "Quiz API",
+            "sub": "user_id % 4"
           },
           {
-            "id": "sh1",
+            "id": "s1",
             "kind": "db",
-            "label": "Shard 1",
+            "label": "Shards 0-3",
             "tone": "bad",
-            "cpu": 95
+            "cpu": 86
           },
           {
-            "id": "sh2",
+            "id": "s5",
             "kind": "db",
-            "label": "Shard 2",
-            "tone": "neutral"
+            "label": "New shard 4",
+            "tone": "neutral",
+            "cpu": 0,
+            "sub": "empty"
           }
         ],
         "edges": [
           {
             "from": "app",
-            "to": "sh1"
+            "to": "s1"
           }
         ]
       },
       "choices": [
         {
-          "id": "reshard-data",
-          "label": "Reshard data",
+          "id": "slots",
+          "label": "Hash keys into 1,024 fixed slots; move whole slots",
           "correct": true,
+          "approach": "optimal",
           "graphAfter": {
             "nodes": [
               {
                 "id": "app",
                 "kind": "server",
-                "label": "App",
-                "tone": "good"
+                "label": "Quiz API",
+                "tone": "good",
+                "sub": "slot table"
               },
               {
-                "id": "sh1",
+                "id": "s1",
                 "kind": "db",
-                "label": "Shard 1",
+                "label": "Shards 0-3",
                 "tone": "good",
-                "cpu": 41
+                "cpu": 69
               },
               {
-                "id": "sh2",
+                "id": "s5",
                 "kind": "db",
-                "label": "Shard 2",
+                "label": "Shard 4",
                 "tone": "good",
-                "cpu": 38
-              },
-              {
-                "id": "sh3",
-                "kind": "db",
-                "label": "Shard 3",
-                "tone": "good",
-                "cpu": 36
+                "cpu": 66,
+                "sub": "205 slots"
               }
             ],
             "edges": [
               {
                 "from": "app",
-                "to": "sh1"
+                "to": "s1"
               },
               {
                 "from": "app",
-                "to": "sh2"
-              },
-              {
-                "from": "app",
-                "to": "sh3"
+                "to": "s5"
               }
             ]
           },
@@ -3820,32 +3999,33 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 31,
+              "value": 68,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "moved",
+              "label": "Rows moved",
+              "value": 20,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 140,
+              "value": 160,
               "unit": "ms",
-              "tone": "good"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Consistent hashing (or range maps) so most keys stay put when capacity is added."
+          "resultTitle": "Only the new shard's share moves",
+          "resultBody": "Keys hash to 1,024 slots and a small table maps slots to shards. Adding shard 4 reassigns about 205 slots, moving only the 20% of data it should own, slot by slot and throttled, with no other key changing place. Cost: every router must fetch and cache the slot table."
         },
         {
-          "id": "user-id-n",
-          "label": "user id N",
+          "id": "mod5",
+          "label": "Switch routing to user_id % 5 over one weekend",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
@@ -3856,61 +4036,63 @@
               "tone": "bad"
             },
             {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 2625,
-              "unit": "ms",
+              "key": "moved",
+              "label": "Rows moved",
+              "value": 80,
+              "unit": "%",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 70,
-              "unit": "errors",
+              "label": "Misrouted reads",
+              "value": 400,
+              "unit": "errors/s",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Hotspot remains",
-          "resultBody": "The same partition still takes the write flood."
+          "resultTitle": "4.8 TB on the move at once",
+          "resultBody": "Four of every five users change shard, so the weekend is spent copying 4.8 TB while the old shards run at 99% CPU. Reads for rows not yet copied miss, and the next shard will require the same ordeal."
         },
         {
-          "id": "random-reassignment-ever",
-          "label": "Random reassignment every",
+          "id": "new-only",
+          "label": "Route only new signups to shard 4",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 97,
+              "value": 84,
               "unit": "%",
               "tone": "bad"
             },
             {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 2310,
-              "unit": "ms",
-              "tone": "bad"
+              "key": "moved",
+              "label": "Rows moved",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 50,
-              "unit": "errors",
-              "tone": "bad"
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 650,
+              "unit": "ms",
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Hotspot remains",
-          "resultBody": "Random reassignment of every user"
+          "resultTitle": "Old shards keep all the load",
+          "resultBody": "No data moves, but the existing users generating 95% of traffic stay on shards 0-3 at 84% CPU, and shard 4 fills only with new signups, which are the most active cohort for a few weeks and then idle."
         }
       ],
       "hints": [
-        "One partition is a hotspot.",
-        "Key choice drives skew.",
-        "Spread the hot key."
+        "With modulo, changing N changes the answer for most keys.",
+        "Add a layer of indirection between the hash and the physical shard.",
+        "Fix the number of buckets once, and move buckets instead of rehashing keys."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "shard-19",
@@ -3920,37 +4102,37 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Secondary index imbalance",
-      "brief": "Data is well sharded by user_id, but a global unique username index still lives on one node.",
-      "constraint": "Username checks are write-heavy at signup.",
-      "question": "Where is the remaining hotspot?",
+      "title": "Leaderboard page 200 takes 9 seconds",
+      "brief": "ArenaX shards 20M players by player_id over 16 shards. The global leaderboard fetches the top page x 50 rows from every shard and merges, so page 200 reads 160,000 rows; shards hit 90% CPU.",
+      "constraint": "Scores update 25,000 times per second and ranks may be at most a few seconds behind.",
+      "question": "How do you serve a global ranking over sharded data?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 9000,
+          "label": "Leaderboard views",
+          "value": 3000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 95,
+          "value": 90,
           "unit": "%",
           "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 2100,
+          "value": 9000,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 30,
-          "unit": "errors",
+          "label": "Query timeouts",
+          "value": 60,
+          "unit": "errors/s",
           "tone": "bad"
         }
       ],
@@ -3959,76 +4141,72 @@
           {
             "id": "app",
             "kind": "server",
-            "label": "App"
+            "label": "Leaderboard API",
+            "tone": "warn",
+            "sub": "merge 16 x N rows"
           },
           {
-            "id": "sh1",
+            "id": "s1",
             "kind": "db",
-            "label": "Shard 1",
+            "label": "Shards 1-16",
             "tone": "bad",
-            "cpu": 95
-          },
-          {
-            "id": "sh2",
-            "kind": "db",
-            "label": "Shard 2",
-            "tone": "neutral"
+            "cpu": 90
           }
         ],
         "edges": [
           {
             "from": "app",
-            "to": "sh1"
+            "to": "s1"
           }
         ]
       },
       "choices": [
         {
-          "id": "reshard-data",
-          "label": "Reshard data",
+          "id": "zset",
+          "label": "Maintain the ranking in a Redis sorted set fed by score events",
           "correct": true,
+          "approach": "optimal",
           "graphAfter": {
             "nodes": [
               {
                 "id": "app",
                 "kind": "server",
-                "label": "App",
+                "label": "Leaderboard API",
                 "tone": "good"
               },
               {
-                "id": "sh1",
-                "kind": "db",
-                "label": "Shard 1",
+                "id": "z",
+                "kind": "cache",
+                "label": "Redis sorted set",
                 "tone": "good",
-                "cpu": 41
+                "sub": "20M members"
               },
               {
-                "id": "sh2",
-                "kind": "db",
-                "label": "Shard 2",
-                "tone": "good",
-                "cpu": 38
+                "id": "q",
+                "kind": "queue",
+                "label": "Score events",
+                "tone": "good"
               },
               {
-                "id": "sh3",
+                "id": "s1",
                 "kind": "db",
-                "label": "Shard 3",
+                "label": "Shards 1-16",
                 "tone": "good",
-                "cpu": 36
+                "cpu": 35
               }
             ],
             "edges": [
               {
                 "from": "app",
-                "to": "sh1"
+                "to": "z"
               },
               {
-                "from": "app",
-                "to": "sh2"
+                "from": "s1",
+                "to": "q"
               },
               {
-                "from": "app",
-                "to": "sh3"
+                "from": "q",
+                "to": "z"
               }
             ]
           },
@@ -4036,68 +4214,70 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 31,
+              "value": 35,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 140,
+              "value": 15,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Query timeouts",
               "value": 0,
-              "unit": "errors",
+              "unit": "errors/s",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "The global unique index must also be partitioned or moved to a dedicated lookup service."
+          "resultTitle": "Any page in one O(log n) call",
+          "resultBody": "Each score change publishes an event that does ZADD on a single sorted set of 20M members, about 2 GB of RAM. Any page is one ZREVRANGE call returning 50 rows in milliseconds, and shards stop doing ranking work. Cost: a derived store to rebuild from the shards if Redis is lost."
         },
         {
-          "id": "ignore-index-because",
-          "label": "Ignore index because",
+          "id": "top50",
+          "label": "Merge just the top 50 rows from each shard",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 99,
+              "value": 30,
               "unit": "%",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2625,
+              "value": 60,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 70,
-              "unit": "errors",
+              "label": "Wrong ranks shown",
+              "value": 5000,
+              "unit": "per min",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Hotspot remains",
-          "resultBody": "The same partition still takes the write flood."
+          "resultTitle": "Fast pages with wrong ranks",
+          "resultBody": "The merge now reads 800 rows and returns quickly, but page 2 onward can only be correct if every shard contributes enough rows. Players on one shard vanish from pages where they belong, and rank numbers disagree with profiles."
         },
         {
-          "id": "put-usernames-app",
-          "label": "Put usernames app",
+          "id": "one-table",
+          "label": "Move every score into one unsharded scores table",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
-              "label": "CPU",
+              "label": "Scores DB CPU",
               "value": 97,
               "unit": "%",
               "tone": "bad"
@@ -4105,28 +4285,29 @@
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2310,
+              "value": 1100,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 50,
-              "unit": "errors",
+              "label": "Update timeouts",
+              "value": 90,
+              "unit": "errors/s",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Hotspot remains",
-          "resultBody": "Put usernames in app memory only"
+          "resultTitle": "25k updates/s on one node",
+          "resultBody": "Ranking queries use a single index now, but all 25,000 score updates per second land on one database, which saturates at 97% CPU. The reason for sharding comes straight back."
         }
       ],
       "hints": [
-        "One partition is a hotspot.",
-        "Key choice drives skew.",
-        "Spread the hot key."
+        "A global order needs a structure that sees every player at once.",
+        "Deep offsets across N shards cost N times the offset.",
+        "Keep the rank in a structure built for ordered insert and range lookup."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "shard-20",
@@ -4136,38 +4317,38 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Directory service stale map",
-      "brief": "A shard map says user 42 is on shard 3, but the row was migrated to shard 7.",
-      "constraint": "Clients cache the directory for 10 minutes.",
-      "question": "What keeps routing correct during moves?",
+      "title": "Writes keep landing on the shard a row left",
+      "brief": "HomeStay moved 3% of listings from shard 3 to shard 7 last night. API nodes cache the shard directory for 10 minutes, so for each move they kept writing to shard 3; 1,900 bookings went to the old location.",
+      "constraint": "The directory service handles about 50 req/s; there are 400 API nodes.",
+      "question": "How do routers learn about a move before they cause damage?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 9000,
-          "unit": "req/s",
+          "label": "Writes",
+          "value": 18000,
+          "unit": "writes/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 95,
+          "value": 45,
           "unit": "%",
+          "tone": "neutral"
+        },
+        {
+          "key": "errors",
+          "label": "Misrouted writes",
+          "value": 190,
+          "unit": "per min",
           "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 2100,
+          "value": 80,
           "unit": "ms",
-          "tone": "bad"
-        },
-        {
-          "key": "errors",
-          "label": "Errors",
-          "value": 30,
-          "unit": "errors",
-          "tone": "bad"
+          "tone": "good"
         }
       ],
       "graphBefore": {
@@ -4175,174 +4356,188 @@
           {
             "id": "app",
             "kind": "server",
-            "label": "App"
+            "label": "400 API nodes",
+            "tone": "warn",
+            "sub": "map cached 10 min"
           },
           {
-            "id": "sh1",
+            "id": "dir",
+            "kind": "cache",
+            "label": "Shard directory"
+          },
+          {
+            "id": "s3",
             "kind": "db",
-            "label": "Shard 1",
+            "label": "Shard 3 (old home)",
             "tone": "bad",
-            "cpu": 95
+            "cpu": 45
           },
           {
-            "id": "sh2",
+            "id": "s7",
             "kind": "db",
-            "label": "Shard 2",
-            "tone": "neutral"
+            "label": "Shard 7 (new home)",
+            "tone": "neutral",
+            "cpu": 40
           }
         ],
         "edges": [
           {
             "from": "app",
-            "to": "sh1"
+            "to": "dir"
+          },
+          {
+            "from": "app",
+            "to": "s3"
+          },
+          {
+            "from": "app",
+            "to": "s7"
           }
         ]
       },
       "choices": [
         {
-          "id": "add-cache",
-          "label": "Add cache",
+          "id": "epoch",
+          "label": "Shards reject stale map versions; routers refresh and retry",
           "correct": true,
+          "approach": "optimal",
           "graphAfter": {
             "nodes": [
               {
                 "id": "app",
                 "kind": "server",
-                "label": "App",
+                "label": "400 API nodes",
+                "tone": "good",
+                "sub": "versioned map"
+              },
+              {
+                "id": "dir",
+                "kind": "cache",
+                "label": "Shard directory",
                 "tone": "good"
               },
               {
-                "id": "sh1",
-                "kind": "db",
-                "label": "Shard 1",
-                "tone": "good",
-                "cpu": 41
-              },
-              {
-                "id": "sh2",
-                "kind": "db",
-                "label": "Shard 2",
-                "tone": "good",
-                "cpu": 38
-              },
-              {
-                "id": "sh3",
+                "id": "s3",
                 "kind": "db",
                 "label": "Shard 3",
                 "tone": "good",
-                "cpu": 36
+                "cpu": 45,
+                "sub": "replies MOVED"
+              },
+              {
+                "id": "s7",
+                "kind": "db",
+                "label": "Shard 7",
+                "tone": "good",
+                "cpu": 42
               }
             ],
             "edges": [
               {
                 "from": "app",
-                "to": "sh1"
+                "to": "dir"
               },
               {
                 "from": "app",
-                "to": "sh2"
+                "to": "s3"
               },
               {
                 "from": "app",
-                "to": "sh3"
+                "to": "s7"
               }
             ]
           },
           "metricsAfter": [
             {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 31,
-              "unit": "%",
-              "tone": "good"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 140,
-              "unit": "ms",
-              "tone": "good"
-            },
-            {
               "key": "errors",
-              "label": "Errors",
+              "label": "Misrouted writes",
               "value": 0,
-              "unit": "errors",
+              "unit": "per min",
               "tone": "good"
-            }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Versioned shard maps, short cache, and a forwarding hint from the old shard."
-        },
-        {
-          "id": "never-invalidate-directo",
-          "label": "Never invalidate directory",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 99,
-              "unit": "%",
-              "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2625,
+              "value": 85,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "good"
             },
             {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 45,
+              "unit": "%",
+              "tone": "neutral"
+            }
+          ],
+          "resultTitle": "Wrong shard says 'moved', router fixes itself",
+          "resultBody": "Every request carries the router's map version. Shard 3 knows it no longer owns the range and replies MOVED with the new owner, so the router refreshes its map and retries on shard 7. Misroutes are rejected instead of written, and directory load stays near 50 req/s. Cost: one extra round trip per router after each move."
+        },
+        {
+          "id": "short-ttl",
+          "label": "Cut the routers' directory cache TTL to 5 seconds",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "retry": true,
+          "metricsAfter": [
+            {
               "key": "errors",
-              "label": "Errors",
+              "label": "Misrouted writes",
+              "value": 12,
+              "unit": "per min",
+              "tone": "warn"
+            },
+            {
+              "key": "cpu",
+              "label": "Directory CPU",
+              "value": 95,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "The directory gets hammered",
+          "resultBody": "400 nodes refreshing every 5 seconds turn 50 req/s into thousands, pushing the directory to 95% CPU. There is still a 5-second window where writes land on shard 3 after each move."
+        },
+        {
+          "id": "forward",
+          "label": "Have shard 3 forward writes for moved rows",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "errors",
+              "label": "Misrouted writes",
+              "value": 0,
+              "unit": "per min",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 160,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "cpu",
+              "label": "CPU",
               "value": 70,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Hotspot remains",
-          "resultBody": "The same partition still takes the write flood."
-        },
-        {
-          "id": "let-clients-guess",
-          "label": "Let clients guess",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 97,
               "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 2310,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 50,
-              "unit": "errors",
-              "tone": "bad"
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Hotspot remains",
-          "resultBody": "Let clients guess the shard"
+          "resultTitle": "The old shard becomes a relay",
+          "resultBody": "Bookings reach shard 7, but shard 3 now proxies every write for rows it gave away, so its CPU rises to 70% and p95 doubles. After a second move, requests chain through multiple forwarding hops."
         }
       ],
       "hints": [
-        "One partition is a hotspot.",
-        "Key choice drives skew.",
-        "Spread the hot key."
+        "The directory is correct; the routers' copies are the problem.",
+        "Only the shard knows for sure which ranges it currently owns.",
+        "Let the wrong destination refuse the request and point to the right one."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "shard-new-01",

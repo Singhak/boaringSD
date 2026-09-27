@@ -219,39 +219,40 @@
       "level": 15,
       "patternId": "health-checks",
       "canonical": false,
+      "reviewed": true,
       "severity": "P1",
       "xp": 50,
-      "title": "Health hits the primary database",
-      "brief": "Every 2s probe runs SELECT 1 on the only primary from 300 pods.",
-      "constraint": "Probes become a real workload.",
-      "question": "What should a cheap check do?",
+      "title": "Health probes pin the orders primary at 92% CPU",
+      "brief": "Grocerly's 400 pods answer readiness every 2 s from kubelet and 3 load balancers by running SELECT count(*) FROM orders. That's 800 full-index scans a second; primary CPU sits at 92%.",
+      "constraint": "A pod that has lost its database connection must still leave rotation within 30 s.",
+      "question": "How can readiness reflect database health without loading it?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 300,
+          "label": "Probe queries",
+          "value": 800,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 15,
+          "value": 92,
           "unit": "%",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "p95",
-          "label": "p95 latency",
-          "value": 200,
+          "label": "p95 query latency",
+          "value": 340,
           "unit": "ms",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 120,
-          "unit": "errors",
+          "label": "Checkout timeouts",
+          "value": 1.8,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -260,162 +261,181 @@
           {
             "id": "lb",
             "kind": "lb",
-            "label": "Balancer"
+            "label": "3 LBs + kubelet",
+            "sub": "probe every 2 s"
           },
           {
-            "id": "p1",
+            "id": "pods",
             "kind": "server",
-            "label": "Pod (dead)",
-            "tone": "bad"
+            "label": "400 API pods",
+            "tone": "warn",
+            "cpu": 35
           },
           {
-            "id": "p2",
-            "kind": "server",
-            "label": "Pod (ready)",
-            "tone": "good"
+            "id": "db",
+            "kind": "db",
+            "label": "Orders primary",
+            "tone": "bad",
+            "cpu": 92,
+            "sub": "count(*) x800/s"
           }
         ],
         "edges": [
           {
             "from": "lb",
-            "to": "p1"
+            "to": "pods"
           },
           {
-            "from": "lb",
-            "to": "p2"
+            "from": "pods",
+            "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "bound-pool",
-          "label": "Bound pool",
+          "id": "cached-pool-state",
+          "label": "Serve readiness from pool status refreshed by SELECT 1 every 10 s",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "lb",
-                "kind": "lb",
-                "label": "Balancer",
-                "tone": "good"
-              },
-              {
-                "id": "p2",
-                "kind": "server",
-                "label": "Pod (ready)",
-                "tone": "good"
-              },
-              {
-                "id": "p3",
-                "kind": "server",
-                "label": "Pod (ready)",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "lb",
-                "to": "p2"
-              },
-              {
-                "from": "lb",
-                "to": "p3"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": -200,
+            "complexityScore": 2,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Readiness may be up to 10 s stale; DB load from probes drops ~99%."
           },
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 58,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
-              "label": "p95 latency",
-              "value": 40,
+              "label": "p95 query latency",
+              "value": 25,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
+              "label": "Checkout timeouts",
+              "value": 0.1,
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Check local process health (and maybe a pool ping) without amplifying load on the primary."
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "3 LBs + kubelet",
+                "sub": "probe every 2 s",
+                "tone": "good"
+              },
+              {
+                "id": "pods",
+                "kind": "server",
+                "label": "400 API pods",
+                "tone": "good",
+                "cpu": 35,
+                "sub": "cached pool status"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Orders primary",
+                "tone": "good",
+                "cpu": 58,
+                "sub": "40 SELECT 1/s"
+              }
+            ],
+            "edges": [
+              {
+                "from": "lb",
+                "to": "pods"
+              },
+              {
+                "from": "pods",
+                "to": "db"
+              }
+            ]
+          },
+          "resultTitle": "Probes stop touching the table",
+          "resultBody": "Each pod runs one cheap SELECT 1 on an existing pool connection every 10 s and caches the result; probes read that flag in microseconds. Probe load on the primary falls from 800 scans to 40 trivial queries a second, and a pod with a dead pool still goes unready within 30 s. Cost: readiness can be up to 10 s stale."
         },
         {
-          "id": "full-table-scan",
-          "label": "Full table scan",
+          "id": "probe-replica",
+          "label": "Point the health query at a read replica instead",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 19,
+              "value": 94,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
-              "label": "p95 latency",
-              "value": 250,
+              "label": "p95 query latency",
+              "value": 380,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 160,
-              "unit": "errors",
+              "label": "Checkout timeouts",
+              "value": 1.2,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Dead node in pool",
-          "resultBody": "The balancer still routes to an unready instance."
+          "resultTitle": "The replica melts, and lies",
+          "resultBody": "The replica now burns 90% CPU on count(*) and its replication lag climbs, while readiness reports the replica's health instead of the primary's, so pods that lost the primary stay in rotation."
         },
         {
-          "id": "open-new-db",
-          "label": "Open new DB",
+          "id": "slower-probes",
+          "label": "Lower the probe frequency from every 2 s to every 30 s",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 17,
+              "value": 64,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
-              "label": "p95 latency",
-              "value": 220,
+              "label": "p95 query latency",
+              "value": 60,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 140,
-              "unit": "errors",
-              "tone": "bad"
+              "label": "Checkout timeouts",
+              "value": 0.6,
+              "unit": "%",
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Dead node in pool",
-          "resultBody": "Open a new DB connection per probe with no reuse"
+          "resultTitle": "Cheaper, but blind for 90 s",
+          "resultBody": "Scans drop 15x and CPU recovers, but with a failure threshold of 3 a dead pod now takes 90 s to leave rotation, which breaks the 30 s requirement, and every probe is still a full index scan."
         }
       ],
       "hints": [
-        "The balancer still thinks this node is fine.",
-        "Alive is not the same as ready.",
-        "Probe the serving path."
+        "Multiply pods by probers by frequency and look at what each probe does.",
+        "A health check should cost almost nothing to answer.",
+        "Separate how often you learn about the database from how often you're asked."
       ],
       "nextId": null
     },
@@ -425,39 +445,40 @@
       "level": 15,
       "patternId": "health-checks",
       "canonical": false,
+      "reviewed": true,
       "severity": "P1",
       "xp": 50,
-      "title": "Always-200 health endpoint",
-      "brief": " /health returns 200 even when the app cannot serve requests because a required dependency is down.",
-      "constraint": "The load balancer keeps sending traffic.",
-      "question": "What should readiness reflect?",
+      "title": "Full-disk pod stays in rotation, failing every upload",
+      "brief": "One of Snapdocs' 12 upload pods filled its local scratch disk. Every upload there fails with ENOSPC, yet /health returns a static 200, so the balancer keeps sending it 8% of 3,000 uploads/s.",
+      "constraint": "Readiness must not depend on shared services, which would pull every pod at once.",
+      "question": "What should this pod's readiness actually check?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 200,
+          "label": "Uploads",
+          "value": 3000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 15,
+          "value": 47,
           "unit": "%",
-          "tone": "warn"
+          "tone": "neutral"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 200,
+          "value": 800,
           "unit": "ms",
           "tone": "warn"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 120,
-          "unit": "errors",
+          "label": "Failed uploads",
+          "value": 8,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -466,162 +487,179 @@
           {
             "id": "lb",
             "kind": "lb",
-            "label": "Balancer"
+            "label": "Load balancer",
+            "sub": "all 12 green"
           },
           {
-            "id": "p1",
+            "id": "pods",
             "kind": "server",
-            "label": "Pod (dead)",
-            "tone": "bad"
+            "label": "11 healthy pods",
+            "cpu": 47
           },
           {
-            "id": "p2",
+            "id": "bad",
             "kind": "server",
-            "label": "Pod (ready)",
-            "tone": "good"
+            "label": "pod-7 (disk 100%)",
+            "tone": "bad",
+            "cpu": 9,
+            "sub": "static 200"
           }
         ],
         "edges": [
           {
             "from": "lb",
-            "to": "p1"
+            "to": "pods"
           },
           {
             "from": "lb",
-            "to": "p2"
+            "to": "bad"
           }
         ]
       },
       "choices": [
         {
-          "id": "fix-probes",
-          "label": "Fix probes",
+          "id": "local-disk-check",
+          "label": "Fail readiness when the pod's scratch disk drops below 5% free",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "lb",
-                "kind": "lb",
-                "label": "Balancer",
-                "tone": "good"
-              },
-              {
-                "id": "p2",
-                "kind": "server",
-                "label": "Pod (ready)",
-                "tone": "good"
-              },
-              {
-                "id": "p3",
-                "kind": "server",
-                "label": "Pod (ready)",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "lb",
-                "to": "p2"
-              },
-              {
-                "from": "lb",
-                "to": "p3"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 1,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Readiness checks local prerequisites only; still fix cleanup so pods don't fill."
           },
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 51,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 40,
+              "value": 420,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
+              "label": "Failed uploads",
+              "value": 0.1,
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Fail readiness when the instance cannot do useful work, so traffic shifts away."
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer",
+                "sub": "all 12 green",
+                "tone": "good"
+              },
+              {
+                "id": "pods",
+                "kind": "server",
+                "label": "11 healthy pods",
+                "cpu": 51,
+                "tone": "good"
+              },
+              {
+                "id": "bad",
+                "kind": "server",
+                "label": "pod-7 (disk 100%)",
+                "tone": "warn",
+                "cpu": 9,
+                "sub": "unready, draining"
+              }
+            ],
+            "edges": [
+              {
+                "from": "lb",
+                "to": "pods"
+              },
+              {
+                "from": "lb",
+                "to": "bad"
+              }
+            ]
+          },
+          "resultTitle": "The broken pod drains itself",
+          "resultBody": "Readiness now checks what this pod's request path needs locally: free scratch space, config loaded, listener up. pod-7 turns unready within one probe period and stops receiving uploads while an alert fires to fix the leak. Because it checks only local state, no shared outage can empty the pool. Cost: you still need to fix disk cleanup."
         },
         {
-          "id": "200-regardless-dependenc",
-          "label": "200 regardless dependency",
+          "id": "db-roundtrip",
+          "label": "Make /health write and read a row in shared Postgres",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 19,
+              "value": 48,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 250,
+              "value": 820,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 160,
-              "unit": "errors",
+              "label": "Failed uploads",
+              "value": 8,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Dead node in pool",
-          "resultBody": "The balancer still routes to an unready instance."
+          "resultTitle": "Tests the wrong disk",
+          "resultBody": "The row lands on Postgres's disk, not pod-7's, so the probe stays green and failures continue, and a Postgres blip would now mark all 12 pods unready at once."
         },
         {
-          "id": "crash-process-every",
-          "label": "Crash process every",
+          "id": "disk-alert",
+          "label": "Alert on-call when any pod's disk passes 90% usage",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 17,
+              "value": 47,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 220,
+              "value": 800,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 140,
-              "unit": "errors",
+              "label": "Failed uploads",
+              "value": 8,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Dead node in pool",
-          "resultBody": "Crash the process on every blip"
+          "resultTitle": "Someone gets paged, uploads keep failing",
+          "resultBody": "Visibility improves, but a human takes about 25 minutes to acknowledge and cordon the pod, and during that time it keeps failing 8% of uploads at full rate."
         }
       ],
       "hints": [
-        "The balancer still thinks this node is fine.",
-        "Alive is not the same as ready.",
-        "Probe the serving path."
+        "The endpoint says 'the process is running', which was never the question.",
+        "What does this pod need locally to serve a request successfully?",
+        "Readiness should fail on local conditions that break this pod's request path."
       ],
       "nextId": null
     },
@@ -1019,203 +1057,245 @@
       "level": 15,
       "patternId": "health-checks",
       "canonical": false,
+      "reviewed": true,
       "severity": "P1",
       "xp": 50,
-      "title": "Health on the public internet",
-      "brief": " /health exposes internal versions, hostnames, and dependency errors to the world.",
-      "constraint": "Attackers scrape it.",
-      "question": "What belongs on a public probe?",
+      "title": "Botnet floods the public /health endpoint",
+      "brief": "Parcelio's /health is reachable at api.parcelio.com/health and runs a deep check of 5 dependencies. A botnet is sending 25k req/s to it, and it also leaks version numbers and internal hostnames.",
+      "constraint": "The cloud load balancer's health checks cannot send custom headers.",
+      "question": "How do you keep probes working without exposing them?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 1000,
+          "label": "Health hits",
+          "value": 25000,
           "unit": "req/s",
-          "tone": "neutral"
+          "tone": "bad"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 15,
+          "value": 89,
           "unit": "%",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 200,
+          "value": 2600,
           "unit": "ms",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 120,
-          "unit": "errors",
+          "label": "5xx",
+          "value": 11,
+          "unit": "%",
           "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "lb",
+            "id": "bots",
+            "kind": "users",
+            "label": "Botnet",
+            "tone": "bad",
+            "sub": "25k req/s"
+          },
+          {
+            "id": "edge",
             "kind": "lb",
-            "label": "Balancer"
+            "label": "Public ingress",
+            "tone": "warn",
+            "sub": "routes /health"
           },
           {
-            "id": "p1",
+            "id": "pods",
             "kind": "server",
-            "label": "Pod (dead)",
-            "tone": "bad"
+            "label": "API pods",
+            "tone": "bad",
+            "cpu": 89,
+            "sub": "deep checks x25k"
           },
           {
-            "id": "p2",
-            "kind": "server",
-            "label": "Pod (ready)",
-            "tone": "good"
+            "id": "deps",
+            "kind": "db",
+            "label": "5 dependencies",
+            "tone": "warn",
+            "cpu": 70
           }
         ],
         "edges": [
           {
-            "from": "lb",
-            "to": "p1"
+            "from": "bots",
+            "to": "edge"
           },
           {
-            "from": "lb",
-            "to": "p2"
+            "from": "edge",
+            "to": "pods"
+          },
+          {
+            "from": "pods",
+            "to": "deps"
           }
         ]
       },
       "choices": [
         {
-          "id": "fix-probes",
-          "label": "Fix probes",
+          "id": "internal-port",
+          "label": "Serve probes on an internal port the public ingress never routes",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "lb",
-                "kind": "lb",
-                "label": "Balancer",
-                "tone": "good"
-              },
-              {
-                "id": "p2",
-                "kind": "server",
-                "label": "Pod (ready)",
-                "tone": "good"
-              },
-              {
-                "id": "p3",
-                "kind": "server",
-                "label": "Pod (ready)",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "lb",
-                "to": "p2"
-              },
-              {
-                "from": "lb",
-                "to": "p3"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": -2400,
+            "complexityScore": 2,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Second listener and security-group rule; public 404s /health."
           },
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 41,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 40,
+              "value": 180,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
+              "label": "5xx",
+              "value": 0.2,
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "A minimal authenticated or internal-only check; do not leak internals on a public URL."
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "bots",
+                "kind": "users",
+                "label": "Botnet",
+                "tone": "bad",
+                "sub": "404 at the edge"
+              },
+              {
+                "id": "edge",
+                "kind": "lb",
+                "label": "Public ingress",
+                "tone": "good",
+                "sub": "routes /health"
+              },
+              {
+                "id": "pods",
+                "kind": "server",
+                "label": "API pods",
+                "tone": "good",
+                "cpu": 41,
+                "sub": "probes on :8081"
+              },
+              {
+                "id": "deps",
+                "kind": "db",
+                "label": "5 dependencies",
+                "tone": "good",
+                "cpu": 30
+              }
+            ],
+            "edges": [
+              {
+                "from": "bots",
+                "to": "edge"
+              },
+              {
+                "from": "edge",
+                "to": "pods"
+              },
+              {
+                "from": "pods",
+                "to": "deps"
+              }
+            ]
+          },
+          "resultTitle": "Bots hit a 404 at the edge",
+          "resultBody": "Probes move to :8081, reachable only from the load balancer's and kubelet's subnets, and ingress returns 404 for /health. The flood dies at the edge, the deep dependency check no longer runs on attacker demand, and version details stop leaking. Cost: a second listener and one firewall rule."
         },
         {
-          "id": "full-stack-traces",
-          "label": "Full stack traces",
+          "id": "rate-limit-health",
+          "label": "Rate-limit /health to 100 requests per second per IP",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 19,
+              "value": 76,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 250,
+              "value": 1900,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 160,
-              "unit": "errors",
+              "label": "5xx",
+              "value": 7,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Dead node in pool",
-          "resultBody": "The balancer still routes to an unready instance."
+          "resultTitle": "Spread-out bots slip through",
+          "resultBody": "The botnet spans 40k IPs sending a few requests each, far under the limit, so most of the flood still runs deep checks; meanwhile the load balancer's own probes come from a handful of IPs and start getting 429s."
         },
         {
-          "id": "database-credentials-hea",
-          "label": "Database credentials health",
+          "id": "api-key-health",
+          "label": "Require an API key header on /health requests",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 17,
+              "value": 30,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 220,
+              "value": 150,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 140,
-              "unit": "errors",
+              "label": "5xx",
+              "value": 100,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Dead node in pool",
-          "resultBody": "Database credentials in the health JSON"
+          "resultTitle": "The balancer can't send the key",
+          "resultBody": "Bots are rejected, but so is the load balancer, which cannot add custom headers to its checks; every target is marked unhealthy and the whole API goes dark."
         }
       ],
       "hints": [
-        "The balancer still thinks this node is fine.",
-        "Alive is not the same as ready.",
-        "Probe the serving path."
+        "Only two kinds of callers ever need this endpoint.",
+        "Filtering by who is asking fails when the legitimate caller can't identify itself.",
+        "Make the endpoint unreachable from the internet rather than trying to filter it."
       ],
       "nextId": null
     },
@@ -1225,39 +1305,40 @@
       "level": 15,
       "patternId": "health-checks",
       "canonical": false,
+      "reviewed": true,
       "severity": "P1",
       "xp": 50,
-      "title": "Stale success from a sidecar",
-      "brief": "The sidecar answers 200 while the app process is dead.",
-      "constraint": "Traffic still reaches the pod IP.",
-      "question": "What must the probe actually test?",
+      "title": "Sidecar keeps dead app containers in rotation",
+      "brief": "Meshly's pods run the app plus an Envoy sidecar. Readiness probes Envoy's admin /ready, which returns 200 whenever Envoy is up. When the app container crashes, the pod stays ready and 6% of requests 503.",
+      "constraint": "The service mesh sidecar must stay in every pod.",
+      "question": "What should the readiness probe be asking?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 200,
+          "value": 38000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 15,
+          "value": 63,
           "unit": "%",
-          "tone": "warn"
+          "tone": "neutral"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 200,
+          "value": 350,
           "unit": "ms",
           "tone": "warn"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 120,
-          "unit": "errors",
+          "label": "503s",
+          "value": 6,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -1266,162 +1347,179 @@
           {
             "id": "lb",
             "kind": "lb",
-            "label": "Balancer"
+            "label": "Service endpoints"
           },
           {
-            "id": "p1",
+            "id": "envoy",
             "kind": "server",
-            "label": "Pod (dead)",
-            "tone": "bad"
+            "label": "Envoy sidecar",
+            "cpu": 12,
+            "sub": "/ready = 200"
           },
           {
-            "id": "p2",
+            "id": "app",
             "kind": "server",
-            "label": "Pod (ready)",
-            "tone": "good"
+            "label": "App container",
+            "tone": "bad",
+            "cpu": 63,
+            "sub": "crash-looping in 3 pods"
           }
         ],
         "edges": [
           {
             "from": "lb",
-            "to": "p1"
+            "to": "envoy"
           },
           {
-            "from": "lb",
-            "to": "p2"
+            "from": "envoy",
+            "to": "app"
           }
         ]
       },
       "choices": [
         {
-          "id": "fix-probes",
-          "label": "Fix probes",
+          "id": "probe-app",
+          "label": "Probe the app container's own readiness endpoint and port",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "lb",
-                "kind": "lb",
-                "label": "Balancer",
-                "tone": "good"
-              },
-              {
-                "id": "p2",
-                "kind": "server",
-                "label": "Pod (ready)",
-                "tone": "good"
-              },
-              {
-                "id": "p3",
-                "kind": "server",
-                "label": "Pod (ready)",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "lb",
-                "to": "p2"
-              },
-              {
-                "from": "lb",
-                "to": "p3"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 1,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Probe config per container; sidecar still needs its own liveness."
           },
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 61,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 40,
+              "value": 210,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
+              "label": "503s",
+              "value": 0.1,
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "The serving process (or a port that fails when the app is down), not only the sidecar."
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Service endpoints",
+                "tone": "good"
+              },
+              {
+                "id": "envoy",
+                "kind": "server",
+                "label": "Envoy sidecar",
+                "cpu": 12,
+                "sub": "/ready = 200",
+                "tone": "good"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App container",
+                "tone": "good",
+                "cpu": 61,
+                "sub": "readiness on :8080/ready"
+              }
+            ],
+            "edges": [
+              {
+                "from": "lb",
+                "to": "envoy"
+              },
+              {
+                "from": "envoy",
+                "to": "app"
+              }
+            ]
+          },
+          "resultTitle": "Crashed apps leave the endpoints",
+          "resultBody": "Readiness now targets the app's own /ready on its port, so when the app process dies the probe fails and the pod leaves the Service endpoints within 10 s, even though Envoy is still healthy. Envoy keeps its own liveness check. Cost: probe config has to stay in sync with the app's port."
         },
         {
-          "id": "tcp-sidecar-admin",
-          "label": "TCP sidecar admin",
+          "id": "faster-envoy-probe",
+          "label": "Probe Envoy's admin endpoint every second instead of 10",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 19,
+              "value": 64,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 250,
+              "value": 350,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 160,
-              "unit": "errors",
+              "label": "503s",
+              "value": 6,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Dead node in pool",
-          "resultBody": "The balancer still routes to an unready instance."
+          "resultTitle": "Faster probes of the wrong thing",
+          "resultBody": "Envoy is perfectly healthy, so probing it ten times as often just returns 200 ten times as often; the crashed app containers stay in rotation and 503s don't move."
         },
         {
-          "id": "always-ready-long-pod",
-          "label": "Always-ready long pod",
+          "id": "tcp-envoy",
+          "label": "Switch to a TCP probe on Envoy's inbound listener",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 17,
+              "value": 63,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 220,
+              "value": 350,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 140,
-              "unit": "errors",
+              "label": "503s",
+              "value": 6,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Dead node in pool",
-          "resultBody": "Always-ready as long as the pod exists"
+          "resultTitle": "The listener accepts, the app is gone",
+          "resultBody": "Envoy's listener accepts TCP connections whether or not the app behind it is alive, so the handshake succeeds, the probe passes, and requests still get 503 from the missing upstream."
         }
       ],
       "hints": [
-        "The balancer still thinks this node is fine.",
-        "Alive is not the same as ready.",
-        "Probe the serving path."
+        "The probe got a correct answer to the wrong question.",
+        "In a pod with two containers, which one actually serves the request?",
+        "Health must be measured at the component that does the work."
       ],
       "nextId": null
     },
@@ -1639,39 +1737,40 @@
       "level": 15,
       "patternId": "health-checks",
       "canonical": false,
+      "reviewed": true,
       "severity": "P1",
       "xp": 50,
-      "title": "Exec probe saturates CPU",
-      "brief": "An exec health script forks a shell and a Python interpreter every second on each pod.",
-      "constraint": "The check is heavier than the app.",
-      "question": "What probe type is appropriate?",
+      "title": "Exec probes eat 40% of each pod's CPU",
+      "brief": "Quillr's liveness and readiness are exec probes running 'python healthcheck.py' every 2 s. Each run boots an interpreter for 180 ms of CPU; on 500m-limited pods that's 40% of CPU and heavy throttling.",
+      "constraint": "The CPU limit stays at 500m per pod.",
+      "question": "How do you check the app without paying for a new process each time?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 1000,
+          "value": 16000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 15,
+          "value": 97,
           "unit": "%",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 200,
+          "value": 1400,
           "unit": "ms",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 120,
-          "unit": "errors",
+          "label": "Throttled periods",
+          "value": 62,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -1680,162 +1779,177 @@
           {
             "id": "lb",
             "kind": "lb",
-            "label": "Balancer"
+            "label": "Service"
           },
           {
-            "id": "p1",
+            "id": "pods",
             "kind": "server",
-            "label": "Pod (dead)",
-            "tone": "bad"
+            "label": "120 pods (500m)",
+            "tone": "bad",
+            "cpu": 97,
+            "sub": "fork + python x2 per 2 s"
           },
           {
-            "id": "p2",
-            "kind": "server",
-            "label": "Pod (ready)",
-            "tone": "good"
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres",
+            "cpu": 40
           }
         ],
         "edges": [
           {
             "from": "lb",
-            "to": "p1"
+            "to": "pods"
           },
           {
-            "from": "lb",
-            "to": "p2"
+            "from": "pods",
+            "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "fix-probes",
-          "label": "Fix probes",
+          "id": "http-probe",
+          "label": "Replace exec probes with httpGet to an in-process endpoint",
           "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": -1200,
+            "latencyP99DeltaMs": -1100,
+            "complexityScore": 1,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "App must expose a lightweight handler; no new process per probe."
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 58,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 260,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Throttled periods",
+              "value": 3,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
           "graphAfter": {
             "nodes": [
               {
                 "id": "lb",
                 "kind": "lb",
-                "label": "Balancer",
+                "label": "Service",
                 "tone": "good"
               },
               {
-                "id": "p2",
+                "id": "pods",
                 "kind": "server",
-                "label": "Pod (ready)",
-                "tone": "good"
+                "label": "120 pods (500m)",
+                "tone": "good",
+                "cpu": 58,
+                "sub": "httpGet /ready"
               },
               {
-                "id": "p3",
-                "kind": "server",
-                "label": "Pod (ready)",
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres",
+                "cpu": 40,
                 "tone": "good"
               }
             ],
             "edges": [
               {
                 "from": "lb",
-                "to": "p2"
+                "to": "pods"
               },
               {
-                "from": "lb",
-                "to": "p3"
+                "from": "pods",
+                "to": "db"
               }
             ]
           },
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 16,
-              "unit": "%",
-              "tone": "good"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 40,
-              "unit": "ms",
-              "tone": "good"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
-              "tone": "good"
-            }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "A cheap HTTP or TCP check in-process, not a heavy exec on every interval."
+          "resultTitle": "Probes cost microseconds now",
+          "resultBody": "The kubelet sends an HTTP GET to a handler inside the already-running process, which answers from in-memory state in well under a millisecond. No fork, no interpreter start-up, so the 180 ms of CPU per probe disappears and throttling falls from 62% to 3%. Cost: the app must expose a small handler."
         },
         {
-          "id": "shell-out-large",
-          "label": "shell out large",
+          "id": "raise-limit",
+          "label": "Raise each pod's CPU limit from 500m to 2 cores",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 19,
+              "value": 45,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 250,
+              "value": 320,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 160,
-              "unit": "errors",
-              "tone": "bad"
+              "label": "Throttled periods",
+              "value": 1,
+              "unit": "%",
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Dead node in pool",
-          "resultBody": "The balancer still routes to an unready instance."
+          "resultTitle": "Throttling ends, the bill quadruples",
+          "resultBody": "Latency recovers, but requests plus limits now reserve 4x the CPU, the cluster needs 60 more nodes, and the probes still waste the same 180 ms each; the constraint says the limit can't move."
         },
         {
-          "id": "compile-code-each",
-          "label": "Compile code each",
+          "id": "probe-timeout",
+          "label": "Raise the probe timeoutSeconds from 1 to 10",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 17,
+              "value": 97,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 220,
+              "value": 1500,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 140,
-              "unit": "errors",
+              "label": "Throttled periods",
+              "value": 63,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Dead node in pool",
-          "resultBody": "Compile code on each probe"
+          "resultTitle": "Fewer restarts, same CPU burn",
+          "resultBody": "Slow throttled probes stop timing out, so there are fewer spurious restarts, but every probe still forks a Python interpreter every 2 s, so CPU stays pegged and p99 latency doesn't improve."
         }
       ],
       "hints": [
-        "The balancer still thinks this node is fine.",
-        "Alive is not the same as ready.",
-        "Probe the serving path."
+        "Look at what it costs to run the probe, not what it checks.",
+        "Starting a process is far more expensive than answering a request.",
+        "Let the running app answer the probe itself."
       ],
       "nextId": null
     },
@@ -1845,39 +1959,40 @@
       "level": 15,
       "patternId": "health-checks",
       "canonical": false,
+      "reviewed": true,
       "severity": "P1",
       "xp": 50,
-      "title": "Drain ignored",
-      "brief": "A deploy SIGKILLs pods while they are still in the load balancer pool.",
-      "constraint": "In-flight requests are cut.",
-      "question": "What sequence should health enable?",
+      "title": "Every rolling deploy spikes 502s for 30 seconds",
+      "brief": "Tripwise deploys 30 times a day. On SIGTERM its Go server exits immediately, but the load balancer keeps routing to the pod for another 5-10 s. Each deploy drops 3% of 50k req/s.",
+      "constraint": "Deploys must stay rolling and happen many times a day.",
+      "question": "How does a terminating pod leave without dropping requests?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 1000,
+          "value": 50000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 15,
+          "value": 57,
           "unit": "%",
-          "tone": "warn"
+          "tone": "neutral"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 200,
+          "value": 260,
           "unit": "ms",
-          "tone": "warn"
+          "tone": "neutral"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 120,
-          "unit": "errors",
+          "label": "502s during deploys",
+          "value": 3,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -1886,162 +2001,180 @@
           {
             "id": "lb",
             "kind": "lb",
-            "label": "Balancer"
+            "label": "Load balancer",
+            "tone": "warn",
+            "sub": "5-10 s to deregister"
           },
           {
-            "id": "p1",
+            "id": "old",
             "kind": "server",
-            "label": "Pod (dead)",
-            "tone": "bad"
+            "label": "Terminating pods",
+            "tone": "bad",
+            "cpu": 20,
+            "sub": "exit on SIGTERM"
           },
           {
-            "id": "p2",
+            "id": "new",
             "kind": "server",
-            "label": "Pod (ready)",
-            "tone": "good"
+            "label": "New pods",
+            "cpu": 57
           }
         ],
         "edges": [
           {
             "from": "lb",
-            "to": "p1"
+            "to": "old"
           },
           {
             "from": "lb",
-            "to": "p2"
+            "to": "new"
           }
         ]
       },
       "choices": [
         {
-          "id": "fix-probes",
-          "label": "Fix probes",
+          "id": "prestop-drain",
+          "label": "preStop sleep 15 s, then stop accepting and finish in-flight requests",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "lb",
-                "kind": "lb",
-                "label": "Balancer",
-                "tone": "good"
-              },
-              {
-                "id": "p2",
-                "kind": "server",
-                "label": "Pod (ready)",
-                "tone": "good"
-              },
-              {
-                "id": "p3",
-                "kind": "server",
-                "label": "Pod (ready)",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "lb",
-                "to": "p2"
-              },
-              {
-                "from": "lb",
-                "to": "p3"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 2,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Each pod takes ~25 s longer to terminate; deploys take a few minutes longer."
           },
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 58,
               "unit": "%",
               "tone": "good"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 40,
-              "unit": "ms",
-              "tone": "good"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
-              "tone": "good"
-            }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Fail readiness, wait for drain, then stop the process."
-        },
-        {
-          "id": "kill-before-removing",
-          "label": "Kill before removing",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 19,
-              "unit": "%",
-              "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
               "value": 250,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 160,
-              "unit": "errors",
-              "tone": "bad"
+              "label": "502s during deploys",
+              "value": 0.01,
+              "unit": "%",
+              "tone": "good"
             }
           ],
-          "resultTitle": "Dead node in pool",
-          "resultBody": "The balancer still routes to an unready instance."
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer",
+                "tone": "good",
+                "sub": "deregistered before exit"
+              },
+              {
+                "id": "old",
+                "kind": "server",
+                "label": "Terminating pods",
+                "tone": "warn",
+                "cpu": 20,
+                "sub": "draining 15 s"
+              },
+              {
+                "id": "new",
+                "kind": "server",
+                "label": "New pods",
+                "cpu": 57,
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "lb",
+                "to": "old"
+              },
+              {
+                "from": "lb",
+                "to": "new"
+              }
+            ]
+          },
+          "resultTitle": "The balancer lets go before the pod does",
+          "resultBody": "The preStop hook sleeps 15 s while endpoint removal propagates to the balancer, so new requests stop arriving; then SIGTERM triggers http.Server.Shutdown, which finishes in-flight requests within the 30 s grace period. Deploy 502s fall to near zero. Cost: every pod takes about 25 s longer to terminate."
         },
         {
-          "id": "no-prestop-delay",
-          "label": "No preStop delay",
+          "id": "long-grace",
+          "label": "Raise terminationGracePeriodSeconds from 30 to 300",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 17,
+              "value": 57,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 220,
+              "value": 260,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "neutral"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 140,
-              "unit": "errors",
+              "label": "502s during deploys",
+              "value": 3,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Dead node in pool",
-          "resultBody": "No preStop delay"
+          "resultTitle": "Grace unused, app still exits",
+          "resultBody": "The grace period is only the maximum time Kubernetes waits before SIGKILL; the app still exits the instant it gets SIGTERM, so the 5-10 s window of misrouted requests is unchanged."
+        },
+        {
+          "id": "client-retry-502",
+          "label": "Retry every 502 at the API gateway once",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 60,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 310,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "502s during deploys",
+              "value": 0.6,
+              "unit": "%",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "GETs recover, POSTs double",
+          "resultBody": "Most reads succeed on retry, but a 502 doesn't tell you whether a POST reached the app, so some bookings are now created twice while others still fail when the retry lands on another terminating pod."
         }
       ],
       "hints": [
-        "The balancer still thinks this node is fine.",
-        "Alive is not the same as ready.",
-        "Probe the serving path."
+        "Removing a pod from the load balancer is not instant.",
+        "The pod and the balancer need to agree on who stops first.",
+        "Keep serving briefly after you're told to stop, then drain what's in flight."
       ],
       "nextId": null
     },
@@ -2231,203 +2364,240 @@
       "level": 15,
       "patternId": "health-checks",
       "canonical": false,
+      "reviewed": true,
       "severity": "P1",
       "xp": 50,
-      "title": "Multi-port service",
-      "brief": "Metrics port is up, HTTP API port is down, and the balancer uses the metrics port as health.",
-      "constraint": "Users hit the API port.",
-      "question": "Which port should readiness use?",
+      "title": "Payments RPCs fail on pods reporting SERVING",
+      "brief": "Ledgerly's binary serves Ledger and Payments gRPC services on :9090. On 2 of 8 pods, Payments failed to connect to its HSM at boot, but the probe checks the overall server status, so 25% of Payments RPCs return UNAVAILABLE.",
+      "constraint": "Both services must keep running in the same binary for now.",
+      "question": "How do you make the probe see the broken service?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 1000,
+          "label": "Payments RPCs",
+          "value": 7000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 15,
+          "value": 44,
           "unit": "%",
-          "tone": "warn"
+          "tone": "neutral"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 200,
+          "value": 90,
           "unit": "ms",
-          "tone": "warn"
+          "tone": "neutral"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 120,
-          "unit": "errors",
+          "label": "UNAVAILABLE",
+          "value": 25,
+          "unit": "%",
           "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "lb",
-            "kind": "lb",
-            "label": "Balancer"
+            "id": "cli",
+            "kind": "users",
+            "label": "Checkout clients"
           },
           {
-            "id": "p1",
+            "id": "pods",
             "kind": "server",
-            "label": "Pod (dead)",
-            "tone": "bad"
+            "label": "6 healthy pods",
+            "cpu": 44
           },
           {
-            "id": "p2",
+            "id": "bad",
             "kind": "server",
-            "label": "Pod (ready)",
-            "tone": "good"
+            "label": "2 pods: Payments NOT_SERVING",
+            "tone": "bad",
+            "cpu": 15,
+            "sub": "overall SERVING"
+          },
+          {
+            "id": "hsm",
+            "kind": "server",
+            "label": "HSM",
+            "sub": "connection failed at boot"
           }
         ],
         "edges": [
           {
-            "from": "lb",
-            "to": "p1"
+            "from": "cli",
+            "to": "pods"
           },
           {
-            "from": "lb",
-            "to": "p2"
+            "from": "cli",
+            "to": "bad"
+          },
+          {
+            "from": "bad",
+            "to": "hsm"
           }
         ]
       },
       "choices": [
         {
-          "id": "fix-probes",
-          "label": "Fix probes",
+          "id": "grpc-service-probe",
+          "label": "gRPC readiness probe naming the payments.v1.Payments service",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "lb",
-                "kind": "lb",
-                "label": "Balancer",
-                "tone": "good"
-              },
-              {
-                "id": "p2",
-                "kind": "server",
-                "label": "Pod (ready)",
-                "tone": "good"
-              },
-              {
-                "id": "p3",
-                "kind": "server",
-                "label": "Pod (ready)",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "lb",
-                "to": "p2"
-              },
-              {
-                "from": "lb",
-                "to": "p3"
-              }
-            ]
+          "approach": "viable_with_tradeoffs",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 2,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Pods with broken Payments also stop serving Ledger until they recover or are split out."
           },
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 58,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 40,
+              "value": 85,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
+              "label": "UNAVAILABLE",
+              "value": 0.1,
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Probe the user-facing port and protocol, not a side port that can be healthy independently."
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "cli",
+                "kind": "users",
+                "label": "Checkout clients",
+                "tone": "good"
+              },
+              {
+                "id": "pods",
+                "kind": "server",
+                "label": "6 healthy pods",
+                "cpu": 58,
+                "tone": "good"
+              },
+              {
+                "id": "bad",
+                "kind": "server",
+                "label": "2 pods: Payments NOT_SERVING",
+                "tone": "warn",
+                "cpu": 15,
+                "sub": "unready"
+              },
+              {
+                "id": "hsm",
+                "kind": "server",
+                "label": "HSM",
+                "sub": "connection failed at boot",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "cli",
+                "to": "pods"
+              },
+              {
+                "from": "cli",
+                "to": "bad"
+              },
+              {
+                "from": "bad",
+                "to": "hsm"
+              }
+            ]
+          },
+          "resultTitle": "The probe asks about Payments by name",
+          "resultBody": "The gRPC health protocol reports status per service name; the probe now sends service 'payments.v1.Payments', gets NOT_SERVING from the 2 broken pods and pulls them from endpoints. Payments errors fall to near zero. Cost: those pods stop serving Ledger too, a reason to split the services later."
         },
         {
-          "id": "health-metrics",
-          "label": "Health metrics",
+          "id": "tcp-9090",
+          "label": "Use a TCP socket probe on port 9090",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 19,
+              "value": 44,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 250,
+              "value": 90,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "neutral"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 160,
-              "unit": "errors",
+              "label": "UNAVAILABLE",
+              "value": 25,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Dead node in pool",
-          "resultBody": "The balancer still routes to an unready instance."
+          "resultTitle": "Port open, service broken",
+          "resultBody": "The gRPC server is listening, so the TCP handshake succeeds on all 8 pods; a socket probe knows nothing about which services inside are able to work, and 25% of Payments RPCs still fail."
         },
         {
-          "id": "tcp-22-app",
-          "label": "TCP 22 app",
+          "id": "metrics-probe",
+          "label": "Probe the HTTP metrics endpoint on port 8080 instead",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 17,
+              "value": 44,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 220,
+              "value": 90,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "neutral"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 140,
-              "unit": "errors",
+              "label": "UNAVAILABLE",
+              "value": 25,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Dead node in pool",
-          "resultBody": "TCP 22 as the app check"
+          "resultTitle": "Metrics are up, Payments isn't",
+          "resultBody": "The Prometheus handler runs on its own listener and happily returns 200 while Payments is NOT_SERVING, so the two broken pods stay in rotation."
         }
       ],
       "hints": [
-        "The balancer still thinks this node is fine.",
-        "Alive is not the same as ready.",
-        "Probe the serving path."
+        "The process is healthy; one of the things it serves is not.",
+        "The gRPC health protocol can answer about more than the whole server.",
+        "Ask about the specific service your callers depend on."
       ],
       "nextId": null
     },
@@ -2437,39 +2607,40 @@
       "level": 15,
       "patternId": "health-checks",
       "canonical": false,
-      "severity": "P1",
+      "reviewed": true,
+      "severity": "P0",
       "xp": 50,
-      "title": "Health check storm after deploy",
-      "brief": "A mesh retries probes from every sidecar at once and the new pods never become ready.",
-      "constraint": "Probe concurrency is unbounded.",
-      "question": "How do you keep probes from becoming load?",
+      "title": "Recovered pods collapse again when readmitted together",
+      "brief": "After a cache outage, all 200 of Menuly's pods turned ready within 5 s and got full traffic with cold local caches. Database QPS jumped 12x, pods timed out, went unready and the cycle repeated for 40 minutes.",
+      "constraint": "The database can take at most 3x its normal query rate.",
+      "question": "How should recovered pods re-enter rotation?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 1000,
+          "value": 70000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 15,
+          "value": 98,
           "unit": "%",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 200,
+          "value": 5000,
           "unit": "ms",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 120,
-          "unit": "errors",
+          "label": "Error rate",
+          "value": 45,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -2478,162 +2649,182 @@
           {
             "id": "lb",
             "kind": "lb",
-            "label": "Balancer"
+            "label": "Load balancer",
+            "tone": "warn",
+            "sub": "full weight at once"
           },
           {
-            "id": "p1",
+            "id": "pods",
             "kind": "server",
-            "label": "Pod (dead)",
-            "tone": "bad"
+            "label": "200 pods (cold caches)",
+            "tone": "bad",
+            "cpu": 90
           },
           {
-            "id": "p2",
-            "kind": "server",
-            "label": "Pod (ready)",
-            "tone": "good"
+            "id": "db",
+            "kind": "db",
+            "label": "Menu DB",
+            "tone": "bad",
+            "cpu": 98,
+            "sub": "12x normal QPS"
           }
         ],
         "edges": [
           {
             "from": "lb",
-            "to": "p1"
+            "to": "pods"
           },
           {
-            "from": "lb",
-            "to": "p2"
+            "from": "pods",
+            "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "fix-probes",
-          "label": "Fix probes",
+          "id": "slow-start",
+          "label": "Enable load-balancer slow start to ramp new targets over 90 s",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "lb",
-                "kind": "lb",
-                "label": "Balancer",
-                "tone": "good"
-              },
-              {
-                "id": "p2",
-                "kind": "server",
-                "label": "Pod (ready)",
-                "tone": "good"
-              },
-              {
-                "id": "p3",
-                "kind": "server",
-                "label": "Pod (ready)",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "lb",
-                "to": "p2"
-              },
-              {
-                "from": "lb",
-                "to": "p3"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 1,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Full capacity returns ~90 s later; the database sees a gentle ramp instead of a spike."
           },
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 71,
               "unit": "%",
-              "tone": "good"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 40,
+              "value": 300,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
+              "label": "Error rate",
+              "value": 0.5,
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Bound probe rate and cost so health traffic cannot prevent readiness."
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer",
+                "tone": "good",
+                "sub": "slow start 90 s"
+              },
+              {
+                "id": "pods",
+                "kind": "server",
+                "label": "200 pods (cold caches)",
+                "tone": "good",
+                "cpu": 62,
+                "sub": "caches warming"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Menu DB",
+                "tone": "good",
+                "cpu": 71,
+                "sub": "~2.5x QPS peak"
+              }
+            ],
+            "edges": [
+              {
+                "from": "lb",
+                "to": "pods"
+              },
+              {
+                "from": "pods",
+                "to": "db"
+              }
+            ]
+          },
+          "resultTitle": "Caches warm on a gentle ramp",
+          "resultBody": "Newly healthy targets start at a small share of traffic and ramp linearly over 90 s, so local caches fill while load is low and database QPS peaks at about 2.5x instead of 12x. Pods stay ready and the flapping loop never starts. Cost: full capacity returns about 90 s later after an outage."
         },
         {
-          "id": "unbounded-parallel-deep",
-          "label": "Unbounded parallel deep",
+          "id": "initial-delay",
+          "label": "Add a 60-second initialDelaySeconds to the readiness probe",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 19,
+              "value": 98,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 250,
+              "value": 5000,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 160,
-              "unit": "errors",
+              "label": "Error rate",
+              "value": 45,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Dead node in pool",
-          "resultBody": "The balancer still routes to an unready instance."
+          "resultTitle": "Same stampede, one minute later",
+          "resultBody": "The delay only affects container start, and here pods were already running; even where it applies, all 200 pods still become ready in the same second after 60 s, with caches just as cold."
         },
         {
-          "id": "probe-production-databas",
-          "label": "Probe production database",
+          "id": "double-pods",
+          "label": "Scale from 200 to 400 pods to spread the load",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 17,
+              "value": 99,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 220,
+              "value": 6000,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 140,
-              "unit": "errors",
+              "label": "Error rate",
+              "value": 50,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Dead node in pool",
-          "resultBody": "Probe the production database with heavy queries at deploy"
+          "resultTitle": "More cold caches, more misses",
+          "resultBody": "Each new pod starts with an empty cache too, so twice as many pods send cache-miss queries at once and database QPS climbs further; the database, not the pods, is the bottleneck."
         }
       ],
       "hints": [
-        "The balancer still thinks this node is fine.",
-        "Alive is not the same as ready.",
-        "Probe the serving path."
+        "The pods were right to say they were ready, yet they still couldn't take full load.",
+        "Warm-up state like caches is invisible to a readiness check.",
+        "Control how quickly traffic returns, not just whether it returns."
       ],
       "nextId": null
     },
@@ -2643,39 +2834,40 @@
       "level": 15,
       "patternId": "health-checks",
       "canonical": false,
-      "severity": "P1",
+      "reviewed": true,
+      "severity": "P0",
       "xp": 50,
-      "title": "Dependency timeout longer than probe timeout",
-      "brief": "Readiness waits 10s on a 30s downstream timeout and probes overlap until threads exhaust.",
-      "constraint": "Probes pile up.",
-      "question": "What timeout rule applies?",
+      "title": "Busy pods fail probes and get pulled under load",
+      "brief": "During a flash sale, BuyNow's traffic doubled to 90k req/s. Readiness requests queued behind 800 requests in each pod's worker pool, timed out at 1 s, and 40% of pods were ejected, overloading the rest.",
+      "constraint": "Truly dead pods must still leave rotation within 15 s.",
+      "question": "How do you stop load from looking like failure?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 1000,
+          "value": 90000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 15,
+          "value": 95,
           "unit": "%",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 200,
+          "value": 4200,
           "unit": "ms",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 120,
-          "unit": "errors",
+          "label": "Pods ejected",
+          "value": 40,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -2684,162 +2876,183 @@
           {
             "id": "lb",
             "kind": "lb",
-            "label": "Balancer"
+            "label": "Load balancer",
+            "tone": "bad",
+            "sub": "ejecting busy pods"
           },
           {
-            "id": "p1",
+            "id": "pods",
             "kind": "server",
-            "label": "Pod (dead)",
-            "tone": "bad"
+            "label": "60% of pods left",
+            "tone": "bad",
+            "cpu": 95,
+            "sub": "probe queued behind work"
           },
           {
-            "id": "p2",
+            "id": "out",
             "kind": "server",
-            "label": "Pod (ready)",
-            "tone": "good"
+            "label": "40% ejected",
+            "tone": "bad",
+            "cpu": 80,
+            "sub": "busy, not broken"
           }
         ],
         "edges": [
           {
             "from": "lb",
-            "to": "p1"
+            "to": "pods"
           },
           {
             "from": "lb",
-            "to": "p2"
+            "to": "out"
           }
         ]
       },
       "choices": [
         {
-          "id": "health-checks",
-          "label": "Health checks",
+          "id": "probe-thread-shed",
+          "label": "Answer probes on a dedicated thread; shed excess load with 429",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "lb",
-                "kind": "lb",
-                "label": "Balancer",
-                "tone": "good"
-              },
-              {
-                "id": "p2",
-                "kind": "server",
-                "label": "Pod (ready)",
-                "tone": "good"
-              },
-              {
-                "id": "p3",
-                "kind": "server",
-                "label": "Pod (ready)",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "lb",
-                "to": "p2"
-              },
-              {
-                "from": "lb",
-                "to": "p3"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": -3000,
+            "complexityScore": 3,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Some users see 429 at peak; the fleet keeps its full capacity."
           },
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 88,
               "unit": "%",
-              "tone": "good"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 40,
+              "value": 450,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Pods ejected",
               "value": 0,
-              "unit": "errors",
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Health checks must use short timeouts and bounded concurrency, shorter than the probe period."
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer",
+                "tone": "good",
+                "sub": "ejecting busy pods"
+              },
+              {
+                "id": "pods",
+                "kind": "server",
+                "label": "100% of pods serving",
+                "tone": "good",
+                "cpu": 88,
+                "sub": "probe queued behind work"
+              },
+              {
+                "id": "out",
+                "kind": "server",
+                "label": "none ejected",
+                "tone": "good",
+                "cpu": 86,
+                "sub": "shedding 8%"
+              }
+            ],
+            "edges": [
+              {
+                "from": "lb",
+                "to": "pods"
+              },
+              {
+                "from": "lb",
+                "to": "out"
+              }
+            ]
+          },
+          "resultTitle": "Busy pods stay in and say 'slow down'",
+          "resultBody": "The probe handler runs on its own small listener outside the request queue, so an overloaded pod still answers in milliseconds, while an admission limit returns 429 for the 8% of requests beyond capacity. The fleet keeps all its pods, and dead ones still fail within 15 s. Cost: some shoppers see 'try again' at peak."
         },
         {
-          "id": "downstream-30s-timeout",
-          "label": "Downstream 30s timeout",
+          "id": "longer-timeout",
+          "label": "Raise readiness timeoutSeconds from 1 to 10",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 19,
+              "value": 95,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 250,
+              "value": 3800,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 160,
-              "unit": "errors",
-              "tone": "bad"
+              "label": "Pods ejected",
+              "value": 15,
+              "unit": "%",
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Dead node in pool",
-          "resultBody": "The balancer still routes to an unready instance."
+          "resultTitle": "Ejections slow, dead pods linger",
+          "resultBody": "Fewer probes time out, but at peak the queue delay exceeds 10 s too, so 15% of pods still get pulled, and a genuinely hung pod now takes 30 s to leave rotation, breaking the 15 s rule."
         },
         {
-          "id": "overlapping-probes-no",
-          "label": "Overlapping probes no",
+          "id": "autoscale-more",
+          "label": "Autoscale on probe failures to add pods faster",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 17,
+              "value": 97,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 220,
+              "value": 4500,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 140,
-              "unit": "errors",
+              "label": "Pods ejected",
+              "value": 40,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Dead node in pool",
-          "resultBody": "Overlapping probes with no cap"
+          "resultTitle": "Help arrives after the cascade",
+          "resultBody": "New pods need 90 s to schedule and boot, while ejections cascade in seconds; by the time they arrive the remaining pods have also failed probes, and each new pod is ejected as soon as it fills up."
         }
       ],
       "hints": [
-        "The balancer still thinks this node is fine.",
-        "Alive is not the same as ready.",
-        "Probe the serving path."
+        "The ejected pods were working hard, not broken.",
+        "When a probe waits in the same queue as real traffic, it measures queue length.",
+        "Keep health answers independent of request load, and handle overload separately."
       ],
       "nextId": null
     },
@@ -2849,39 +3062,40 @@
       "level": 15,
       "patternId": "health-checks",
       "canonical": false,
+      "reviewed": true,
       "severity": "P1",
       "xp": 50,
-      "title": "False healthy during deadlock",
-      "brief": "The health thread is separate and still answers 200 while request threads are deadlocked.",
-      "constraint": "Users are stuck; probes are green.",
-      "question": "What should liveness detect?",
+      "title": "Deadlocked pod passes liveness for 6 hours",
+      "brief": "One of Routely's 20 JVM pods deadlocked: all 200 worker threads wait on two locks. Liveness is served by a separate Netty thread that returns 200, so 5% of requests hang for 30 s until someone notices.",
+      "constraint": "Liveness must not restart pods that are merely busy.",
+      "question": "How can liveness detect that no work is making progress?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 200,
+          "value": 24000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 15,
+          "value": 55,
           "unit": "%",
-          "tone": "warn"
+          "tone": "neutral"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 200,
+          "value": 30000,
           "unit": "ms",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 120,
-          "unit": "errors",
+          "label": "Hung requests",
+          "value": 5,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -2890,162 +3104,177 @@
           {
             "id": "lb",
             "kind": "lb",
-            "label": "Balancer"
+            "label": "Load balancer"
           },
           {
-            "id": "p1",
+            "id": "pods",
             "kind": "server",
-            "label": "Pod (dead)",
-            "tone": "bad"
+            "label": "19 healthy pods",
+            "cpu": 55
           },
           {
-            "id": "p2",
+            "id": "stuck",
             "kind": "server",
-            "label": "Pod (ready)",
-            "tone": "good"
+            "label": "pod-12 (deadlocked)",
+            "tone": "bad",
+            "cpu": 2,
+            "sub": "liveness 200"
           }
         ],
         "edges": [
           {
             "from": "lb",
-            "to": "p1"
+            "to": "pods"
           },
           {
             "from": "lb",
-            "to": "p2"
+            "to": "stuck"
           }
         ]
       },
       "choices": [
         {
-          "id": "fix-probes",
-          "label": "Fix probes",
+          "id": "progress-watchdog",
+          "label": "Liveness fails if no worker finished a task in 60 s while work is queued",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "lb",
-                "kind": "lb",
-                "label": "Balancer",
-                "tone": "good"
-              },
-              {
-                "id": "p2",
-                "kind": "server",
-                "label": "Pod (ready)",
-                "tone": "good"
-              },
-              {
-                "id": "p3",
-                "kind": "server",
-                "label": "Pod (ready)",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "lb",
-                "to": "p2"
-              },
-              {
-                "from": "lb",
-                "to": "p3"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": -29000,
+            "complexityScore": 3,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Needs a heartbeat counter in the worker loop; slow-but-moving pods are left alone."
           },
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 56,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 40,
+              "value": 400,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
+              "label": "Hung requests",
+              "value": 0.05,
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "A check that fails if the request path cannot make progress (watchdog), not only a side thread."
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer",
+                "tone": "good"
+              },
+              {
+                "id": "pods",
+                "kind": "server",
+                "label": "19 healthy pods",
+                "cpu": 55,
+                "tone": "good"
+              },
+              {
+                "id": "stuck",
+                "kind": "server",
+                "label": "pod-12 (deadlocked)",
+                "tone": "warn",
+                "cpu": 40,
+                "sub": "restarted after 90 s"
+              }
+            ],
+            "edges": [
+              {
+                "from": "lb",
+                "to": "pods"
+              },
+              {
+                "from": "lb",
+                "to": "stuck"
+              }
+            ]
+          },
+          "resultTitle": "No progress means restart",
+          "resultBody": "Each worker bumps a completed-task counter; liveness fails when the queue is non-empty and the counter hasn't moved for 60 s. A deadlocked pod is restarted within about 90 s, while a busy pod that is still completing tasks passes. Also capture a thread dump before restart to fix the lock order. Cost: a small watchdog in the worker loop."
         },
         {
-          "id": "a-dedicated-thread",
-          "label": "A dedicated thread",
+          "id": "liveness-in-pool",
+          "label": "Serve the liveness endpoint from the worker thread pool",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 19,
+              "value": 70,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 250,
+              "value": 9000,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 160,
-              "unit": "errors",
+              "label": "Hung requests",
+              "value": 3,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Dead node in pool",
-          "resultBody": "The balancer still routes to an unready instance."
+          "resultTitle": "Busy pods get restarted too",
+          "resultBody": "The deadlocked pod now fails liveness, but so does every pod whose pool is saturated at peak; the kubelet restarts busy pods, the survivors get more load, and a restart storm follows."
         },
         {
-          "id": "no-deadlock-detection",
-          "label": "No deadlock detection",
+          "id": "nightly-restart",
+          "label": "Restart every pod on a nightly schedule",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 17,
+              "value": 55,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 220,
+              "value": 30000,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 140,
-              "unit": "errors",
+              "label": "Hung requests",
+              "value": 2,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Dead node in pool",
-          "resultBody": "No deadlock detection"
+          "resultTitle": "Deadlocks wait until midnight",
+          "resultBody": "A deadlock that starts at 9 a.m. still hangs 5% of requests for 15 hours until the scheduled restart, and the root cause is never captured."
         }
       ],
       "hints": [
-        "The balancer still thinks this node is fine.",
-        "Alive is not the same as ready.",
-        "Probe the serving path."
+        "The thread answering the probe was fine; the threads doing the work were not.",
+        "'Busy' and 'stuck' look the same from a queue, but not from a completion counter.",
+        "Liveness should measure forward progress, not whether something can answer HTTP."
       ],
       "nextId": null
     },

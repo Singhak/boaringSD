@@ -466,10 +466,10 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Microservice rollout",
-      "brief": "A new microservice jumps from 500 to 15,000 req/s on one instance.",
-      "constraint": "Only one service instance exists and it hits CPU limits.",
-      "question": "What should happen next?",
+      "title": "New service pegs one core out of sixteen",
+      "brief": "The new geocoding service, a single Node.js process on a 16-core VM, jumped from 500 to 15,000 req/s. One core sits at 100% while the other 15 idle, and p95 hits 2.8 s.",
+      "constraint": "The service keeps no state between requests, and the VM budget is fixed this quarter.",
+      "question": "How do you use the capacity the VM already has?",
       "metricsBefore": [
         {
           "key": "rps",
@@ -480,8 +480,8 @@
         },
         {
           "key": "cpu",
-          "label": "CPU",
-          "value": 96,
+          "label": "Busiest core",
+          "value": 100,
           "unit": "%",
           "tone": "bad"
         },
@@ -494,9 +494,9 @@
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 90,
-          "unit": "errors",
+          "label": "Timeouts",
+          "value": 9,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -505,153 +505,172 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Map clients"
           },
           {
-            "id": "s1",
+            "id": "proc",
             "kind": "server",
-            "label": "Server 1",
+            "label": "Node process",
             "tone": "bad",
-            "cpu": 96
+            "cpu": 100,
+            "sub": "core 0 only"
+          },
+          {
+            "id": "idle",
+            "kind": "server",
+            "label": "15 idle cores",
+            "tone": "neutral",
+            "cpu": 0
           }
         ],
         "edges": [
           {
             "from": "users",
-            "to": "s1"
+            "to": "proc"
           }
         ]
       },
       "choices": [
         {
-          "id": "more-instances",
-          "label": "More instances",
+          "id": "cluster",
+          "label": "Run one worker process per core behind a shared port",
           "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "complexityScore": 1,
+            "tradeoffSummary": "Uses every core; more memory and no shared in-process cache."
+          },
           "graphAfter": {
             "nodes": [
               {
                 "id": "users",
                 "kind": "users",
-                "label": "Users"
+                "label": "Map clients"
               },
               {
-                "id": "s1",
-                "kind": "server",
-                "label": "Server 1",
+                "id": "proc",
+                "kind": "lb",
+                "label": "Cluster primary",
                 "tone": "good",
-                "cpu": 32
+                "sub": "round-robin"
               },
               {
-                "id": "s2",
+                "id": "idle",
                 "kind": "server",
-                "label": "Server 2",
+                "label": "16 workers",
                 "tone": "good",
-                "cpu": 34
-              },
-              {
-                "id": "s3",
-                "kind": "server",
-                "label": "Server 3",
-                "tone": "good",
-                "cpu": 33
+                "cpu": 22
               }
             ],
             "edges": [
               {
                 "from": "users",
-                "to": "s1"
+                "to": "proc"
               },
               {
-                "from": "users",
-                "to": "s2"
-              },
-              {
-                "from": "users",
-                "to": "s3"
+                "from": "proc",
+                "to": "idle"
               }
             ]
           },
           "metricsAfter": [
             {
               "key": "cpu",
-              "label": "CPU",
-              "value": 32,
+              "label": "Busiest core",
+              "value": 22,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 140,
+              "value": 45,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Timeouts",
               "value": 0,
-              "unit": "errors",
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Add identical instances and route work across them."
+          "resultTitle": "Sixteen workers share the load",
+          "resultBody": "Node's cluster module starts 16 workers that share port 443, and connections are handed out round-robin. Each worker handles about 940 req/s, the busiest core falls to 22%, and p95 drops to 45 ms. Cost: 16 copies of the process use about 3 GB of RAM."
         },
         {
-          "id": "backup-node",
-          "label": "One backup",
+          "id": "fast-core",
+          "label": "Move to a VM with a faster single core",
           "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
-              "label": "CPU",
-              "value": 99,
+              "label": "Busiest core",
+              "value": 100,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 3360,
+              "value": 1900,
               "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Timeouts",
+              "value": 6,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Still one hot path",
-          "resultBody": "A single backup is failover, not capacity.",
-          "retry": true
+          "resultTitle": "Faster core, still one core",
+          "resultBody": "The new CPU clocks about 30% higher, but one process still runs JavaScript on one core. It tops out near 8,000 req/s, so the queue keeps growing and p95 only falls to 1.9 s."
         },
         {
-          "id": "db-first",
-          "label": "DB-first",
+          "id": "threadpool",
+          "label": "Raise the process's libuv thread pool to 64",
           "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
-              "label": "CPU",
-              "value": 98,
+              "label": "Busiest core",
+              "value": 100,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 3080,
+              "value": 2800,
               "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Timeouts",
+              "value": 9,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Wrong layer",
-          "resultBody": "Moving logic into the database does not add app CPU.",
-          "retry": true
+          "resultTitle": "JavaScript still runs on one thread",
+          "resultBody": "The libuv pool only runs file, DNS, and crypto work. The geocoding math runs on the single JavaScript thread, so core 0 stays at 100% and nothing improves."
         }
       ],
       "hints": [
-        "One instance is the limit.",
-        "Copies of the same service share load.",
-        "Add more identical instances."
+        "The VM isn't out of CPU; one process is.",
+        "A Node.js process runs your JavaScript on a single thread.",
+        "Identical copies of a stateless process can run side by side, even on one machine."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "hs-04",
@@ -1072,36 +1091,36 @@
       "severity": "P1",
       "xp": 50,
       "title": "One crash takes the service down",
-      "brief": "Sessions live in process memory. When the process dies, everyone is logged out.",
-      "constraint": "The system is not stateless and cannot be rebuilt quickly.",
-      "question": "What is the design issue?",
+      "brief": "QuickCab runs 3 dispatch instances at 80% CPU for 9,000 req/s. When one crashed, the other two needed 120% of their capacity, queued requests, and failed health checks within a minute.",
+      "constraint": "A known memory leak crashes an instance about once a week until next month's fix.",
+      "question": "How big should the fleet be so one crash is survivable?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 4000,
+          "value": 9000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 40,
+          "value": 99,
           "unit": "%",
           "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 900,
+          "value": 4000,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 4000,
-          "unit": "errors",
+          "label": "Failed dispatches",
+          "value": 60,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -1110,72 +1129,92 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Riders"
           },
           {
-            "id": "s1",
+            "id": "lb",
+            "kind": "lb",
+            "label": "Load balancer",
+            "tone": "warn"
+          },
+          {
+            "id": "live",
             "kind": "server",
-            "label": "App + sessions",
+            "label": "Instances 1-2",
             "tone": "bad",
-            "cpu": 40
+            "cpu": 99,
+            "sub": "carrying 3 nodes' work"
+          },
+          {
+            "id": "dead",
+            "kind": "server",
+            "label": "Instance 3",
+            "tone": "bad",
+            "sub": "crashed"
           }
         ],
         "edges": [
           {
             "from": "users",
-            "to": "s1"
+            "to": "lb"
+          },
+          {
+            "from": "lb",
+            "to": "live"
+          },
+          {
+            "from": "lb",
+            "to": "dead"
           }
         ]
       },
       "choices": [
         {
-          "id": "external-state",
-          "label": "External sessions",
+          "id": "n-plus-one",
+          "label": "Run five instances so four survivors stay under 70%",
           "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 400,
+            "complexityScore": 1,
+            "tradeoffSummary": "Pay for spare capacity so a failure has somewhere to go."
+          },
           "graphAfter": {
             "nodes": [
               {
                 "id": "users",
                 "kind": "users",
-                "label": "Users"
+                "label": "Riders"
               },
               {
-                "id": "s1",
-                "kind": "server",
-                "label": "App 1",
-                "tone": "good",
-                "cpu": 35
-              },
-              {
-                "id": "s2",
-                "kind": "server",
-                "label": "App 2",
-                "tone": "good",
-                "cpu": 36
-              },
-              {
-                "id": "cache",
-                "kind": "cache",
-                "label": "Session store",
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer",
                 "tone": "good"
+              },
+              {
+                "id": "live",
+                "kind": "server",
+                "label": "Instances 1-4",
+                "tone": "good",
+                "cpu": 60
+              },
+              {
+                "id": "dead",
+                "kind": "server",
+                "label": "Instance 5",
+                "tone": "neutral",
+                "sub": "crashed, restarting"
               }
             ],
             "edges": [
               {
                 "from": "users",
-                "to": "s1"
+                "to": "lb"
               },
               {
-                "from": "users",
-                "to": "s2"
-              },
-              {
-                "from": "s1",
-                "to": "cache"
-              },
-              {
-                "from": "s2",
-                "to": "cache"
+                "from": "lb",
+                "to": "live"
               }
             ]
           },
@@ -1183,83 +1222,100 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 18,
+              "value": 60,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 45,
+              "value": 70,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Failed dispatches",
               "value": 0,
-              "unit": "errors",
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Move sessions out of process memory so instances can die and be replaced."
+          "resultTitle": "A crash is now a non-event",
+          "resultBody": "The same work spread over 5 instances is about 48% CPU each. When one crashes, the other four rise to 60%, below the 70% target, so health checks keep passing and riders see nothing. Cost: two more instances that mostly carry headroom."
         },
         {
-          "id": "more-retries",
-          "label": "More retries",
+          "id": "cold-standby",
+          "label": "Keep one standby instance that boots on failure",
           "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 43,
+              "value": 99,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 1080,
+              "value": 3500,
               "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Failed dispatches",
+              "value": 45,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Still lost state",
-          "resultBody": "Retries cannot recreate in-memory sessions after a crash.",
-          "retry": true
+          "resultTitle": "Standby boots after the collapse",
+          "resultBody": "The standby takes 3 minutes to boot and warm up. The two survivors are at 120% for that whole window, fail health checks after about a minute, and the standby comes up to a fleet already down."
         },
         {
-          "id": "more-cpu",
-          "label": "More CPU",
+          "id": "watchdog",
+          "label": "Restart crashed instances automatically with a watchdog",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 42,
+              "value": 95,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 990,
+              "value": 1800,
               "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Failed dispatches",
+              "value": 12,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Crash still wipes users",
-          "resultBody": "CPU does not make in-process session state survivable.",
-          "retry": true
+          "resultTitle": "Faster restarts, same cascade",
+          "resultBody": "The crashed process is back in about 40 s including warm-up, but the survivors are still overloaded for those 40 s. Requests queue and time out, and one survivor sometimes fails its health check too."
         }
       ],
       "hints": [
-        "State is inside the process.",
-        "A crash must not wipe users.",
-        "Externalize sessions."
+        "Each instance had 20% headroom, and a crash moves a third of the load.",
+        "Capacity has to be there before the failure, not after.",
+        "Size the fleet so that N-1 instances can carry the full load."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "hs-07",
@@ -2658,37 +2714,37 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Black Friday checkout",
-      "brief": "Checkout is 12x normal. Two app servers both sit above 95% CPU.",
-      "constraint": "The app is already stateless and sessions live in Redis.",
-      "question": "What is the next capacity move?",
+      "title": "Scaled to 12 servers, database refuses connections",
+      "brief": "For Black Friday, ShopLane's autoscaler grew checkout from 2 to 12 servers, each opening a 100-connection pool. Postgres allows 500 connections, so new servers fail with \"too many clients\" and 25% of checkouts error.",
+      "constraint": "The database sits at only 45% CPU, and checkout must stay scaled out for the peak.",
+      "question": "How do 12 servers share the database's connections?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 18000,
+          "value": 24000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 96,
+          "value": 60,
           "unit": "%",
-          "tone": "bad"
+          "tone": "warn"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 2400,
+          "value": 1500,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 70,
-          "unit": "errors",
+          "label": "Checkout errors",
+          "value": 25,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -2697,69 +2753,110 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Shoppers"
           },
           {
-            "id": "s1",
+            "id": "lb",
+            "kind": "lb",
+            "label": "Load balancer",
+            "tone": "neutral"
+          },
+          {
+            "id": "app",
             "kind": "server",
-            "label": "Server 1",
+            "label": "Checkout x12",
+            "tone": "warn",
+            "cpu": 60,
+            "sub": "100 conns each"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres",
             "tone": "bad",
-            "cpu": 96
+            "cpu": 45,
+            "sub": "500 / 500 conns"
           }
         ],
         "edges": [
           {
             "from": "users",
-            "to": "s1"
+            "to": "lb"
+          },
+          {
+            "from": "lb",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "more-checkout",
-          "label": "More instances",
+          "id": "pgbouncer",
+          "label": "Put PgBouncer in front and shrink each pool to 20",
           "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "latencyP99DeltaMs": 1,
+            "complexityScore": 2,
+            "tradeoffSummary": "Scale app servers freely; transaction pooling limits session features."
+          },
           "graphAfter": {
             "nodes": [
               {
                 "id": "users",
                 "kind": "users",
-                "label": "Users"
+                "label": "Shoppers"
               },
               {
-                "id": "s1",
-                "kind": "server",
-                "label": "Server 1",
-                "tone": "good",
-                "cpu": 32
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer",
+                "tone": "good"
               },
               {
-                "id": "s2",
+                "id": "app",
                 "kind": "server",
-                "label": "Server 2",
+                "label": "Checkout x12",
                 "tone": "good",
-                "cpu": 34
+                "cpu": 55,
+                "sub": "20 conns each"
               },
               {
-                "id": "s3",
-                "kind": "server",
-                "label": "Server 3",
+                "id": "pool",
+                "kind": "lb",
+                "label": "PgBouncer",
                 "tone": "good",
-                "cpu": 33
+                "sub": "transaction mode"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres",
+                "tone": "good",
+                "cpu": 55,
+                "sub": "150 conns"
               }
             ],
             "edges": [
               {
                 "from": "users",
-                "to": "s1"
+                "to": "lb"
               },
               {
-                "from": "users",
-                "to": "s2"
+                "from": "lb",
+                "to": "app"
               },
               {
-                "from": "users",
-                "to": "s3"
+                "from": "app",
+                "to": "pool"
+              },
+              {
+                "from": "pool",
+                "to": "db"
               }
             ]
           },
@@ -2767,7 +2864,7 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 32,
+              "value": 55,
               "unit": "%",
               "tone": "good"
             },
@@ -2780,43 +2877,53 @@
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Checkout errors",
               "value": 0,
-              "unit": "errors",
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Add more identical checkout instances and let the entry layer spread requests."
+          "resultTitle": "240 app connections share 150 database ones",
+          "resultBody": "PgBouncer in transaction mode multiplexes 12 x 20 client connections onto about 150 real ones, because a connection is only busy during a transaction. Checkout errors drop to 0 and Postgres runs at 55%. Cost: session features like SET and advisory locks need an audit."
         },
         {
-          "id": "logic-in-redis",
-          "label": "Logic in Redis",
+          "id": "max-conns",
+          "label": "Raise Postgres max_connections from 500 to 1,500",
           "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 99,
+              "value": 92,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2880,
+              "value": 2200,
               "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Checkout errors",
+              "value": 8,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Redis is not the app",
-          "resultBody": "Checkout CPU belongs on app instances, not inside Redis.",
-          "retry": true
+          "resultTitle": "Database thrashes on 1,200 backends",
+          "resultBody": "Every connection is a separate Postgres process with its own memory, and 1,200 of them mostly sit idle. Memory pressure and context switching push database CPU from 45% to 92%, so p95 rises to 2.2 s."
         },
         {
-          "id": "pin-carts",
-          "label": "Pin carts",
+          "id": "scale-down",
+          "label": "Scale checkout back down to four servers",
           "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
@@ -2828,22 +2935,29 @@
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2640,
+              "value": 3000,
               "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Checkout errors",
+              "value": 15,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Worse affinity",
-          "resultBody": "Pinning carts concentrates load again.",
-          "retry": true
+          "resultTitle": "Connections fit, servers melt",
+          "resultBody": "Four pools of 100 fit under the limit, but 24,000 req/s over 4 servers pushes each to 98% CPU. Connection errors are gone and timeouts take their place, with p95 at 3 s."
         }
       ],
       "hints": [
-        "Sessions are already external.",
-        "Two boxes are not enough.",
-        "Scale the checkout fleet."
+        "The database has CPU to spare; it's out of connection slots.",
+        "Twelve pools of 100 ask for more connections than the database allows.",
+        "Most pooled connections sit idle between transactions and could be shared."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "hs-15",

@@ -228,16 +228,17 @@
       "level": 14,
       "patternId": "idempotency",
       "canonical": false,
+      "reviewed": true,
       "severity": "P1",
       "xp": 50,
-      "title": "Webhook delivered twice",
-      "brief": "A payment provider sends the same paid event twice after a timeout.",
-      "constraint": "At-least-once delivery is documented.",
-      "question": "How should the webhook handler behave?",
+      "title": "Wallet top-ups credited twice after slow webhooks",
+      "brief": "PocketPay's payment.succeeded webhook handler takes 12 s at peak; the provider times out at 10 s and redelivers the same event. 1.1% of top-ups credit the wallet twice, about $38k a day.",
+      "constraint": "The provider guarantees at-least-once delivery and retries for 3 days.",
+      "question": "How does the handler credit each event exactly once?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
+          "label": "Webhooks",
           "value": 200,
           "unit": "req/s",
           "tone": "neutral"
@@ -245,195 +246,204 @@
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 20,
+          "value": 48,
           "unit": "%",
           "tone": "warn"
         },
         {
           "key": "p95",
-          "label": "p95 latency",
-          "value": 400,
+          "label": "p95 handler time",
+          "value": 11800,
           "unit": "ms",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 2,
-          "unit": "errors",
+          "label": "Double credits",
+          "value": 130,
+          "unit": "/hour",
           "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "user",
+            "id": "prov",
             "kind": "users",
-            "label": "Double click"
+            "label": "Payment provider",
+            "sub": "retries at 10 s"
           },
           {
             "id": "api",
             "kind": "server",
-            "label": "API",
-            "tone": "warn"
+            "label": "Webhook handler x3",
+            "tone": "warn",
+            "cpu": 48
           },
           {
-            "id": "pay",
-            "kind": "server",
-            "label": "Two charges",
-            "tone": "bad"
+            "id": "db",
+            "kind": "db",
+            "label": "Wallet ledger (Postgres)",
+            "tone": "bad",
+            "cpu": 41,
+            "sub": "credit applied per delivery"
           }
         ],
         "edges": [
           {
-            "from": "user",
+            "from": "prov",
             "to": "api"
           },
           {
             "from": "api",
-            "to": "pay"
+            "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "idempotency-key",
-          "label": "Idempotency key",
+          "id": "event-id-in-txn",
+          "label": "Insert the event ID under a unique index in the credit transaction",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "user",
-                "kind": "users",
-                "label": "Retry"
-              },
-              {
-                "id": "api",
-                "kind": "server",
-                "label": "API",
-                "tone": "good"
-              },
-              {
-                "id": "key",
-                "kind": "cache",
-                "label": "Idempotency key",
-                "tone": "good"
-              },
-              {
-                "id": "pay",
-                "kind": "server",
-                "label": "One charge",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "user",
-                "to": "api"
-              },
-              {
-                "from": "api",
-                "to": "key"
-              },
-              {
-                "from": "key",
-                "to": "pay"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 1,
+            "complexityScore": 2,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "Dedupe marker and credit commit or roll back together; one extra indexed row per event."
           },
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 47,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
-              "label": "p95 latency",
-              "value": 40,
+              "label": "p95 handler time",
+              "value": 11700,
               "unit": "ms",
-              "tone": "good"
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Double credits",
               "value": 0,
-              "unit": "errors",
+              "unit": "/hour",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Dedupe on event id and treat a second delivery as a no-op success."
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "prov",
+                "kind": "users",
+                "label": "Payment provider",
+                "sub": "retries at 10 s",
+                "tone": "good"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Webhook handler x3",
+                "tone": "good",
+                "cpu": 48
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Wallet ledger (Postgres)",
+                "tone": "good",
+                "cpu": 41,
+                "sub": "processed_events PK + credit, one txn"
+              }
+            ],
+            "edges": [
+              {
+                "from": "prov",
+                "to": "api"
+              },
+              {
+                "from": "api",
+                "to": "db"
+              }
+            ]
+          },
+          "resultTitle": "Second delivery is a no-op 200",
+          "resultBody": "The redelivery hits a unique violation on processed_events.event_id, the transaction rolls back and the handler returns 200 so the provider stops. Because the marker and the credit commit atomically, a crash mid-handler leaves neither, so the retry still credits once. Cost: one small row per event, pruned after the 3-day retry window."
         },
         {
-          "id": "credit-wallet-twice",
-          "label": "Credit wallet twice",
+          "id": "redis-setnx",
+          "label": "SETNX the event ID in Redis with a 10-minute TTL first",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 24,
+              "value": 47,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
-              "label": "p95 latency",
-              "value": 500,
+              "label": "p95 handler time",
+              "value": 11800,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 42,
-              "unit": "errors",
+              "label": "Double credits",
+              "value": 9,
+              "unit": "/hour",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Side effect doubled",
-          "resultBody": "The retry ran the money path again."
+          "resultTitle": "Crashed credits never retry",
+          "resultBody": "Fast duplicates are blocked, but when a handler dies after SETNX and before the ledger commit, every redelivery sees the key and skips, so 0.2% of top-ups are never credited. Redeliveries after 10 minutes slip past the TTL and still double-credit."
         },
         {
-          "id": "return-500-so",
-          "label": "Return 500 so",
+          "id": "ack-then-process",
+          "label": "Return 200 immediately and credit the wallet in a background job",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 22,
+              "value": 44,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
-              "label": "p95 latency",
-              "value": 440,
+              "label": "p95 handler time",
+              "value": 90,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 22,
-              "unit": "errors",
+              "label": "Double credits",
+              "value": 60,
+              "unit": "/hour",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Side effect doubled",
-          "resultBody": "Return 500 so the provider retries again"
+          "resultTitle": "Fast acks, same duplicates",
+          "resultBody": "Timeouts drop, but the provider still redelivers after network blips and its own failovers, and the background job has no dedupe, so about 60 double credits an hour remain. Worse, jobs lost in a worker crash were already acknowledged and will never be resent."
         }
       ],
       "hints": [
-        "Retries will happen.",
-        "Side effects must not double.",
-        "Key the write once."
+        "The provider will keep resending until it sees a 2xx, so duplicates are guaranteed.",
+        "A dedupe marker stored somewhere else can disagree with the ledger after a crash.",
+        "Make recording 'I processed this event' part of the same commit as the credit."
       ],
       "nextId": null
     },
@@ -443,212 +453,220 @@
       "level": 14,
       "patternId": "idempotency",
       "canonical": false,
+      "reviewed": true,
       "severity": "P1",
       "xp": 50,
-      "title": "PUT vs POST for updates",
-      "brief": "Clients retry a POST that increments a counter and the counter drifts.",
-      "constraint": "Retries are inevitable on mobile.",
-      "question": "Which HTTP model is safer?",
+      "title": "Thermostats creep 3 degrees warmer on flaky Wi-Fi",
+      "brief": "HomeHeat's app sends POST /adjust {delta: +1}. On weak Wi-Fi, 7% of responses are lost and the app retries up to 3 times, so one tap raises the setpoint by 2-4 degrees.",
+      "constraint": "The thermostat has 64 KB of RAM: there is no room for a request-key store on the device.",
+      "question": "How should the command be shaped so a retry is harmless?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 200,
+          "label": "Commands",
+          "value": 1800,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 20,
+          "value": 22,
           "unit": "%",
-          "tone": "warn"
+          "tone": "neutral"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 400,
+          "value": 2400,
           "unit": "ms",
           "tone": "warn"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 2,
-          "unit": "errors",
+          "label": "Overshoot complaints",
+          "value": 340,
+          "unit": "/day",
           "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "user",
+            "id": "app",
             "kind": "users",
-            "label": "Double click"
+            "label": "Mobile app",
+            "tone": "warn",
+            "sub": "retries x3"
           },
           {
             "id": "api",
             "kind": "server",
-            "label": "API",
-            "tone": "warn"
+            "label": "Device API",
+            "cpu": 22
           },
           {
-            "id": "pay",
+            "id": "dev",
             "kind": "server",
-            "label": "Two charges",
-            "tone": "bad"
+            "label": "Thermostat",
+            "tone": "bad",
+            "sub": "applies each delta"
           }
         ],
         "edges": [
           {
-            "from": "user",
+            "from": "app",
             "to": "api"
           },
           {
             "from": "api",
-            "to": "pay"
+            "to": "dev"
           }
         ]
       },
       "choices": [
         {
-          "id": "idempotency-key",
-          "label": "Idempotency key",
+          "id": "absolute-setpoint",
+          "label": "Send PUT /setpoint with the absolute target, like 21 C",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "user",
-                "kind": "users",
-                "label": "Retry"
-              },
-              {
-                "id": "api",
-                "kind": "server",
-                "label": "API",
-                "tone": "good"
-              },
-              {
-                "id": "key",
-                "kind": "cache",
-                "label": "Idempotency key",
-                "tone": "good"
-              },
-              {
-                "id": "pay",
-                "kind": "server",
-                "label": "One charge",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "user",
-                "to": "api"
-              },
-              {
-                "from": "api",
-                "to": "key"
-              },
-              {
-                "from": "key",
-                "to": "pay"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 1,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Naturally idempotent; concurrent taps from two phones become last-writer-wins."
           },
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 22,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 40,
+              "value": 2400,
               "unit": "ms",
-              "tone": "good"
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
+              "label": "Overshoot complaints",
+              "value": 6,
+              "unit": "/day",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Make the operation idempotent (PUT/UPSERT or key-protected POST), not a bare increment."
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "app",
+                "kind": "users",
+                "label": "Mobile app",
+                "tone": "good",
+                "sub": "retries x3"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Device API",
+                "cpu": 22,
+                "tone": "good"
+              },
+              {
+                "id": "dev",
+                "kind": "server",
+                "label": "Thermostat",
+                "tone": "good",
+                "sub": "set to 21, again and again"
+              }
+            ],
+            "edges": [
+              {
+                "from": "app",
+                "to": "api"
+              },
+              {
+                "from": "api",
+                "to": "dev"
+              }
+            ]
+          },
+          "resultTitle": "Retries set 21 again, not 22",
+          "resultBody": "Setting an absolute value is naturally idempotent: applying 'setpoint = 21' three times leaves 21, so no key store is needed on the device. The app computes the target from the last reported state. Cost: two family members tapping at once is now last-writer-wins, which is acceptable for a thermostat."
         },
         {
-          "id": "post-increment-no",
-          "label": "POST increment no",
+          "id": "no-retries",
+          "label": "Disable automatic retries on adjust commands in the app",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 24,
+              "value": 21,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 500,
+              "value": 2400,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 42,
-              "unit": "errors",
+              "label": "Overshoot complaints",
+              "value": 210,
+              "unit": "/day",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Side effect doubled",
-          "resultBody": "The retry ran the money path again."
+          "resultTitle": "Taps now vanish instead",
+          "resultBody": "Overshoot stops, but 7% of taps whose request was lost now do nothing, users tap again by hand, and those manual repeats still stack deltas, so complaints only fall by a third."
         },
         {
-          "id": "get-mutates-state",
-          "label": "GET mutates state",
+          "id": "device-debounce",
+          "label": "Debounce identical deltas on the device for 2 seconds",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 22,
+              "value": 23,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 440,
+              "value": 2400,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 22,
-              "unit": "errors",
+              "label": "Overshoot complaints",
+              "value": 300,
+              "unit": "/day",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Side effect doubled",
-          "resultBody": "GET that mutates state"
+          "resultTitle": "Retries arrive after the window",
+          "resultBody": "App retries fire 3-8 s after the original, well outside the 2 s window, so most still apply. Meanwhile a user deliberately tapping +1 twice gets only one degree."
         }
       ],
       "hints": [
-        "Retries will happen.",
-        "Side effects must not double.",
-        "Key the write once."
+        "'Add one' means something different each time it runs.",
+        "Some operations give the same result no matter how many times you repeat them.",
+        "Express the command as the final state you want, not the change."
       ],
       "nextId": null
     },
@@ -1376,149 +1394,190 @@
       "level": 14,
       "patternId": "idempotency",
       "canonical": false,
+      "reviewed": true,
       "severity": "P1",
       "xp": 50,
-      "title": "Client-generated IDs",
-      "brief": "Mobile creates order IDs offline and replays them after reconnect.",
-      "constraint": "The same ID may arrive hours later.",
-      "question": "What uniqueness model fits?",
+      "title": "Offline sync creates duplicate inspection reports",
+      "brief": "SiteCheck inspectors work offline and sync when signal returns. The server assigns report IDs on POST; when the 201 is lost, the app resends and 4.5% of 60k daily reports appear twice.",
+      "constraint": "Devices can be offline for days, so the server cannot coordinate IDs up front.",
+      "question": "How does a resent report map back to the one already stored?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 200,
+          "label": "Sync writes",
+          "value": 900,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 20,
+          "value": 31,
           "unit": "%",
-          "tone": "warn"
+          "tone": "neutral"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 400,
+          "value": 1900,
           "unit": "ms",
           "tone": "warn"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 2,
-          "unit": "errors",
+          "label": "Duplicate reports",
+          "value": 2700,
+          "unit": "/day",
           "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "user",
+            "id": "app",
             "kind": "users",
-            "label": "Double click"
+            "label": "Offline app",
+            "tone": "warn",
+            "sub": "resends on lost 201"
           },
           {
             "id": "api",
             "kind": "server",
-            "label": "API",
-            "tone": "warn"
+            "label": "Sync API",
+            "cpu": 31
           },
           {
-            "id": "pay",
-            "kind": "server",
-            "label": "Two charges",
-            "tone": "bad"
+            "id": "db",
+            "kind": "db",
+            "label": "Reports DB",
+            "tone": "bad",
+            "cpu": 28,
+            "sub": "SERIAL id per insert"
           }
         ],
         "edges": [
           {
-            "from": "user",
+            "from": "app",
             "to": "api"
           },
           {
             "from": "api",
-            "to": "pay"
+            "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "idempotency-key",
-          "label": "Idempotency key",
+          "id": "client-uuid",
+          "label": "Client mints a UUIDv7 per report; conflicts return the stored row",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "user",
-                "kind": "users",
-                "label": "Retry"
-              },
-              {
-                "id": "api",
-                "kind": "server",
-                "label": "API",
-                "tone": "good"
-              },
-              {
-                "id": "key",
-                "kind": "cache",
-                "label": "Idempotency key",
-                "tone": "good"
-              },
-              {
-                "id": "pay",
-                "kind": "server",
-                "label": "One charge",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "user",
-                "to": "api"
-              },
-              {
-                "from": "api",
-                "to": "key"
-              },
-              {
-                "from": "key",
-                "to": "pay"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 1,
+            "complexityScore": 2,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "16-byte keys instead of 8; time-ordered v7 keeps B-tree inserts sequential."
           },
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 32,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 40,
+              "value": 1850,
               "unit": "ms",
-              "tone": "good"
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Duplicate reports",
               "value": 0,
-              "unit": "errors",
+              "unit": "/day",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Treat client order IDs as idempotency keys with a unique constraint on persist."
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "app",
+                "kind": "users",
+                "label": "Offline app",
+                "tone": "good",
+                "sub": "resends on lost 201"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Sync API",
+                "cpu": 31,
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Reports DB",
+                "tone": "good",
+                "cpu": 28,
+                "sub": "PK = client UUID"
+              }
+            ],
+            "edges": [
+              {
+                "from": "app",
+                "to": "api"
+              },
+              {
+                "from": "api",
+                "to": "db"
+              }
+            ]
+          },
+          "resultTitle": "The report has one ID from birth",
+          "resultBody": "The ID is created on the device before the first send, so every resend carries the same primary key; the conflict is ignored and the API returns the stored row. UUIDv7 is time-ordered, so inserts stay append-like in the B-tree. Cost: 16-byte keys, and the server must still validate ownership."
         },
         {
-          "id": "server-always-assigns",
-          "label": "Server always assigns",
+          "id": "content-hash",
+          "label": "Dedupe on a hash of site, inspector and report text",
           "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 36,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1950,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Duplicate reports",
+              "value": 900,
+              "unit": "/day",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Real reports merged away",
+          "resultBody": "Inspectors file many legitimately identical 'No defects found' reports for the same site on different days; 1.5% of genuine reports are now silently dropped as duplicates, and any edit between resends defeats the hash."
+        },
+        {
+          "id": "serial-sync",
+          "label": "Send one report at a time and wait for each ID",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
@@ -1526,62 +1585,31 @@
               "label": "CPU",
               "value": 24,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 500,
+              "value": 1900,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 42,
-              "unit": "errors",
+              "label": "Duplicate reports",
+              "value": 2600,
+              "unit": "/day",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Side effect doubled",
-          "resultBody": "The retry ran the money path again."
-        },
-        {
-          "id": "no-unique-index",
-          "label": "No unique index",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 22,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 440,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 22,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Side effect doubled",
-          "resultBody": "No unique index on client order ID"
+          "resultTitle": "Slower sync, same duplicates",
+          "resultBody": "A backlog of 400 reports now takes 12 minutes to drain, and a lost 201 still leaves the app not knowing whether the insert happened, so it still resends and duplicates barely move."
         }
       ],
       "hints": [
-        "Retries will happen.",
-        "Side effects must not double.",
-        "Key the write once."
+        "The duplicate happens because the client never learns the server's ID.",
+        "What if the ID existed before the request was ever sent?",
+        "Let the client own the primary key so the server can recognise a repeat."
       ],
       "nextId": null
     },
@@ -1591,212 +1619,221 @@
       "level": 14,
       "patternId": "idempotency",
       "canonical": false,
-      "severity": "P1",
+      "reviewed": true,
+      "severity": "P0",
       "xp": 50,
-      "title": "Partial failure after side effect",
-      "brief": "The card is charged, then the DB write fails, then a retry charges again.",
-      "constraint": "The side effect happened outside your database.",
-      "question": "What must be stored first?",
+      "title": "Payout retried after a DB failover pays sellers twice",
+      "brief": "CraftMart's payout job calls the bank transfer API, then records the payout in Postgres. A 20 s primary failover made 1,400 commits fail after the transfers went out; the retry sent $2.1M twice.",
+      "constraint": "A bank transfer cannot be rolled back once accepted.",
+      "question": "How does the retry avoid sending money the bank already sent?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 200,
+          "label": "Payouts",
+          "value": 60,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 20,
+          "value": 38,
           "unit": "%",
-          "tone": "warn"
+          "tone": "neutral"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 400,
+          "value": 1400,
           "unit": "ms",
           "tone": "warn"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 2,
-          "unit": "errors",
+          "label": "Duplicate transfers",
+          "value": 1400,
+          "unit": "transfers",
           "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "user",
-            "kind": "users",
-            "label": "Double click"
+            "id": "job",
+            "kind": "worker",
+            "label": "Payout job",
+            "tone": "warn",
+            "cpu": 38
           },
           {
-            "id": "api",
+            "id": "bank",
             "kind": "server",
-            "label": "API",
-            "tone": "warn"
+            "label": "Bank transfer API",
+            "tone": "bad",
+            "sub": "no key sent"
           },
           {
-            "id": "pay",
-            "kind": "server",
-            "label": "Two charges",
-            "tone": "bad"
+            "id": "db",
+            "kind": "db",
+            "label": "Payouts DB",
+            "tone": "bad",
+            "sub": "failover 20 s"
           }
         ],
         "edges": [
           {
-            "from": "user",
-            "to": "api"
+            "from": "job",
+            "to": "bank"
           },
           {
-            "from": "api",
-            "to": "pay"
+            "from": "job",
+            "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "idempotency-key",
-          "label": "Idempotency key",
+          "id": "bank-idem-key",
+          "label": "Record payout intent first; send payout_id as the bank's idempotency key",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "user",
-                "kind": "users",
-                "label": "Retry"
-              },
-              {
-                "id": "api",
-                "kind": "server",
-                "label": "API",
-                "tone": "good"
-              },
-              {
-                "id": "key",
-                "kind": "cache",
-                "label": "Idempotency key",
-                "tone": "good"
-              },
-              {
-                "id": "pay",
-                "kind": "server",
-                "label": "One charge",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "user",
-                "to": "api"
-              },
-              {
-                "from": "api",
-                "to": "key"
-              },
-              {
-                "from": "key",
-                "to": "pay"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 4,
+            "complexityScore": 3,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "One extra write before the call; relies on the bank honouring keys for its documented window."
           },
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 39,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 40,
+              "value": 1450,
               "unit": "ms",
-              "tone": "good"
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Duplicate transfers",
               "value": 0,
-              "unit": "errors",
+              "unit": "transfers",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Persist the idempotency key and intended charge before calling the network, then complete or reconcile."
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "job",
+                "kind": "worker",
+                "label": "Payout job",
+                "tone": "good",
+                "cpu": 38
+              },
+              {
+                "id": "bank",
+                "kind": "server",
+                "label": "Bank transfer API",
+                "tone": "good",
+                "sub": "dedupes on payout_id"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Payouts DB",
+                "tone": "good",
+                "sub": "intent row before call"
+              }
+            ],
+            "edges": [
+              {
+                "from": "job",
+                "to": "bank"
+              },
+              {
+                "from": "job",
+                "to": "db"
+              }
+            ]
+          },
+          "resultTitle": "The bank returns the first transfer",
+          "resultBody": "The payout row (status=pending) is committed before the call, and its ID travels as the Idempotency-Key header. A retry after the failover sends the same key, and the bank replays the original transfer instead of creating a new one. Cost: one extra write per payout, and the bank's key window must be longer than your retry window."
         },
         {
-          "id": "call-network-first",
-          "label": "Call network first",
+          "id": "wrap-in-txn",
+          "label": "Wrap the bank call and the DB write in one transaction",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 24,
+              "value": 44,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 500,
+              "value": 1500,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Duplicate transfers",
+              "value": 1400,
+              "unit": "transfers",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Rollback can't reach the bank",
+          "resultBody": "A database transaction only rolls back rows. When the commit fails after the HTTP call succeeded, the transfer is already gone, and the retry sends it again, while holding row locks for the full 1.4 s bank call."
+        },
+        {
+          "id": "query-bank",
+          "label": "Before retrying, search the bank's transfer list for a match",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
               "value": 42,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Side effect doubled",
-          "resultBody": "The retry ran the money path again."
-        },
-        {
-          "id": "retry-charges-checking",
-          "label": "Retry charges checking",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 22,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 440,
+              "value": 3200,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 22,
-              "unit": "errors",
+              "label": "Duplicate transfers",
+              "value": 380,
+              "unit": "transfers",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Side effect doubled",
-          "resultBody": "Retry charges without checking provider references"
+          "resultTitle": "The transfer list lags a minute",
+          "resultBody": "The bank's listing endpoint is eventually consistent and trails by 30-90 s, so retries shortly after the failover still find nothing and pay again; matching on amount and account also confuses sellers who get two equal payouts."
         }
       ],
       "hints": [
-        "Retries will happen.",
-        "Side effects must not double.",
-        "Key the write once."
+        "The side effect lives in a system your database cannot roll back.",
+        "The bank can only recognise a repeat if you tell it which payout this is.",
+        "Pass a stable identifier for the payout downstream on every attempt."
       ],
       "nextId": null
     },
@@ -2038,212 +2075,220 @@
       "level": 14,
       "patternId": "idempotency",
       "canonical": false,
-      "severity": "P1",
+      "reviewed": true,
+      "severity": "P2",
       "xp": 50,
-      "title": "DELETE is retried",
-      "brief": "A client retries DELETE /item/9 and the second call returns 404, which the app treats as failure.",
-      "constraint": "The item is already gone.",
-      "question": "What is the idempotent DELETE contract?",
+      "title": "Cancel button says 'failed' for already-cancelled plans",
+      "brief": "StreamBox's DELETE /subscriptions/:id succeeds, but on 3% of mobile calls the 204 is lost. The retry gets 404, the app shows 'Cancellation failed', and support gets 900 tickets a day.",
+      "constraint": "The client must still see a real error when the ID is wrong or belongs to someone else.",
+      "question": "What should a repeated DELETE return?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 404,
+          "value": 4200,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 20,
+          "value": 27,
           "unit": "%",
-          "tone": "warn"
+          "tone": "neutral"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 400,
+          "value": 310,
           "unit": "ms",
-          "tone": "warn"
+          "tone": "neutral"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 2,
-          "unit": "errors",
+          "label": "False failures",
+          "value": 900,
+          "unit": "/day",
           "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "user",
+            "id": "app",
             "kind": "users",
-            "label": "Double click"
+            "label": "Mobile app",
+            "tone": "warn",
+            "sub": "retries DELETE"
           },
           {
             "id": "api",
             "kind": "server",
-            "label": "API",
-            "tone": "warn"
+            "label": "Subscriptions API",
+            "tone": "warn",
+            "cpu": 27
           },
           {
-            "id": "pay",
-            "kind": "server",
-            "label": "Two charges",
-            "tone": "bad"
+            "id": "db",
+            "kind": "db",
+            "label": "Subscriptions DB",
+            "sub": "row hard-deleted"
           }
         ],
         "edges": [
           {
-            "from": "user",
+            "from": "app",
             "to": "api"
           },
           {
             "from": "api",
-            "to": "pay"
+            "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "idempotency-key",
-          "label": "Idempotency key",
+          "id": "tombstone",
+          "label": "Keep a cancelled tombstone and return 204 on repeat DELETEs",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "user",
-                "kind": "users",
-                "label": "Retry"
-              },
-              {
-                "id": "api",
-                "kind": "server",
-                "label": "API",
-                "tone": "good"
-              },
-              {
-                "id": "key",
-                "kind": "cache",
-                "label": "Idempotency key",
-                "tone": "good"
-              },
-              {
-                "id": "pay",
-                "kind": "server",
-                "label": "One charge",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "user",
-                "to": "api"
-              },
-              {
-                "from": "api",
-                "to": "key"
-              },
-              {
-                "from": "key",
-                "to": "pay"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 20,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 2,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "Soft-delete rows linger; unknown or foreign IDs still return 404/403."
           },
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 27,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 40,
+              "value": 300,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
+              "label": "False failures",
+              "value": 4,
+              "unit": "/day",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Treat a second DELETE as success (200/204) because the desired state is already absent."
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "app",
+                "kind": "users",
+                "label": "Mobile app",
+                "tone": "good",
+                "sub": "retries DELETE"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Subscriptions API",
+                "tone": "good",
+                "cpu": 27
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Subscriptions DB",
+                "sub": "status=cancelled tombstone",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "app",
+                "to": "api"
+              },
+              {
+                "from": "api",
+                "to": "db"
+              }
+            ]
+          },
+          "resultTitle": "Same answer on every attempt",
+          "resultBody": "The row becomes status=cancelled instead of vanishing, so a retry from the owner finds it and gets the same 204 as the first call, while unknown IDs still get 404 and other users' IDs get 403. Cost: tombstones are kept for 90 days and every query must filter on status."
         },
         {
-          "id": "404-hard-error",
-          "label": "404 hard error",
+          "id": "client-404-ok",
+          "label": "Have the app treat any 404 on DELETE as success",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 24,
+              "value": 27,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 500,
+              "value": 310,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "neutral"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 42,
-              "unit": "errors",
+              "label": "False failures",
+              "value": 120,
+              "unit": "/day",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Side effect doubled",
-          "resultBody": "The retry ran the money path again."
+          "resultTitle": "Stale IDs report fake success",
+          "resultBody": "Tickets drop, but when a cached screen sends a stale subscription ID after a plan change, the 404 now reads as 'Cancelled', and those users keep being billed; 120 chargebacks a day replace the tickets."
         },
         {
-          "id": "recreate-item-so",
-          "label": "Recreate item so",
+          "id": "retry-until-204",
+          "label": "Make the app retry DELETE until it receives a 204",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 22,
+              "value": 58,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 440,
+              "value": 520,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 22,
-              "unit": "errors",
+              "label": "False failures",
+              "value": 900,
+              "unit": "/day",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Side effect doubled",
-          "resultBody": "Recreate the item so DELETE can run again"
+          "resultTitle": "Retries loop on a missing row",
+          "resultBody": "The row is already gone, so every retry gets 404 forever; affected phones hammer the API until backoff caps out, doubling CPU, and the app still eventually shows 'Cancellation failed'."
         }
       ],
       "hints": [
-        "Retries will happen.",
-        "Side effects must not double.",
-        "Key the write once."
+        "The first DELETE worked; only the answer was lost.",
+        "Idempotency covers the response a caller sees, not just the final state.",
+        "The server needs to remember that this owner already cancelled this plan."
       ],
       "nextId": null
     },
@@ -2253,212 +2298,241 @@
       "level": 14,
       "patternId": "idempotency",
       "canonical": false,
+      "reviewed": true,
       "severity": "P1",
       "xp": 50,
-      "title": "GraphQL mutation without a key",
-      "brief": "placeOrder is retried by Apollo after a timeout and two orders appear.",
-      "constraint": "Mutations are not automatically idempotent.",
-      "question": "What belongs on the mutation?",
+      "title": "GraphQL sendMoney mutation sends twice on retry",
+      "brief": "Splitly's app batches GraphQL mutations into one HTTP request. Apollo's retry link resends the batch on network errors, so 0.4% of sendMoney calls run twice: 210 duplicate transfers a day.",
+      "constraint": "Users legitimately send the same $20 to the same friend twice in a row.",
+      "question": "Where does the dedupe key belong in a batched GraphQL request?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 200,
+          "label": "GraphQL req",
+          "value": 3500,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 20,
+          "value": 44,
           "unit": "%",
-          "tone": "warn"
+          "tone": "neutral"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 400,
+          "value": 850,
           "unit": "ms",
           "tone": "warn"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 2,
-          "unit": "errors",
+          "label": "Duplicate transfers",
+          "value": 210,
+          "unit": "/day",
           "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "user",
+            "id": "app",
             "kind": "users",
-            "label": "Double click"
+            "label": "Mobile app",
+            "tone": "warn",
+            "sub": "retry link on"
           },
           {
-            "id": "api",
+            "id": "gw",
             "kind": "server",
-            "label": "API",
-            "tone": "warn"
+            "label": "GraphQL gateway",
+            "cpu": 44,
+            "sub": "batched ops"
           },
           {
             "id": "pay",
             "kind": "server",
-            "label": "Two charges",
-            "tone": "bad"
+            "label": "Transfers resolver",
+            "tone": "bad",
+            "sub": "no key"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Ledger DB"
           }
         ],
         "edges": [
           {
-            "from": "user",
-            "to": "api"
+            "from": "app",
+            "to": "gw"
           },
           {
-            "from": "api",
+            "from": "gw",
             "to": "pay"
+          },
+          {
+            "from": "pay",
+            "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "idempotency-key",
-          "label": "Idempotency key",
+          "id": "per-mutation-key",
+          "label": "Add an idempotencyKey argument to each sendMoney mutation input",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "user",
-                "kind": "users",
-                "label": "Retry"
-              },
-              {
-                "id": "api",
-                "kind": "server",
-                "label": "API",
-                "tone": "good"
-              },
-              {
-                "id": "key",
-                "kind": "cache",
-                "label": "Idempotency key",
-                "tone": "good"
-              },
-              {
-                "id": "pay",
-                "kind": "server",
-                "label": "One charge",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "user",
-                "to": "api"
-              },
-              {
-                "from": "api",
-                "to": "key"
-              },
-              {
-                "from": "key",
-                "to": "pay"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 2,
+            "complexityScore": 2,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "Schema change and client update; keys scoped per user in the resolver."
           },
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 45,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 40,
+              "value": 860,
               "unit": "ms",
-              "tone": "good"
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Duplicate transfers",
               "value": 0,
-              "unit": "errors",
+              "unit": "/day",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "A client mutation id stored uniquely so retries return the first order."
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "app",
+                "kind": "users",
+                "label": "Mobile app",
+                "tone": "good",
+                "sub": "retry link on"
+              },
+              {
+                "id": "gw",
+                "kind": "server",
+                "label": "GraphQL gateway",
+                "cpu": 44,
+                "sub": "batched ops",
+                "tone": "good"
+              },
+              {
+                "id": "pay",
+                "kind": "server",
+                "label": "Transfers resolver",
+                "tone": "good",
+                "sub": "unique (user, key)"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Ledger DB",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "app",
+                "to": "gw"
+              },
+              {
+                "from": "gw",
+                "to": "pay"
+              },
+              {
+                "from": "pay",
+                "to": "db"
+              }
+            ]
+          },
+          "resultTitle": "Each mutation carries its own key",
+          "resultBody": "The key is generated once per tap and stored with (user_id, key) in the ledger transaction, so a resent batch replays the stored result while two deliberate $20 sends carry two keys. HTTP-level headers can't do this because one request holds many mutations. Cost: a schema change and a client release."
         },
         {
-          "id": "retries-no-mutation",
-          "label": "Retries no mutation",
+          "id": "body-hash",
+          "label": "Dedupe at the gateway on a hash of the request body",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 24,
+              "value": 49,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 500,
+              "value": 900,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 42,
-              "unit": "errors",
+              "label": "Duplicate transfers",
+              "value": 140,
+              "unit": "/day",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Side effect doubled",
-          "resultBody": "The retry ran the money path again."
+          "resultTitle": "Blocks real repeats, misses retries",
+          "resultBody": "Deliberate second $20 transfers now get rejected as duplicates, while a retried batch that picked up an extra queued mutation has a different hash and runs sendMoney again anyway."
         },
         {
-          "id": "idempotency-queries",
-          "label": "Idempotency queries",
+          "id": "no-retry-mutations",
+          "label": "Turn off the retry link for all mutation operations",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 22,
+              "value": 43,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 440,
+              "value": 850,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 22,
-              "unit": "errors",
+              "label": "Duplicate transfers",
+              "value": 120,
+              "unit": "/day",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Side effect doubled",
-          "resultBody": "Idempotency only on queries"
+          "resultTitle": "Users retry by hand instead",
+          "resultBody": "Automatic duplicates stop, but users who see a spinner fail tap Send again, and without a key that manual resend still creates a second transfer, so duplicates only fall by 40%."
         }
       ],
       "hints": [
-        "Retries will happen.",
-        "Side effects must not double.",
-        "Key the write once."
+        "One HTTP request here can contain several unrelated mutations.",
+        "Two identical-looking transfers are not necessarily duplicates.",
+        "The key has to identify one user intent, not one network request."
       ],
       "nextId": null
     },
@@ -2468,212 +2542,222 @@
       "level": 14,
       "patternId": "idempotency",
       "canonical": false,
+      "reviewed": true,
       "severity": "P1",
       "xp": 50,
-      "title": "Exactly-once as a slogan",
-      "brief": "A team claims Kafka exactly-once, then a downstream HTTP call still fires twice.",
-      "constraint": "External side effects are outside the broker’s EOS.",
-      "question": "What still has to be designed?",
+      "title": "Advertisers overbilled after consumer rebalances",
+      "brief": "AdLedger's consumer reads 90k click events/s and runs UPDATE spend = spend + cost in Postgres, committing offsets every 5 s. Each rebalance replays up to 5 s of clicks: advertisers are overbilled 0.8%.",
+      "constraint": "The team already enabled 'exactly-once' settings on the producers.",
+      "question": "How does the Postgres sink stop double-applying replayed clicks?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 200,
-          "unit": "req/s",
+          "label": "Click events",
+          "value": 90000,
+          "unit": "msg/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 20,
+          "value": 67,
           "unit": "%",
           "tone": "warn"
         },
         {
           "key": "p95",
-          "label": "p95 latency",
-          "value": 400,
+          "label": "p95 apply lag",
+          "value": 1200,
           "unit": "ms",
-          "tone": "warn"
+          "tone": "neutral"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 2,
-          "unit": "errors",
+          "label": "Overbilled",
+          "value": 0.8,
+          "unit": "%",
           "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "user",
-            "kind": "users",
-            "label": "Double click"
+            "id": "kafka",
+            "kind": "queue",
+            "label": "clicks topic (48 partitions)"
           },
           {
-            "id": "api",
-            "kind": "server",
-            "label": "API",
-            "tone": "warn"
+            "id": "cons",
+            "kind": "worker",
+            "label": "Spend consumers x12",
+            "tone": "warn",
+            "cpu": 67,
+            "sub": "rebalance replays 5 s"
           },
           {
-            "id": "pay",
-            "kind": "server",
-            "label": "Two charges",
-            "tone": "bad"
+            "id": "db",
+            "kind": "db",
+            "label": "Spend DB (Postgres)",
+            "tone": "bad",
+            "cpu": 58,
+            "sub": "spend = spend + cost"
           }
         ],
         "edges": [
           {
-            "from": "user",
-            "to": "api"
+            "from": "kafka",
+            "to": "cons"
           },
           {
-            "from": "api",
-            "to": "pay"
+            "from": "cons",
+            "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "idempotency-key",
-          "label": "Idempotency key",
+          "id": "offsets-in-db",
+          "label": "Store each partition's offset in the same Postgres transaction",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "user",
-                "kind": "users",
-                "label": "Retry"
-              },
-              {
-                "id": "api",
-                "kind": "server",
-                "label": "API",
-                "tone": "good"
-              },
-              {
-                "id": "key",
-                "kind": "cache",
-                "label": "Idempotency key",
-                "tone": "good"
-              },
-              {
-                "id": "pay",
-                "kind": "server",
-                "label": "One charge",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "user",
-                "to": "api"
-              },
-              {
-                "from": "api",
-                "to": "key"
-              },
-              {
-                "from": "key",
-                "to": "pay"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 3,
+            "complexityScore": 3,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "Consumer seeks from DB offsets on assignment; Kafka's own committed offsets become advisory."
           },
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 68,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
-              "label": "p95 latency",
-              "value": 40,
+              "label": "p95 apply lag",
+              "value": 1250,
               "unit": "ms",
-              "tone": "good"
+              "tone": "neutral"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Overbilled",
               "value": 0,
-              "unit": "errors",
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Idempotent handlers at every side-effect boundary, not only broker EOS."
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "kafka",
+                "kind": "queue",
+                "label": "clicks topic (48 partitions)",
+                "tone": "good"
+              },
+              {
+                "id": "cons",
+                "kind": "worker",
+                "label": "Spend consumers x12",
+                "tone": "good",
+                "cpu": 67,
+                "sub": "rebalance replays 5 s"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Spend DB (Postgres)",
+                "tone": "good",
+                "cpu": 58,
+                "sub": "spend + offset, one txn"
+              }
+            ],
+            "edges": [
+              {
+                "from": "kafka",
+                "to": "cons"
+              },
+              {
+                "from": "cons",
+                "to": "db"
+              }
+            ]
+          },
+          "resultTitle": "Replayed offsets are skipped",
+          "resultBody": "Each batch updates spend and writes consumer_offsets(partition, offset) in one transaction. After a rebalance the new owner seeks to the stored offset, and any message at or below it is ignored, so each click is applied once. Cost: offset management moves into your code."
         },
         {
-          "id": "assume-kafka-eos",
-          "label": "Assume Kafka EOS",
+          "id": "idempotent-producer",
+          "label": "Set enable.idempotence=true on every click producer",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 24,
+              "value": 67,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
-              "label": "p95 latency",
-              "value": 500,
+              "label": "p95 apply lag",
+              "value": 1200,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "neutral"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 42,
-              "unit": "errors",
+              "label": "Overbilled",
+              "value": 0.8,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Side effect doubled",
-          "resultBody": "The retry ran the money path again."
+          "resultTitle": "Fixes the wrong side of Kafka",
+          "resultBody": "The idempotent producer only stops duplicate appends caused by producer retries into the log. The duplicates here come from the consumer re-reading already-applied messages, so overbilling stays at 0.8%."
         },
         {
-          "id": "no-outbound-idempotency",
-          "label": "No outbound idempotency",
+          "id": "sync-commit",
+          "label": "Commit Kafka offsets synchronously after every message",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 22,
+              "value": 91,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
-              "label": "p95 latency",
-              "value": 440,
+              "label": "p95 apply lag",
+              "value": 9000,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 22,
-              "unit": "errors",
-              "tone": "bad"
+              "label": "Overbilled",
+              "value": 0.05,
+              "unit": "%",
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Side effect doubled",
-          "resultBody": "No outbound idempotency keys"
+          "resultTitle": "Smaller window, throughput halves",
+          "resultBody": "The replay window shrinks to one message, but a crash between the Postgres commit and the offset commit still double-applies, and a broker round-trip per message drops throughput so far that apply lag grows to 9 s."
         }
       ],
       "hints": [
-        "Retries will happen.",
-        "Side effects must not double.",
-        "Key the write once."
+        "Kafka's exactly-once guarantees stop at Kafka's boundary.",
+        "Two separate commits, one in Postgres and one in Kafka, can always disagree after a crash.",
+        "Make 'how far I've read' part of the same atomic write as the result."
       ],
       "nextId": null
     },
@@ -2683,149 +2767,208 @@
       "level": 14,
       "patternId": "idempotency",
       "canonical": false,
+      "reviewed": true,
       "severity": "P1",
       "xp": 50,
-      "title": "Refund applied twice",
-      "brief": "Support clicks Refund, the page times out, they click again, and the customer is paid twice.",
-      "constraint": "Refunds are irreversible money movement.",
-      "question": "What should the refund API require?",
+      "title": "Agent and auto-rule both refund the same order",
+      "brief": "ShopNest's fraud rule and a support agent refunded the same $180 order within 300 ms. Each request carried its own idempotency key, so both went through: 70 double refunds a week.",
+      "constraint": "Refunds come from different actors, so request keys will always differ.",
+      "question": "What makes the refund itself impossible to apply twice?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 200,
+          "label": "Refund calls",
+          "value": 40,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 20,
+          "value": 19,
           "unit": "%",
-          "tone": "warn"
+          "tone": "neutral"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 400,
+          "value": 700,
           "unit": "ms",
-          "tone": "warn"
+          "tone": "neutral"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 2,
-          "unit": "errors",
+          "label": "Double refunds",
+          "value": 70,
+          "unit": "/week",
           "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "user",
+            "id": "agents",
             "kind": "users",
-            "label": "Double click"
+            "label": "Agents + fraud rule"
           },
           {
             "id": "api",
             "kind": "server",
-            "label": "API",
-            "tone": "warn"
+            "label": "Refund API",
+            "tone": "warn",
+            "cpu": 19,
+            "sub": "keys differ per actor"
           },
           {
-            "id": "pay",
+            "id": "db",
+            "kind": "db",
+            "label": "Orders DB",
+            "tone": "bad",
+            "sub": "refund_state unchecked"
+          },
+          {
+            "id": "psp",
             "kind": "server",
-            "label": "Two charges",
+            "label": "Card processor",
             "tone": "bad"
           }
         ],
         "edges": [
           {
-            "from": "user",
+            "from": "agents",
             "to": "api"
           },
           {
             "from": "api",
-            "to": "pay"
+            "to": "db"
+          },
+          {
+            "from": "api",
+            "to": "psp"
           }
         ]
       },
       "choices": [
         {
-          "id": "idempotency-key",
-          "label": "Idempotency key",
+          "id": "conditional-transition",
+          "label": "UPDATE refund_state to 'refunding' only WHERE it is still 'none'",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "user",
-                "kind": "users",
-                "label": "Retry"
-              },
-              {
-                "id": "api",
-                "kind": "server",
-                "label": "API",
-                "tone": "good"
-              },
-              {
-                "id": "key",
-                "kind": "cache",
-                "label": "Idempotency key",
-                "tone": "good"
-              },
-              {
-                "id": "pay",
-                "kind": "server",
-                "label": "One charge",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "user",
-                "to": "api"
-              },
-              {
-                "from": "api",
-                "to": "key"
-              },
-              {
-                "from": "key",
-                "to": "pay"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 1,
+            "complexityScore": 2,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "State machine guards the order; loser gets 409 with the winner's refund ID."
           },
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 19,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 40,
+              "value": 700,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Double refunds",
               "value": 0,
-              "unit": "errors",
+              "unit": "/week",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "A unique refund key per payment so a second click returns the original refund."
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "agents",
+                "kind": "users",
+                "label": "Agents + fraud rule",
+                "tone": "good"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Refund API",
+                "tone": "good",
+                "cpu": 19,
+                "sub": "keys differ per actor"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Orders DB",
+                "tone": "good",
+                "sub": "none -> refunding -> refunded"
+              },
+              {
+                "id": "psp",
+                "kind": "server",
+                "label": "Card processor",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "agents",
+                "to": "api"
+              },
+              {
+                "from": "api",
+                "to": "db"
+              },
+              {
+                "from": "api",
+                "to": "psp"
+              }
+            ]
+          },
+          "resultTitle": "Only one actor wins the transition",
+          "resultBody": "A compare-and-set on the order's state row lets exactly one request see rowcount = 1; only that one calls the processor, and the other gets 409 with the existing refund. The business operation, not the request, is now idempotent. Cost: partial refunds need their own states."
         },
         {
-          "id": "refund-bare-increment",
-          "label": "Refund bare increment",
+          "id": "shared-key",
+          "label": "Require the same idempotency key header on all refund calls",
           "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 19,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 700,
+              "unit": "ms",
+              "tone": "neutral"
+            },
+            {
+              "key": "errors",
+              "label": "Double refunds",
+              "value": 64,
+              "unit": "/week",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Actors can't agree on a key",
+          "resultBody": "The fraud rule and the agent console generate keys independently and never see each other's, so they still send different keys and both refunds go through; only retries of a single actor are caught."
+        },
+        {
+          "id": "nightly-reverse",
+          "label": "Run a nightly job that claws back duplicate refunds",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
@@ -2833,62 +2976,31 @@
               "label": "CPU",
               "value": 24,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 500,
+              "value": 700,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "neutral"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 42,
-              "unit": "errors",
+              "label": "Double refunds",
+              "value": 49,
+              "unit": "/week",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Side effect doubled",
-          "resultBody": "The retry ran the money path again."
-        },
-        {
-          "id": "no-unique-constraint",
-          "label": "No unique constraint",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 22,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 440,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 22,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Side effect doubled",
-          "resultBody": "No unique constraint on refund ids"
+          "resultTitle": "Clawbacks mostly bounce",
+          "resultBody": "By night the money is already on the customer's card, and 70% of reversal attempts fail or turn into disputes, so most double refunds stay lost and support now handles angry clawback emails."
         }
       ],
       "hints": [
-        "Retries will happen.",
-        "Side effects must not double.",
-        "Key the write once."
+        "Both requests were individually valid and correctly keyed.",
+        "Idempotency can live on the entity being changed, not just on the request.",
+        "Guard the order's state so only one transition out of 'not refunded' can succeed."
       ],
       "nextId": null
     },
@@ -2898,212 +3010,220 @@
       "level": 14,
       "patternId": "idempotency",
       "canonical": false,
-      "severity": "P1",
+      "reviewed": true,
+      "severity": "P2",
       "xp": 50,
-      "title": "Natural key already exists",
-      "brief": "Creating a user by email retries and the unique index conflicts.",
-      "constraint": "The first request may have succeeded.",
-      "question": "How should the API treat the conflict?",
+      "title": "Signup retry tells new users 'email already taken'",
+      "brief": "Trailmate's signup commits in 2 s, but the app times out at 1.5 s and retries. The retry hits the unique email index and returns 409 'email taken': 6% of new users abandon signup.",
+      "constraint": "A stranger typing an existing email must never get into that account.",
+      "question": "How does the retry get the original signup's response?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 200,
+          "label": "Signups",
+          "value": 120,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 20,
+          "value": 33,
           "unit": "%",
-          "tone": "warn"
+          "tone": "neutral"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 400,
+          "value": 2100,
           "unit": "ms",
           "tone": "warn"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 2,
-          "unit": "errors",
+          "label": "Abandoned signups",
+          "value": 6,
+          "unit": "%",
           "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "user",
+            "id": "app",
             "kind": "users",
-            "label": "Double click"
+            "label": "New users",
+            "tone": "warn",
+            "sub": "retry at 1.5 s"
           },
           {
             "id": "api",
             "kind": "server",
-            "label": "API",
-            "tone": "warn"
+            "label": "Accounts API",
+            "cpu": 33
           },
           {
-            "id": "pay",
-            "kind": "server",
-            "label": "Two charges",
-            "tone": "bad"
+            "id": "db",
+            "kind": "db",
+            "label": "Users DB",
+            "tone": "bad",
+            "sub": "unique(email) -> 409"
           }
         ],
         "edges": [
           {
-            "from": "user",
+            "from": "app",
             "to": "api"
           },
           {
             "from": "api",
-            "to": "pay"
+            "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "idempotency-key",
-          "label": "Idempotency key",
+          "id": "key-with-account",
+          "label": "Store the signup's idempotency key on the account and replay 201",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "user",
-                "kind": "users",
-                "label": "Retry"
-              },
-              {
-                "id": "api",
-                "kind": "server",
-                "label": "API",
-                "tone": "good"
-              },
-              {
-                "id": "key",
-                "kind": "cache",
-                "label": "Idempotency key",
-                "tone": "good"
-              },
-              {
-                "id": "pay",
-                "kind": "server",
-                "label": "One charge",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "user",
-                "to": "api"
-              },
-              {
-                "from": "api",
-                "to": "key"
-              },
-              {
-                "from": "key",
-                "to": "pay"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 1,
+            "complexityScore": 2,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "Replays only for the same key within 24 h; everyone else still gets 409."
           },
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 33,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 40,
+              "value": 2100,
               "unit": "ms",
-              "tone": "good"
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
+              "label": "Abandoned signups",
+              "value": 0.4,
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Map the unique conflict to the existing user when the request is a retry of the same create."
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "app",
+                "kind": "users",
+                "label": "New users",
+                "tone": "good",
+                "sub": "retry at 1.5 s"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Accounts API",
+                "cpu": 33,
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Users DB",
+                "tone": "good",
+                "sub": "email unique + signup_key"
+              }
+            ],
+            "edges": [
+              {
+                "from": "app",
+                "to": "api"
+              },
+              {
+                "from": "api",
+                "to": "db"
+              }
+            ]
+          },
+          "resultTitle": "The retry is recognised as the same signup",
+          "resultBody": "On a unique-email conflict the API checks whether the existing account was created with this request's key; if so it replays the original 201 and session token, otherwise it returns 409. A stranger with the same email but a different key gets no access. Cost: one extra column and a lookup on the conflict path."
         },
         {
-          "id": "always-500-unique",
-          "label": "Always 500 unique",
+          "id": "upsert-email",
+          "label": "Upsert on email and return 200 to any caller",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 24,
+              "value": 33,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 500,
+              "value": 2000,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 42,
-              "unit": "errors",
+              "label": "Abandoned signups",
+              "value": 0.3,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Side effect doubled",
-          "resultBody": "The retry ran the money path again."
+          "resultTitle": "Anyone can take over an account",
+          "resultBody": "Abandonment disappears, but anyone who signs up with an existing email now overwrites the password or receives a session for someone else's account: a critical account-takeover bug."
         },
         {
-          "id": "create-second-user",
-          "label": "Create second user",
+          "id": "drop-unique",
+          "label": "Drop the unique email index and merge duplicates nightly",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 22,
+              "value": 36,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 440,
+              "value": 1900,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 22,
-              "unit": "errors",
+              "label": "Abandoned signups",
+              "value": 3.5,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Side effect doubled",
-          "resultBody": "Create a second user with a suffix"
+          "resultTitle": "Two half-accounts per user",
+          "resultBody": "Retries now create a second account, so users log in the next day to an empty profile, password resets go to two accounts, and the nightly merge must guess which one holds the real data."
         }
       ],
       "hints": [
-        "Retries will happen.",
-        "Side effects must not double.",
-        "Key the write once."
+        "The unique index is doing its job; the problem is the answer it produces for a retry.",
+        "The server can't tell 'same user retrying' from 'different person, same email' by email alone.",
+        "Remember which request created the row so a repeat can be answered as the original."
       ],
       "nextId": null
     },
@@ -3113,212 +3233,220 @@
       "level": 14,
       "patternId": "idempotency",
       "canonical": false,
-      "severity": "P1",
+      "reviewed": true,
+      "severity": "P2",
       "xp": 50,
-      "title": "Non-idempotent PATCH merge",
-      "brief": "PATCH adds +1 to quantity on each retry because it sends a delta, not the desired quantity.",
-      "constraint": "Retries replay the same body.",
-      "question": "What payload is idempotent?",
+      "title": "Retried edits append the same paragraph twice",
+      "brief": "Inkwell's editor sends JSON Patch 'add /blocks/-' to append paragraphs. Saves take 900 ms on hotel Wi-Fi; retries after lost responses duplicate blocks in 2% of saves across 30k articles.",
+      "constraint": "Up to 4 editors work on the same article at once.",
+      "question": "How can the retry detect that its patch was already applied?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 200,
+          "label": "Saves",
+          "value": 2600,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 20,
+          "value": 41,
           "unit": "%",
-          "tone": "warn"
+          "tone": "neutral"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 400,
+          "value": 900,
           "unit": "ms",
           "tone": "warn"
         },
         {
           "key": "errors",
-          "label": "Errors",
+          "label": "Duplicated blocks",
           "value": 2,
-          "unit": "errors",
+          "unit": "%",
           "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "user",
+            "id": "eds",
             "kind": "users",
-            "label": "Double click"
+            "label": "Editors x4 per doc",
+            "tone": "warn"
           },
           {
             "id": "api",
             "kind": "server",
-            "label": "API",
-            "tone": "warn"
+            "label": "Docs API",
+            "cpu": 41,
+            "sub": "applies append blindly"
           },
           {
-            "id": "pay",
-            "kind": "server",
-            "label": "Two charges",
-            "tone": "bad"
+            "id": "db",
+            "kind": "db",
+            "label": "Articles DB",
+            "tone": "bad",
+            "cpu": 35
           }
         ],
         "edges": [
           {
-            "from": "user",
+            "from": "eds",
             "to": "api"
           },
           {
             "from": "api",
-            "to": "pay"
+            "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "idempotency-key",
-          "label": "Idempotency key",
+          "id": "if-match",
+          "label": "Send If-Match with the ETag; the stale retry gets 412",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "user",
-                "kind": "users",
-                "label": "Retry"
-              },
-              {
-                "id": "api",
-                "kind": "server",
-                "label": "API",
-                "tone": "good"
-              },
-              {
-                "id": "key",
-                "kind": "cache",
-                "label": "Idempotency key",
-                "tone": "good"
-              },
-              {
-                "id": "pay",
-                "kind": "server",
-                "label": "One charge",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "user",
-                "to": "api"
-              },
-              {
-                "from": "api",
-                "to": "key"
-              },
-              {
-                "from": "key",
-                "to": "pay"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 3,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "Client must refetch and rebase on 412; busy docs see more conflicts."
           },
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
-              "unit": "%",
-              "tone": "good"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 40,
-              "unit": "ms",
-              "tone": "good"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
-              "tone": "good"
-            }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Send the desired absolute state (quantity = 3), not a relative increment."
-        },
-        {
-          "id": "patch-add-1",
-          "label": "PATCH add 1",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 24,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 500,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
               "value": 42,
-              "unit": "errors",
-              "tone": "bad"
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 920,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Duplicated blocks",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
             }
           ],
-          "resultTitle": "Side effect doubled",
-          "resultBody": "The retry ran the money path again."
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "eds",
+                "kind": "users",
+                "label": "Editors x4 per doc",
+                "tone": "good"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Docs API",
+                "cpu": 41,
+                "sub": "applies only at version N",
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Articles DB",
+                "tone": "good",
+                "cpu": 35
+              }
+            ],
+            "edges": [
+              {
+                "from": "eds",
+                "to": "api"
+              },
+              {
+                "from": "api",
+                "to": "db"
+              }
+            ]
+          },
+          "resultTitle": "The retry sees its own edit landed",
+          "resultBody": "The patch applies only if the article is still at version N. The first attempt moved it to N+1, so the retry gets 412 Precondition Failed; the client refetches, sees its paragraph present and stops. Conditional requests also stop co-editors clobbering each other. Cost: clients must handle 412 by rebasing."
         },
         {
-          "id": "no-version-field",
-          "label": "No version field",
+          "id": "full-put",
+          "label": "Replace the patch with a PUT of the whole document",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 22,
+              "value": 55,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 440,
+              "value": 1400,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 22,
-              "unit": "errors",
+              "label": "Duplicated blocks",
+              "value": 1.2,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Side effect doubled",
-          "resultBody": "No version field and relative updates"
+          "resultTitle": "Retries are safe, co-edits vanish",
+          "resultBody": "A PUT is idempotent, so duplicates stop, but with four editors each PUT overwrites paragraphs the others saved moments earlier: 1.2% of saves now silently erase someone's work, and 400 KB bodies raise latency."
+        },
+        {
+          "id": "drop-identical",
+          "label": "Drop any appended block identical to the last one",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 42,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 900,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Duplicated blocks",
+              "value": 0.9,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Real repeats are eaten",
+          "resultBody": "Deliberate repeated blocks such as dividers and 'TBD' placeholders disappear, and a retry that lands after a co-editor's append is not 'last', so it still duplicates."
         }
       ],
       "hints": [
-        "Retries will happen.",
-        "Side effects must not double.",
-        "Key the write once."
+        "'Append to the end' is not idempotent, and the end moves.",
+        "HTTP has a built-in way to say 'only apply this if nothing has changed'.",
+        "Tie the patch to the document version it was written against."
       ],
       "nextId": null
     },

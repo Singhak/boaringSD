@@ -1116,37 +1116,44 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Profile storm",
-      "brief": "A popular profile hits the same data repeatedly during a launch campaign.",
-      "constraint": "Reads dominate; writes are minimal.",
-      "question": "What pattern offsets the repeated database work?",
+      "title": "Profile cache hit rate stuck at 3%",
+      "brief": "Trellis profile pages serve 60,000 req/s through Redis, yet the hit rate is 3%. Keys are built from the full URL, and every share link carries a unique ?ref= click ID. Postgres sits at 88% CPU.",
+      "constraint": "Marketing needs the ?ref= parameter to keep reaching the analytics pipeline.",
+      "question": "Why does the cache almost never hit, and what fixes it?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 150000,
+          "value": 60000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 40,
+          "value": 88,
           "unit": "%",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 1800,
+          "value": 620,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
           "label": "Errors",
-          "value": 20,
+          "value": 90,
           "unit": "errors",
+          "tone": "bad"
+        },
+        {
+          "key": "hit",
+          "label": "Cache hit rate",
+          "value": 3,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -1155,20 +1162,29 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Profile visitors"
           },
           {
             "id": "app",
             "kind": "server",
             "label": "App",
-            "tone": "warn"
+            "tone": "warn",
+            "cpu": 50
+          },
+          {
+            "id": "cache",
+            "kind": "cache",
+            "label": "Redis",
+            "tone": "warn",
+            "cpu": 35,
+            "sub": "3% hit rate"
           },
           {
             "id": "db",
             "kind": "db",
-            "label": "Database",
+            "label": "Postgres",
             "tone": "bad",
-            "cpu": 92
+            "cpu": 88
           }
         ],
         "edges": [
@@ -1178,69 +1194,32 @@
           },
           {
             "from": "app",
+            "to": "cache"
+          },
+          {
+            "from": "cache",
             "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "add-cache",
-          "label": "Add cache",
+          "id": "normalize-key",
+          "label": "Key on profile ID only, stripping tracking query params",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "app",
-                "kind": "server",
-                "label": "App",
-                "tone": "good"
-              },
-              {
-                "id": "cache",
-                "kind": "cache",
-                "label": "Cache",
-                "tone": "good"
-              },
-              {
-                "id": "db",
-                "kind": "db",
-                "label": "Database",
-                "tone": "good",
-                "cpu": 22
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "app"
-              },
-              {
-                "from": "app",
-                "to": "cache"
-              },
-              {
-                "from": "cache",
-                "to": "db"
-              }
-            ]
-          },
+          "approach": "optimal",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 21,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 120,
+              "value": 45,
               "unit": "ms",
               "tone": "good"
             },
@@ -1250,80 +1229,104 @@
               "value": 0,
               "unit": "errors",
               "tone": "good"
+            },
+            {
+              "key": "hit",
+              "label": "Cache hit rate",
+              "value": 96,
+              "unit": "%",
+              "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Cache profile data and invalidate when updates are made."
+          "resultTitle": "Every visit to a profile shares one key",
+          "resultBody": "The key becomes profile:{id}:v1, so the 400,000 daily share links for a popular profile all read one entry. Hit rate climbs from 3% to 96% and Postgres drops to 21% CPU. The ?ref= value is still logged by the app before the cache lookup, so analytics keep their click IDs."
         },
         {
-          "id": "queue-all-profile",
-          "label": "Queue all profile",
+          "id": "longer-ttl",
+          "label": "Raise the profile cache TTL to 24 hours",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 44,
+              "value": 87,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2250,
+              "value": 600,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 60,
+              "value": 85,
               "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "hit",
+              "label": "Cache hit rate",
+              "value": 4,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Same row, again",
-          "resultBody": "The origin still serves every repeat read."
+          "resultTitle": "Longer life for keys nobody reuses",
+          "resultBody": "Each click ID appears once, so a 24-hour TTL just keeps millions of single-use entries around. Redis memory grows by 30 GB and starts evicting, while the hit rate moves from 3% to 4%."
         },
         {
-          "id": "add-reader-only-database",
-          "label": "Add reader-only database",
+          "id": "replicas",
+          "label": "Add two Postgres read replicas behind the app",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 42,
+              "value": 58,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 1980,
+              "value": 310,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 40,
+              "value": 20,
               "unit": "errors",
+              "tone": "warn"
+            },
+            {
+              "key": "hit",
+              "label": "Cache hit rate",
+              "value": 3,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Same row, again",
-          "resultBody": "Add a reader-only database without caching"
+          "resultTitle": "Load spread, cache still useless",
+          "resultBody": "Three databases now share the 58,000 misses per second, so each sits near 58% CPU and p95 halves. You pay about $2,400 a month for replicas while Redis still hits only 3% of requests."
         }
       ],
       "hints": [
-        "The same data is fetched over and over.",
-        "A short TTL is enough.",
-        "Serve repeats from cache."
+        "Compare the number of distinct cache keys with the number of distinct profiles.",
+        "Two visits to the same profile from different share links produce different keys.",
+        "A cache key should contain only the inputs that change the response."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "cache-04",
@@ -1333,37 +1336,37 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Inventory freshness",
-      "brief": "Inventory values change every few minutes and are read constantly across the app.",
-      "constraint": "The system can tolerate a small delay but not stale inventory for long.",
-      "question": "What is the best tradeoff?",
+      "title": "Sneaker drop oversells 340 pairs",
+      "brief": "Kitework's 5,000-pair drop drew 18,000 product views/s and 1,200 checkouts/s. Stock counts are cached in Redis for 60 seconds, checkout trusts the cached count, and 340 orders were confirmed with no shoes left.",
+      "constraint": "Product pages must stay on the cache; Postgres cannot serve 18,000 views per second.",
+      "question": "How do you stop overselling without taking the cache off the page?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 150000,
+          "value": 18000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 40,
+          "value": 45,
           "unit": "%",
           "tone": "warn"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 1800,
+          "value": 90,
           "unit": "ms",
-          "tone": "bad"
+          "tone": "good"
         },
         {
-          "key": "errors",
-          "label": "Errors",
-          "value": 20,
-          "unit": "errors",
+          "key": "oversold",
+          "label": "Oversold",
+          "value": 340,
+          "unit": "orders",
           "tone": "bad"
         }
       ],
@@ -1372,20 +1375,29 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Shoppers"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "App",
-            "tone": "warn"
+            "label": "Store API",
+            "tone": "warn",
+            "cpu": 40
+          },
+          {
+            "id": "cache",
+            "kind": "cache",
+            "label": "Redis",
+            "tone": "warn",
+            "cpu": 30,
+            "sub": "stock TTL 60 s"
           },
           {
             "id": "db",
             "kind": "db",
-            "label": "Database",
-            "tone": "bad",
-            "cpu": 92
+            "label": "Postgres",
+            "tone": "warn",
+            "cpu": 45
           }
         ],
         "edges": [
@@ -1395,87 +1407,83 @@
           },
           {
             "from": "app",
+            "to": "cache"
+          },
+          {
+            "from": "cache",
             "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "add-cache",
-          "label": "Add cache",
+          "id": "conditional-decrement",
+          "label": "Show cached stock; reserve with a conditional UPDATE at checkout",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "app",
-                "kind": "server",
-                "label": "App",
-                "tone": "good"
-              },
-              {
-                "id": "cache",
-                "kind": "cache",
-                "label": "Cache",
-                "tone": "good"
-              },
-              {
-                "id": "db",
-                "kind": "db",
-                "label": "Database",
-                "tone": "good",
-                "cpu": 22
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "app"
-              },
-              {
-                "from": "app",
-                "to": "cache"
-              },
-              {
-                "from": "cache",
-                "to": "db"
-              }
-            ]
-          },
+          "approach": "optimal",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 52,
               "unit": "%",
-              "tone": "good"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 120,
+              "value": 95,
               "unit": "ms",
               "tone": "good"
             },
             {
-              "key": "errors",
-              "label": "Errors",
+              "key": "oversold",
+              "label": "Oversold",
               "value": 0,
-              "unit": "errors",
+              "unit": "orders",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Use a short TTL with invalidation on stock updates."
+          "resultTitle": "The database has the final say",
+          "resultBody": "Pages still read the cached count, but checkout runs UPDATE stock SET qty = qty - 1 WHERE sku = ? AND qty > 0 and fails the order if no row changes. Oversells drop to 0. Cost: 1,200 writes/s queue on one hot row, adding ~5 ms to checkout, and a page may briefly show stock that is already gone."
         },
         {
-          "id": "infinite-cache-lifetime",
-          "label": "Infinite cache lifetime",
+          "id": "short-ttl",
+          "label": "Cut the stock cache TTL from 60 to 1 second",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 71,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 140,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "oversold",
+              "label": "Oversold",
+              "value": 38,
+              "unit": "orders",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "A smaller race window is still a race",
+          "resultBody": "Counts now refresh every second, so Postgres serves 60 times more stock reads and climbs to 71% CPU. At 1,200 checkouts per second, a single stale second still let 38 orders through after the last pair sold."
+        },
+        {
+          "id": "write-through",
+          "label": "Update the Redis count from the app on each purchase",
+          "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
@@ -1483,64 +1491,34 @@
               "label": "CPU",
               "value": 44,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2250,
+              "value": 92,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "good"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 60,
-              "unit": "errors",
+              "key": "oversold",
+              "label": "Oversold",
+              "value": 210,
+              "unit": "orders",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Same row, again",
-          "resultBody": "The origin still serves every repeat read."
-        },
-        {
-          "id": "no-cache",
-          "label": "No cache",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 42,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 1980,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 40,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Same row, again",
-          "resultBody": "No cache"
+          "resultTitle": "Read-modify-write races in the app",
+          "resultBody": "Each app node does GET, subtracts one, then SET. Two nodes that read 12 both write 11, so decrements are lost and the cache keeps showing stock. Redis and Postgres also drift whenever one write fails, and 210 orders still oversell."
         }
       ],
       "hints": [
-        "The same data is fetched over and over.",
-        "A short TTL is enough.",
-        "Serve repeats from cache."
+        "Viewing a count and claiming an item need different guarantees.",
+        "The oversell happens between reading the count and placing the order.",
+        "Let one atomic operation check and change the stock at the same time."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "cache-05",
@@ -1550,37 +1528,44 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Cache stampede",
-      "brief": "A hot object expires and 8,000 requests miss at once.",
-      "constraint": "The DB sees a synchronized cold miss from many clients.",
-      "question": "What prevents the stampede?",
+      "title": "Cache cutover melts Postgres in 40 seconds",
+      "brief": "Pintfeed must retire its Redis node tonight. The replacement is empty; a test cutover at 40,000 req/s dropped the hit rate from 97% to 0% and Postgres hit 99% CPU within 40 seconds.",
+      "constraint": "The old node's data cannot be copied; its snapshot uses an incompatible format.",
+      "question": "How do you cut over to the empty cache without an outage?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 8000,
+          "value": 40000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 40,
+          "value": 99,
           "unit": "%",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 1800,
+          "value": 4200,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
           "label": "Errors",
-          "value": 20,
+          "value": 2300,
           "unit": "errors",
+          "tone": "bad"
+        },
+        {
+          "key": "hit",
+          "label": "Cache hit rate",
+          "value": 0,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -1589,20 +1574,29 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Recipe readers"
           },
           {
             "id": "app",
             "kind": "server",
             "label": "App",
-            "tone": "warn"
+            "tone": "warn",
+            "cpu": 70
+          },
+          {
+            "id": "cache",
+            "kind": "cache",
+            "label": "New Redis",
+            "tone": "bad",
+            "cpu": 8,
+            "sub": "empty"
           },
           {
             "id": "db",
             "kind": "db",
-            "label": "Database",
+            "label": "Postgres",
             "tone": "bad",
-            "cpu": 92
+            "cpu": 99
           }
         ],
         "edges": [
@@ -1612,69 +1606,32 @@
           },
           {
             "from": "app",
+            "to": "cache"
+          },
+          {
+            "from": "cache",
             "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "fresh-reads",
-          "label": "Fresh reads",
+          "id": "warm-ramp",
+          "label": "Warm the top 50k keys, then ramp traffic in 10% steps",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "app",
-                "kind": "server",
-                "label": "App",
-                "tone": "good"
-              },
-              {
-                "id": "cache",
-                "kind": "cache",
-                "label": "Cache",
-                "tone": "good"
-              },
-              {
-                "id": "db",
-                "kind": "db",
-                "label": "Database",
-                "tone": "good",
-                "cpu": 22
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "app"
-              },
-              {
-                "from": "app",
-                "to": "cache"
-              },
-              {
-                "from": "cache",
-                "to": "db"
-              }
-            ]
-          },
+          "approach": "optimal",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 38,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 120,
+              "value": 60,
               "unit": "ms",
               "tone": "good"
             },
@@ -1684,80 +1641,104 @@
               "value": 0,
               "unit": "errors",
               "tone": "good"
+            },
+            {
+              "key": "hit",
+              "label": "Cache hit rate",
+              "value": 94,
+              "unit": "%",
+              "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Single-flight refresh or lock around the first miss."
+          "resultTitle": "The cache is warm before it is trusted",
+          "resultBody": "A job reads the 50,000 hottest keys from yesterday's access log (82% of traffic) and loads them at a rate Postgres can absorb. Traffic then moves 10% at a time, so misses grow slowly. Postgres peaks at 38% and the cutover takes 25 minutes instead of 1."
         },
         {
-          "id": "longer-db-timeouts",
-          "label": "Longer DB timeouts",
+          "id": "bigger-pool",
+          "label": "Double the Postgres connection pool to 800",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 44,
+              "value": 100,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2250,
+              "value": 6100,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 60,
+              "value": 3100,
               "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "hit",
+              "label": "Cache hit rate",
+              "value": 0,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Same row, again",
-          "resultBody": "The origin still serves every repeat read."
+          "resultTitle": "More connections, same CPU",
+          "resultBody": "Postgres was CPU-bound, not short of connections. 800 backends now fight for the same cores and lock manager, p95 rises from 4.2 s to 6.1 s, and errors grow because each query waits longer."
         },
         {
-          "id": "never-expire-cache",
-          "label": "Never expire cache",
+          "id": "add-replica",
+          "label": "Attach a Redis replica to the new node",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 42,
+              "value": 99,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 1980,
+              "value": 4200,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 40,
+              "value": 2300,
               "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "hit",
+              "label": "Cache hit rate",
+              "value": 0,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Same row, again",
-          "resultBody": "Never expire cache entries"
+          "resultTitle": "Two empty caches instead of one",
+          "resultBody": "The replica copies the new node's contents, which is nothing. It improves failover later, but every read tonight still misses and goes to Postgres."
         }
       ],
       "hints": [
-        "The same data is fetched over and over.",
-        "A short TTL is enough.",
-        "Serve repeats from cache."
+        "The new cache holds no data, so every request is a miss.",
+        "A small number of keys serve most of the traffic.",
+        "Control how quickly traffic reaches the cold cache."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "cache-06",
@@ -1767,36 +1748,36 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Regional traffic burst",
-      "brief": "A local event sends heavy reads to a regional page from one city.",
-      "constraint": "Most requests hit the same few objects and the origin is far away.",
-      "question": "Where should the data live for fastest response?",
+      "title": "Frankfurt launch: every page waits on Virginia",
+      "brief": "Lumo launched rides in Frankfurt at 22,000 req/s. EU app servers read the one Redis cluster in us-east-1, 90 ms away, and each request makes 4 sequential GETs. p95 is 520 ms.",
+      "constraint": "Driver data is written only in us-east; EU reads may be up to 2 seconds stale.",
+      "question": "How do you make EU cache reads fast?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 150000,
+          "value": 22000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 40,
+          "value": 35,
           "unit": "%",
-          "tone": "warn"
+          "tone": "good"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 1800,
+          "value": 520,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
           "label": "Errors",
-          "value": 20,
+          "value": 60,
           "unit": "errors",
           "tone": "bad"
         }
@@ -1806,20 +1787,29 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "EU riders"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "App",
-            "tone": "warn"
+            "label": "EU app",
+            "tone": "warn",
+            "cpu": 35
+          },
+          {
+            "id": "cache",
+            "kind": "cache",
+            "label": "Redis us-east-1",
+            "tone": "warn",
+            "cpu": 30,
+            "sub": "90 ms RTT"
           },
           {
             "id": "db",
             "kind": "db",
-            "label": "Database",
-            "tone": "bad",
-            "cpu": 92
+            "label": "Postgres us-east-1",
+            "tone": "good",
+            "cpu": 40
           }
         ],
         "edges": [
@@ -1829,69 +1819,32 @@
           },
           {
             "from": "app",
+            "to": "cache"
+          },
+          {
+            "from": "cache",
             "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "add-cache",
-          "label": "Add cache",
+          "id": "regional-cache",
+          "label": "Regional Redis in Frankfurt with pub/sub invalidation",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "app",
-                "kind": "server",
-                "label": "App",
-                "tone": "good"
-              },
-              {
-                "id": "cache",
-                "kind": "cache",
-                "label": "Cache",
-                "tone": "good"
-              },
-              {
-                "id": "db",
-                "kind": "db",
-                "label": "Database",
-                "tone": "good",
-                "cpu": 22
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "app"
-              },
-              {
-                "from": "app",
-                "to": "cache"
-              },
-              {
-                "from": "cache",
-                "to": "db"
-              }
-            ]
-          },
+          "approach": "optimal",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 30,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 120,
+              "value": 45,
               "unit": "ms",
               "tone": "good"
             },
@@ -1903,78 +1856,81 @@
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "A regional cache close to users and a shorter TTL on the hot object."
+          "resultTitle": "Cache reads stay inside the region",
+          "resultBody": "Each GET now costs ~0.5 ms instead of 90 ms, so p95 falls from 520 ms to 45 ms. US writes publish invalidations that reach Frankfurt in ~100 ms, well inside the 2-second limit. Cost: a second cluster, about $1,800 a month, and a cold start while the EU cache fills."
         },
         {
-          "id": "origin-only-reads",
-          "label": "Origin-only reads",
+          "id": "bigger-redis",
+          "label": "Upgrade the us-east Redis to a larger instance",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 44,
+              "value": 35,
               "unit": "%",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2250,
+              "value": 515,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 60,
+              "value": 55,
               "unit": "errors",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Same row, again",
-          "resultBody": "The origin still serves every repeat read."
+          "resultTitle": "Faster server, same ocean",
+          "resultBody": "Redis was answering in 0.2 ms; the other 89.8 ms of each GET is the round trip across the Atlantic. The bigger instance costs twice as much and p95 stays at 515 ms."
         },
         {
-          "id": "more-app-threads",
-          "label": "More app threads",
+          "id": "pipeline",
+          "label": "Pipeline the four GETs into one round-trip",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 42,
+              "value": 34,
               "unit": "%",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 1980,
+              "value": 210,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 40,
+              "value": 25,
               "unit": "errors",
-              "tone": "bad"
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Same row, again",
-          "resultBody": "More app threads"
+          "resultTitle": "One trip across the Atlantic instead of four",
+          "resultBody": "Batching saves three round trips, so p95 drops from 520 ms to 210 ms. Every request still crosses the Atlantic once, and pages that need a second dependent lookup still pay 180 ms."
         }
       ],
       "hints": [
-        "The same data is fetched over and over.",
-        "A short TTL is enough.",
-        "Serve repeats from cache."
+        "Check how long Redis itself spends per command.",
+        "Almost all of the latency is network distance.",
+        "The allowed staleness means the data can live closer to the readers."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "cache-07",
@@ -1984,36 +1940,36 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Leaderboard freshness",
-      "brief": "A leaderboard updates every 20 seconds but is read continuously.",
-      "constraint": "A few seconds of staleness is acceptable.",
-      "question": "What is the right cache policy?",
+      "title": "Leaderboard rank query pins the database",
+      "brief": "Arcadia Blitz has 30 million players. After every match, 9,000 rank lookups/s run SELECT COUNT(*) WHERE score > ? on Postgres, which sits at 95% CPU with a 2.4-second p95.",
+      "constraint": "Players must see their new rank within 1 second of a match ending.",
+      "question": "How do you serve fresh ranks without counting rows each time?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 150000,
+          "value": 9000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 40,
+          "value": 95,
           "unit": "%",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 1800,
+          "value": 2400,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
           "label": "Errors",
-          "value": 20,
+          "value": 310,
           "unit": "errors",
           "tone": "bad"
         }
@@ -2023,20 +1979,22 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Players"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "App",
-            "tone": "warn"
+            "label": "Game API",
+            "tone": "warn",
+            "cpu": 55
           },
           {
             "id": "db",
             "kind": "db",
-            "label": "Database",
+            "label": "Postgres",
             "tone": "bad",
-            "cpu": 92
+            "cpu": 95,
+            "sub": "30M score rows"
           }
         ],
         "edges": [
@@ -2052,63 +2010,22 @@
       },
       "choices": [
         {
-          "id": "fresh-reads",
-          "label": "Fresh reads",
+          "id": "sorted-set",
+          "label": "Redis sorted set updated on each score write, read with ZREVRANK",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "app",
-                "kind": "server",
-                "label": "App",
-                "tone": "good"
-              },
-              {
-                "id": "cache",
-                "kind": "cache",
-                "label": "Cache",
-                "tone": "good"
-              },
-              {
-                "id": "db",
-                "kind": "db",
-                "label": "Database",
-                "tone": "good",
-                "cpu": 22
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "app"
-              },
-              {
-                "from": "app",
-                "to": "cache"
-              },
-              {
-                "from": "cache",
-                "to": "db"
-              }
-            ]
-          },
+          "approach": "optimal",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 18,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 120,
+              "value": 12,
               "unit": "ms",
               "tone": "good"
             },
@@ -2120,78 +2037,81 @@
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Short TTL with periodic refresh and invalidation on score changes."
+          "resultTitle": "Ranks come from an ordered structure",
+          "resultBody": "Each match result runs ZADD, and rank reads use ZREVRANK; both are O(log N), about 25 steps for 30 million players. Ranks update in milliseconds and Postgres drops to 18% CPU. Cost: ~3 GB of Redis memory, and a rebuild job from Postgres if the set is lost."
         },
         {
-          "id": "no-cache",
-          "label": "No cache",
+          "id": "cache-60s",
+          "label": "Cache each player's rank result for 60 seconds",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 44,
+              "value": 70,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2250,
+              "value": 1800,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 60,
+              "value": 150,
               "unit": "errors",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Same row, again",
-          "resultBody": "The origin still serves every repeat read."
+          "resultTitle": "Stale ranks, and misses are still slow",
+          "resultBody": "Players look up their rank right after a match, which is exactly when their cached value is out of date. Most lookups miss anyway, the ones that hit break the 1-second rule, and each miss still counts millions of rows."
         },
         {
-          "id": "ttl-24-hours",
-          "label": "TTL 24 hours",
+          "id": "score-index",
+          "label": "Add a B-tree index on the score column",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 42,
+              "value": 82,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 1980,
+              "value": 1100,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 40,
+              "value": 120,
               "unit": "errors",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Same row, again",
-          "resultBody": "TTL of 24 hours"
+          "resultTitle": "The index still has to be walked",
+          "resultBody": "COUNT(*) WHERE score > ? now scans the index instead of the table, but a mid-ranked player still counts 15 million entries. p95 halves to 1.1 s and the database stays at 82% CPU."
         }
       ],
       "hints": [
-        "The same data is fetched over and over.",
-        "A short TTL is enough.",
-        "Serve repeats from cache."
+        "Counting every higher score gets slower as the player base grows.",
+        "Ranks change with every score write, so a TTL cache goes stale right away.",
+        "Look for a structure that keeps members ordered as scores are written."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "cache-08",
@@ -2201,37 +2121,44 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Hot user object",
-      "brief": "One user profile object is fetched millions of times per hour, yet the underlying record changes occasionally.",
-      "constraint": "The data is user-specific and easy to invalidate.",
-      "question": "How do you keep reads cheap without stale sessions?",
+      "title": "One 400 KB cache value saturates the network",
+      "brief": "Sparkboard caches each account as a single 400 KB JSON blob, including all 5,000 members. Every API call reads the whole blob: 3,000 req/s moves 9.6 Gbps from Redis, and app CPU is 85% parsing JSON.",
+      "constraint": "Most endpoints need only 3 or 4 fields, such as plan, region and feature limits.",
+      "question": "How do you stop every request from pulling the whole account?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 150000,
+          "value": 3000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 40,
+          "value": 85,
           "unit": "%",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 1800,
+          "value": 900,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
           "label": "Errors",
-          "value": 20,
+          "value": 70,
           "unit": "errors",
+          "tone": "bad"
+        },
+        {
+          "key": "net",
+          "label": "Redis NIC",
+          "value": 96,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -2240,20 +2167,30 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "API clients"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "App",
-            "tone": "warn"
+            "label": "API",
+            "tone": "bad",
+            "cpu": 85,
+            "sub": "parsing 400 KB"
+          },
+          {
+            "id": "cache",
+            "kind": "cache",
+            "label": "Redis",
+            "tone": "bad",
+            "cpu": 60,
+            "sub": "NIC 9.6 Gbps"
           },
           {
             "id": "db",
             "kind": "db",
-            "label": "Database",
-            "tone": "bad",
-            "cpu": 92
+            "label": "Postgres",
+            "tone": "good",
+            "cpu": 20
           }
         ],
         "edges": [
@@ -2263,69 +2200,32 @@
           },
           {
             "from": "app",
+            "to": "cache"
+          },
+          {
+            "from": "cache",
             "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "add-cache",
-          "label": "Add cache",
+          "id": "hash-fields",
+          "label": "Store the account as a Redis hash and HMGET needed fields",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "app",
-                "kind": "server",
-                "label": "App",
-                "tone": "good"
-              },
-              {
-                "id": "cache",
-                "kind": "cache",
-                "label": "Cache",
-                "tone": "good"
-              },
-              {
-                "id": "db",
-                "kind": "db",
-                "label": "Database",
-                "tone": "good",
-                "cpu": 22
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "app"
-              },
-              {
-                "from": "app",
-                "to": "cache"
-              },
-              {
-                "from": "cache",
-                "to": "db"
-              }
-            ]
-          },
+          "approach": "optimal",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 22,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 120,
+              "value": 35,
               "unit": "ms",
               "tone": "good"
             },
@@ -2335,28 +2235,75 @@
               "value": 0,
               "unit": "errors",
               "tone": "good"
+            },
+            {
+              "key": "net",
+              "label": "Redis NIC",
+              "value": 4,
+              "unit": "%",
+              "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Cache the user metadata with a short expiry and invalidate on update/logout."
+          "resultTitle": "Requests fetch bytes, not megabytes",
+          "resultBody": "Scalar fields live in a hash and the member list moves to its own key. A typical call reads about 300 bytes, so Redis traffic drops from 9.6 Gbps to under 0.5 Gbps and parsing cost disappears. Cost: code that edited the blob must now update individual fields."
         },
         {
-          "id": "cache-forever",
-          "label": "Cache forever",
+          "id": "gzip",
+          "label": "Gzip the blob before writing it to Redis",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 44,
+              "value": 97,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2250,
+              "value": 850,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 80,
+              "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "net",
+              "label": "Redis NIC",
+              "value": 30,
+              "unit": "%",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Network relieved, CPU buried",
+          "resultBody": "The blob shrinks to ~120 KB, so the Redis NIC falls to 30%. Each request now inflates and parses the full 400 KB, pushing app CPU from 85% to 97%, and p95 barely moves."
+        },
+        {
+          "id": "read-replicas",
+          "label": "Spread the GETs across three Redis read replicas",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 85,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 700,
               "unit": "ms",
               "tone": "bad"
             },
@@ -2366,49 +2313,26 @@
               "value": 60,
               "unit": "errors",
               "tone": "bad"
-            }
-          ],
-          "resultTitle": "Same row, again",
-          "resultBody": "The origin still serves every repeat read."
-        },
-        {
-          "id": "skip-cache",
-          "label": "Skip cache",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
+            },
             {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 42,
+              "key": "net",
+              "label": "Redis NIC",
+              "value": 33,
               "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 1980,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 40,
-              "unit": "errors",
-              "tone": "bad"
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Same row, again",
-          "resultBody": "Skip cache"
+          "resultTitle": "Bandwidth split, parsing unchanged",
+          "resultBody": "Each replica now carries a third of the 9.6 Gbps, so network pressure drops. The app still downloads and parses 400 KB per request, CPU stays at 85%, and you pay for three more nodes."
         }
       ],
       "hints": [
-        "The same data is fetched over and over.",
-        "A short TTL is enough.",
-        "Serve repeats from cache."
+        "Multiply the value size by the request rate.",
+        "Most requests use a tiny fraction of what they download.",
+        "Redis can store and return parts of an object separately."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "cache-09",
@@ -2418,37 +2342,44 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Flash-sale pricing page",
-      "brief": "The same pricing page is hit by thousands of users when a price update happens.",
-      "constraint": "The pricing data updates infrequently but is read frequently.",
-      "question": "What is the best design decision?",
+      "title": "Sale went live, pages kept the old price",
+      "brief": "Voltmart's noon sale changes 80,000 prices. Price keys have a 10-minute TTL, so pages showed full prices until 12:10 and support took 4,000 complaints. Tomorrow's sale starts at noon again, at 50,000 req/s.",
+      "constraint": "Postgres can absorb at most 5,000 cache misses per second.",
+      "question": "How do you switch 80,000 cached prices exactly at noon?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 150000,
+          "value": 50000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 40,
+          "value": 30,
           "unit": "%",
-          "tone": "warn"
+          "tone": "good"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 1800,
+          "value": 80,
           "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "stale",
+          "label": "Stale-price window",
+          "value": 10,
+          "unit": "min",
           "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 20,
-          "unit": "errors",
+          "label": "Complaints",
+          "value": 4000,
+          "unit": "tickets",
           "tone": "bad"
         }
       ],
@@ -2457,20 +2388,29 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Shoppers"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "App",
-            "tone": "warn"
+            "label": "Storefront",
+            "tone": "good",
+            "cpu": 35
+          },
+          {
+            "id": "cache",
+            "kind": "cache",
+            "label": "Redis",
+            "tone": "warn",
+            "cpu": 25,
+            "sub": "TTL 10 min"
           },
           {
             "id": "db",
             "kind": "db",
-            "label": "Database",
-            "tone": "bad",
-            "cpu": 92
+            "label": "Postgres",
+            "tone": "good",
+            "cpu": 30
           }
         ],
         "edges": [
@@ -2480,152 +2420,139 @@
           },
           {
             "from": "app",
+            "to": "cache"
+          },
+          {
+            "from": "cache",
             "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "add-cache",
-          "label": "Add cache",
+          "id": "versioned-keys",
+          "label": "Preload v2 price keys, then flip the version at noon",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "app",
-                "kind": "server",
-                "label": "App",
-                "tone": "good"
-              },
-              {
-                "id": "cache",
-                "kind": "cache",
-                "label": "Cache",
-                "tone": "good"
-              },
-              {
-                "id": "db",
-                "kind": "db",
-                "label": "Database",
-                "tone": "good",
-                "cpu": 22
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "app"
-              },
-              {
-                "from": "app",
-                "to": "cache"
-              },
-              {
-                "from": "cache",
-                "to": "db"
-              }
-            ]
-          },
+          "approach": "optimal",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 32,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 120,
+              "value": 80,
               "unit": "ms",
               "tone": "good"
             },
             {
-              "key": "errors",
-              "label": "Errors",
+              "key": "stale",
+              "label": "Stale-price window",
               "value": 0,
-              "unit": "errors",
+              "unit": "min",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Complaints",
+              "value": 0,
+              "unit": "tickets",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Cache product display data and invalidate on pricing updates."
+          "resultTitle": "The new prices were already warm",
+          "resultBody": "At 11:30 a job writes price:v2:{sku} for all 80,000 items. At 12:00 one config key switches reads from v1 to v2, so every page shows the sale price at once and every read still hits. Cost: a second copy of the prices, about 40 MB, until v1 expires."
         },
         {
-          "id": "move-pricing-queue",
-          "label": "Move pricing queue",
+          "id": "cron-delete",
+          "label": "Cron job deletes every price key at 12:00",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 44,
+              "value": 100,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2250,
+              "value": 3800,
               "unit": "ms",
               "tone": "bad"
             },
             {
+              "key": "stale",
+              "label": "Stale-price window",
+              "value": 0,
+              "unit": "min",
+              "tone": "good"
+            },
+            {
               "key": "errors",
-              "label": "Errors",
-              "value": 60,
-              "unit": "errors",
+              "label": "Complaints",
+              "value": 1500,
+              "unit": "tickets",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Same row, again",
-          "resultBody": "The origin still serves every repeat read."
+          "resultTitle": "80,000 misses at the busiest second",
+          "resultBody": "Prices are correct, but the cache is empty exactly when 50,000 req/s arrive. Postgres faces ten times its 5,000-miss limit, hits 100% CPU, and checkout times out for three minutes."
         },
         {
-          "id": "use-replica",
-          "label": "Use replica",
+          "id": "short-ttl",
+          "label": "Cut the price key TTL to 5 seconds all day",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 42,
+              "value": 96,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 1980,
+              "value": 1400,
               "unit": "ms",
               "tone": "bad"
             },
             {
+              "key": "stale",
+              "label": "Stale-price window",
+              "value": 0,
+              "unit": "min",
+              "tone": "warn"
+            },
+            {
               "key": "errors",
-              "label": "Errors",
-              "value": 40,
-              "unit": "errors",
+              "label": "Complaints",
+              "value": 600,
+              "unit": "tickets",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Same row, again",
-          "resultBody": "Use a replica only"
+          "resultTitle": "Fresh prices, all-day overload",
+          "resultBody": "The stale window shrinks to 5 seconds, but 80,000 keys expiring every 5 seconds means 16,000 misses per second, over three times what Postgres can take. It runs at 96% CPU all day, not just at noon."
         }
       ],
       "hints": [
-        "The same data is fetched over and over.",
-        "A short TTL is enough.",
-        "Serve repeats from cache."
+        "You know the exact moment the data will change.",
+        "Deleting everything at that moment creates a flood of misses.",
+        "Prepare the new values ahead of time and change which ones are read."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "cache-10",
@@ -2635,37 +2562,44 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Sparse but repeated reads",
-      "brief": "A document or special report is rare but requested heavily for a few minutes.",
-      "constraint": "A cold object causes a big latency spike and repeated DB hits.",
-      "question": "How should the system handle the first miss?",
+      "title": "Morning hit rate crashes after the nightly export",
+      "brief": "Bookwise's 16 GB Redis keeps its 2 million hot titles at a 98% hit rate. A 02:00 export reads all 40 million titles through the same cache-aside path; by 07:00 the hit rate is 41% and Postgres is at 93%.",
+      "constraint": "The export must finish nightly and read data no more than 5 minutes old.",
+      "question": "Why does the morning rush miss the cache, and what stops it?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 150000,
+          "value": 35000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 40,
+          "value": 93,
           "unit": "%",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 1800,
+          "value": 1300,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
           "label": "Errors",
-          "value": 20,
+          "value": 220,
           "unit": "errors",
+          "tone": "bad"
+        },
+        {
+          "key": "hit",
+          "label": "Cache hit rate",
+          "value": 41,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -2674,20 +2608,29 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Readers + export job"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "App",
-            "tone": "warn"
+            "label": "Catalog API",
+            "tone": "warn",
+            "cpu": 55
+          },
+          {
+            "id": "cache",
+            "kind": "cache",
+            "label": "Redis LRU 16 GB",
+            "tone": "warn",
+            "cpu": 40,
+            "sub": "hot keys evicted"
           },
           {
             "id": "db",
             "kind": "db",
-            "label": "Database",
+            "label": "Postgres",
             "tone": "bad",
-            "cpu": 92
+            "cpu": 93
           }
         ],
         "edges": [
@@ -2697,69 +2640,32 @@
           },
           {
             "from": "app",
+            "to": "cache"
+          },
+          {
+            "from": "cache",
             "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "add-cache",
-          "label": "Add cache",
+          "id": "bypass",
+          "label": "Point the export job at a read replica, skipping Redis",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "app",
-                "kind": "server",
-                "label": "App",
-                "tone": "good"
-              },
-              {
-                "id": "cache",
-                "kind": "cache",
-                "label": "Cache",
-                "tone": "good"
-              },
-              {
-                "id": "db",
-                "kind": "db",
-                "label": "Database",
-                "tone": "good",
-                "cpu": 22
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "app"
-              },
-              {
-                "from": "app",
-                "to": "cache"
-              },
-              {
-                "from": "cache",
-                "to": "db"
-              }
-            ]
-          },
+          "approach": "optimal",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 24,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 120,
+              "value": 40,
               "unit": "ms",
               "tone": "good"
             },
@@ -2769,80 +2675,104 @@
               "value": 0,
               "unit": "errors",
               "tone": "good"
+            },
+            {
+              "key": "hit",
+              "label": "Cache hit rate",
+              "value": 98,
+              "unit": "%",
+              "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Populate the cache once and serve the rest from memory."
+          "resultTitle": "The scan no longer pollutes the cache",
+          "resultBody": "The export streams 40 million rows from a replica that lags seconds behind, and never touches Redis. The hot 2 million titles stay resident, so the 07:00 hit rate stays at 98%. Cost: one replica, about $900 a month, and the export runs against slightly stale data."
         },
         {
-          "id": "retry-cache",
-          "label": "Retry cache",
+          "id": "double-memory",
+          "label": "Double Redis memory to 32 GB",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 44,
+              "value": 90,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2250,
+              "value": 1200,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 60,
+              "value": 200,
               "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "hit",
+              "label": "Cache hit rate",
+              "value": 45,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Same row, again",
-          "resultBody": "The origin still serves every repeat read."
+          "resultTitle": "The scan is bigger than any cache",
+          "resultBody": "40 million titles at ~3 KB each is 120 GB, so the export still cycles through and evicts the hot set. You pay twice as much for Redis and the morning hit rate rises from 41% to 45%."
         },
         {
-          "id": "increase-db-timeouts",
-          "label": "Increase DB timeouts",
+          "id": "export-ttl",
+          "label": "Give keys loaded by the export a 1-hour TTL",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 42,
+              "value": 88,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 1980,
+              "value": 1050,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 40,
+              "value": 170,
               "unit": "errors",
               "tone": "bad"
+            },
+            {
+              "key": "hit",
+              "label": "Cache hit rate",
+              "value": 52,
+              "unit": "%",
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Same row, again",
-          "resultBody": "Increase DB timeouts"
+          "resultTitle": "The damage is done before expiry",
+          "resultBody": "The cold keys now expire by 04:00, but LRU already evicted the hot titles while the export was writing. Memory is free at 07:00, yet the hot set must be refilled from Postgres, so the hit rate only reaches 52%."
         }
       ],
       "hints": [
-        "The same data is fetched over and over.",
-        "A short TTL is enough.",
-        "Serve repeats from cache."
+        "Compare the size of the export's working set with the size of the cache.",
+        "Under LRU, a single pass over cold data pushes out frequently used entries.",
+        "Not every reader needs to go through the cache."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "cache-11",
@@ -2852,36 +2782,36 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Config flags hit the database",
-      "brief": "Every request loads feature flags from SQL, adding 15ms even though flags change hourly.",
-      "constraint": "Flags are tiny, shared, and rarely written.",
-      "question": "Where should flags live at request time?",
+      "title": "Feature-flag lookups drive the database to 84%",
+      "brief": "Relay's API reads its 30 feature flags from Postgres on every request: 12,000 identical queries/s for a table that changes a few times a day. Postgres is at 84% CPU and p95 is 240 ms.",
+      "constraint": "A kill-switch flip must reach all 200 pods within 5 seconds, and requests must keep working if the flags table is unreachable.",
+      "question": "How do you serve flags without a database query per request?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 150000,
+          "value": 12000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 40,
+          "value": 84,
           "unit": "%",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 1800,
+          "value": 240,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
           "label": "Errors",
-          "value": 20,
+          "value": 45,
           "unit": "errors",
           "tone": "bad"
         }
@@ -2891,20 +2821,22 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "API clients"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "App",
-            "tone": "warn"
+            "label": "API (200 pods)",
+            "tone": "warn",
+            "cpu": 45
           },
           {
             "id": "db",
             "kind": "db",
-            "label": "Database",
+            "label": "Postgres",
             "tone": "bad",
-            "cpu": 92
+            "cpu": 84,
+            "sub": "SELECT * FROM flags"
           }
         ],
         "edges": [
@@ -2920,63 +2852,22 @@
       },
       "choices": [
         {
-          "id": "add-cache",
-          "label": "Add cache",
+          "id": "in-memory-refresh",
+          "label": "Hold flags in process memory, refreshed from the DB every 5 s",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "app",
-                "kind": "server",
-                "label": "App",
-                "tone": "good"
-              },
-              {
-                "id": "cache",
-                "kind": "cache",
-                "label": "Cache",
-                "tone": "good"
-              },
-              {
-                "id": "db",
-                "kind": "db",
-                "label": "Database",
-                "tone": "good",
-                "cpu": 22
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "app"
-              },
-              {
-                "from": "app",
-                "to": "cache"
-              },
-              {
-                "from": "cache",
-                "to": "db"
-              }
-            ]
-          },
+          "approach": "optimal",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 12,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 120,
+              "value": 38,
               "unit": "ms",
               "tone": "good"
             },
@@ -2988,78 +2879,81 @@
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Cache flags in memory or Redis with invalidation when an admin publishes a change."
+          "resultTitle": "Flags read from RAM, refreshed in the background",
+          "resultBody": "Each pod reloads the 30-row table every 5 seconds, so Postgres sees 40 queries per second instead of 12,000. Flag reads take nanoseconds and a flip reaches every pod within 5 s. If Postgres is down, pods keep the last good copy. Cost: flags can be up to 5 seconds old."
         },
         {
-          "id": "join-flags-every",
-          "label": "Join flags every",
+          "id": "redis-ttl",
+          "label": "Cache each flag in Redis with a 60-second TTL",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 44,
+              "value": 15,
               "unit": "%",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2250,
+              "value": 70,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 60,
+              "value": 10,
               "unit": "errors",
-              "tone": "bad"
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Same row, again",
-          "resultBody": "The origin still serves every repeat read."
+          "resultTitle": "The kill switch takes a minute",
+          "resultBody": "Postgres load drops, but each request now makes 30 Redis lookups and depends on Redis being up. A flipped kill switch can stay cached for up to 60 seconds, twelve times the 5-second requirement."
         },
         {
-          "id": "store-flags-client",
-          "label": "Store flags client",
+          "id": "load-once",
+          "label": "Load the flags once when each process starts",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 42,
+              "value": 8,
               "unit": "%",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 1980,
+              "value": 36,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 40,
+              "value": 0,
               "unit": "errors",
-              "tone": "bad"
+              "tone": "good"
             }
           ],
-          "resultTitle": "Same row, again",
-          "resultBody": "Store flags only in client localStorage"
+          "resultTitle": "Fast until you need to flip one",
+          "resultBody": "Database load disappears, but the flags never change without a restart. The next kill-switch flip needs a rolling restart of 200 pods and takes 12 minutes to reach them all."
         }
       ],
       "hints": [
-        "The same data is fetched over and over.",
-        "A short TTL is enough.",
-        "Serve repeats from cache."
+        "The data is tiny, read on every request, and rarely written.",
+        "Something must still pick up a change within 5 seconds.",
+        "Each server can keep its own copy and refresh it on a timer."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "cache-12",
@@ -3457,15 +3351,15 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Session cache as source of truth",
-      "brief": "A Redis cache is treated as durable session storage and a node restart logs everyone out.",
-      "constraint": "Sessions must survive cache eviction.",
-      "question": "What is the correct cache role?",
+      "title": "Shoppers return to empty carts",
+      "brief": "Basketly keeps carts only in Redis, with maxmemory 12 GB and allkeys-lru. During a promo at 30,000 req/s, memory filled and Redis evicted 180,000 carts belonging to shoppers who had stepped away.",
+      "constraint": "Carts must survive for 7 days, and Redis cannot grow past 12 GB this quarter.",
+      "question": "How do you stop eviction from deleting customer carts?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 150000,
+          "value": 30000,
           "unit": "req/s",
           "tone": "neutral"
         },
@@ -3479,15 +3373,15 @@
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 1800,
+          "value": 70,
           "unit": "ms",
-          "tone": "bad"
+          "tone": "good"
         },
         {
-          "key": "errors",
-          "label": "Errors",
-          "value": 20,
-          "unit": "errors",
+          "key": "lost",
+          "label": "Carts lost",
+          "value": 180000,
+          "unit": "carts",
           "tone": "bad"
         }
       ],
@@ -3496,20 +3390,22 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Shoppers"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "App",
-            "tone": "warn"
+            "label": "Cart API",
+            "tone": "warn",
+            "cpu": 40
           },
           {
-            "id": "db",
-            "kind": "db",
-            "label": "Database",
+            "id": "cache",
+            "kind": "cache",
+            "label": "Redis 12 GB",
             "tone": "bad",
-            "cpu": 92
+            "cpu": 35,
+            "sub": "evicting carts"
           }
         ],
         "edges": [
@@ -3519,118 +3415,47 @@
           },
           {
             "from": "app",
-            "to": "db"
+            "to": "cache"
           }
         ]
       },
       "choices": [
         {
-          "id": "add-cache",
-          "label": "Add cache",
+          "id": "durable-store",
+          "label": "Persist carts in Postgres; keep Redis as a TTL cache",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "app",
-                "kind": "server",
-                "label": "App",
-                "tone": "good"
-              },
-              {
-                "id": "cache",
-                "kind": "cache",
-                "label": "Cache",
-                "tone": "good"
-              },
-              {
-                "id": "db",
-                "kind": "db",
-                "label": "Database",
-                "tone": "good",
-                "cpu": 22
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "app"
-              },
-              {
-                "from": "app",
-                "to": "cache"
-              },
-              {
-                "from": "cache",
-                "to": "db"
-              }
-            ]
-          },
+          "approach": "optimal",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 38,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 120,
+              "value": 75,
               "unit": "ms",
               "tone": "good"
             },
             {
-              "key": "errors",
-              "label": "Errors",
+              "key": "lost",
+              "label": "Carts lost",
               "value": 0,
-              "unit": "errors",
+              "unit": "carts",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Use cache as a fast layer in front of durable session storage, not as the only copy."
+          "resultTitle": "Eviction now costs a miss, not a cart",
+          "resultBody": "Cart writes go to Postgres first, and Redis holds active carts for 2 hours. An evicted cart is reloaded on the next read in ~3 ms. Carts lost drops to 0. Cost: roughly 600 extra writes per second on Postgres."
         },
         {
-          "id": "increase-redis-maxmemory",
-          "label": "Increase Redis maxmemory",
+          "id": "noeviction",
+          "label": "Switch the Redis eviction policy to noeviction",
           "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 44,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 2250,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 60,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Same row, again",
-          "resultBody": "The origin still serves every repeat read."
-        },
-        {
-          "id": "store-sessions-browser",
-          "label": "Store sessions browser",
-          "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
@@ -3638,33 +3463,73 @@
               "label": "CPU",
               "value": 42,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 1980,
+              "value": 90,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 40,
+              "value": 900,
               "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "lost",
+              "label": "Carts lost",
+              "value": 0,
+              "unit": "carts",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Nothing evicted, nothing written",
+          "resultBody": "Old carts stay, but once memory reaches 12 GB every write returns an OOM error. New shoppers cannot add items, and 900 requests per second fail during the promo."
+        },
+        {
+          "id": "aof",
+          "label": "Turn on AOF persistence with fsync every second",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 45,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 78,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "lost",
+              "label": "Carts lost",
+              "value": 175000,
+              "unit": "carts",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Same row, again",
-          "resultBody": "Store sessions only in browser cookies without a server record"
+          "resultTitle": "Durable deletes are still deletes",
+          "resultBody": "AOF protects carts from a restart, but eviction is a deliberate delete and gets written to the log too. With memory still capped at 12 GB, 175,000 carts are evicted in the next promo."
         }
       ],
       "hints": [
-        "The same data is fetched over and over.",
-        "A short TTL is enough.",
-        "Serve repeats from cache."
+        "Ask what allkeys-lru is allowed to do when memory is full.",
+        "Persistence and eviction are separate problems.",
+        "A cache should be safe to lose; decide where the durable copy lives."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "cache-15",
@@ -3674,36 +3539,36 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Multi-key assemble on every page",
-      "brief": "A homepage fans out to 40 independent DB keys that almost never change together.",
-      "constraint": "The assembled page is identical for anonymous users for minutes.",
-      "question": "What should be cached?",
+      "title": "Homepage makes 120 Redis round-trips",
+      "brief": "Newsdeck's homepage builds 120 story cards, each fetched with its own sequential Redis GET at ~0.4 ms. At 15,000 pages/s that is 1.8 million commands/s; Redis is at 88% CPU and page p95 is 180 ms.",
+      "constraint": "The story cards must stay individually cached; editors update them one at a time.",
+      "question": "How do you cut the cost of assembling the page?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 150000,
+          "value": 15000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 40,
+          "value": 88,
           "unit": "%",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 1800,
+          "value": 180,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
           "label": "Errors",
-          "value": 20,
+          "value": 40,
           "unit": "errors",
           "tone": "bad"
         }
@@ -3713,20 +3578,30 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Readers"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "App",
-            "tone": "warn"
+            "label": "Web app",
+            "tone": "warn",
+            "cpu": 50,
+            "sub": "120 GETs per page"
+          },
+          {
+            "id": "cache",
+            "kind": "cache",
+            "label": "Redis",
+            "tone": "bad",
+            "cpu": 88,
+            "sub": "1.8M cmds/s"
           },
           {
             "id": "db",
             "kind": "db",
-            "label": "Database",
-            "tone": "bad",
-            "cpu": 92
+            "label": "Postgres",
+            "tone": "good",
+            "cpu": 15
           }
         ],
         "edges": [
@@ -3736,69 +3611,32 @@
           },
           {
             "from": "app",
+            "to": "cache"
+          },
+          {
+            "from": "cache",
             "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "add-cache",
-          "label": "Add cache",
+          "id": "mget",
+          "label": "Fetch all 120 cards with a single MGET per page",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "app",
-                "kind": "server",
-                "label": "App",
-                "tone": "good"
-              },
-              {
-                "id": "cache",
-                "kind": "cache",
-                "label": "Cache",
-                "tone": "good"
-              },
-              {
-                "id": "db",
-                "kind": "db",
-                "label": "Database",
-                "tone": "good",
-                "cpu": 22
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "app"
-              },
-              {
-                "from": "app",
-                "to": "cache"
-              },
-              {
-                "from": "cache",
-                "to": "db"
-              }
-            ]
-          },
+          "approach": "optimal",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 30,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 120,
+              "value": 25,
               "unit": "ms",
               "tone": "good"
             },
@@ -3810,78 +3648,81 @@
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Cache the assembled homepage fragment, not only the individual keys."
+          "resultTitle": "One round-trip instead of 120",
+          "resultBody": "A single MGET returns all 120 cards in about 1 ms, so page assembly drops from ~50 ms of waiting to 1 ms. Redis handles 15,000 commands per second instead of 1.8 million and falls to 30% CPU. Cost: in a Redis Cluster the keys need a shared hash tag or one MGET per shard."
         },
         {
-          "id": "cache-nothing-because",
-          "label": "Cache nothing because",
+          "id": "replicas",
+          "label": "Add two Redis read replicas to share the GETs",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 44,
+              "value": 45,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2250,
+              "value": 170,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 60,
+              "value": 10,
               "unit": "errors",
-              "tone": "bad"
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Same row, again",
-          "resultBody": "The origin still serves every repeat read."
+          "resultTitle": "Less load per node, same latency",
+          "resultBody": "Three nodes split the 1.8 million commands, so CPU per node drops to 45%. Each page still waits on 120 sequential round-trips, and p95 stays at 170 ms."
         },
         {
-          "id": "query-all-40",
-          "label": "Query all 40",
+          "id": "more-threads",
+          "label": "Raise the app's worker threads from 64 to 256",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 42,
+              "value": 97,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 1980,
+              "value": 260,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 40,
+              "value": 120,
               "unit": "errors",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Same row, again",
-          "resultBody": "Query all 40 keys on every request"
+          "resultTitle": "More pages in flight, each still slow",
+          "resultBody": "More threads send GETs in parallel across requests, so Redis gets even more commands and reaches 97% CPU. Each page still makes 120 serial calls, and p95 rises to 260 ms as Redis queues up."
         }
       ],
       "hints": [
-        "The same data is fetched over and over.",
-        "A short TTL is enough.",
-        "Serve repeats from cache."
+        "Count how many times one page waits on the network.",
+        "The cost is the number of commands, not the size of the data.",
+        "Redis can answer for many keys in one request."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "cache-16",
@@ -3891,37 +3732,44 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Hot key eviction loop",
-      "brief": "A tiny Redis instance evicts the hottest key, which is immediately reloaded and evicted again.",
-      "constraint": "Working set is larger than cache RAM.",
-      "question": "What stops the thrash?",
+      "title": "Match-day cache evicts itself every few seconds",
+      "brief": "Fanzone's 8 GB Redis uses volatile-lru. New analytics counters were written without a TTL and now fill 6.5 GB, so only cached match data can be evicted. Hit rate has fallen to 35% and Postgres is at 90%.",
+      "constraint": "The counters are the only copy until the nightly flush and must not be lost.",
+      "question": "How do you give the match cache its memory back?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 150000,
+          "value": 40000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 40,
+          "value": 90,
           "unit": "%",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 1800,
+          "value": 950,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
           "label": "Errors",
-          "value": 20,
+          "value": 260,
           "unit": "errors",
+          "tone": "bad"
+        },
+        {
+          "key": "hit",
+          "label": "Cache hit rate",
+          "value": 35,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -3930,20 +3778,29 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Fans"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "App",
-            "tone": "warn"
+            "label": "Match API",
+            "tone": "warn",
+            "cpu": 55
+          },
+          {
+            "id": "cache",
+            "kind": "cache",
+            "label": "Redis 8 GB",
+            "tone": "bad",
+            "cpu": 45,
+            "sub": "6.5 GB of counters"
           },
           {
             "id": "db",
             "kind": "db",
-            "label": "Database",
+            "label": "Postgres",
             "tone": "bad",
-            "cpu": 92
+            "cpu": 90
           }
         ],
         "edges": [
@@ -3953,69 +3810,32 @@
           },
           {
             "from": "app",
+            "to": "cache"
+          },
+          {
+            "from": "cache",
             "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "add-cache",
-          "label": "Add cache",
+          "id": "separate-instance",
+          "label": "Move the TTL-less analytics counters to their own Redis",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "app",
-                "kind": "server",
-                "label": "App",
-                "tone": "good"
-              },
-              {
-                "id": "cache",
-                "kind": "cache",
-                "label": "Cache",
-                "tone": "good"
-              },
-              {
-                "id": "db",
-                "kind": "db",
-                "label": "Database",
-                "tone": "good",
-                "cpu": 22
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "app"
-              },
-              {
-                "from": "app",
-                "to": "cache"
-              },
-              {
-                "from": "cache",
-                "to": "db"
-              }
-            ]
-          },
+          "approach": "optimal",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 26,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 120,
+              "value": 50,
               "unit": "ms",
               "tone": "good"
             },
@@ -4025,80 +3845,104 @@
               "value": 0,
               "unit": "errors",
               "tone": "good"
+            },
+            {
+              "key": "hit",
+              "label": "Cache hit rate",
+              "value": 95,
+              "unit": "%",
+              "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Size the cache for the hot working set or split hot keys so they are not constantly evicted."
+          "resultTitle": "Cache and data stop sharing memory",
+          "resultBody": "Counters now live on a separate Redis with noeviction and persistence, sized for them. The match cache gets its full 8 GB back, the hit rate returns to 95%, and Postgres drops to 26%. Cost: one more Redis instance, about $400 a month."
         },
         {
-          "id": "set-ttl-zero",
-          "label": "Set TTL zero",
+          "id": "allkeys-lru",
+          "label": "Switch the eviction policy to allkeys-lru",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 44,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 2250,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 60,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Same row, again",
-          "resultBody": "The origin still serves every repeat read."
-        },
-        {
-          "id": "disable-eviction-oom",
-          "label": "Disable eviction OOM",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 42,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 1980,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
               "value": 40,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 120,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
               "unit": "errors",
+              "tone": "good"
+            },
+            {
+              "key": "hit",
+              "label": "Cache hit rate",
+              "value": 88,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Cache recovers, analytics quietly lost",
+          "resultBody": "Rarely touched counters are now evicted to make room for match data, so the hit rate recovers. Those counters were the only copy, and the nightly report is missing about 30% of the day's events."
+        },
+        {
+          "id": "raise-maxmemory",
+          "label": "Raise maxmemory to 15.5 GB on the 16 GB host",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 5000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 4000,
+              "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "hit",
+              "label": "Cache hit rate",
+              "value": 0,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Same row, again",
-          "resultBody": "Disable eviction and OOM the cache"
+          "resultTitle": "The snapshot fork kills Redis",
+          "resultBody": "The next RDB snapshot forks the process, and copy-on-write pages push memory past 16 GB. The kernel OOM killer stops Redis, every read goes to Postgres, and the site is down for 6 minutes."
         }
       ],
       "hints": [
-        "The same data is fetched over and over.",
-        "A short TTL is enough.",
-        "Serve repeats from cache."
+        "Check which keys volatile-lru is allowed to evict.",
+        "Keys without a TTL are never eviction candidates under this policy.",
+        "Data that must not be lost should not compete with a cache for memory."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "cache-17",
@@ -4300,36 +4144,36 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Computed report on every dashboard open",
-      "brief": "A 12-second aggregation runs on each dashboard load even when filters are unchanged.",
-      "constraint": "The report can be a few minutes stale.",
-      "question": "How do you cut dashboard latency?",
+      "title": "Finance dashboard runs a 12-second query per view",
+      "brief": "Ledgerly's revenue dashboard runs a 12-second aggregate over 900 million rows every time it opens: 400 opens a minute at month end. The warehouse is at 97% CPU. The data only changes during the 03:00 ETL.",
+      "constraint": "Figures must match the latest completed ETL run exactly.",
+      "question": "How do you stop recomputing the same report all day?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 150000,
+          "value": 7,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 40,
+          "value": 97,
           "unit": "%",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 1800,
+          "value": 12000,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
           "label": "Errors",
-          "value": 20,
+          "value": 35,
           "unit": "errors",
           "tone": "bad"
         }
@@ -4339,20 +4183,22 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Finance team"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "App",
-            "tone": "warn"
+            "label": "Dashboard API",
+            "tone": "warn",
+            "cpu": 30
           },
           {
             "id": "db",
             "kind": "db",
-            "label": "Database",
+            "label": "Warehouse",
             "tone": "bad",
-            "cpu": 92
+            "cpu": 97,
+            "sub": "12 s aggregate"
           }
         ],
         "edges": [
@@ -4368,63 +4214,22 @@
       },
       "choices": [
         {
-          "id": "add-cache",
-          "label": "Add cache",
+          "id": "precompute",
+          "label": "Compute reports after the 03:00 ETL and cache per report date",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "app",
-                "kind": "server",
-                "label": "App",
-                "tone": "good"
-              },
-              {
-                "id": "cache",
-                "kind": "cache",
-                "label": "Cache",
-                "tone": "good"
-              },
-              {
-                "id": "db",
-                "kind": "db",
-                "label": "Database",
-                "tone": "good",
-                "cpu": 22
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "app"
-              },
-              {
-                "from": "app",
-                "to": "cache"
-              },
-              {
-                "from": "cache",
-                "to": "db"
-              }
-            ]
-          },
+          "approach": "optimal",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 8,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 120,
+              "value": 60,
               "unit": "ms",
               "tone": "good"
             },
@@ -4436,78 +4241,81 @@
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Cache the computed result keyed by filters, with a TTL or refresh job."
+          "resultTitle": "The report is computed once a day",
+          "resultBody": "The ETL job runs each aggregate once and stores it under report:{name}:{etl_date}. Dashboards read a cached result in milliseconds, and the key only changes when a new ETL run finishes, so figures always match it. Cost: a 10-minute batch step after the ETL."
         },
         {
-          "id": "run-aggregation-browser",
-          "label": "Run aggregation browser",
+          "id": "ttl-30s",
+          "label": "Cache each report result for 30 seconds",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 44,
+              "value": 70,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2250,
+              "value": 12000,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 60,
+              "value": 15,
               "unit": "errors",
-              "tone": "bad"
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Same row, again",
-          "resultBody": "The origin still serves every repeat read."
+          "resultTitle": "Every expiry is another 12-second query",
+          "resultBody": "Most opens now hit, but every 30 seconds the entry expires and the next viewers wait 12 seconds while several of them rerun the same query at once. The warehouse stays at 70% for data that changed once overnight."
         },
         {
-          "id": "lock-dashboard-until",
-          "label": "Lock dashboard until",
+          "id": "replicas",
+          "label": "Add two warehouse read replicas for the dashboard",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 42,
+              "value": 90,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 1980,
+              "value": 11500,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 40,
+              "value": 20,
               "unit": "errors",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Same row, again",
-          "resultBody": "Lock the dashboard until the query finishes every time"
+          "resultTitle": "Three machines running the same query",
+          "resultBody": "The load spreads, but each open still scans 900 million rows for 12 seconds. The replicas run at 90% and cost about $6,000 a month to recompute an answer that does not change."
         }
       ],
       "hints": [
-        "The same data is fetched over and over.",
-        "A short TTL is enough.",
-        "Serve repeats from cache."
+        "Note how often the underlying data changes.",
+        "Every open recomputes an identical answer.",
+        "Tie the cached result to the event that changes the data, not to a timer."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "cache-19",
@@ -4517,37 +4325,44 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Dogpile after deploy",
-      "brief": "A deploy flushes Redis and the primary instantly takes the full read load.",
-      "constraint": "The working set is large and popular.",
-      "question": "How should deploys treat the cache?",
+      "title": "Every deploy empties the cache",
+      "brief": "Quillstack deploys 8 times a day. Cache keys include the build SHA, like v:{sha}:page:{id}, so each release starts with a 0% hit rate. For 4 minutes Postgres runs at 98% and p95 hits 3 seconds at 45,000 req/s.",
+      "constraint": "Deploys cannot slow down; the team ships fixes several times a day.",
+      "question": "How do you keep releases from resetting the cache?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 150000,
+          "value": 45000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 40,
+          "value": 98,
           "unit": "%",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 1800,
+          "value": 3000,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
           "label": "Errors",
-          "value": 20,
+          "value": 1200,
           "unit": "errors",
+          "tone": "bad"
+        },
+        {
+          "key": "hit",
+          "label": "Cache hit rate",
+          "value": 0,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -4556,20 +4371,30 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Docs readers"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "App",
-            "tone": "warn"
+            "label": "Docs app",
+            "tone": "warn",
+            "cpu": 60,
+            "sub": "new build"
+          },
+          {
+            "id": "cache",
+            "kind": "cache",
+            "label": "Redis",
+            "tone": "warn",
+            "cpu": 20,
+            "sub": "keys keyed by SHA"
           },
           {
             "id": "db",
             "kind": "db",
-            "label": "Database",
+            "label": "Postgres",
             "tone": "bad",
-            "cpu": 92
+            "cpu": 98
           }
         ],
         "edges": [
@@ -4579,69 +4404,32 @@
           },
           {
             "from": "app",
+            "to": "cache"
+          },
+          {
+            "from": "cache",
             "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "hash-urls",
-          "label": "Hash URLs",
+          "id": "schema-version",
+          "label": "Version keys by payload schema instead of build SHA",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "app",
-                "kind": "server",
-                "label": "App",
-                "tone": "good"
-              },
-              {
-                "id": "cache",
-                "kind": "cache",
-                "label": "Cache",
-                "tone": "good"
-              },
-              {
-                "id": "db",
-                "kind": "db",
-                "label": "Database",
-                "tone": "good",
-                "cpu": 22
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "app"
-              },
-              {
-                "from": "app",
-                "to": "cache"
-              },
-              {
-                "from": "cache",
-                "to": "db"
-              }
-            ]
-          },
+          "approach": "optimal",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 25,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 120,
+              "value": 45,
               "unit": "ms",
               "tone": "good"
             },
@@ -4651,80 +4439,104 @@
               "value": 0,
               "unit": "errors",
               "tone": "good"
+            },
+            {
+              "key": "hit",
+              "label": "Cache hit rate",
+              "value": 97,
+              "unit": "%",
+              "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Avoid full flush; warm or version keys so the origin is not stampeded."
+          "resultTitle": "Deploys reuse yesterday's cache",
+          "resultBody": "Keys become page:s3:{id}, and s3 changes only when the serialized format changes, about twice a month. New builds read the existing entries, so the hit rate stays at 97% through a deploy. Cost: engineers must remember to bump the schema version when the payload shape changes."
         },
         {
-          "id": "flushall-every-release",
-          "label": "FLUSHALL every release",
+          "id": "slow-rollout",
+          "label": "Roll new builds to pods over 40 minutes",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 44,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 2250,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
               "value": 60,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 400,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 80,
               "unit": "errors",
-              "tone": "bad"
+              "tone": "warn"
+            },
+            {
+              "key": "hit",
+              "label": "Cache hit rate",
+              "value": 70,
+              "unit": "%",
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Same row, again",
-          "resultBody": "The origin still serves every repeat read."
+          "resultTitle": "Smaller floods, much slower deploys",
+          "resultBody": "Only the pods on the new build miss, so Postgres peaks at 60% instead of 98%. Each release now takes 40 minutes, which breaks the deploy constraint, and the cache still refills from zero 8 times a day."
         },
         {
-          "id": "turn-cache-off",
-          "label": "Turn cache off",
+          "id": "bigger-db",
+          "label": "Scale Postgres to an instance twice the size",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 42,
+              "value": 72,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 1980,
+              "value": 900,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 40,
+              "value": 300,
               "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "hit",
+              "label": "Cache hit rate",
+              "value": 0,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Same row, again",
-          "resultBody": "Turn the cache off during deploys"
+          "resultTitle": "Paying to absorb a self-inflicted miss",
+          "resultBody": "The larger instance, about $4,000 more a month, takes the post-deploy flood at 72% CPU, but every deploy still starts at a 0% hit rate and p95 still reaches 900 ms."
         }
       ],
       "hints": [
-        "The same data is fetched over and over.",
-        "A short TTL is enough.",
-        "Serve repeats from cache."
+        "Check what changes in the cache key on every release.",
+        "The cached data itself is identical before and after most deploys.",
+        "A key should change only when the meaning or shape of its value changes."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "cache-20",
@@ -4734,37 +4546,37 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Local in-process cache drifts",
-      "brief": "Each app instance caches config in memory and instances disagree for 10 minutes after a change.",
-      "constraint": "All instances must converge quickly.",
-      "question": "What cache design fixes drift?",
+      "title": "Two pods, two prices for the same concert",
+      "brief": "Tixly's 40 pods each keep event details in an in-process cache with a 10-minute TTL. When an organizer changes a price, pods disagree for up to 10 minutes, and 2,300 checkouts an hour fail on price mismatch.",
+      "constraint": "The local cache stays: a hot event once pushed a Redis shard to 95% CPU without it.",
+      "question": "How do you make all 40 local caches drop a changed event quickly?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 150000,
+          "value": 28000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 40,
+          "value": 45,
           "unit": "%",
           "tone": "warn"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 1800,
+          "value": 60,
           "unit": "ms",
-          "tone": "bad"
+          "tone": "good"
         },
         {
-          "key": "errors",
-          "label": "Errors",
-          "value": 20,
-          "unit": "errors",
+          "key": "mismatch",
+          "label": "Price mismatches",
+          "value": 2300,
+          "unit": "/hour",
           "tone": "bad"
         }
       ],
@@ -4773,20 +4585,28 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Ticket buyers"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "App",
-            "tone": "warn"
+            "label": "40 pods + local cache",
+            "tone": "warn",
+            "cpu": 40
+          },
+          {
+            "id": "cache",
+            "kind": "cache",
+            "label": "Redis",
+            "tone": "warn",
+            "cpu": 45
           },
           {
             "id": "db",
             "kind": "db",
-            "label": "Database",
-            "tone": "bad",
-            "cpu": 92
+            "label": "Postgres",
+            "tone": "good",
+            "cpu": 30
           }
         ],
         "edges": [
@@ -4796,152 +4616,118 @@
           },
           {
             "from": "app",
+            "to": "cache"
+          },
+          {
+            "from": "cache",
             "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "add-cache",
-          "label": "Add cache",
+          "id": "pubsub",
+          "label": "Broadcast invalidations to every pod over Redis pub/sub",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "app",
-                "kind": "server",
-                "label": "App",
-                "tone": "good"
-              },
-              {
-                "id": "cache",
-                "kind": "cache",
-                "label": "Cache",
-                "tone": "good"
-              },
-              {
-                "id": "db",
-                "kind": "db",
-                "label": "Database",
-                "tone": "good",
-                "cpu": 22
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "app"
-              },
-              {
-                "from": "app",
-                "to": "cache"
-              },
-              {
-                "from": "cache",
-                "to": "db"
-              }
-            ]
-          },
+          "approach": "optimal",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 46,
               "unit": "%",
-              "tone": "good"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 120,
-              "unit": "ms",
-              "tone": "good"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
-              "tone": "good"
-            }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Use a shared cache or pub/sub invalidation so every instance drops the stale entry."
-        },
-        {
-          "id": "longer-in-process-ttl",
-          "label": "Longer in-process TTL",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 44,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 2250,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
               "value": 60,
-              "unit": "errors",
-              "tone": "bad"
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "mismatch",
+              "label": "Price mismatches",
+              "value": 15,
+              "unit": "/hour",
+              "tone": "good"
             }
           ],
-          "resultTitle": "Same row, again",
-          "resultBody": "The origin still serves every repeat read."
+          "resultTitle": "Every pod hears about the change",
+          "resultBody": "The price update publishes event:{id} after commit, and each pod drops its local copy within ~50 ms. Mismatches fall from 2,300 to about 15 an hour. Pub/sub is fire-and-forget, so the 10-minute TTL stays as a backstop for pods that miss a message."
         },
         {
-          "id": "different-ttls-per",
-          "label": "Different TTLs per",
+          "id": "sticky",
+          "label": "Pin each user to one pod with sticky sessions",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 42,
+              "value": 50,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 65,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "mismatch",
+              "label": "Price mismatches",
+              "value": 2100,
+              "unit": "/hour",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Consistent for the user, still stale",
+          "resultBody": "Each user now sees one pod's version, so prices stop flickering between refreshes. That pod can still be 10 minutes behind the database checkout reads, so 2,100 checkouts an hour still fail."
+        },
+        {
+          "id": "ttl-1s",
+          "label": "Cut the in-process cache TTL to 1 second",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 86,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 1980,
+              "value": 90,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 40,
-              "unit": "errors",
-              "tone": "bad"
+              "key": "mismatch",
+              "label": "Price mismatches",
+              "value": 120,
+              "unit": "/hour",
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Same row, again",
-          "resultBody": "Different TTLs per instance"
+          "resultTitle": "Fresher copies, hot shard again",
+          "resultBody": "Staleness drops to 1 second and mismatches to about 120 an hour. Each pod now refetches every hot event every second, so the Redis shard climbs back to 86% CPU, close to the overload the local cache was built to prevent."
         }
       ],
       "hints": [
-        "The same data is fetched over and over.",
-        "A short TTL is enough.",
-        "Serve repeats from cache."
+        "There are 40 independent copies of each event.",
+        "Waiting for a TTL means waiting for the slowest copy to expire.",
+        "Tell every copy when the source changes."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "cache-new-01",

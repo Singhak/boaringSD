@@ -218,39 +218,40 @@
       "level": 12,
       "patternId": "multi-region",
       "canonical": false,
-      "severity": "P1",
+      "reviewed": true,
+      "severity": "P0",
       "xp": 50,
-      "title": "DNS failover too slow",
-      "brief": "The primary region dies, but clients cache the old IP for 30 minutes.",
-      "constraint": "TTL is 1800 seconds and there is no health-based routing.",
-      "question": "What makes regional failover actually work?",
+      "title": "40% of users stuck on a dead region after DNS flip",
+      "brief": "us-east went dark and TicketHub switched its DNS record to us-west in 2 minutes. With a 3600 s TTL and pooled keep-alive connections, 40% of 60k req/s still hit us-east 45 minutes later.",
+      "constraint": "You can't control client resolvers, ISP caches or how long apps keep connections open.",
+      "question": "How do you move traffic without waiting on DNS caches?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 1800,
+          "value": 60000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 10,
+          "value": 46,
           "unit": "%",
           "tone": "warn"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 220,
+          "value": 21000,
           "unit": "ms",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 5000,
-          "unit": "errors",
+          "label": "Failed requests",
+          "value": 40,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -259,51 +260,113 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Fans",
+            "tone": "warn",
+            "sub": "cached us-east IP"
           },
           {
-            "id": "us",
-            "kind": "server",
-            "label": "US-East (down)",
+            "id": "dns",
+            "kind": "lb",
+            "label": "DNS (TTL 3600 s)",
             "tone": "bad"
+          },
+          {
+            "id": "east",
+            "kind": "server",
+            "label": "us-east (down)",
+            "tone": "bad",
+            "cpu": 0
+          },
+          {
+            "id": "west",
+            "kind": "server",
+            "label": "us-west",
+            "tone": "warn",
+            "cpu": 46,
+            "sub": "60% of traffic"
           }
         ],
         "edges": [
           {
             "from": "users",
-            "to": "us"
+            "to": "dns"
+          },
+          {
+            "from": "dns",
+            "to": "east"
+          },
+          {
+            "from": "dns",
+            "to": "west"
           }
         ]
       },
       "choices": [
         {
-          "id": "second-region",
-          "label": "Second region",
+          "id": "anycast-gslb",
+          "label": "Static anycast IPs on a global load balancer with endpoint health checks",
           "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 1800,
+            "latencyP99DeltaMs": -5,
+            "complexityScore": 3,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Paid edge service; clients keep one IP forever and failover happens behind it."
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 71,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 240,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Failed requests",
+              "value": 0.3,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
           "graphAfter": {
             "nodes": [
               {
                 "id": "users",
                 "kind": "users",
-                "label": "Users"
+                "label": "Fans",
+                "tone": "good",
+                "sub": "cached us-east IP"
               },
               {
                 "id": "dns",
                 "kind": "lb",
-                "label": "Geo DNS",
-                "tone": "good"
+                "label": "Anycast edge",
+                "tone": "good",
+                "sub": "health-checked"
               },
               {
-                "id": "us",
+                "id": "east",
                 "kind": "server",
-                "label": "US-East",
-                "tone": "good"
+                "label": "us-east (down)",
+                "tone": "bad",
+                "cpu": 0
               },
               {
-                "id": "eu",
+                "id": "west",
                 "kind": "server",
-                "label": "EU-West",
-                "tone": "good"
+                "label": "us-west",
+                "tone": "good",
+                "cpu": 71,
+                "sub": "100% of traffic"
               }
             ],
             "edges": [
@@ -313,107 +376,86 @@
               },
               {
                 "from": "dns",
-                "to": "us"
+                "to": "east"
               },
               {
                 "from": "dns",
-                "to": "eu"
+                "to": "west"
               }
             ]
           },
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 16,
-              "unit": "%",
-              "tone": "good"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 40,
-              "unit": "ms",
-              "tone": "good"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
-              "tone": "good"
-            }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Health-checked global routing with short TTLs or Anycast, not static DNS alone."
+          "resultTitle": "Failover happens behind the IP",
+          "resultBody": "Clients resolve two anycast IPs that never change; the edge health-checks each region and shifts traffic to us-west within about 30 s, regardless of what any resolver has cached. New connections land on us-west immediately. Cost: roughly $1.8k a month for the edge service plus data-transfer fees."
         },
         {
-          "id": "hope-users-flush",
-          "label": "Hope users flush",
+          "id": "ttl-5s",
+          "label": "Cut the DNS record's TTL from 3600 seconds to 5",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 14,
+              "value": 58,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 275,
+              "value": 9000,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 5040,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Blast radius intact",
-          "resultBody": "All users still depend on one region."
-        },
-        {
-          "id": "keep-1-hour-ttl",
-          "label": "Keep 1-hour TTL",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
+              "label": "Failed requests",
               "value": 12,
               "unit": "%",
               "tone": "bad"
+            }
+          ],
+          "resultTitle": "Resolvers and pools ignore it",
+          "resultBody": "Next time, many ISP resolvers floor TTLs at 60-300 s and mobile apps hold keep-alive connections for hours without re-resolving, so 12% of traffic still reaches the dead region; DNS query volume also rises 700x."
+        },
+        {
+          "id": "multi-a-record",
+          "label": "Publish both regions' IPs in one multi-value A record",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 50,
+              "unit": "%",
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 242,
+              "value": 21000,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 5020,
-              "unit": "errors",
+              "label": "Failed requests",
+              "value": 22,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Blast radius intact",
-          "resultBody": "Keep a 1-hour TTL for easier caching"
+          "resultTitle": "Half the connects wait for timeouts",
+          "resultBody": "Clients pick an IP at random, and many SDKs don't try the second address until a 21 s TCP timeout; half of new connections stall on the dead region before failing or falling back."
         }
       ],
       "hints": [
-        "One region is the blast radius.",
-        "Failover must already have capacity.",
-        "Serve from a second region."
+        "The DNS change was fast; getting clients to notice it was slow.",
+        "Any fix that relies on clients re-resolving inherits every cache between you and them.",
+        "Keep the IP the same and change what's behind it."
       ],
       "nextId": null
     },
@@ -644,39 +686,40 @@
       "level": 12,
       "patternId": "multi-region",
       "canonical": false,
-      "severity": "P1",
+      "reviewed": true,
+      "severity": "P2",
       "xp": 50,
-      "title": "Users pinned to a distant region",
-      "brief": "APAC users always hit US-East even though an APAC stack exists.",
-      "constraint": "Latency is 220ms on tiny GETs.",
-      "question": "How should traffic be steered?",
+      "title": "Singapore customers served from Virginia",
+      "brief": "Deskly added ap-southeast-1 and geo-DNS, yet enterprise users in Singapore still see 240 ms RTT: their corporate resolvers sit at HQ in Virginia, so DNS maps them to us-east. Page loads take 2.8 s.",
+      "constraint": "Customers won't change their corporate DNS setup for one vendor.",
+      "question": "How do you route by where the user is, not where their resolver is?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 220,
+          "value": 14000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 10,
+          "value": 52,
           "unit": "%",
-          "tone": "warn"
+          "tone": "neutral"
         },
         {
           "key": "p95",
-          "label": "p95 latency",
-          "value": 220,
+          "label": "p95 page load",
+          "value": 2800,
           "unit": "ms",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 5000,
-          "unit": "errors",
+          "label": "Misrouted APAC users",
+          "value": 63,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -685,50 +728,112 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Singapore staff",
+            "tone": "warn",
+            "sub": "resolver in Virginia"
           },
           {
-            "id": "us",
+            "id": "dns",
+            "kind": "lb",
+            "label": "Geo-DNS",
+            "tone": "bad",
+            "sub": "sees resolver IP"
+          },
+          {
+            "id": "east",
             "kind": "server",
-            "label": "US-East (down)",
-            "tone": "bad"
+            "label": "us-east",
+            "tone": "warn",
+            "cpu": 52
+          },
+          {
+            "id": "ap",
+            "kind": "server",
+            "label": "ap-southeast-1",
+            "cpu": 18,
+            "sub": "mostly idle"
           }
         ],
         "edges": [
           {
             "from": "users",
-            "to": "us"
+            "to": "dns"
+          },
+          {
+            "from": "dns",
+            "to": "east"
+          },
+          {
+            "from": "dns",
+            "to": "ap"
           }
         ]
       },
       "choices": [
         {
-          "id": "second-region",
-          "label": "Second region",
+          "id": "edge-l7-routing",
+          "label": "Terminate TLS at the nearest edge and route by client IP",
           "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 900,
+            "latencyP99DeltaMs": -180,
+            "complexityScore": 3,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Edge sees the real client address; adds an edge hop and per-GB fees."
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 38,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 page load",
+              "value": 700,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Misrouted APAC users",
+              "value": 4,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
           "graphAfter": {
             "nodes": [
               {
                 "id": "users",
                 "kind": "users",
-                "label": "Users"
+                "label": "Singapore staff",
+                "tone": "good",
+                "sub": "resolver in Virginia"
               },
               {
                 "id": "dns",
                 "kind": "lb",
-                "label": "Geo DNS",
-                "tone": "good"
+                "label": "Anycast edge",
+                "tone": "good",
+                "sub": "routes by client IP"
               },
               {
-                "id": "us",
+                "id": "east",
                 "kind": "server",
-                "label": "US-East",
-                "tone": "good"
+                "label": "us-east",
+                "tone": "good",
+                "cpu": 38
               },
               {
-                "id": "eu",
+                "id": "ap",
                 "kind": "server",
-                "label": "EU-West",
+                "label": "ap-southeast-1",
+                "cpu": 41,
+                "sub": "APAC traffic",
                 "tone": "good"
               }
             ],
@@ -739,107 +844,86 @@
               },
               {
                 "from": "dns",
-                "to": "us"
+                "to": "east"
               },
               {
                 "from": "dns",
-                "to": "eu"
+                "to": "ap"
               }
             ]
           },
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 16,
-              "unit": "%",
-              "tone": "good"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 40,
-              "unit": "ms",
-              "tone": "good"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
-              "tone": "good"
-            }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Route users to the nearest healthy region, with failover if that region is down."
+          "resultTitle": "The edge sees the real user",
+          "resultBody": "Anycast delivers each TCP connection to the nearest point of presence, which sees the true client address and forwards to ap-southeast-1 over the provider backbone. The resolver's location no longer matters, and page loads fall to 0.7 s. Cost: edge fees and one more hop to operate."
         },
         {
-          "id": "one-global-origin",
-          "label": "One global origin",
+          "id": "more-geo-rules",
+          "label": "Add finer country rules to the geo-DNS map",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 14,
+              "value": 52,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
-              "label": "p95 latency",
-              "value": 275,
+              "label": "p95 page load",
+              "value": 2800,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 5040,
-              "unit": "errors",
+              "label": "Misrouted APAC users",
+              "value": 61,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Blast radius intact",
-          "resultBody": "All users still depend on one region."
+          "resultTitle": "DNS still sees Virginia",
+          "resultBody": "The rules are correct but the input is wrong: every lookup still arrives from the Virginia resolver, and corporate resolvers rarely forward EDNS Client Subnet, so the map keeps choosing us-east."
         },
         {
-          "id": "manual-country-files",
-          "label": "Manual country files",
+          "id": "cdn-api",
+          "label": "Cache API responses on the CDN in Singapore",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 12,
+              "value": 50,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
-              "label": "p95 latency",
-              "value": 242,
+              "label": "p95 page load",
+              "value": 2500,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 5020,
-              "unit": "errors",
+              "label": "Misrouted APAC users",
+              "value": 60,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Blast radius intact",
-          "resultBody": "Manual country files on each laptop"
+          "resultTitle": "Personalised APIs don't cache",
+          "resultBody": "Static assets speed up, but ticket lists and inboxes are per-user and uncacheable, so the hit rate on API calls is 3% and each page still makes five 240 ms round trips to Virginia."
         }
       ],
       "hints": [
-        "One region is the blast radius.",
-        "Failover must already have capacity.",
-        "Serve from a second region."
+        "Geo-DNS decides based on who asks the DNS question.",
+        "For these users the asker is thousands of kilometres away from the user.",
+        "Make the routing decision at a point that sees the user's own connection."
       ],
       "nextId": null
     },
@@ -849,114 +933,110 @@
       "level": 12,
       "patternId": "multi-region",
       "canonical": false,
-      "severity": "P1",
+      "reviewed": true,
+      "severity": "P0",
       "xp": 50,
-      "title": "Config deployed to one region",
-      "brief": "A feature flag is on in EU and off in US, so checkout rules disagree.",
-      "constraint": "Flags must be consistent for a given user.",
-      "question": "What multi-region concern is this?",
+      "title": "One bad flag took down all three regions at once",
+      "brief": "StreamCo pushed a rate-limit config with limit: 0 through its global config service. All three regions picked it up within 40 s and rejected 100% of 180k req/s. Multi-region bought nothing.",
+      "constraint": "Config changes must still reach all regions within an hour.",
+      "question": "How do you stop one change from hitting every region together?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 15000,
+          "value": 180000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 10,
+          "value": 14,
           "unit": "%",
           "tone": "warn"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 220,
+          "value": 8,
           "unit": "ms",
-          "tone": "warn"
+          "tone": "neutral"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 5000,
-          "unit": "errors",
+          "label": "Rejected requests",
+          "value": 100,
+          "unit": "%",
           "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "users",
-            "kind": "users",
-            "label": "Users"
+            "id": "cfg",
+            "kind": "server",
+            "label": "Global config service",
+            "tone": "bad",
+            "sub": "push to all"
           },
           {
             "id": "us",
             "kind": "server",
-            "label": "US-East (down)",
-            "tone": "bad"
+            "label": "us-east",
+            "tone": "bad",
+            "cpu": 14,
+            "sub": "429 everything"
+          },
+          {
+            "id": "eu",
+            "kind": "server",
+            "label": "eu-west",
+            "tone": "bad",
+            "cpu": 12,
+            "sub": "429 everything"
+          },
+          {
+            "id": "ap",
+            "kind": "server",
+            "label": "ap-south",
+            "tone": "bad",
+            "cpu": 11,
+            "sub": "429 everything"
           }
         ],
         "edges": [
           {
-            "from": "users",
+            "from": "cfg",
             "to": "us"
+          },
+          {
+            "from": "cfg",
+            "to": "eu"
+          },
+          {
+            "from": "cfg",
+            "to": "ap"
           }
         ]
       },
       "choices": [
         {
-          "id": "read-replicas",
-          "label": "Read replicas",
+          "id": "staged-config",
+          "label": "Roll config region by region with bake time and auto-rollback",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "dns",
-                "kind": "lb",
-                "label": "Geo DNS",
-                "tone": "good"
-              },
-              {
-                "id": "us",
-                "kind": "server",
-                "label": "US-East",
-                "tone": "good"
-              },
-              {
-                "id": "eu",
-                "kind": "server",
-                "label": "EU-West",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "dns"
-              },
-              {
-                "from": "dns",
-                "to": "us"
-              },
-              {
-                "from": "dns",
-                "to": "eu"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 3,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Global changes take ~45 min; regions run different config versions during the rollout."
           },
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 46,
               "unit": "%",
               "tone": "good"
             },
@@ -969,19 +1049,101 @@
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
+              "label": "Rejected requests",
+              "value": 0.2,
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Replicate control-plane config with a defined consistency model, or pin a user to one region’s flags."
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "cfg",
+                "kind": "server",
+                "label": "Global config service",
+                "tone": "good",
+                "sub": "canary region first"
+              },
+              {
+                "id": "us",
+                "kind": "server",
+                "label": "us-east",
+                "tone": "good",
+                "cpu": 46,
+                "sub": "canary, rolled back"
+              },
+              {
+                "id": "eu",
+                "kind": "server",
+                "label": "eu-west",
+                "tone": "good",
+                "cpu": 44,
+                "sub": "never received it"
+              },
+              {
+                "id": "ap",
+                "kind": "server",
+                "label": "ap-south",
+                "tone": "good",
+                "cpu": 42,
+                "sub": "never received it"
+              }
+            ],
+            "edges": [
+              {
+                "from": "cfg",
+                "to": "us"
+              },
+              {
+                "from": "cfg",
+                "to": "eu"
+              },
+              {
+                "from": "cfg",
+                "to": "ap"
+              }
+            ]
+          },
+          "resultTitle": "Canary region catches it",
+          "resultBody": "The change goes to 5% of ap-south, then the whole region, then the next, with 15 minutes of bake between stages. The next bad value trips the error-rate alarm in the canary slice and rolls back automatically, so only a sliver of one region is affected. Cost: global changes take about 45 minutes."
         },
         {
-          "id": "independent-flags-no",
-          "label": "Independent flags no",
+          "id": "fourth-region",
+          "label": "Add a fourth region for extra failover capacity",
           "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 11,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 8,
+              "unit": "ms",
+              "tone": "neutral"
+            },
+            {
+              "key": "errors",
+              "label": "Rejected requests",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Four regions, same config",
+          "resultBody": "The new region subscribes to the same config service and receives the same bad value at the same moment, so the outage just has one more region in it and costs 33% more."
+        },
+        {
+          "id": "two-person-review",
+          "label": "Require two engineers to approve every config change",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
@@ -989,62 +1151,31 @@
               "label": "CPU",
               "value": 14,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 275,
+              "value": 8,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "neutral"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 5040,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Blast radius intact",
-          "resultBody": "All users still depend on one region."
-        },
-        {
-          "id": "change-flags-region",
-          "label": "Change flags region",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 12,
+              "label": "Rejected requests",
+              "value": 100,
               "unit": "%",
               "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 242,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 5020,
-              "unit": "errors",
-              "tone": "bad"
             }
           ],
-          "resultTitle": "Blast radius intact",
-          "resultBody": "Change flags only in the region that happens to be awake"
+          "resultTitle": "Reviewers approved the typo",
+          "resultBody": "Review catches some mistakes, but the next bad value looks reasonable in a diff, both reviewers approve it, and it still lands on every region at once with the same 100% rejection."
         }
       ],
       "hints": [
-        "One region is the blast radius.",
-        "Failover must already have capacity.",
-        "Serve from a second region."
+        "The regions were independent for hardware failures, not for changes.",
+        "Most large outages start with a deploy or a config push.",
+        "Make regions separate failure domains for changes too, and give each stage time to show errors."
       ],
       "nextId": null
     },
@@ -1054,39 +1185,40 @@
       "level": 12,
       "patternId": "multi-region",
       "canonical": false,
+      "reviewed": true,
       "severity": "P1",
       "xp": 50,
-      "title": "Stateful sessions in one region",
-      "brief": "Sessions live in regional memory, so a failover logs everyone out.",
-      "constraint": "Users must survive a region loss.",
-      "question": "Where should session state live?",
+      "title": "Failover logs out two million users",
+      "brief": "BankLite failed over from us-east to us-west during a drill. Sessions live only in us-east Redis, so all 2.1M active users were logged out and 380k called support or retried MFA at once.",
+      "constraint": "A revoked session must stop working in every region within 5 seconds.",
+      "question": "How does a session survive a region failover?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 15000,
+          "label": "Logins",
+          "value": 9000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 10,
+          "value": 88,
           "unit": "%",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "p95",
-          "label": "p95 latency",
-          "value": 220,
+          "label": "p95 login",
+          "value": 6500,
           "unit": "ms",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 5000,
-          "unit": "errors",
+          "label": "Forced logouts",
+          "value": 2100000,
+          "unit": "users",
           "tone": "bad"
         }
       ],
@@ -1095,161 +1227,202 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Customers",
+            "tone": "bad",
+            "sub": "logged out"
           },
           {
-            "id": "us",
+            "id": "west",
             "kind": "server",
-            "label": "US-East (down)",
+            "label": "us-west API",
+            "tone": "warn",
+            "cpu": 55
+          },
+          {
+            "id": "auth",
+            "kind": "server",
+            "label": "Auth + MFA",
+            "tone": "bad",
+            "cpu": 88,
+            "sub": "login storm"
+          },
+          {
+            "id": "redis",
+            "kind": "cache",
+            "label": "Session store (us-east only)",
             "tone": "bad"
           }
         ],
         "edges": [
           {
             "from": "users",
-            "to": "us"
+            "to": "west"
+          },
+          {
+            "from": "west",
+            "to": "auth"
+          },
+          {
+            "from": "west",
+            "to": "redis"
           }
         ]
       },
       "choices": [
         {
-          "id": "read-replicas",
-          "label": "Read replicas",
+          "id": "replicated-sessions",
+          "label": "Replicate the session store asynchronously into each region",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "dns",
-                "kind": "lb",
-                "label": "Geo DNS",
-                "tone": "good"
-              },
-              {
-                "id": "us",
-                "kind": "server",
-                "label": "US-East",
-                "tone": "good"
-              },
-              {
-                "id": "eu",
-                "kind": "server",
-                "label": "EU-West",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "dns"
-              },
-              {
-                "from": "dns",
-                "to": "us"
-              },
-              {
-                "from": "dns",
-                "to": "eu"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 2400,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 3,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Second Redis cluster; revocations and new sessions reach other regions in ~1 s."
           },
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 42,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
-              "label": "p95 latency",
-              "value": 40,
+              "label": "p95 login",
+              "value": 300,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
-              "tone": "good"
+              "label": "Forced logouts",
+              "value": 3000,
+              "unit": "users",
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Replicated or globally reachable session storage, not process memory in one region."
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Customers",
+                "tone": "good",
+                "sub": "logged out"
+              },
+              {
+                "id": "west",
+                "kind": "server",
+                "label": "us-west API",
+                "tone": "good",
+                "cpu": 50
+              },
+              {
+                "id": "auth",
+                "kind": "server",
+                "label": "Auth + MFA",
+                "tone": "good",
+                "cpu": 42,
+                "sub": "login storm"
+              },
+              {
+                "id": "redis",
+                "kind": "cache",
+                "label": "Session store (both regions)",
+                "tone": "good",
+                "sub": "~1 s replication lag"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "west"
+              },
+              {
+                "from": "west",
+                "to": "auth"
+              },
+              {
+                "from": "west",
+                "to": "redis"
+              }
+            ]
+          },
+          "resultTitle": "Sessions are already there",
+          "resultBody": "Each region reads a local Redis that receives every session write and revocation about a second later. On failover, us-west already holds nearly all sessions; only sessions created in the last second are lost. Revocations propagate well inside the 5 s budget. Cost: a second cluster and cross-region replication traffic."
         },
         {
-          "id": "sticky-sessions-single",
-          "label": "Sticky sessions single",
+          "id": "sticky-home",
+          "label": "Pin each user's traffic to their home region",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 14,
+              "value": 86,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
-              "label": "p95 latency",
-              "value": 275,
+              "label": "p95 login",
+              "value": 6200,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 5040,
-              "unit": "errors",
+              "label": "Forced logouts",
+              "value": 2100000,
+              "unit": "users",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Blast radius intact",
-          "resultBody": "All users still depend on one region."
+          "resultTitle": "Pinned to the region that died",
+          "resultBody": "Stickiness keeps users near their session in normal times, but when the home region is the one that fails, every pinned user still loses their session and the login storm is identical."
         },
         {
-          "id": "no-session-store",
-          "label": "No session store",
+          "id": "wan-reads",
+          "label": "Have us-west pods read sessions from us-east over WAN",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 12,
+              "value": 80,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
-              "label": "p95 latency",
-              "value": 242,
+              "label": "p95 login",
+              "value": 6400,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 5020,
-              "unit": "errors",
+              "label": "Forced logouts",
+              "value": 2100000,
+              "unit": "users",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Blast radius intact",
-          "resultBody": "No session store"
+          "resultTitle": "Session store died with its region",
+          "resultBody": "In normal times every request pays a 70 ms cross-region lookup, and when us-east is actually down the store is unreachable too, so all 2.1M users are logged out anyway."
         }
       ],
       "hints": [
-        "One region is the blast radius.",
-        "Failover must already have capacity.",
-        "Serve from a second region."
+        "The standby had compute but not the state users depend on.",
+        "Anything stored only in the failed region is gone during the failover.",
+        "Sessions need a copy in the surviving region before the failure, with revocations following fast."
       ],
       "nextId": null
     },
@@ -1543,202 +1716,220 @@
       "level": 12,
       "patternId": "multi-region",
       "canonical": false,
-      "severity": "P1",
+      "reviewed": true,
+      "severity": "P0",
       "xp": 50,
-      "title": "Warm standby is too cold",
-      "brief": "The DR region has no running app instances; boot plus image pull takes 40 minutes.",
-      "constraint": "RTO is 15 minutes.",
-      "question": "What readiness level is required?",
+      "title": "Standby region collapses under failover traffic",
+      "brief": "PetPals keeps 4 pods warm in eu-central for 80 needed. On failover, autoscaling asked for 76 more during a regional event and got 9 in 25 minutes; error rate hit 85%.",
+      "constraint": "The budget cannot pay for a full second copy of production.",
+      "question": "How big must the standby be, and what covers the gap?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 15000,
+          "value": 32000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 10,
+          "value": 100,
           "unit": "%",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 220,
+          "value": 12000,
           "unit": "ms",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 5000,
-          "unit": "errors",
+          "label": "Error rate",
+          "value": 85,
+          "unit": "%",
           "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "users",
-            "kind": "users",
-            "label": "Users"
+            "id": "lb",
+            "kind": "lb",
+            "label": "Failover router"
           },
           {
-            "id": "us",
+            "id": "pods",
             "kind": "server",
-            "label": "US-East (down)",
-            "tone": "bad"
+            "label": "eu-central 13 of 80 pods",
+            "tone": "bad",
+            "cpu": 100,
+            "sub": "scaling blocked"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Promoted replica",
+            "tone": "warn",
+            "cpu": 64
           }
         ],
         "edges": [
           {
-            "from": "users",
-            "to": "us"
+            "from": "lb",
+            "to": "pods"
+          },
+          {
+            "from": "pods",
+            "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "second-region",
-          "label": "Second region",
+          "id": "half-capacity",
+          "label": "Keep 50% capacity warm and shed low-priority traffic on failover",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "dns",
-                "kind": "lb",
-                "label": "Geo DNS",
-                "tone": "good"
-              },
-              {
-                "id": "us",
-                "kind": "server",
-                "label": "US-East",
-                "tone": "good"
-              },
-              {
-                "id": "eu",
-                "kind": "server",
-                "label": "EU-West",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "dns"
-              },
-              {
-                "from": "dns",
-                "to": "us"
-              },
-              {
-                "from": "dns",
-                "to": "eu"
-              }
-            ]
+          "approach": "viable_with_tradeoffs",
+          "tradeoffs": {
+            "costMonthlyDelta": 14000,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 3,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Pays for 40 idle pods; recommendations and feeds degrade for ~20 min while autoscaling fills in."
           },
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 78,
               "unit": "%",
-              "tone": "good"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 40,
+              "value": 450,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
+              "label": "Error rate",
+              "value": 1.5,
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "A warm or hot standby with scaled-out instances already running, not a cold start."
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Failover router",
+                "tone": "good"
+              },
+              {
+                "id": "pods",
+                "kind": "server",
+                "label": "eu-central 40 -> 80 pods",
+                "tone": "good",
+                "cpu": 78,
+                "sub": "shedding low-priority"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Promoted replica",
+                "tone": "good",
+                "cpu": 64
+              }
+            ],
+            "edges": [
+              {
+                "from": "lb",
+                "to": "pods"
+              },
+              {
+                "from": "pods",
+                "to": "db"
+              }
+            ]
+          },
+          "resultTitle": "Checkout survives, feeds degrade",
+          "resultBody": "Forty pre-provisioned pods, plus reserved capacity for the rest, take the load on day one. Load shedding drops recommendation and feed calls, about 45% of requests, so checkout and login stay under 1.5% errors while autoscaling adds the remaining pods. Cost: about $14k a month for capacity that sits idle."
         },
         {
-          "id": "document-only-dr",
-          "label": "Document-only DR",
+          "id": "trust-autoscaling",
+          "label": "Rely on autoscaling from 4 to 80 pods at failover",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 14,
+              "value": 100,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 275,
+              "value": 12000,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 5040,
-              "unit": "errors",
+              "label": "Error rate",
+              "value": 80,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Blast radius intact",
-          "resultBody": "All users still depend on one region."
+          "resultTitle": "Everyone else is scaling too",
+          "resultBody": "During a regional outage every tenant fails over into the same zones, instance requests return insufficient-capacity errors, and new nodes take minutes to boot even when granted; the 4 pods melt long before help arrives."
         },
         {
-          "id": "one-tiny-vm",
-          "label": "One tiny VM",
+          "id": "faster-failover",
+          "label": "Speed up failover so traffic moves in 30 seconds",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 12,
+              "value": 100,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 242,
+              "value": 15000,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 5020,
-              "unit": "errors",
+              "label": "Error rate",
+              "value": 90,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Blast radius intact",
-          "resultBody": "One tiny VM that cannot take full load"
+          "resultTitle": "The crash just arrives sooner",
+          "resultBody": "Full traffic now reaches 4 pods 30 seconds after the outage instead of 3 minutes, so they saturate sooner, crash-loop under load and slow the autoscaler's readiness checks even further."
         }
       ],
       "hints": [
-        "One region is the blast radius.",
-        "Failover must already have capacity.",
-        "Serve from a second region."
+        "The standby was sized for idle time, not for the worst day.",
+        "Cloud capacity is least available exactly when a whole region fails.",
+        "Decide how much must be pre-provisioned and what you'll switch off until the rest arrives."
       ],
       "nextId": null
     },
@@ -1987,202 +2178,253 @@
       "level": 12,
       "patternId": "multi-region",
       "canonical": false,
-      "severity": "P1",
+      "reviewed": true,
+      "severity": "P0",
       "xp": 50,
-      "title": "Cron in every region",
-      "brief": "A billing cron runs in US and EU and double-charges customers.",
-      "constraint": "Jobs are not region-aware.",
-      "question": "How should scheduled work be coordinated?",
+      "title": "Every customer invoiced twice on the 1st",
+      "brief": "After going active-active, InvoiceIQ's monthly billing cron runs in both us-east and eu-west. Each region billed all 48k customers at 00:00 UTC, and 96k invoice emails went out in 20 minutes.",
+      "constraint": "Billing must still run on the 1st even if one region is down.",
+      "question": "How do two live regions split a job that must run once?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 15000,
+          "label": "Invoice writes",
+          "value": 80,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 10,
+          "value": 61,
           "unit": "%",
           "tone": "warn"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 220,
+          "value": 450,
           "unit": "ms",
-          "tone": "warn"
+          "tone": "neutral"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 5000,
-          "unit": "errors",
+          "label": "Duplicate invoices",
+          "value": 48000,
+          "unit": "invoices",
           "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "users",
-            "kind": "users",
-            "label": "Users"
+            "id": "cron-us",
+            "kind": "worker",
+            "label": "Billing cron us-east",
+            "tone": "bad",
+            "cpu": 61
           },
           {
-            "id": "us",
+            "id": "cron-eu",
+            "kind": "worker",
+            "label": "Billing cron eu-west",
+            "tone": "bad",
+            "cpu": 58
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Multi-master DB",
+            "tone": "warn",
+            "sub": "async replication"
+          },
+          {
+            "id": "mail",
             "kind": "server",
-            "label": "US-East (down)",
-            "tone": "bad"
+            "label": "Email provider",
+            "tone": "bad",
+            "sub": "96k sent"
           }
         ],
         "edges": [
           {
-            "from": "users",
-            "to": "us"
+            "from": "cron-us",
+            "to": "db"
+          },
+          {
+            "from": "cron-eu",
+            "to": "db"
+          },
+          {
+            "from": "cron-us",
+            "to": "mail"
+          },
+          {
+            "from": "cron-eu",
+            "to": "mail"
           }
         ]
       },
       "choices": [
         {
-          "id": "second-region",
-          "label": "Second region",
+          "id": "home-region-owner",
+          "label": "Each region bills only customers homed there; survivors adopt orphans",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "dns",
-                "kind": "lb",
-                "label": "Geo DNS",
-                "tone": "good"
-              },
-              {
-                "id": "us",
-                "kind": "server",
-                "label": "US-East",
-                "tone": "good"
-              },
-              {
-                "id": "eu",
-                "kind": "server",
-                "label": "EU-West",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "dns"
-              },
-              {
-                "from": "dns",
-                "to": "us"
-              },
-              {
-                "from": "dns",
-                "to": "eu"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 3,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "Ownership is data, not timing; takeover of a dead region's customers is a deliberate step."
           },
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 34,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 40,
+              "value": 420,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Duplicate invoices",
               "value": 0,
-              "unit": "errors",
+              "unit": "invoices",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Elect a single region (or a lock) for globally unique jobs; run regional jobs only on regional data."
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "cron-us",
+                "kind": "worker",
+                "label": "Billing cron us-east",
+                "tone": "good",
+                "cpu": 34,
+                "sub": "home = us"
+              },
+              {
+                "id": "cron-eu",
+                "kind": "worker",
+                "label": "Billing cron eu-west",
+                "tone": "good",
+                "cpu": 31,
+                "sub": "home = eu"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Multi-master DB",
+                "tone": "good",
+                "sub": "async replication"
+              },
+              {
+                "id": "mail",
+                "kind": "server",
+                "label": "Email provider",
+                "tone": "good",
+                "sub": "48k sent"
+              }
+            ],
+            "edges": [
+              {
+                "from": "cron-us",
+                "to": "db"
+              },
+              {
+                "from": "cron-eu",
+                "to": "db"
+              },
+              {
+                "from": "cron-us",
+                "to": "mail"
+              },
+              {
+                "from": "cron-eu",
+                "to": "mail"
+              }
+            ]
+          },
+          "resultTitle": "No customer has two billers",
+          "resultBody": "Every customer row has a home_region, and each cron only bills its own. Because each customer is written by one region, the invoice row's unique key also works. If a region is marked failed, the survivor adopts its customers after the failover is declared, so billing still runs. Cost: takeover is an explicit, audited step."
         },
         {
-          "id": "every-region-runs",
-          "label": "Every region runs",
+          "id": "unique-per-region",
+          "label": "Add a unique index on (customer, period) in each regional DB",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 14,
+              "value": 60,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 275,
+              "value": 460,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "neutral"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 5040,
-              "unit": "errors",
+              "label": "Duplicate invoices",
+              "value": 46000,
+              "unit": "invoices",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Blast radius intact",
-          "resultBody": "All users still depend on one region."
+          "resultTitle": "Both inserts win locally",
+          "resultBody": "Each region's insert succeeds against its own copy before replication delivers the other one about 400 ms later; the conflict is detected after both crons already emailed the invoice."
         },
         {
-          "id": "disable-clocks",
-          "label": "Disable clocks",
+          "id": "disable-eu-cron",
+          "label": "Disable the billing cron in eu-west permanently",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 12,
+              "value": 60,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 242,
+              "value": 450,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "neutral"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 5020,
-              "unit": "errors",
-              "tone": "bad"
+              "label": "Duplicate invoices",
+              "value": 0,
+              "unit": "invoices",
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Blast radius intact",
-          "resultBody": "Disable clocks"
+          "resultTitle": "Billing now dies with us-east",
+          "resultBody": "Duplicates stop, but billing lives in one region again: when us-east is down on the 1st, nobody bills, and the next outage delays 48k invoices by 30 hours until someone runs it by hand."
         }
       ],
       "hints": [
-        "One region is the blast radius.",
-        "Failover must already have capacity.",
-        "Serve from a second region."
+        "Both regions are healthy and both believe the job is theirs.",
+        "With async replication, 'check the database first' sees only your own region's writes.",
+        "Give each unit of work exactly one owner, and make handing it over explicit."
       ],
       "nextId": null
     },
@@ -2192,39 +2434,40 @@
       "level": 12,
       "patternId": "multi-region",
       "canonical": false,
+      "reviewed": true,
       "severity": "P1",
       "xp": 50,
-      "title": "Object storage is regional",
-      "brief": "Images live in one bucket; failover region 404s every avatar.",
-      "constraint": "The app is multi-region; the bucket is not.",
-      "question": "What must be replicated?",
+      "title": "Listing photos 404 after failing over to eu-west",
+      "brief": "RentNest serves 90 TB of listing photos from a us-east bucket. During the failover drill to eu-west, the app ran fine but 38% of photos broke: the CDN had only the hot ones cached.",
+      "constraint": "New uploads must be viewable by the host within 5 seconds.",
+      "question": "How do photos stay available when their home region is gone?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 404,
+          "label": "Image requests",
+          "value": 45000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 10,
+          "value": 36,
           "unit": "%",
-          "tone": "warn"
+          "tone": "neutral"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 220,
+          "value": 1800,
           "unit": "ms",
           "tone": "warn"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 5000,
-          "unit": "errors",
+          "label": "Broken images",
+          "value": 38,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -2233,161 +2476,205 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Renters"
           },
           {
-            "id": "us",
+            "id": "cdn",
+            "kind": "cdn",
+            "label": "CDN",
+            "tone": "warn",
+            "sub": "62% cached"
+          },
+          {
+            "id": "eu",
             "kind": "server",
-            "label": "US-East (down)",
-            "tone": "bad"
+            "label": "eu-west app",
+            "cpu": 36
+          },
+          {
+            "id": "s3",
+            "kind": "db",
+            "label": "Photo bucket (us-east)",
+            "tone": "bad",
+            "sub": "unreachable"
           }
         ],
         "edges": [
           {
             "from": "users",
-            "to": "us"
+            "to": "cdn"
+          },
+          {
+            "from": "cdn",
+            "to": "s3"
+          },
+          {
+            "from": "users",
+            "to": "eu"
+          },
+          {
+            "from": "eu",
+            "to": "s3"
           }
         ]
       },
       "choices": [
         {
-          "id": "read-replicas",
-          "label": "Read replicas",
+          "id": "crr-fallback",
+          "label": "Replicate the bucket cross-region; read local, fall back on 404",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "dns",
-                "kind": "lb",
-                "label": "Geo DNS",
-                "tone": "good"
-              },
-              {
-                "id": "us",
-                "kind": "server",
-                "label": "US-East",
-                "tone": "good"
-              },
-              {
-                "id": "eu",
-                "kind": "server",
-                "label": "EU-West",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "dns"
-              },
-              {
-                "from": "dns",
-                "to": "us"
-              },
-              {
-                "from": "dns",
-                "to": "eu"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 4100,
+            "latencyP99DeltaMs": -30,
+            "complexityScore": 2,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Doubles storage and pays replication transfer; brand-new uploads may lag seconds."
           },
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 37,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 40,
+              "value": 160,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
+              "label": "Broken images",
+              "value": 0.1,
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Replicate or dual-write blobs (or use a global namespace) so both regions can read media."
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Renters",
+                "tone": "good"
+              },
+              {
+                "id": "cdn",
+                "kind": "cdn",
+                "label": "CDN",
+                "tone": "good",
+                "sub": "62% cached"
+              },
+              {
+                "id": "eu",
+                "kind": "server",
+                "label": "eu-west app",
+                "cpu": 36,
+                "tone": "good"
+              },
+              {
+                "id": "s3",
+                "kind": "db",
+                "label": "Photo buckets (us + eu)",
+                "tone": "good",
+                "sub": "async replication"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "cdn"
+              },
+              {
+                "from": "cdn",
+                "to": "s3"
+              },
+              {
+                "from": "users",
+                "to": "eu"
+              },
+              {
+                "from": "eu",
+                "to": "s3"
+              }
+            ]
+          },
+          "resultTitle": "The photos were already in Europe",
+          "resultBody": "Every object is copied to an eu-west bucket, most within seconds. The CDN and app read the nearest copy and fall back to the other bucket on a 404, which covers a brand-new upload that hasn't replicated yet. During the drill only uploads from the last few seconds went missing. Cost: double storage plus replication transfer."
         },
         {
-          "id": "assume-s3-one",
-          "label": "Assume S3 one",
+          "id": "cdn-longer-ttl",
+          "label": "Raise the CDN cache TTL on photos to 30 days",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 14,
+              "value": 36,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 275,
+              "value": 900,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 5040,
-              "unit": "errors",
+              "label": "Broken images",
+              "value": 21,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Blast radius intact",
-          "resultBody": "All users still depend on one region."
+          "resultTitle": "The long tail was never cached",
+          "resultBody": "Popular photos stay cached longer, but most of the 90 TB is rarely viewed and never in the cache, so 21% of requests still miss to a dead origin, and new uploads can't be written anywhere."
         },
         {
-          "id": "store-images-app",
-          "label": "Store images app",
+          "id": "app-dual-write",
+          "label": "Have the app write every upload to both regions' buckets",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 12,
+              "value": 44,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 242,
+              "value": 1900,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 5020,
-              "unit": "errors",
+              "label": "Broken images",
+              "value": 3,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Blast radius intact",
-          "resultBody": "Store images only on the app disk"
+          "resultTitle": "Copies drift with nothing to repair them",
+          "resultBody": "Uploads now wait on a cross-region PUT, adding 120 ms, and whenever one write fails the buckets silently diverge; the 90 TB already uploaded was never copied, so old listings remain broken."
         }
       ],
       "hints": [
-        "One region is the blast radius.",
-        "Failover must already have capacity.",
-        "Serve from a second region."
+        "The app failed over; its data didn't.",
+        "A cache holds what was popular, not everything you own.",
+        "Object stores can copy data across regions for you, but the copy trails the original."
       ],
       "nextId": null
     },
@@ -2643,39 +2930,40 @@
       "level": 12,
       "patternId": "multi-region",
       "canonical": false,
+      "reviewed": true,
       "severity": "P1",
       "xp": 50,
-      "title": "Follow-the-sun on-call vs follow-the-traffic",
-      "brief": "Traffic is global 24/7 but only one region is staffed, so overnight incidents wait.",
-      "constraint": "This is an operations design issue tied to multi-region.",
-      "question": "What must match the architecture?",
+      "title": "First real failover finds hard-coded us-east hosts",
+      "brief": "Norvo's DR plan promised 15-minute failover. In the first real us-east outage, eu-west took 3 h 40 min: 11 services had us-east hostnames in config and the runbook's 14 steps were stale.",
+      "constraint": "Leadership wants proof failover works, not another document.",
+      "question": "How do you know failover will work before you need it?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 15000,
+          "value": 22000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 10,
+          "value": 23,
           "unit": "%",
           "tone": "warn"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 220,
+          "value": 30000,
           "unit": "ms",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 5000,
-          "unit": "errors",
+          "label": "Failover time",
+          "value": 220,
+          "unit": "min",
           "tone": "bad"
         }
       ],
@@ -2684,161 +2972,198 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Customers",
+            "tone": "bad"
           },
           {
-            "id": "us",
+            "id": "eu",
             "kind": "server",
-            "label": "US-East (down)",
+            "label": "eu-west services",
+            "tone": "warn",
+            "cpu": 23,
+            "sub": "calling us-east"
+          },
+          {
+            "id": "east",
+            "kind": "server",
+            "label": "us-east (down)",
             "tone": "bad"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "eu-west replica",
+            "sub": "data is fine"
           }
         ],
         "edges": [
           {
             "from": "users",
-            "to": "us"
+            "to": "eu"
+          },
+          {
+            "from": "eu",
+            "to": "east"
+          },
+          {
+            "from": "eu",
+            "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "second-region",
-          "label": "Second region",
+          "id": "game-days",
+          "label": "Evacuate a production region every quarter during game days",
           "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 3000,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 3,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Planned, staffed risk each quarter in exchange for known recovery time."
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 58,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 400,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Failover time",
+              "value": 18,
+              "unit": "min",
+              "tone": "good"
+            }
+          ],
           "graphAfter": {
             "nodes": [
               {
                 "id": "users",
                 "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "dns",
-                "kind": "lb",
-                "label": "Geo DNS",
-                "tone": "good"
-              },
-              {
-                "id": "us",
-                "kind": "server",
-                "label": "US-East",
+                "label": "Customers",
                 "tone": "good"
               },
               {
                 "id": "eu",
                 "kind": "server",
-                "label": "EU-West",
+                "label": "eu-west services",
+                "tone": "good",
+                "cpu": 58,
+                "sub": "no cross-region calls"
+              },
+              {
+                "id": "east",
+                "kind": "server",
+                "label": "us-east (down)",
+                "tone": "bad"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "eu-west replica",
+                "sub": "data is fine",
                 "tone": "good"
               }
             ],
             "edges": [
               {
                 "from": "users",
-                "to": "dns"
-              },
-              {
-                "from": "dns",
-                "to": "us"
-              },
-              {
-                "from": "dns",
                 "to": "eu"
+              },
+              {
+                "from": "eu",
+                "to": "east"
+              },
+              {
+                "from": "eu",
+                "to": "db"
               }
             ]
           },
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 16,
-              "unit": "%",
-              "tone": "good"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 40,
-              "unit": "ms",
-              "tone": "good"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
-              "tone": "good"
-            }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Runbooks, paging, and dashboards that work for every serving region, not only HQ hours."
+          "resultTitle": "The drill found them first",
+          "resultBody": "Draining real traffic out of a region on a planned day surfaced the hard-coded hosts, a missing secret and two quotas; each became a fix and an automated check. The next outage fails over in 18 minutes because the path is exercised every quarter. Cost: a staffed, scheduled risk and some engineering time each drill."
         },
         {
-          "id": "multi-region-serving-sin",
-          "label": "Multi-region serving single-regi",
+          "id": "better-runbook",
+          "label": "Rewrite the DR runbook with detailed step-by-step screenshots",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 14,
+              "value": 23,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 275,
+              "value": 30000,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 5040,
-              "unit": "errors",
+              "label": "Failover time",
+              "value": 150,
+              "unit": "min",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Blast radius intact",
-          "resultBody": "All users still depend on one region."
+          "resultTitle": "Accurate for a month",
+          "resultBody": "The runbook is correct on the day it's written, but services keep adding new dependencies; without exercising the path, the next outage still finds four new us-east hostnames and takes 2.5 hours."
         },
         {
-          "id": "no-paging-outside",
-          "label": "No paging outside",
+          "id": "more-replication",
+          "label": "Replicate every database to eu-west synchronously",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 12,
+              "value": 30,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 242,
+              "value": 30000,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 5020,
-              "unit": "errors",
+              "label": "Failover time",
+              "value": 220,
+              "unit": "min",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Blast radius intact",
-          "resultBody": "No paging outside HQ"
+          "resultTitle": "Data was never the problem",
+          "resultBody": "Every write now pays an 80 ms cross-region round trip, yet in the next outage the eu-west services still call us-east hostnames and wait on the same broken config."
         }
       ],
       "hints": [
-        "One region is the blast radius.",
-        "Failover must already have capacity.",
-        "Serve from a second region."
+        "The data had replicated fine; the services around it hadn't been tested.",
+        "Anything that isn't exercised regularly drifts.",
+        "Treat failover as a routine operation you practise with real traffic."
       ],
       "nextId": null
     },
@@ -2848,202 +3173,222 @@
       "level": 12,
       "patternId": "multi-region",
       "canonical": false,
+      "reviewed": true,
       "severity": "P1",
       "xp": 50,
-      "title": "Schema migration not dual-region",
-      "brief": "EU is on schema v12 and US is on v11 when traffic shifts.",
-      "constraint": "The app cannot read the new column in the old region.",
-      "question": "How do you migrate a multi-region fleet?",
+      "title": "Column drop in us-east breaks eu-west mid-deploy",
+      "brief": "Fitbase deploys region by region. v42 renamed users.phone to phone_e164 in one migration; replication applied the DDL in eu-west while v41 still ran there, and 30% of eu-west requests failed.",
+      "constraint": "Regions must keep deploying one at a time, hours apart.",
+      "question": "How do you change a shared schema while regions run different versions?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 15000,
+          "value": 26000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 10,
+          "value": 49,
           "unit": "%",
-          "tone": "warn"
+          "tone": "neutral"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 220,
+          "value": 700,
           "unit": "ms",
           "tone": "warn"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 5000,
-          "unit": "errors",
+          "label": "eu-west errors",
+          "value": 30,
+          "unit": "%",
           "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "users",
-            "kind": "users",
-            "label": "Users"
-          },
-          {
             "id": "us",
             "kind": "server",
-            "label": "US-East (down)",
-            "tone": "bad"
+            "label": "us-east (v42)",
+            "cpu": 44
+          },
+          {
+            "id": "eu",
+            "kind": "server",
+            "label": "eu-west (v41)",
+            "tone": "bad",
+            "cpu": 49,
+            "sub": "column not found"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Replicated DB",
+            "tone": "warn",
+            "sub": "DDL replicated"
           }
         ],
         "edges": [
           {
-            "from": "users",
-            "to": "us"
+            "from": "us",
+            "to": "db"
+          },
+          {
+            "from": "eu",
+            "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "second-region",
-          "label": "Second region",
+          "id": "expand-contract",
+          "label": "Add and dual-write the new column; drop the old one last",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "dns",
-                "kind": "lb",
-                "label": "Geo DNS",
-                "tone": "good"
-              },
-              {
-                "id": "us",
-                "kind": "server",
-                "label": "US-East",
-                "tone": "good"
-              },
-              {
-                "id": "eu",
-                "kind": "server",
-                "label": "EU-West",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "dns"
-              },
-              {
-                "from": "dns",
-                "to": "us"
-              },
-              {
-                "from": "dns",
-                "to": "eu"
-              }
-            ]
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 1,
+            "complexityScore": 3,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "Four releases instead of one; both columns exist for weeks."
           },
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 50,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 40,
+              "value": 300,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "eu-west errors",
               "value": 0,
-              "unit": "errors",
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Expand-contract migrations that are compatible across versions, applied in every region before cutover."
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "us",
+                "kind": "server",
+                "label": "us-east (v42)",
+                "cpu": 44,
+                "tone": "good"
+              },
+              {
+                "id": "eu",
+                "kind": "server",
+                "label": "eu-west (v41)",
+                "tone": "good",
+                "cpu": 49,
+                "sub": "reads phone"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Replicated DB",
+                "tone": "good",
+                "sub": "phone + phone_e164"
+              }
+            ],
+            "edges": [
+              {
+                "from": "us",
+                "to": "db"
+              },
+              {
+                "from": "eu",
+                "to": "db"
+              }
+            ]
+          },
+          "resultTitle": "Old and new code both find their column",
+          "resultBody": "Release 1 adds phone_e164 and dual-writes; a backfill copies old rows; release 2 reads the new column; only after every region runs it does release 3 drop phone. At no point does a running version lose a column it reads. Cost: four releases over a few weeks instead of one."
         },
         {
-          "id": "break-schema-one",
-          "label": "Break schema one",
+          "id": "deploy-all-at-once",
+          "label": "Deploy v42 to all regions at the same moment",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 14,
+              "value": 52,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 275,
+              "value": 900,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 5040,
-              "unit": "errors",
+              "label": "eu-west errors",
+              "value": 8,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Blast radius intact",
-          "resultBody": "All users still depend on one region."
+          "resultTitle": "Mixed versions still overlap",
+          "resultBody": "A rolling deploy still has old and new pods side by side for minutes in every region, so old pods keep failing on the missing column, and a bad release now hits all regions at once with no staged rollback."
         },
         {
-          "id": "different-schemas-long-t",
-          "label": "Different schemas long-term",
+          "id": "pause-replication",
+          "label": "Pause replication to eu-west until its deploy finishes",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
+              "value": 47,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 700,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "eu-west errors",
               "value": 12,
               "unit": "%",
               "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 242,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 5020,
-              "unit": "errors",
-              "tone": "bad"
             }
           ],
-          "resultTitle": "Blast radius intact",
-          "resultBody": "Different schemas as a long-term state"
+          "resultTitle": "Four hours of lag builds up",
+          "resultBody": "eu-west errors pause, but its data falls four hours behind, users see stale profiles, and if us-east fails meanwhile you lose four hours of writes; when replication resumes the DDL breaks v41 anyway."
         }
       ],
       "hints": [
-        "One region is the blast radius.",
-        "Failover must already have capacity.",
-        "Serve from a second region."
+        "During a region-by-region rollout, two versions share one schema for hours.",
+        "A migration is safe only if both the old and the new code can run against it.",
+        "Split the rename into steps that each stay backward-compatible."
       ],
       "nextId": null
     },
@@ -3053,202 +3398,234 @@
       "level": 12,
       "patternId": "multi-region",
       "canonical": false,
+      "reviewed": true,
       "severity": "P1",
       "xp": 50,
-      "title": "Global secondary indexes lag",
-      "brief": "A user writes in Tokyo and immediately queries a global index that is 8 seconds behind.",
-      "constraint": "The user expects their own write.",
-      "question": "What consistency rule still applies across regions?",
+      "title": "Two users claim the same @handle in different regions",
+      "brief": "Chirply runs DynamoDB global tables in us and eu. Handle signup checks a GSI, then writes. Replication takes about 1 s, so 140 handles a day end up owned by two accounts.",
+      "constraint": "Normal posting and reads must stay local and fast in each region.",
+      "question": "How do you enforce a globally unique handle?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 15000,
+          "label": "Handle claims",
+          "value": 300,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 10,
+          "value": 29,
           "unit": "%",
-          "tone": "warn"
+          "tone": "neutral"
         },
         {
           "key": "p95",
-          "label": "p95 latency",
-          "value": 220,
+          "label": "p95 claim",
+          "value": 40,
           "unit": "ms",
-          "tone": "warn"
+          "tone": "neutral"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 5000,
-          "unit": "errors",
+          "label": "Double-owned handles",
+          "value": 140,
+          "unit": "/day",
           "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "users",
-            "kind": "users",
-            "label": "Users"
+            "id": "us-api",
+            "kind": "server",
+            "label": "us API",
+            "cpu": 29
           },
           {
-            "id": "us",
+            "id": "eu-api",
             "kind": "server",
-            "label": "US-East (down)",
-            "tone": "bad"
+            "label": "eu API",
+            "cpu": 27
+          },
+          {
+            "id": "tbl",
+            "kind": "db",
+            "label": "Global table",
+            "tone": "bad",
+            "sub": "last writer wins, ~1 s lag"
           }
         ],
         "edges": [
           {
-            "from": "users",
-            "to": "us"
+            "from": "us-api",
+            "to": "tbl"
+          },
+          {
+            "from": "eu-api",
+            "to": "tbl"
           }
         ]
       },
       "choices": [
         {
-          "id": "fresh-reads",
-          "label": "Fresh reads",
+          "id": "quorum-handles",
+          "label": "Keep just the handles table in a cross-region quorum store",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "dns",
-                "kind": "lb",
-                "label": "Geo DNS",
-                "tone": "good"
-              },
-              {
-                "id": "us",
-                "kind": "server",
-                "label": "US-East",
-                "tone": "good"
-              },
-              {
-                "id": "eu",
-                "kind": "server",
-                "label": "EU-West",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "dns"
-              },
-              {
-                "from": "dns",
-                "to": "us"
-              },
-              {
-                "from": "dns",
-                "to": "eu"
-              }
-            ]
+          "approach": "viable_with_tradeoffs",
+          "tradeoffs": {
+            "costMonthlyDelta": 700,
+            "latencyP99DeltaMs": 90,
+            "complexityScore": 3,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "Handle claims pay one cross-region round trip; everything else stays local."
           },
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 16,
+              "value": 29,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
-              "label": "p95 latency",
+              "label": "p95 claim",
+              "value": 130,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Double-owned handles",
+              "value": 0,
+              "unit": "/day",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "us-api",
+                "kind": "server",
+                "label": "us API",
+                "cpu": 29,
+                "tone": "good"
+              },
+              {
+                "id": "eu-api",
+                "kind": "server",
+                "label": "eu API",
+                "cpu": 27,
+                "tone": "good"
+              },
+              {
+                "id": "tbl",
+                "kind": "db",
+                "label": "Global table",
+                "tone": "good",
+                "sub": "last writer wins, ~1 s lag"
+              },
+              {
+                "id": "q",
+                "kind": "db",
+                "label": "Handles (quorum store)",
+                "tone": "good",
+                "sub": "strong writes"
+              }
+            ],
+            "edges": [
+              {
+                "from": "us-api",
+                "to": "tbl"
+              },
+              {
+                "from": "eu-api",
+                "to": "tbl"
+              },
+              {
+                "from": "us-api",
+                "to": "q"
+              },
+              {
+                "from": "eu-api",
+                "to": "q"
+              }
+            ]
+          },
+          "resultTitle": "Only the rare write pays the latency",
+          "resultBody": "Handle claims go through a store that commits only with a majority across regions, so the second claimant's conditional insert fails. This is the PACELC trade in miniature: 300 claims/s pay about 90 ms extra, while millions of posts stay local and eventually consistent. Cost: one more datastore to run."
+        },
+        {
+          "id": "check-both",
+          "label": "Check both regions' indexes for the handle before writing",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 33,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 claim",
+              "value": 120,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Double-owned handles",
+              "value": 60,
+              "unit": "/day",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Both checks still see nothing",
+          "resultBody": "Two users who claim within the same second both check both regions, both find the handle free, and both write; the race narrows but check-then-write across async replicas can't close it."
+        },
+        {
+          "id": "strong-gsi",
+          "label": "Switch the GSI lookup to a strongly consistent read",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 29,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 claim",
               "value": 40,
               "unit": "ms",
-              "tone": "good"
+              "tone": "neutral"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
-              "tone": "good"
-            }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Read-your-own-writes or a local index for the writer; do not pretend a lagging global index is immediate."
-        },
-        {
-          "id": "treat-global-indexes",
-          "label": "Treat global indexes",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 14,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 275,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 5040,
-              "unit": "errors",
+              "label": "Double-owned handles",
+              "value": 140,
+              "unit": "/day",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Blast radius intact",
-          "resultBody": "All users still depend on one region."
-        },
-        {
-          "id": "force-every-read",
-          "label": "Force every read",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 12,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 242,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 5020,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Blast radius intact",
-          "resultBody": "Force every read to wait for world-wide replication"
+          "resultTitle": "GSIs can't read strongly",
+          "resultBody": "DynamoDB global secondary indexes only support eventually consistent reads, and even a strong base-table read is strong only within one region; the other region's pending write is still invisible."
         }
       ],
       "hints": [
-        "One region is the blast radius.",
-        "Failover must already have capacity.",
-        "Serve from a second region."
+        "Each region confirmed 'free' using only what had replicated to it.",
+        "Uniqueness is a global decision; async replicas can only tell you about the past.",
+        "Pay for coordination only on the small path that truly needs it."
       ],
       "nextId": null
     },

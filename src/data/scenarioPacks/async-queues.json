@@ -2619,37 +2619,37 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Visibility timeout too short",
-      "brief": "Video transcodes take 8 minutes, but the message becomes visible again after 30 seconds.",
-      "constraint": "Multiple workers start the same job.",
-      "question": "What queue setting must match the work?",
+      "title": "Each upload is transcoded four times",
+      "brief": "Reelcut transcodes run about 8 minutes, but the SQS visibility timeout is 30 seconds. Messages reappear mid-job, so each video is picked up by ~4 workers. The fleet is at 96% CPU on 2,000 uploads an hour.",
+      "constraint": "A crashed worker's job must be retried within 2 minutes.",
+      "question": "How do you stop healthy jobs from being redelivered?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
+          "label": "Uploads",
           "value": 2000,
-          "unit": "req/s",
+          "unit": "jobs/h",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 90,
+          "value": 96,
           "unit": "%",
           "tone": "bad"
         },
         {
           "key": "p95",
-          "label": "p95 latency",
-          "value": 8000,
-          "unit": "ms",
+          "label": "p95 finish time",
+          "value": 1900,
+          "unit": "s",
           "tone": "bad"
         },
         {
-          "key": "errors",
-          "label": "Errors",
-          "value": 15,
-          "unit": "errors",
+          "key": "dupes",
+          "label": "Workers per job",
+          "value": 4.2,
+          "unit": "x",
           "tone": "bad"
         }
       ],
@@ -2658,20 +2658,28 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Creators"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "API",
-            "tone": "bad",
-            "cpu": 94
+            "label": "Upload API",
+            "tone": "good",
+            "cpu": 20
           },
           {
-            "id": "pay",
-            "kind": "server",
-            "label": "Vendor",
-            "tone": "bad"
+            "id": "queue",
+            "kind": "queue",
+            "label": "SQS",
+            "tone": "warn",
+            "sub": "visibility 30 s"
+          },
+          {
+            "id": "worker",
+            "kind": "worker",
+            "label": "Transcoders",
+            "tone": "bad",
+            "cpu": 96
           }
         ],
         "edges": [
@@ -2681,57 +2689,20 @@
           },
           {
             "from": "app",
-            "to": "pay"
+            "to": "queue"
+          },
+          {
+            "from": "queue",
+            "to": "worker"
           }
         ]
       },
       "choices": [
         {
-          "id": "use-queue",
-          "label": "Use queue",
+          "id": "heartbeat",
+          "label": "Heartbeat visibility extensions while each transcode runs",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "app",
-                "kind": "server",
-                "label": "API",
-                "tone": "good",
-                "cpu": 28
-              },
-              {
-                "id": "q",
-                "kind": "queue",
-                "label": "Queue",
-                "tone": "good"
-              },
-              {
-                "id": "w",
-                "kind": "worker",
-                "label": "Worker",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "app"
-              },
-              {
-                "from": "app",
-                "to": "q"
-              },
-              {
-                "from": "q",
-                "to": "w"
-              }
-            ]
-          },
+          "approach": "optimal",
           "metricsAfter": [
             {
               "key": "cpu",
@@ -2742,91 +2713,94 @@
             },
             {
               "key": "p95",
-              "label": "p95 latency",
-              "value": 533,
-              "unit": "ms",
+              "label": "p95 finish time",
+              "value": 520,
+              "unit": "s",
               "tone": "good"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
+              "key": "dupes",
+              "label": "Workers per job",
+              "value": 1.0,
+              "unit": "x",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Set visibility timeout (or heartbeat extend) longer than the real processing time."
+          "resultTitle": "Jobs stay hidden while they're alive",
+          "resultBody": "Workers call ChangeMessageVisibility every 60 seconds to push the timeout 2 minutes out. A running job stays invisible for as long as it takes, and a crashed worker stops the heartbeat, so its job reappears within 2 minutes. Fleet CPU falls from 96% to 30%."
         },
         {
-          "id": "ack-immediately-before",
-          "label": "Ack immediately before",
+          "id": "more-workers",
+          "label": "Triple the transcode worker fleet",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 94,
+              "value": 90,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
-              "label": "p95 latency",
-              "value": 10000,
-              "unit": "ms",
+              "label": "p95 finish time",
+              "value": 1700,
+              "unit": "s",
               "tone": "bad"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 55,
-              "unit": "errors",
+              "key": "dupes",
+              "label": "Workers per job",
+              "value": 6.5,
+              "unit": "x",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Request still blocked",
-          "resultBody": "The user thread is still waiting on the vendor."
+          "resultTitle": "More workers, more copies of each job",
+          "resultBody": "The extra workers pick up the reappearing messages faster, so each video is now transcoded 6 or 7 times. The bill triples and CPU stays at 90%."
         },
         {
-          "id": "disable-acknowledgements",
-          "label": "Disable acknowledgements",
+          "id": "long-timeout",
+          "label": "Raise the SQS visibility timeout to 12 hours",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 92,
+              "value": 32,
               "unit": "%",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "p95",
-              "label": "p95 latency",
-              "value": 8800,
-              "unit": "ms",
-              "tone": "bad"
+              "label": "p95 finish time",
+              "value": 700,
+              "unit": "s",
+              "tone": "warn"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 35,
-              "unit": "errors",
-              "tone": "bad"
+              "key": "dupes",
+              "label": "Workers per job",
+              "value": 1.0,
+              "unit": "x",
+              "tone": "good"
             }
           ],
-          "resultTitle": "Request still blocked",
-          "resultBody": "Disable acknowledgements"
+          "resultTitle": "Duplicates gone, crashes stranded",
+          "resultBody": "Duplicate work stops, but when a worker is killed its video stays hidden for 12 hours before anyone retries it. Spot-instance reclaims strand about 40 uploads a day, far past the 2-minute retry rule."
         }
       ],
       "hints": [
-        "The request path is waiting on slow work.",
-        "Users only need an ack now.",
-        "Enqueue and return."
+        "Compare the job's duration with how long a received message stays hidden.",
+        "The queue assumes a worker is dead once the timeout expires.",
+        "A live worker can tell the queue it is still working."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "queue-14",
@@ -2836,37 +2810,37 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Signup SMS in the request",
-      "brief": "Phone verification SMS is sent synchronously and the carrier API times out at peak.",
-      "constraint": "Account creation can succeed without waiting on SMS.",
-      "question": "What should the API do on signup?",
+      "title": "SMS provider rejects 93% of welcome texts",
+      "brief": "Hatch's TV ad brought 600 signups/s for 5 minutes. Welcome-SMS workers autoscaled to 200 and sent 1,400 req/s against a 100 msg/s provider limit; 93% got HTTP 429 and were retried immediately.",
+      "constraint": "The provider limit is per account; a higher tier takes two weeks to approve. Welcome texts may arrive up to an hour late.",
+      "question": "How do you get all 180,000 texts delivered without hammering the provider?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 2000,
+          "label": "SMS attempts",
+          "value": 1400,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 90,
+          "value": 80,
           "unit": "%",
           "tone": "bad"
         },
         {
-          "key": "p95",
-          "label": "p95 latency",
-          "value": 8000,
-          "unit": "ms",
+          "key": "delivered",
+          "label": "Texts delivered",
+          "value": 7,
+          "unit": "%",
           "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 15,
-          "unit": "errors",
+          "label": "429 responses",
+          "value": 93,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -2875,20 +2849,28 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "New signups"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "API",
-            "tone": "bad",
-            "cpu": 94
+            "label": "Signup API",
+            "tone": "good",
+            "cpu": 40
           },
           {
-            "id": "pay",
-            "kind": "server",
-            "label": "Vendor",
-            "tone": "bad"
+            "id": "queue",
+            "kind": "queue",
+            "label": "SMS queue",
+            "tone": "warn",
+            "sub": "180k pending"
+          },
+          {
+            "id": "worker",
+            "kind": "worker",
+            "label": "SMS workers x200",
+            "tone": "bad",
+            "cpu": 80
           }
         ],
         "edges": [
@@ -2898,152 +2880,118 @@
           },
           {
             "from": "app",
-            "to": "pay"
+            "to": "queue"
+          },
+          {
+            "from": "queue",
+            "to": "worker"
           }
         ]
       },
       "choices": [
         {
-          "id": "use-queue",
-          "label": "Use queue",
+          "id": "token-bucket",
+          "label": "Cap SMS workers at 90 sends/s with a shared token bucket",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "app",
-                "kind": "server",
-                "label": "API",
-                "tone": "good",
-                "cpu": 28
-              },
-              {
-                "id": "q",
-                "kind": "queue",
-                "label": "Queue",
-                "tone": "good"
-              },
-              {
-                "id": "w",
-                "kind": "worker",
-                "label": "Worker",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "app"
-              },
-              {
-                "from": "app",
-                "to": "q"
-              },
-              {
-                "from": "q",
-                "to": "w"
-              }
-            ]
-          },
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 10,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "delivered",
+              "label": "Texts delivered",
+              "value": 100,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "429 responses",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "The queue absorbs the burst",
+          "resultBody": "A token bucket in Redis lets all workers together send 90 messages per second, just under the limit. The 180,000 texts drain in about 33 minutes, inside the one-hour allowance, with zero 429s. Cost: late signups wait up to half an hour for their text."
+        },
+        {
+          "id": "more-keys",
+          "label": "Spread sends across five more provider API keys",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 70,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "delivered",
+              "label": "Texts delivered",
+              "value": 0,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "429 responses",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "The provider suspends the account",
+          "resultBody": "The limit is per account, not per key. The extra keys look like limit evasion, the provider suspends sending for 24 hours, and now every text fails, including login codes."
+        },
+        {
+          "id": "drop-old",
+          "label": "Drop welcome texts older than 60 seconds",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
               "value": 30,
               "unit": "%",
-              "tone": "good"
+              "tone": "warn"
             },
             {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 533,
-              "unit": "ms",
-              "tone": "good"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
-              "tone": "good"
-            }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Create the user, enqueue the SMS job, and return; workers send and retry the message."
-        },
-        {
-          "id": "fail-signup-if",
-          "label": "Fail signup if",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 94,
+              "key": "delivered",
+              "label": "Texts delivered",
+              "value": 11,
               "unit": "%",
               "tone": "bad"
             },
             {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 10000,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
               "key": "errors",
-              "label": "Errors",
-              "value": 55,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Request still blocked",
-          "resultBody": "The user thread is still waiting on the vendor."
-        },
-        {
-          "id": "increase-http-timeout",
-          "label": "Increase HTTP timeout",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 92,
+              "label": "429 responses",
+              "value": 60,
               "unit": "%",
               "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 8800,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 35,
-              "unit": "errors",
-              "tone": "bad"
             }
           ],
-          "resultTitle": "Request still blocked",
-          "resultBody": "Increase the HTTP timeout to 2 minutes"
+          "resultTitle": "The backlog vanishes, so do the texts",
+          "resultBody": "The queue empties quickly because most messages are discarded, and workers still retry immediately and still exceed the limit. About 160,000 new users never receive their welcome code."
         }
       ],
       "hints": [
-        "The request path is waiting on slow work.",
-        "Users only need an ack now.",
-        "Enqueue and return."
+        "The provider's limit is lower than the rate the workers are sending at.",
+        "The texts have an hour of slack, which is time to spread the work out.",
+        "Control the rate at which the whole worker fleet drains the queue."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "queue-15",
@@ -3053,214 +3001,190 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Retry storm after an outage",
-      "brief": "A downstream API recovers and every delayed job retries at once.",
-      "constraint": "The dependency cannot absorb a synchronized burst.",
-      "question": "How do you retry safely?",
+      "title": "Carrier recovers, then falls over again",
+      "brief": "Parcelly's carrier API was down for 10 minutes, and 400,000 label jobs failed. Workers requeue failures instantly, so on recovery the carrier took 40,000 req/s against a normal 2,000 and crashed again, three times.",
+      "constraint": "Labels must print before the 17:00 pickup, about 2 hours away.",
+      "question": "How should failed jobs be retried so the carrier can recover?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 2000,
+          "label": "Carrier calls",
+          "value": 40000,
           "unit": "req/s",
-          "tone": "neutral"
+          "tone": "bad"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 90,
+          "value": 95,
           "unit": "%",
           "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 8000,
+          "value": 30000,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 15,
-          "unit": "errors",
+          "label": "Failed calls",
+          "value": 88,
+          "unit": "%",
           "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "users",
-            "kind": "users",
-            "label": "Users"
-          },
-          {
             "id": "app",
             "kind": "server",
-            "label": "API",
-            "tone": "bad",
-            "cpu": 94
+            "label": "Order API",
+            "tone": "good",
+            "cpu": 25
           },
           {
-            "id": "pay",
+            "id": "queue",
+            "kind": "queue",
+            "label": "Label queue",
+            "tone": "bad",
+            "sub": "400k retrying"
+          },
+          {
+            "id": "worker",
+            "kind": "worker",
+            "label": "Label workers",
+            "tone": "bad",
+            "cpu": 95
+          },
+          {
+            "id": "carrier",
             "kind": "server",
-            "label": "Vendor",
-            "tone": "bad"
+            "label": "Carrier API",
+            "tone": "bad",
+            "sub": "recovering"
           }
         ],
         "edges": [
           {
-            "from": "users",
-            "to": "app"
+            "from": "app",
+            "to": "queue"
           },
           {
-            "from": "app",
-            "to": "pay"
+            "from": "queue",
+            "to": "worker"
+          },
+          {
+            "from": "worker",
+            "to": "carrier"
           }
         ]
       },
       "choices": [
         {
-          "id": "use-queue",
-          "label": "Use queue",
+          "id": "backoff-jitter",
+          "label": "Exponential backoff with full jitter on each redelivery",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "app",
-                "kind": "server",
-                "label": "API",
-                "tone": "good",
-                "cpu": 28
-              },
-              {
-                "id": "q",
-                "kind": "queue",
-                "label": "Queue",
-                "tone": "good"
-              },
-              {
-                "id": "w",
-                "kind": "worker",
-                "label": "Worker",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "app"
-              },
-              {
-                "from": "app",
-                "to": "q"
-              },
-              {
-                "from": "q",
-                "to": "w"
-              }
-            ]
-          },
+          "approach": "optimal",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 30,
+              "value": 45,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 533,
+              "value": 800,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
+              "label": "Failed calls",
+              "value": 1,
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Exponential backoff with jitter and a retry budget so jobs do not stampede."
+          "resultTitle": "Retries spread out as the carrier recovers",
+          "resultBody": "Each retry waits a random time between 0 and min(10 min, 2 s x 2^attempt). The 400,000 jobs arrive spread over time instead of together, the carrier stays up at about 3,000 req/s, and the backlog clears in roughly 40 minutes."
         },
         {
-          "id": "retry-all-jobs",
-          "label": "Retry all jobs",
+          "id": "fixed-delay",
+          "label": "Wait a fixed 30 seconds before every retry",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 94,
+              "value": 70,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 10000,
+              "value": 12000,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Failed calls",
               "value": 55,
-              "unit": "errors",
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Request still blocked",
-          "resultBody": "The user thread is still waiting on the vendor."
+          "resultTitle": "Retries arrive in synchronized waves",
+          "resultBody": "Every failed job waits exactly 30 seconds, so they all come back together. The carrier gets a 40,000 req/s spike every 30 seconds and fails on each one, and the backlog barely shrinks."
         },
         {
-          "id": "never-retry-after",
-          "label": "Never retry after",
+          "id": "dlq-all",
+          "label": "Send every failed job straight to the dead-letter queue",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 92,
+              "value": 5,
               "unit": "%",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 8800,
+              "value": 300,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 35,
-              "unit": "errors",
-              "tone": "bad"
+              "label": "Failed calls",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
             }
           ],
-          "resultTitle": "Request still blocked",
-          "resultBody": "Never retry after an outage"
+          "resultTitle": "Quiet carrier, 400,000 stuck labels",
+          "resultBody": "The storm stops, but 400,000 labels now wait for someone to replay the DLQ by hand. A replay all at once would recreate the same spike, so most parcels miss the 17:00 pickup."
         }
       ],
       "hints": [
-        "The request path is waiting on slow work.",
-        "Users only need an ack now.",
-        "Enqueue and return."
+        "Look at when the failed jobs come back.",
+        "If every job waits the same amount of time, they still arrive together.",
+        "Retry delays should grow and be spread randomly."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "queue-16",
@@ -3270,214 +3194,197 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Exactly-once assumed on Kafka",
-      "brief": "A consumer increments a coupon-used counter on every message and the counter doubles after rebalance.",
-      "constraint": "The broker delivers at least once.",
-      "question": "What must the consumer implement?",
+      "title": "Loyalty points credited twice after each deploy",
+      "brief": "Orbit Rewards' Kafka consumer credits points in Postgres, then auto-commits offsets every 5 seconds. Each deploy triggers a rebalance, up to 5 seconds of events are consumed again, and about 18,000 purchases get double points.",
+      "constraint": "Kafka transactions cannot cover the Postgres write; points must be credited exactly once per purchase.",
+      "question": "How do you make a replayed event leave points unchanged?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 2000,
-          "unit": "req/s",
+          "label": "Purchase events",
+          "value": 3600,
+          "unit": "msg/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 90,
+          "value": 40,
           "unit": "%",
-          "tone": "bad"
+          "tone": "warn"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 8000,
+          "value": 25,
           "unit": "ms",
-          "tone": "bad"
+          "tone": "good"
         },
         {
-          "key": "errors",
-          "label": "Errors",
-          "value": 15,
-          "unit": "errors",
+          "key": "dupes",
+          "label": "Double credits",
+          "value": 18000,
+          "unit": "per deploy",
           "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "users",
-            "kind": "users",
-            "label": "Users"
-          },
-          {
             "id": "app",
             "kind": "server",
-            "label": "API",
-            "tone": "bad",
-            "cpu": 94
+            "label": "Checkout",
+            "tone": "good",
+            "cpu": 30
           },
           {
-            "id": "pay",
-            "kind": "server",
-            "label": "Vendor",
-            "tone": "bad"
+            "id": "queue",
+            "kind": "queue",
+            "label": "Kafka purchases",
+            "tone": "good"
+          },
+          {
+            "id": "worker",
+            "kind": "worker",
+            "label": "Points consumer",
+            "tone": "warn",
+            "cpu": 40,
+            "sub": "auto-commit 5 s"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Points DB",
+            "tone": "good",
+            "cpu": 35
           }
         ],
         "edges": [
           {
-            "from": "users",
-            "to": "app"
+            "from": "app",
+            "to": "queue"
           },
           {
-            "from": "app",
-            "to": "pay"
+            "from": "queue",
+            "to": "worker"
+          },
+          {
+            "from": "worker",
+            "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "idempotency-key",
-          "label": "Idempotency key",
+          "id": "offset-in-tx",
+          "label": "Save consumer offsets in the same DB transaction as points",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "app",
-                "kind": "server",
-                "label": "API",
-                "tone": "good",
-                "cpu": 28
-              },
-              {
-                "id": "q",
-                "kind": "queue",
-                "label": "Queue",
-                "tone": "good"
-              },
-              {
-                "id": "w",
-                "kind": "worker",
-                "label": "Worker",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "app"
-              },
-              {
-                "from": "app",
-                "to": "q"
-              },
-              {
-                "from": "q",
-                "to": "w"
-              }
-            ]
-          },
+          "approach": "optimal",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 30,
+              "value": 42,
               "unit": "%",
-              "tone": "good"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 533,
+              "value": 27,
               "unit": "ms",
               "tone": "good"
             },
             {
-              "key": "errors",
-              "label": "Errors",
+              "key": "dupes",
+              "label": "Double credits",
               "value": 0,
-              "unit": "errors",
+              "unit": "per deploy",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Idempotent updates keyed by message or coupon id so redelivery does not double-count."
+          "resultTitle": "Points and position commit together",
+          "resultBody": "Each batch updates balances and writes the partition's offset in one Postgres transaction. After a rebalance the consumer seeks to the stored offset, so a replayed event is either already committed with its offset or not applied at all. Double credits drop to 0 at the cost of ~2 ms per batch."
         },
         {
-          "id": "assume-kafka-exactly-onc",
-          "label": "Assume Kafka exactly-once",
+          "id": "idempotent-producer",
+          "label": "Enable the Kafka idempotent producer on checkout",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 94,
+              "value": 40,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 10000,
+              "value": 25,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "good"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 55,
-              "unit": "errors",
+              "key": "dupes",
+              "label": "Double credits",
+              "value": 18000,
+              "unit": "per deploy",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Request still blocked",
-          "resultBody": "The user thread is still waiting on the vendor."
+          "resultTitle": "Fixes duplicates on the wrong side",
+          "resultBody": "The idempotent producer stops checkout from writing the same event twice to the log. These duplicates come from the consumer reading events again after a rebalance, so every deploy still double-credits about 18,000 purchases."
         },
         {
-          "id": "disable-consumer-group",
-          "label": "Disable consumer group",
+          "id": "commit-first",
+          "label": "Commit offsets before processing each batch",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 92,
+              "value": 38,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 8800,
+              "value": 24,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "good"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 35,
-              "unit": "errors",
+              "key": "dupes",
+              "label": "Double credits",
+              "value": 0,
+              "unit": "per deploy",
+              "tone": "good"
+            },
+            {
+              "key": "lost",
+              "label": "Missing credits",
+              "value": 11000,
+              "unit": "per deploy",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Request still blocked",
-          "resultBody": "Disable consumer group rebalance forever"
+          "resultTitle": "No duplicates, missing points instead",
+          "resultBody": "This is at-most-once delivery: if a consumer dies after committing but before writing, those events are skipped for good. Double credits stop, but about 11,000 purchases per deploy now get no points at all."
         }
       ],
       "hints": [
-        "The request path is waiting on slow work.",
-        "Users only need an ack now.",
-        "Enqueue and return."
+        "Kafka offsets and the Postgres write are committed separately.",
+        "A crash between the two either repeats or skips the work.",
+        "Make the record of what was processed part of the same commit as the effect."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "queue-17",
@@ -3487,214 +3394,179 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Priority work stuck behind bulk import",
-      "brief": "Password-reset emails sit behind a 2-million-row CSV import on one queue.",
-      "constraint": "User-facing jobs cannot wait on bulk work.",
-      "question": "How should work be separated?",
+      "title": "Password resets wait 45 minutes behind a newsletter",
+      "brief": "Mailroom sends password-reset emails through the same SQS queue as bulk mail. A customer just imported a 3-million-recipient newsletter, and at 1,100 sends/s every reset email now waits about 45 minutes.",
+      "constraint": "Reset and 2FA emails must arrive within 30 seconds; the email provider caps you at 1,500 sends/s.",
+      "question": "How do you get urgent emails out while the import drains?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 2000,
-          "unit": "req/s",
+          "label": "Sends",
+          "value": 1100,
+          "unit": "msg/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 90,
+          "value": 75,
           "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "wait",
+          "label": "Reset email wait",
+          "value": 2700,
+          "unit": "s",
           "tone": "bad"
         },
         {
-          "key": "p95",
-          "label": "p95 latency",
-          "value": 8000,
-          "unit": "ms",
-          "tone": "bad"
-        },
-        {
-          "key": "errors",
-          "label": "Errors",
-          "value": 15,
-          "unit": "errors",
+          "key": "depth",
+          "label": "Queue depth",
+          "value": 3000000,
+          "unit": "msgs",
           "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "users",
-            "kind": "users",
-            "label": "Users"
-          },
-          {
             "id": "app",
             "kind": "server",
-            "label": "API",
-            "tone": "bad",
-            "cpu": 94
+            "label": "Mail API",
+            "tone": "good",
+            "cpu": 25
           },
           {
-            "id": "pay",
-            "kind": "server",
-            "label": "Vendor",
-            "tone": "bad"
+            "id": "queue",
+            "kind": "queue",
+            "label": "Shared SQS queue",
+            "tone": "bad",
+            "sub": "3M bulk ahead"
+          },
+          {
+            "id": "worker",
+            "kind": "worker",
+            "label": "Senders x30",
+            "tone": "warn",
+            "cpu": 75
           }
         ],
         "edges": [
           {
-            "from": "users",
-            "to": "app"
+            "from": "app",
+            "to": "queue"
           },
           {
-            "from": "app",
-            "to": "pay"
+            "from": "queue",
+            "to": "worker"
           }
         ]
       },
       "choices": [
         {
-          "id": "use-queue",
-          "label": "Use queue",
+          "id": "priority-queue",
+          "label": "Separate transactional queue with its own reserved workers",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "app",
-                "kind": "server",
-                "label": "API",
-                "tone": "good",
-                "cpu": 28
-              },
-              {
-                "id": "q",
-                "kind": "queue",
-                "label": "Queue",
-                "tone": "good"
-              },
-              {
-                "id": "w",
-                "kind": "worker",
-                "label": "Worker",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "app"
-              },
-              {
-                "from": "app",
-                "to": "q"
-              },
-              {
-                "from": "q",
-                "to": "w"
-              }
-            ]
-          },
+          "approach": "optimal",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 30,
+              "value": 72,
               "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "wait",
+              "label": "Reset email wait",
+              "value": 4,
+              "unit": "s",
               "tone": "good"
             },
             {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 533,
-              "unit": "ms",
-              "tone": "good"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
-              "tone": "good"
+              "key": "depth",
+              "label": "Queue depth",
+              "value": 2900000,
+              "unit": "msgs",
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Use priority queues or separate worker pools for interactive versus bulk jobs."
+          "resultTitle": "Urgent mail skips the bulk line",
+          "resultBody": "Resets and 2FA codes go to their own queue with 5 dedicated workers and 200 sends/s of the provider budget. They arrive in about 4 seconds, while bulk mail drains at 1,300 sends/s, about 38 minutes, behind them."
         },
         {
-          "id": "one-fifo-queue",
-          "label": "One FIFO queue",
+          "id": "double-workers",
+          "label": "Double the shared worker pool to 60",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 94,
+              "value": 70,
               "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "wait",
+              "label": "Reset email wait",
+              "value": 2000,
+              "unit": "s",
               "tone": "bad"
             },
             {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 10000,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 55,
-              "unit": "errors",
+              "key": "depth",
+              "label": "Queue depth",
+              "value": 2800000,
+              "unit": "msgs",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Request still blocked",
-          "resultBody": "The user thread is still waiting on the vendor."
+          "resultTitle": "The provider cap sets the speed",
+          "resultBody": "Throughput can only reach the 1,500 sends/s provider cap, so the 3 million bulk emails still take 33 minutes. Every reset still waits behind them, now for about 33 minutes instead of 45."
         },
         {
-          "id": "pause-password-resets",
-          "label": "Pause password resets",
+          "id": "priority-field",
+          "label": "Add a priority attribute to each reset message",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 92,
+              "value": 75,
               "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "wait",
+              "label": "Reset email wait",
+              "value": 2700,
+              "unit": "s",
               "tone": "bad"
             },
             {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 8800,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 35,
-              "unit": "errors",
+              "key": "depth",
+              "label": "Queue depth",
+              "value": 3000000,
+              "unit": "msgs",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Request still blocked",
-          "resultBody": "Pause password resets during imports"
+          "resultTitle": "SQS ignores the attribute",
+          "resultBody": "An SQS standard queue returns messages in roughly arrival order no matter what attributes they carry. Workers only see the priority after receiving the message, so resets still wait about 45 minutes behind the import."
         }
       ],
       "hints": [
-        "The request path is waiting on slow work.",
-        "Users only need an ack now.",
-        "Enqueue and return."
+        "Adding workers doesn't help when urgent messages are in line behind millions of others.",
+        "The queue has no way to put one message ahead of another.",
+        "Different latency requirements call for different lines."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "queue-18",
@@ -3704,37 +3576,37 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Outbox missing after a crash",
-      "brief": "The API writes an order row, then crashes before publishing to the queue, so fulfillment never starts.",
-      "constraint": "The database write committed; the message did not.",
-      "question": "What pattern keeps state and messages aligned?",
+      "title": "Paid orders never reach the warehouse",
+      "brief": "Freshbox's order handler commits to Postgres, then publishes OrderPlaced to Kafka. When a pod dies between the two steps, from OOM kills or deploys, the event is lost. Last week 1,140 paid orders never shipped.",
+      "constraint": "The warehouse must only ever see orders that were actually committed.",
+      "question": "How do you guarantee every committed order produces its event?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 2000,
+          "label": "Orders",
+          "value": 900,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 90,
+          "value": 55,
           "unit": "%",
-          "tone": "bad"
+          "tone": "warn"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 8000,
+          "value": 140,
           "unit": "ms",
-          "tone": "bad"
+          "tone": "good"
         },
         {
-          "key": "errors",
-          "label": "Errors",
-          "value": 15,
-          "unit": "errors",
+          "key": "missing",
+          "label": "Orders never shipped",
+          "value": 1140,
+          "unit": "/week",
           "tone": "bad"
         }
       ],
@@ -3743,20 +3615,35 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Customers"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "API",
-            "tone": "bad",
-            "cpu": 94
+            "label": "Order service",
+            "tone": "warn",
+            "cpu": 55,
+            "sub": "commit, then publish"
           },
           {
-            "id": "pay",
-            "kind": "server",
-            "label": "Vendor",
-            "tone": "bad"
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres",
+            "tone": "good",
+            "cpu": 40
+          },
+          {
+            "id": "queue",
+            "kind": "queue",
+            "label": "Kafka",
+            "tone": "good"
+          },
+          {
+            "id": "worker",
+            "kind": "worker",
+            "label": "Warehouse consumer",
+            "tone": "good",
+            "cpu": 30
           }
         ],
         "edges": [
@@ -3766,152 +3653,129 @@
           },
           {
             "from": "app",
-            "to": "pay"
+            "to": "db"
+          },
+          {
+            "from": "app",
+            "to": "queue"
+          },
+          {
+            "from": "queue",
+            "to": "worker"
           }
         ]
       },
       "choices": [
         {
-          "id": "use-outbox",
-          "label": "Use outbox",
+          "id": "outbox",
+          "label": "Write the event to an outbox table in the order's transaction",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "app",
-                "kind": "server",
-                "label": "API",
-                "tone": "good",
-                "cpu": 28
-              },
-              {
-                "id": "q",
-                "kind": "queue",
-                "label": "Queue",
-                "tone": "good"
-              },
-              {
-                "id": "w",
-                "kind": "worker",
-                "label": "Worker",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "app"
-              },
-              {
-                "from": "app",
-                "to": "q"
-              },
-              {
-                "from": "q",
-                "to": "w"
-              }
-            ]
-          },
+          "approach": "optimal",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 30,
+              "value": 57,
               "unit": "%",
-              "tone": "good"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 533,
+              "value": 150,
               "unit": "ms",
               "tone": "good"
             },
             {
-              "key": "errors",
-              "label": "Errors",
+              "key": "missing",
+              "label": "Orders never shipped",
               "value": 0,
-              "unit": "errors",
+              "unit": "/week",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Transactional outbox: write the event in the same transaction, then a relay publishes it."
+          "resultTitle": "The event commits with the order",
+          "resultBody": "The order row and its outbox row commit together or not at all. A relay (Debezium reading the WAL) publishes outbox rows to Kafka and marks them sent, so a crash only delays an event. Missing orders drop to 0. Cost: delivery is at-least-once, so the warehouse consumer must dedupe by order ID."
         },
         {
-          "id": "publish-first-write",
-          "label": "Publish first write",
+          "id": "publish-first",
+          "label": "Publish to Kafka before committing the order",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 94,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 10000,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
               "value": 55,
-              "unit": "errors",
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 145,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "missing",
+              "label": "Orders never shipped",
+              "value": 0,
+              "unit": "/week",
+              "tone": "warn"
+            },
+            {
+              "key": "ghost",
+              "label": "Phantom shipments",
+              "value": 820,
+              "unit": "/week",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Request still blocked",
-          "resultBody": "The user thread is still waiting on the vendor."
+          "resultTitle": "Events for orders that never existed",
+          "resultBody": "Lost events stop, but 3% of orders roll back after publishing, for example on failed fraud checks. The warehouse now packs about 820 boxes a week for orders that were never committed."
         },
         {
-          "id": "rely-user-click",
-          "label": "Rely user click",
+          "id": "retry-publish",
+          "label": "Retry the Kafka publish three times in the handler",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 92,
+              "value": 58,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 8800,
+              "value": 190,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "good"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 35,
-              "unit": "errors",
+              "key": "missing",
+              "label": "Orders never shipped",
+              "value": 700,
+              "unit": "/week",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Request still blocked",
-          "resultBody": "Rely on the user to click again"
+          "resultTitle": "Retries don't survive a dead pod",
+          "resultBody": "Retries cover brief broker errors, but an OOM-killed or redeployed pod never runs its retry loop. Missing orders fall only from 1,140 to about 700 a week, and slow retries add 50 ms to p95."
         }
       ],
       "hints": [
-        "The request path is waiting on slow work.",
-        "Users only need an ack now.",
-        "Enqueue and return."
+        "Two separate systems are written one after the other with no shared commit.",
+        "Changing the order of the two writes changes which failure you get.",
+        "Make the event part of the same database write as the order."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "queue-19",
@@ -3921,16 +3785,16 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Unbounded queue memory",
-      "brief": "Producers keep enqueueing during a worker outage until the broker runs out of disk.",
-      "constraint": "Consumers are down for hours.",
-      "question": "What protects the system?",
+      "title": "Telemetry broker nears its memory alarm",
+      "brief": "Pulsegrid devices publish 8,000 events/s to RabbitMQ. Consumers insert one row and commit per message, topping out at 5,000/s with Postgres at 90% CPU. The queue grows by 3,000/s and broker memory is at 88%.",
+      "constraint": "Telemetry must not be dropped, and Postgres cannot be upgraded this month.",
+      "question": "How do you make consumers keep up before the broker blocks publishers?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 2000,
-          "unit": "req/s",
+          "label": "Events in",
+          "value": 8000,
+          "unit": "msg/s",
           "tone": "neutral"
         },
         {
@@ -3942,16 +3806,16 @@
         },
         {
           "key": "p95",
-          "label": "p95 latency",
-          "value": 8000,
+          "label": "Insert p95",
+          "value": 45,
           "unit": "ms",
-          "tone": "bad"
+          "tone": "warn"
         },
         {
-          "key": "errors",
-          "label": "Errors",
-          "value": 15,
-          "unit": "errors",
+          "key": "mem",
+          "label": "Broker memory",
+          "value": 88,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -3960,175 +3824,157 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Devices"
           },
           {
-            "id": "app",
-            "kind": "server",
-            "label": "API",
+            "id": "queue",
+            "kind": "queue",
+            "label": "RabbitMQ",
             "tone": "bad",
-            "cpu": 94
+            "sub": "+3,000 msg/s"
           },
           {
-            "id": "pay",
-            "kind": "server",
-            "label": "Vendor",
-            "tone": "bad"
+            "id": "worker",
+            "kind": "worker",
+            "label": "Consumers",
+            "tone": "warn",
+            "cpu": 60,
+            "sub": "1 row per commit"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres",
+            "tone": "bad",
+            "cpu": 90
           }
         ],
         "edges": [
           {
             "from": "users",
-            "to": "app"
+            "to": "queue"
           },
           {
-            "from": "app",
-            "to": "pay"
+            "from": "queue",
+            "to": "worker"
+          },
+          {
+            "from": "worker",
+            "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "use-queue",
-          "label": "Use queue",
+          "id": "batch-insert",
+          "label": "Consume in batches of 500 with one bulk INSERT each",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "app",
-                "kind": "server",
-                "label": "API",
-                "tone": "good",
-                "cpu": 28
-              },
-              {
-                "id": "q",
-                "kind": "queue",
-                "label": "Queue",
-                "tone": "good"
-              },
-              {
-                "id": "w",
-                "kind": "worker",
-                "label": "Worker",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "app"
-              },
-              {
-                "from": "app",
-                "to": "q"
-              },
-              {
-                "from": "q",
-                "to": "w"
-              }
-            ]
-          },
+          "approach": "optimal",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 30,
+              "value": 40,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
-              "label": "p95 latency",
-              "value": 533,
+              "label": "Insert p95",
+              "value": 60,
               "unit": "ms",
               "tone": "good"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
+              "key": "mem",
+              "label": "Broker memory",
+              "value": 20,
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Backpressure, retention limits, and producer throttling when the queue cannot drain."
+          "resultTitle": "One commit per 500 rows",
+          "resultBody": "Consumers prefetch 500 messages, write them with one multi-row INSERT, then ack the batch. Per-commit overhead is paid once per 500 rows, so throughput reaches about 25,000 rows/s at 40% Postgres CPU and the backlog drains in minutes. Cost: a crash replays up to 500 events, so inserts use ON CONFLICT DO NOTHING."
         },
         {
-          "id": "infinite-retention-no",
-          "label": "Infinite retention no",
+          "id": "raise-watermark",
+          "label": "Raise the broker memory high-watermark to 95%",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 94,
+              "value": 90,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
-              "label": "p95 latency",
-              "value": 10000,
+              "label": "Insert p95",
+              "value": 45,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 55,
-              "unit": "errors",
+              "key": "mem",
+              "label": "Broker memory",
+              "value": 95,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Request still blocked",
-          "resultBody": "The user thread is still waiting on the vendor."
+          "resultTitle": "A few more minutes before the alarm",
+          "resultBody": "Consumers are still 3,000 events/s behind, so the extra headroom fills within minutes. Then the alarm blocks every publisher, devices buffer and drop data, and the broker is left too close to its OOM limit."
         },
         {
-          "id": "drop-broker-keep",
-          "label": "Drop broker keep",
+          "id": "max-length",
+          "label": "Set a 1M max-length with drop-head overflow",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 92,
+              "value": 90,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
-              "label": "p95 latency",
-              "value": 8800,
+              "label": "Insert p95",
+              "value": 45,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
-              "key": "errors",
-              "label": "Errors",
-              "value": 35,
-              "unit": "errors",
+              "key": "mem",
+              "label": "Broker memory",
+              "value": 60,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "lost",
+              "label": "Events dropped",
+              "value": 3000,
+              "unit": "msg/s",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Request still blocked",
-          "resultBody": "Drop the broker and keep producing to /dev/null"
+          "resultTitle": "Memory capped by deleting telemetry",
+          "resultBody": "The broker stays healthy by discarding the oldest messages, 3,000 every second, which breaks the no-drop rule. Consumer throughput is still stuck at 5,000/s."
         }
       ],
       "hints": [
-        "The request path is waiting on slow work.",
-        "Users only need an ack now.",
-        "Enqueue and return."
+        "The queue grows because consumers are slower than producers.",
+        "Measure the cost of each database commit, not each row.",
+        "Do more work per round-trip to Postgres."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "queue-20",
@@ -4138,37 +3984,37 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Long saga without compensation",
-      "brief": "Booking reserves a flight, then hotel reservation fails, but the flight stay reserved.",
-      "constraint": "Steps are async and can fail independently.",
-      "question": "What failure handling is missing?",
+      "title": "Hotel fails, traveller keeps a flight they didn't want",
+      "brief": "Wanderly books flight, then hotel, then car through a queue-driven workflow. When the hotel step fails (4% of trips, mostly sold out), nothing undoes the flight. 600 travellers a week are charged for stranded flights.",
+      "constraint": "Partner APIs are plain REST; they support book and cancel, but no prepare/commit.",
+      "question": "How do you leave no half-booked trips when a later step fails?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 2000,
-          "unit": "req/s",
+          "label": "Trips",
+          "value": 15000,
+          "unit": "/week",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 90,
+          "value": 35,
           "unit": "%",
-          "tone": "bad"
+          "tone": "good"
         },
         {
           "key": "p95",
-          "label": "p95 latency",
-          "value": 8000,
+          "label": "Booking p95",
+          "value": 4000,
           "unit": "ms",
-          "tone": "bad"
+          "tone": "warn"
         },
         {
-          "key": "errors",
-          "label": "Errors",
-          "value": 15,
-          "unit": "errors",
+          "key": "stranded",
+          "label": "Stranded flights",
+          "value": 600,
+          "unit": "/week",
           "tone": "bad"
         }
       ],
@@ -4177,20 +4023,28 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Travellers"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "API",
-            "tone": "bad",
-            "cpu": 94
+            "label": "Trip orchestrator",
+            "tone": "warn",
+            "cpu": 35
           },
           {
-            "id": "pay",
-            "kind": "server",
-            "label": "Vendor",
-            "tone": "bad"
+            "id": "queue",
+            "kind": "queue",
+            "label": "Step queue",
+            "tone": "good"
+          },
+          {
+            "id": "worker",
+            "kind": "worker",
+            "label": "Partner workers",
+            "tone": "good",
+            "cpu": 30,
+            "sub": "flight, hotel, car"
           }
         ],
         "edges": [
@@ -4200,152 +4054,118 @@
           },
           {
             "from": "app",
-            "to": "pay"
+            "to": "queue"
+          },
+          {
+            "from": "queue",
+            "to": "worker"
           }
         ]
       },
       "choices": [
         {
-          "id": "add-saga",
-          "label": "Add saga",
+          "id": "compensate",
+          "label": "Run compensating cancels in reverse order, retried until done",
           "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "app",
-                "kind": "server",
-                "label": "API",
-                "tone": "good",
-                "cpu": 28
-              },
-              {
-                "id": "q",
-                "kind": "queue",
-                "label": "Queue",
-                "tone": "good"
-              },
-              {
-                "id": "w",
-                "kind": "worker",
-                "label": "Worker",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "app"
-              },
-              {
-                "from": "app",
-                "to": "q"
-              },
-              {
-                "from": "q",
-                "to": "w"
-              }
-            ]
-          },
+          "approach": "optimal",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 30,
+              "value": 36,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
-              "label": "p95 latency",
-              "value": 533,
+              "label": "Booking p95",
+              "value": 4200,
               "unit": "ms",
-              "tone": "good"
+              "tone": "warn"
             },
             {
-              "key": "errors",
-              "label": "Errors",
+              "key": "stranded",
+              "label": "Stranded flights",
               "value": 0,
-              "unit": "errors",
+              "unit": "/week",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "A saga with compensating actions (or a state machine) to undo completed steps on later failure."
+          "resultTitle": "Every completed step can be undone",
+          "resultBody": "The orchestrator records each finished step. On failure it enqueues cancel-car, cancel-hotel and cancel-flight for completed steps, newest first, retried with backoff and keyed by booking reference so a repeated cancel is harmless. Stranded flights drop to 0. Cost: some fares carry a cancellation fee, which the business absorbs."
         },
         {
-          "id": "a-single-distributed",
-          "label": "A single distributed",
+          "id": "two-phase",
+          "label": "Wrap the three partner calls in a two-phase commit",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 94,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 10000,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 55,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Request still blocked",
-          "resultBody": "The user thread is still waiting on the vendor."
-        },
-        {
-          "id": "ignore-partial-success",
-          "label": "Ignore partial success",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 92,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 8800,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
               "value": 35,
-              "unit": "errors",
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "Booking p95",
+              "value": 4000,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "stranded",
+              "label": "Stranded flights",
+              "value": 600,
+              "unit": "/week",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Request still blocked",
-          "resultBody": "Ignore partial success"
+          "resultTitle": "Partners have nothing to prepare",
+          "resultBody": "2PC needs every participant to support prepare and commit. The airline and hotel APIs only book or cancel, so the coordinator can't hold a booking in a prepared state and trips still end half-booked."
+        },
+        {
+          "id": "retry-hotel",
+          "label": "Retry the failed hotel booking until it succeeds",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 50,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "Booking p95",
+              "value": 90000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "stranded",
+              "label": "Stranded flights",
+              "value": 540,
+              "unit": "/week",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Retrying a sold-out hotel forever",
+          "resultBody": "Most failures are sold-out rooms, so retries never succeed. Trips sit in 'pending' for hours while the flight is already charged, and 540 travellers a week still end up with a flight and no hotel."
         }
       ],
       "hints": [
-        "The request path is waiting on slow work.",
-        "Users only need an ack now.",
-        "Enqueue and return."
+        "One step already changed the outside world before the failure.",
+        "Distributed transactions need partner support that isn't there.",
+        "For every forward step, define the step that undoes it."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     }
   ]
 }

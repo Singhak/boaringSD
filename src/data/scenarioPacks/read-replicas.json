@@ -232,10 +232,10 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Analytics report slows checkout",
-      "brief": "A reporting service runs heavy queries on the same database and checkout transactions lock up.",
-      "constraint": "Reports are read-heavy and can tolerate lag.",
-      "question": "What should be moved?",
+      "title": "Hourly finance report slows checkout",
+      "brief": "ShopNova's finance report runs a 25-minute REPEATABLE READ query on the checkout MySQL primary every hour. The InnoDB history list grows to 8 million entries and checkout p95 jumps from 60 ms to 900 ms.",
+      "constraint": "Finance accepts data up to 5 minutes old; checkout writes must stay on the primary.",
+      "question": "Where should the report run so checkout recovers?",
       "metricsBefore": [
         {
           "key": "rps",
@@ -254,15 +254,15 @@
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 3200,
+          "value": 900,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 40,
-          "unit": "errors",
+          "label": "Checkout timeouts",
+          "value": 3,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -271,20 +271,29 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Shoppers"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "App",
-            "tone": "neutral"
+            "label": "Checkout API",
+            "tone": "neutral",
+            "cpu": 45
+          },
+          {
+            "id": "report",
+            "kind": "server",
+            "label": "Finance report",
+            "tone": "warn",
+            "sub": "25-min snapshot"
           },
           {
             "id": "db",
             "kind": "db",
             "label": "Primary",
             "tone": "bad",
-            "cpu": 95
+            "cpu": 88,
+            "sub": "history list 8M"
           }
         ],
         "edges": [
@@ -295,25 +304,43 @@
           {
             "from": "app",
             "to": "db"
+          },
+          {
+            "from": "report",
+            "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "read-replicas",
-          "label": "Read replicas",
+          "id": "report-replica",
+          "label": "Run the report on a dedicated replica outside the app pool",
           "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 900,
+            "complexityScore": 2,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Isolates heavy reads; reports lag by seconds."
+          },
           "graphAfter": {
             "nodes": [
               {
                 "id": "users",
                 "kind": "users",
-                "label": "Users"
+                "label": "Shoppers"
               },
               {
                 "id": "app",
                 "kind": "server",
-                "label": "App",
+                "label": "Checkout API",
+                "tone": "good",
+                "cpu": 40
+              },
+              {
+                "id": "report",
+                "kind": "server",
+                "label": "Finance report",
                 "tone": "good"
               },
               {
@@ -321,13 +348,15 @@
                 "kind": "db",
                 "label": "Primary",
                 "tone": "good",
-                "cpu": 40
+                "cpu": 48
               },
               {
-                "id": "r1",
+                "id": "rep",
                 "kind": "replica",
-                "label": "Replica",
-                "tone": "good"
+                "label": "Reporting replica",
+                "tone": "warn",
+                "cpu": 70,
+                "sub": "report only"
               }
             ],
             "edges": [
@@ -340,8 +369,12 @@
                 "to": "db"
               },
               {
-                "from": "app",
-                "to": "r1"
+                "from": "db",
+                "to": "rep"
+              },
+              {
+                "from": "report",
+                "to": "rep"
               }
             ]
           },
@@ -349,97 +382,100 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 29,
+              "value": 48,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 213,
+              "value": 65,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Checkout timeouts",
               "value": 0,
-              "unit": "errors",
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Move the analytics queries to a read replica."
+          "resultTitle": "Report's snapshot moves off the primary",
+          "resultBody": "The long snapshot now holds back purge on the reporting replica only. The primary's history list drains to a few thousand entries, its CPU falls to 48%, and checkout p95 returns to 65 ms. Cost: one more replica, and report data is a few seconds old."
         },
         {
-          "id": "put-analytics-primary",
-          "label": "Put analytics primary",
+          "id": "covering-index",
+          "label": "Add a covering index so the report finishes faster",
           "correct": false,
+          "approach": "viable_with_tradeoffs",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 92,
+              "value": 82,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 4000,
+              "value": 500,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Checkout timeouts",
+              "value": 1.5,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Shorter report, same shared primary",
+          "resultBody": "The report drops from 25 to 12 minutes, but its snapshot still pins undo on the primary and the history list still reaches 4 million. The new index also slows every checkout insert, so p95 only improves to 500 ms."
+        },
+        {
+          "id": "read-uncommitted",
+          "label": "Run the report at READ UNCOMMITTED isolation",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
               "value": 80,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Primary still hot",
-          "resultBody": "Reads are still landing on the write node."
-        },
-        {
-          "id": "use-cdn",
-          "label": "Use CDN",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 90,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 3520,
+              "value": 400,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 60,
-              "unit": "errors",
+              "label": "Checkout timeouts",
+              "value": 1,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Primary still hot",
-          "resultBody": "Use a CDN"
+          "resultTitle": "Report totals no longer add up",
+          "resultBody": "Without a consistent snapshot the history list stops growing, but the report now counts orders that later rolled back and finance totals are off by 0.3%. Its full scans still burn primary CPU, and checkout p95 stays at 400 ms."
         }
       ],
       "hints": [
-        "Reads dominate this load.",
-        "Writes can stay on one primary.",
-        "Send reads to replicas."
+        "Checkout slowed down even though its own traffic didn't change.",
+        "A long-running snapshot stops InnoDB from purging old row versions for everyone on that server.",
+        "Finance can tolerate minutes of lag; checkout can't share a server with that snapshot."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "rr-03",
@@ -645,37 +681,37 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Hot read-only workload",
-      "brief": "Most traffic is reading product pages, but one primary database is CPU-bound.",
-      "constraint": "Writes are modest and distributed among a few users.",
-      "question": "How do you relieve the bottleneck?",
+      "title": "Evening price lookups outgrow two replicas",
+      "brief": "PriceWatch peaks at 70,000 reads/s every evening on 2 Postgres replicas that each top out near 18,000 reads/s. Both hit 99% CPU while the primary handles 1,500 writes/s at 35%.",
+      "constraint": "Prices may be 2 s stale, and replicas must stay under 70% CPU at peak.",
+      "question": "How many replicas does the evening peak need?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 8000,
+          "value": 70000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 88,
+          "value": 99,
           "unit": "%",
           "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 3200,
+          "value": 1400,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 40,
-          "unit": "errors",
+          "label": "Lookup timeouts",
+          "value": 7,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -684,20 +720,30 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Shoppers"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "App",
-            "tone": "neutral"
+            "label": "Price API",
+            "tone": "neutral",
+            "cpu": 50
           },
           {
             "id": "db",
             "kind": "db",
             "label": "Primary",
+            "tone": "good",
+            "cpu": 35,
+            "sub": "1,500 writes/s"
+          },
+          {
+            "id": "r",
+            "kind": "replica",
+            "label": "Replicas x2",
             "tone": "bad",
-            "cpu": 95
+            "cpu": 99,
+            "sub": "35k reads/s each"
           }
         ],
         "edges": [
@@ -708,39 +754,57 @@
           {
             "from": "app",
             "to": "db"
+          },
+          {
+            "from": "app",
+            "to": "r"
+          },
+          {
+            "from": "db",
+            "to": "r"
           }
         ]
       },
       "choices": [
         {
-          "id": "read-replicas",
-          "label": "Read replicas",
+          "id": "six",
+          "label": "Grow to six replicas at about 12k reads/s each",
           "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 2400,
+            "complexityScore": 1,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Sized for peak with headroom; costs more off-peak."
+          },
           "graphAfter": {
             "nodes": [
               {
                 "id": "users",
                 "kind": "users",
-                "label": "Users"
+                "label": "Shoppers"
               },
               {
                 "id": "app",
                 "kind": "server",
-                "label": "App",
-                "tone": "good"
+                "label": "Price API",
+                "tone": "good",
+                "cpu": 50
               },
               {
                 "id": "db",
                 "kind": "db",
                 "label": "Primary",
                 "tone": "good",
-                "cpu": 40
+                "cpu": 38
               },
               {
-                "id": "r1",
+                "id": "r",
                 "kind": "replica",
-                "label": "Replica",
-                "tone": "good"
+                "label": "Replicas x6",
+                "tone": "good",
+                "cpu": 65,
+                "sub": "~11.7k reads/s each"
               }
             ],
             "edges": [
@@ -754,7 +818,11 @@
               },
               {
                 "from": "app",
-                "to": "r1"
+                "to": "r"
+              },
+              {
+                "from": "db",
+                "to": "r"
               }
             ]
           },
@@ -762,97 +830,100 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 29,
+              "value": 65,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 213,
+              "value": 25,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Lookup timeouts",
               "value": 0,
-              "unit": "errors",
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Use read replicas for the high-volume read path."
+          "resultTitle": "Peak spread across six replicas",
+          "resultBody": "70,000 reads/s over 6 replicas is about 11,700 each, roughly 65% of an 18,000 reads/s ceiling, so the peak fits under the 70% target and p95 falls to 25 ms. Cost: four more replicas, about $2,400 a month, and more WAL streams from the primary."
         },
         {
-          "id": "add-more-writes",
-          "label": "Add more writes",
+          "id": "three",
+          "label": "Add one replica to reach three for the peak",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 92,
+              "value": 99,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 4000,
+              "value": 1100,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 80,
-              "unit": "errors",
+              "label": "Lookup timeouts",
+              "value": 5,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Primary still hot",
-          "resultBody": "Reads are still landing on the write node."
+          "resultTitle": "Three replicas still run out",
+          "resultBody": "Three replicas split 70,000 reads/s into about 23,300 each, above the 18,000 ceiling, so all three sit at 99% CPU. Timeouts fall only slightly, to 5%."
         },
         {
-          "id": "use-queue-reads",
-          "label": "Use queue reads",
+          "id": "overflow-primary",
+          "label": "Send peak overflow reads to the primary",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 90,
+              "value": 97,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 3520,
+              "value": 900,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 60,
-              "unit": "errors",
+              "label": "Lookup timeouts",
+              "value": 4,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Primary still hot",
-          "resultBody": "Use a queue for reads"
+          "resultTitle": "Overflow drowns the write node",
+          "resultBody": "The primary picks up about 34,000 reads/s on top of its writes and CPU jumps from 35% to 97%. Price updates now queue behind reads, write latency passes 2 s, and replicas start lagging too."
         }
       ],
       "hints": [
-        "Reads dominate this load.",
-        "Writes can stay on one primary.",
-        "Send reads to replicas."
+        "Work out reads per replica at peak, not on average.",
+        "Each replica has a ceiling, and the target is 70% of it.",
+        "Divide the peak by 70% of one replica's capacity and round up."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "rr-05",
@@ -862,37 +933,37 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Followers are stale",
-      "brief": "The app reads from replicas but a user expects a fresh view immediately after posting.",
-      "constraint": "Replication delay is measured in seconds, not milliseconds.",
-      "question": "What should you design around?",
+      "title": "Replicas fall 20 minutes behind by noon",
+      "brief": "LedgerLite's MySQL primary commits 9,000 small transactions/s across 16 cores. Its 3 replicas apply the binlog on a single SQL thread, top out near 5,000 transactions/s, and trail 20 minutes by noon.",
+      "constraint": "Balance pages read from replicas and must be less than 5 s stale.",
+      "question": "What lets the replicas keep up with the primary?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 8000,
-          "unit": "req/s",
+          "label": "Write rate",
+          "value": 9000,
+          "unit": "tx/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 88,
+          "value": 60,
           "unit": "%",
-          "tone": "bad"
+          "tone": "warn"
         },
         {
-          "key": "p95",
-          "label": "p95 latency",
-          "value": 3200,
-          "unit": "ms",
+          "key": "lag",
+          "label": "Replica lag",
+          "value": 1200,
+          "unit": "s",
           "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 40,
-          "unit": "errors",
+          "label": "Stale balance pages",
+          "value": 100,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -901,20 +972,30 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Account holders"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "App",
-            "tone": "neutral"
+            "label": "Ledger API",
+            "tone": "neutral",
+            "cpu": 40
           },
           {
             "id": "db",
             "kind": "db",
             "label": "Primary",
+            "tone": "warn",
+            "cpu": 60,
+            "sub": "16 cores busy"
+          },
+          {
+            "id": "r",
+            "kind": "replica",
+            "label": "Replicas x3",
             "tone": "bad",
-            "cpu": 95
+            "cpu": 9,
+            "sub": "1 core pegged"
           }
         ],
         "edges": [
@@ -925,39 +1006,56 @@
           {
             "from": "app",
             "to": "db"
+          },
+          {
+            "from": "app",
+            "to": "r"
+          },
+          {
+            "from": "db",
+            "to": "r"
           }
         ]
       },
       "choices": [
         {
-          "id": "fresh-reads",
-          "label": "Fresh reads",
+          "id": "parallel-apply",
+          "label": "Parallel binlog apply with 16 LOGICAL_CLOCK workers",
           "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "complexityScore": 2,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Apply throughput matches the primary; more replica CPU."
+          },
           "graphAfter": {
             "nodes": [
               {
                 "id": "users",
                 "kind": "users",
-                "label": "Users"
+                "label": "Account holders"
               },
               {
                 "id": "app",
                 "kind": "server",
-                "label": "App",
-                "tone": "good"
+                "label": "Ledger API",
+                "tone": "good",
+                "cpu": 40
               },
               {
                 "id": "db",
                 "kind": "db",
                 "label": "Primary",
-                "tone": "good",
-                "cpu": 40
+                "tone": "warn",
+                "cpu": 60
               },
               {
-                "id": "r1",
+                "id": "r",
                 "kind": "replica",
-                "label": "Replica",
-                "tone": "good"
+                "label": "Replicas x3",
+                "tone": "good",
+                "cpu": 45,
+                "sub": "16 apply workers"
               }
             ],
             "edges": [
@@ -971,7 +1069,11 @@
               },
               {
                 "from": "app",
-                "to": "r1"
+                "to": "r"
+              },
+              {
+                "from": "db",
+                "to": "r"
               }
             ]
           },
@@ -979,97 +1081,100 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 29,
-              "unit": "%",
-              "tone": "good"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 213,
-              "unit": "ms",
-              "tone": "good"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
-              "tone": "good"
-            }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Bounded freshness for the user’s own writes, not global strong consistency."
-        },
-        {
-          "id": "force-all-reads",
-          "label": "Force all reads",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 92,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 4000,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 80,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Primary still hot",
-          "resultBody": "Reads are still landing on the write node."
-        },
-        {
-          "id": "tell-users-refresh",
-          "label": "Tell users refresh",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 90,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 3520,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
               "value": 60,
-              "unit": "errors",
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "lag",
+              "label": "Replica lag",
+              "value": 0.8,
+              "unit": "s",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Stale balance pages",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Replicas apply as fast as the primary commits",
+          "resultBody": "With WRITESET dependency tracking on the primary and 16 apply workers that preserve commit order, each replica applies about 14,000 transactions/s. The 20-minute backlog drains in about 25 minutes and lag then stays under 1 s. Cost: replica CPU rises to about 45%."
+        },
+        {
+          "id": "more-replicas",
+          "label": "Add three more replicas to spread the reads",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 61,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "lag",
+              "label": "Replica lag",
+              "value": 1200,
+              "unit": "s",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Stale balance pages",
+              "value": 100,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Primary still hot",
-          "resultBody": "Tell users to refresh later"
+          "resultTitle": "Six replicas, all 20 minutes behind",
+          "resultBody": "Every new replica replays the same 9,000 transactions/s on one thread and falls behind at the same rate. Reads are spread wider, but every balance page is still minutes stale."
+        },
+        {
+          "id": "big-replicas",
+          "label": "Upgrade the replicas to 64-core instances",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 60,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "lag",
+              "label": "Replica lag",
+              "value": 1150,
+              "unit": "s",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Stale balance pages",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sixty-four cores, one thread busy",
+          "resultBody": "The apply thread still uses one core, and the other 63 idle, so throughput stays near 5,000 transactions/s. Lag keeps growing and the replica bill quadruples."
         }
       ],
       "hints": [
-        "Reads dominate this load.",
-        "Writes can stay on one primary.",
-        "Send reads to replicas."
+        "Replica CPU looks low, but one core on each is at 100%.",
+        "The primary commits in parallel on 16 cores, and each replica replays it serially.",
+        "Transactions that don't touch the same rows can be applied at the same time."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "rr-06",
@@ -1079,37 +1184,37 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Single-source-of-truth cluster",
-      "brief": "The product has multiple app servers that all do reads and writes on one database.",
-      "constraint": "The database is the bottleneck even though app traffic is okay.",
-      "question": "What is the best next step?",
+      "title": "Meter ingest pegs the primary at 95%",
+      "brief": "GridSense writes 60,000 meter readings/s into one Postgres primary as single-row INSERTs, each its own transaction and fsync. Dashboards read only 300 queries/s. The primary sits at 95% CPU.",
+      "constraint": "Readings must be durable within 1 s of arrival; the team can make one change this sprint.",
+      "question": "What actually takes load off the primary?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Traffic",
-          "value": 8000,
-          "unit": "req/s",
+          "label": "Inserts",
+          "value": 60000,
+          "unit": "rows/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 88,
+          "value": 95,
           "unit": "%",
           "tone": "bad"
         },
         {
           "key": "p95",
-          "label": "p95 latency",
-          "value": 3200,
+          "label": "Insert p95",
+          "value": 850,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 40,
-          "unit": "errors",
+          "label": "Dropped readings",
+          "value": 4,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -1118,77 +1223,101 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Smart meters"
           },
           {
-            "id": "app",
+            "id": "ingest",
             "kind": "server",
-            "label": "App",
-            "tone": "neutral"
+            "label": "Ingest service",
+            "tone": "neutral",
+            "cpu": 30
           },
           {
             "id": "db",
             "kind": "db",
             "label": "Primary",
             "tone": "bad",
-            "cpu": 95
+            "cpu": 95,
+            "sub": "60k commits/s"
+          },
+          {
+            "id": "dash",
+            "kind": "server",
+            "label": "Dashboards",
+            "tone": "good",
+            "cpu": 10,
+            "sub": "300 queries/s"
           }
         ],
         "edges": [
           {
             "from": "users",
-            "to": "app"
+            "to": "ingest"
           },
           {
-            "from": "app",
+            "from": "ingest",
+            "to": "db"
+          },
+          {
+            "from": "dash",
             "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "read-replicas",
-          "label": "Read replicas",
+          "id": "copy-batch",
+          "label": "Batch readings into 1-second multi-row COPY transactions",
           "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "latencyP99DeltaMs": 1000,
+            "complexityScore": 2,
+            "tradeoffSummary": "Far fewer commits for up to 1 s of added write latency."
+          },
           "graphAfter": {
             "nodes": [
               {
                 "id": "users",
                 "kind": "users",
-                "label": "Users"
+                "label": "Smart meters"
               },
               {
-                "id": "app",
+                "id": "ingest",
                 "kind": "server",
-                "label": "App",
-                "tone": "good"
+                "label": "Ingest workers",
+                "tone": "good",
+                "cpu": 35,
+                "sub": "1 s batches"
               },
               {
                 "id": "db",
                 "kind": "db",
                 "label": "Primary",
                 "tone": "good",
-                "cpu": 40
+                "cpu": 40,
+                "sub": "20 commits/s"
               },
               {
-                "id": "r1",
-                "kind": "replica",
-                "label": "Replica",
-                "tone": "good"
+                "id": "dash",
+                "kind": "server",
+                "label": "Dashboards",
+                "tone": "good",
+                "cpu": 10
               }
             ],
             "edges": [
               {
                 "from": "users",
-                "to": "app"
+                "to": "ingest"
               },
               {
-                "from": "app",
+                "from": "ingest",
                 "to": "db"
               },
               {
-                "from": "app",
-                "to": "r1"
+                "from": "dash",
+                "to": "db"
               }
             ]
           },
@@ -1196,97 +1325,100 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 29,
+              "value": 40,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
-              "label": "p95 latency",
-              "value": 213,
+              "label": "Insert p95",
+              "value": 900,
               "unit": "ms",
-              "tone": "good"
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Dropped readings",
               "value": 0,
-              "unit": "errors",
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Separate reads from writes using replicas and a primary database."
+          "resultTitle": "Sixty thousand commits become twenty",
+          "resultBody": "Twenty ingest workers buffer for up to 1 s and COPY about 3,000 rows each per transaction. Commits and fsyncs fall from 60,000/s to 20/s and primary CPU drops to 40%. Cost: workers acknowledge only after commit, so meters resend up to 1 s of readings on a crash."
         },
         {
-          "id": "remove-app-servers",
-          "label": "Remove app servers",
+          "id": "replicas",
+          "label": "Add three read replicas behind a reader endpoint",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 92,
+              "value": 94,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
-              "label": "p95 latency",
-              "value": 4000,
+              "label": "Insert p95",
+              "value": 840,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 80,
-              "unit": "errors",
+              "label": "Dropped readings",
+              "value": 4,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Primary still hot",
-          "resultBody": "Reads are still landing on the write node."
+          "resultTitle": "Replicas replay every insert too",
+          "resultBody": "The replicas take the 300 dashboard queries/s, which were never the problem. The primary still performs 60,000 commits/s at 95% CPU, and each replica now replays all 60,000 rows/s on top."
         },
         {
-          "id": "add-more-writes",
-          "label": "Add more writes",
+          "id": "second-primary",
+          "label": "Promote a replica to accept half of the inserts",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 90,
+              "value": 55,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
-              "label": "p95 latency",
-              "value": 3520,
+              "label": "Insert p95",
+              "value": 200,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 60,
-              "unit": "errors",
+              "label": "Incomplete dashboards",
+              "value": 50,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Primary still hot",
-          "resultBody": "Add more writes"
+          "resultTitle": "Two primaries, two diverging histories",
+          "resultBody": "Promoting a replica breaks it off from the original primary. Each node now holds half the readings, dashboards see incomplete data, and the two timelines can't be merged back without a manual rebuild."
         }
       ],
       "hints": [
-        "Reads dominate this load.",
-        "Writes can stay on one primary.",
-        "Send reads to replicas."
+        "Look at the ratio of writes to reads.",
+        "Every replica must apply every write the primary makes.",
+        "Most of the primary's work is per transaction, not per row."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "rr-07",
@@ -1296,37 +1428,37 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Page loads are slow despite healthy app servers",
-      "brief": "The app tier is at 35% CPU, but end-user latency is 7 seconds.",
-      "constraint": "The system is waiting on database reads and writes.",
-      "question": "What is the bottleneck?",
+      "title": "Pages slow while three replicas sit idle",
+      "brief": "RecipeBox added 3 read replicas, but its framework opens a transaction for every request and the read/write router sends anything inside a transaction to the primary. The primary serves 30,000 reads/s at 93%.",
+      "constraint": "Pages may show data up to 2 s old, but save flows must read their own writes.",
+      "question": "How do the replicas start taking page reads?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 8000,
+          "value": 30000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 88,
+          "value": 93,
           "unit": "%",
           "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 3200,
+          "value": 1300,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 40,
-          "unit": "errors",
+          "label": "Page timeouts",
+          "value": 5,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -1335,20 +1467,30 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Home cooks"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "App",
-            "tone": "neutral"
+            "label": "Web app",
+            "tone": "neutral",
+            "cpu": 45,
+            "sub": "tx per request"
           },
           {
             "id": "db",
             "kind": "db",
             "label": "Primary",
             "tone": "bad",
-            "cpu": 95
+            "cpu": 93
+          },
+          {
+            "id": "r",
+            "kind": "replica",
+            "label": "Replicas x3",
+            "tone": "neutral",
+            "cpu": 4,
+            "sub": "idle"
           }
         ],
         "edges": [
@@ -1359,39 +1501,52 @@
           {
             "from": "app",
             "to": "db"
+          },
+          {
+            "from": "db",
+            "to": "r"
           }
         ]
       },
       "choices": [
         {
-          "id": "read-replicas",
-          "label": "Read replicas",
+          "id": "readonly-tx",
+          "label": "Mark GET handlers read-only so the router picks a replica",
           "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "complexityScore": 2,
+            "consistencyGuarantee": "session",
+            "tradeoffSummary": "Uses existing replicas; needs routing discipline in code."
+          },
           "graphAfter": {
             "nodes": [
               {
                 "id": "users",
                 "kind": "users",
-                "label": "Users"
+                "label": "Home cooks"
               },
               {
                 "id": "app",
                 "kind": "server",
-                "label": "App",
-                "tone": "good"
+                "label": "Web app",
+                "tone": "good",
+                "cpu": 45,
+                "sub": "read-only GETs"
               },
               {
                 "id": "db",
                 "kind": "db",
                 "label": "Primary",
                 "tone": "good",
-                "cpu": 40
+                "cpu": 35
               },
               {
-                "id": "r1",
+                "id": "r",
                 "kind": "replica",
-                "label": "Replica",
-                "tone": "good"
+                "label": "Replicas x3",
+                "tone": "good",
+                "cpu": 55
               }
             ],
             "edges": [
@@ -1405,7 +1560,11 @@
               },
               {
                 "from": "app",
-                "to": "r1"
+                "to": "r"
+              },
+              {
+                "from": "db",
+                "to": "r"
               }
             ]
           },
@@ -1413,97 +1572,100 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 29,
+              "value": 55,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 213,
-              "unit": "ms",
-              "tone": "good"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
-              "tone": "good"
-            }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "The primary database is overloaded with both reads and writes."
-        },
-        {
-          "id": "slow-disk",
-          "label": "Slow disk",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 92,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 4000,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 80,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Primary still hot",
-          "resultBody": "Reads are still landing on the write node."
-        },
-        {
-          "id": "low-client-bandwidth",
-          "label": "Low client bandwidth",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
               "value": 90,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Page timeouts",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Page reads move to the replicas",
+          "resultBody": "GET handlers now open read-only transactions, which the router sends to replicas; saves and their follow-up reads stay on the primary. The primary drops to 35% CPU, replicas run near 55%, and p95 falls to 90 ms. Cost: a handler audit, and GETs that write, like view counters, must move."
+        },
+        {
+          "id": "all-replica",
+          "label": "Point the whole app's connection string at a replica",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 50,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 120,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Failed requests",
+              "value": 12,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Every save now fails",
+          "resultBody": "Page reads move off the primary, but replicas reject writes with \"cannot execute INSERT in a read-only transaction\". Every recipe save, rating, and login update fails, which is 12% of all requests."
+        },
+        {
+          "id": "two-more",
+          "label": "Add two more replicas to the reader pool",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 93,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 3520,
+              "value": 1300,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 60,
-              "unit": "errors",
+              "label": "Page timeouts",
+              "value": 5,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Primary still hot",
-          "resultBody": "Low client bandwidth"
+          "resultTitle": "Five idle replicas instead of three",
+          "resultBody": "The router still sees every query inside a transaction and sends it to the primary. The two new replicas join the others at 4% CPU while the primary stays at 93%."
         }
       ],
       "hints": [
-        "Reads dominate this load.",
-        "Writes can stay on one primary.",
-        "Send reads to replicas."
+        "The replicas are healthy and caught up, but receive no queries.",
+        "The router decides by the kind of transaction, not by the SQL inside it.",
+        "Tell the router which requests only read."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "rr-08",
@@ -1513,37 +1675,37 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Archival reports flood the database",
-      "brief": "The finance team runs heavy monthly reports during business hours and kills checkout latency.",
-      "constraint": "Read-heavy analytics can accept some lag.",
-      "question": "Which path is best?",
+      "title": "Archive export wipes the replicas' cache",
+      "brief": "Newsly's 4 replicas serve 40,000 article reads/s from a warm cache. A daily compliance export now scans 5 years of archives on the same pool; cache hit rate falls from 98% to 55% and p95 from 30 ms to 700 ms.",
+      "constraint": "The export runs daily this quarter; the 4 replicas are all the budget allows.",
+      "question": "How do you keep the export from hurting readers?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 8000,
+          "value": 40000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 88,
+          "value": 55,
           "unit": "%",
-          "tone": "bad"
+          "tone": "warn"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 3200,
+          "value": 700,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 40,
-          "unit": "errors",
+          "label": "Reader timeouts",
+          "value": 2,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -1552,20 +1714,36 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Readers"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "App",
-            "tone": "neutral"
+            "label": "Article API",
+            "tone": "neutral",
+            "cpu": 35
+          },
+          {
+            "id": "export",
+            "kind": "server",
+            "label": "Compliance export",
+            "tone": "warn",
+            "sub": "5-year scan"
           },
           {
             "id": "db",
             "kind": "db",
             "label": "Primary",
+            "tone": "good",
+            "cpu": 30
+          },
+          {
+            "id": "r",
+            "kind": "replica",
+            "label": "Replicas x4",
             "tone": "bad",
-            "cpu": 95
+            "cpu": 55,
+            "sub": "cache hit 55%"
           }
         ],
         "edges": [
@@ -1575,26 +1753,46 @@
           },
           {
             "from": "app",
-            "to": "db"
+            "to": "r"
+          },
+          {
+            "from": "export",
+            "to": "r"
+          },
+          {
+            "from": "db",
+            "to": "r"
           }
         ]
       },
       "choices": [
         {
-          "id": "read-replicas",
-          "label": "Read replicas",
+          "id": "tag-route",
+          "label": "Tag export queries and route them to replica 4 only",
           "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "complexityScore": 2,
+            "tradeoffSummary": "Contains cache damage to one node at the cost of pool headroom."
+          },
           "graphAfter": {
             "nodes": [
               {
                 "id": "users",
                 "kind": "users",
-                "label": "Users"
+                "label": "Readers"
               },
               {
                 "id": "app",
                 "kind": "server",
-                "label": "App",
+                "label": "Article API",
+                "tone": "good",
+                "cpu": 35
+              },
+              {
+                "id": "export",
+                "kind": "server",
+                "label": "Compliance export",
                 "tone": "good"
               },
               {
@@ -1602,13 +1800,23 @@
                 "kind": "db",
                 "label": "Primary",
                 "tone": "good",
-                "cpu": 40
+                "cpu": 30
               },
               {
-                "id": "r1",
+                "id": "r",
                 "kind": "replica",
-                "label": "Replica",
-                "tone": "good"
+                "label": "Replicas 1-3",
+                "tone": "warn",
+                "cpu": 72,
+                "sub": "cache hit 98%"
+              },
+              {
+                "id": "r4",
+                "kind": "replica",
+                "label": "Replica 4",
+                "tone": "warn",
+                "cpu": 60,
+                "sub": "export only"
               }
             ],
             "edges": [
@@ -1618,11 +1826,19 @@
               },
               {
                 "from": "app",
-                "to": "db"
+                "to": "r"
               },
               {
-                "from": "app",
-                "to": "r1"
+                "from": "export",
+                "to": "r4"
+              },
+              {
+                "from": "db",
+                "to": "r"
+              },
+              {
+                "from": "db",
+                "to": "r4"
               }
             ]
           },
@@ -1630,97 +1846,100 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 29,
+              "value": 72,
               "unit": "%",
-              "tone": "good"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 213,
+              "value": 35,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Reader timeouts",
               "value": 0,
-              "unit": "errors",
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Use a dedicated replica for reporting queries."
+          "resultTitle": "Three caches stay warm",
+          "resultBody": "The proxy sends queries tagged as the export to replica 4 only and takes it out of the reader pool. Replicas 1-3 keep a 98% hit rate and carry the 40,000 reads/s at about 72% CPU, and p95 returns to 35 ms. Cost: less reader headroom while the export runs."
         },
         {
-          "id": "route-primary",
-          "label": "Route primary",
+          "id": "more-ram",
+          "label": "Double the replicas' RAM to fit the archives",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 92,
+              "value": 54,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 4000,
+              "value": 560,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Reader timeouts",
+              "value": 1.5,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Archive still bigger than memory",
+          "resultBody": "The archive is 6 TB and the replicas now have 512 GB each, so the scan still pushes hot articles out of cache on all 4 nodes. The hit rate only recovers to 62% and the RAM bill doubles."
+        },
+        {
+          "id": "export-primary",
+          "label": "Run the export on the primary overnight",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
               "value": 80,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Primary still hot",
-          "resultBody": "Reads are still landing on the write node."
-        },
-        {
-          "id": "use-cdn",
-          "label": "Use CDN",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 90,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 3520,
+              "value": 250,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 60,
-              "unit": "errors",
-              "tone": "bad"
+              "label": "Reader timeouts",
+              "value": 0.5,
+              "unit": "%",
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Primary still hot",
-          "resultBody": "Use the CDN"
+          "resultTitle": "Primary's cache takes the hit instead",
+          "resultBody": "Readers recover, but the scan now evicts the primary's working set. Morning publishing writes hit a cold cache, commit latency passes 400 ms, and the scan load makes all 4 replicas lag by 90 s."
         }
       ],
       "hints": [
-        "Reads dominate this load.",
-        "Writes can stay on one primary.",
-        "Send reads to replicas."
+        "Replica CPU is moderate; the damage shows up in the cache hit rate.",
+        "A full archive scan pushes the hot articles out of every cache it passes through.",
+        "Decide which replicas the scan is allowed to touch."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "rr-09",
@@ -2014,37 +2233,37 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Scaling is good but a single SQL node remains hot",
-      "brief": "You expanded the app layer to three servers, but the database still sees every query.",
-      "constraint": "Read traffic is the major load, and write traffic is moderate.",
-      "question": "Which design gives the biggest improvement without a full rewrite?",
+      "title": "One replica at 95% while two sit idle",
+      "brief": "MapTiles' app servers open long-lived connection pools to the reader DNS name at boot. After a replica restart, 80% of connections ended up on replica 1: it runs at 95% CPU while replicas 2 and 3 sit near 20%.",
+      "constraint": "App servers restart only once a week.",
+      "question": "How do reads spread evenly across the replicas again?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 8000,
+          "value": 25000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 88,
+          "value": 95,
           "unit": "%",
           "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 3200,
+          "value": 600,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 40,
-          "unit": "errors",
+          "label": "Tile timeouts",
+          "value": 3,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -2053,20 +2272,36 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Map users"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "App",
-            "tone": "neutral"
+            "label": "Tile API",
+            "tone": "neutral",
+            "cpu": 40,
+            "sub": "pools pinned at boot"
           },
           {
             "id": "db",
             "kind": "db",
             "label": "Primary",
+            "tone": "good",
+            "cpu": 25
+          },
+          {
+            "id": "r1",
+            "kind": "replica",
+            "label": "Replica 1",
             "tone": "bad",
             "cpu": 95
+          },
+          {
+            "id": "r23",
+            "kind": "replica",
+            "label": "Replicas 2-3",
+            "tone": "neutral",
+            "cpu": 20
           }
         ],
         "edges": [
@@ -2076,40 +2311,74 @@
           },
           {
             "from": "app",
-            "to": "db"
+            "to": "r1"
+          },
+          {
+            "from": "app",
+            "to": "r23"
+          },
+          {
+            "from": "db",
+            "to": "r1"
+          },
+          {
+            "from": "db",
+            "to": "r23"
           }
         ]
       },
       "choices": [
         {
-          "id": "read-replicas",
-          "label": "Read replicas",
+          "id": "proxy",
+          "label": "Route reads through a proxy that balances per query",
           "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "latencyP99DeltaMs": 1,
+            "complexityScore": 3,
+            "tradeoffSummary": "Even replica load regardless of client pooling; another tier to run."
+          },
           "graphAfter": {
             "nodes": [
               {
                 "id": "users",
                 "kind": "users",
-                "label": "Users"
+                "label": "Map users"
               },
               {
                 "id": "app",
                 "kind": "server",
-                "label": "App",
-                "tone": "good"
+                "label": "Tile API",
+                "tone": "good",
+                "cpu": 40
+              },
+              {
+                "id": "proxy",
+                "kind": "lb",
+                "label": "ProxySQL",
+                "tone": "good",
+                "sub": "per-query"
               },
               {
                 "id": "db",
                 "kind": "db",
                 "label": "Primary",
                 "tone": "good",
-                "cpu": 40
+                "cpu": 25
               },
               {
                 "id": "r1",
                 "kind": "replica",
-                "label": "Replica",
-                "tone": "good"
+                "label": "Replica 1",
+                "tone": "good",
+                "cpu": 46
+              },
+              {
+                "id": "r23",
+                "kind": "replica",
+                "label": "Replicas 2-3",
+                "tone": "good",
+                "cpu": 44
               }
             ],
             "edges": [
@@ -2119,11 +2388,23 @@
               },
               {
                 "from": "app",
-                "to": "db"
+                "to": "proxy"
               },
               {
-                "from": "app",
+                "from": "proxy",
                 "to": "r1"
+              },
+              {
+                "from": "proxy",
+                "to": "r23"
+              },
+              {
+                "from": "db",
+                "to": "r1"
+              },
+              {
+                "from": "db",
+                "to": "r23"
               }
             ]
           },
@@ -2131,97 +2412,100 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 29,
+              "value": 45,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 213,
+              "value": 40,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Tile timeouts",
               "value": 0,
-              "unit": "errors",
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Read replicas focused on read traffic with writes remaining on the primary."
+          "resultTitle": "Queries spread per request",
+          "resultBody": "Apps connect to a ProxySQL pair, which keeps its own pools to every replica and spreads each query by load. All three replicas settle near 45% CPU and p95 drops to 40 ms. Cost: about 0.3 ms per query and a proxy tier to keep highly available."
         },
         {
-          "id": "substantially-more-app",
-          "label": "Substantially more app",
+          "id": "fourth",
+          "label": "Add a fourth replica to the reader DNS record",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 92,
+              "value": 95,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 4000,
+              "value": 600,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Tile timeouts",
+              "value": 3,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "New replica gets no connections",
+          "resultBody": "Existing pools never re-resolve the DNS name, so the new replica receives nothing until next week's restarts. Replica 1 stays at 95% and the new node idles at 2%."
+        },
+        {
+          "id": "conn-cap",
+          "label": "Cap replica 1 at 200 connections in its config",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
               "value": 80,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Primary still hot",
-          "resultBody": "Reads are still landing on the write node."
-        },
-        {
-          "id": "a-larger-single",
-          "label": "A larger single",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 90,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 3520,
+              "value": 450,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 60,
-              "unit": "errors",
+              "label": "Tile timeouts",
+              "value": 15,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Primary still hot",
-          "resultBody": "A larger single machine"
+          "resultTitle": "Refused connections, failing pools",
+          "resultBody": "Replica 1 starts refusing new connections with \"too many connections\", and pools that lose a connection fail to replace it. 15% of tile reads error until pools happen to resolve another replica."
         }
       ],
       "hints": [
-        "Reads dominate this load.",
-        "Writes can stay on one primary.",
-        "Send reads to replicas."
+        "All three replicas are healthy and caught up.",
+        "DNS picks a replica once per connection, and these connections live for a week.",
+        "Balancing needs to happen per query, by something that sees every replica."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "rr-11",
@@ -2231,37 +2515,37 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Search suggestions hammer Postgres",
-      "brief": "Typeahead queries hit the primary 40,000 times per minute and write latency doubles.",
-      "constraint": "Suggestions can be a few seconds behind.",
-      "question": "Where should typeahead reads go?",
+      "title": "Typeahead queries swamp Postgres",
+      "brief": "BookNook's search box fires 12,000 suggestion queries/s using ILIKE '%term%' on a 20M-row titles table. Each one is a 300 ms sequential scan, and the primary and both replicas sit at 99% CPU.",
+      "constraint": "Budget allows at most two more database instances.",
+      "question": "What makes each suggestion cheap enough to serve?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 40000,
+          "value": 12000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 88,
+          "value": 99,
           "unit": "%",
           "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 3200,
+          "value": 2400,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 40,
-          "unit": "errors",
+          "label": "Suggestion timeouts",
+          "value": 22,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -2270,20 +2554,30 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Shoppers"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "App",
-            "tone": "neutral"
+            "label": "Search API",
+            "tone": "neutral",
+            "cpu": 30
           },
           {
             "id": "db",
             "kind": "db",
             "label": "Primary",
             "tone": "bad",
-            "cpu": 95
+            "cpu": 99,
+            "sub": "seq scans"
+          },
+          {
+            "id": "r",
+            "kind": "replica",
+            "label": "Replicas x2",
+            "tone": "bad",
+            "cpu": 99,
+            "sub": "seq scans"
           }
         ],
         "edges": [
@@ -2294,39 +2588,55 @@
           {
             "from": "app",
             "to": "db"
+          },
+          {
+            "from": "app",
+            "to": "r"
+          },
+          {
+            "from": "db",
+            "to": "r"
           }
         ]
       },
       "choices": [
         {
-          "id": "read-replicas",
-          "label": "Read replicas",
+          "id": "trigram",
+          "label": "Trigram GIN index so ILIKE stops scanning the table",
           "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "complexityScore": 1,
+            "tradeoffSummary": "Cuts per-query cost 100x; extra index storage and write cost."
+          },
           "graphAfter": {
             "nodes": [
               {
                 "id": "users",
                 "kind": "users",
-                "label": "Users"
+                "label": "Shoppers"
               },
               {
                 "id": "app",
                 "kind": "server",
-                "label": "App",
-                "tone": "good"
+                "label": "Search API",
+                "tone": "good",
+                "cpu": 30
               },
               {
                 "id": "db",
                 "kind": "db",
                 "label": "Primary",
                 "tone": "good",
-                "cpu": 40
+                "cpu": 25
               },
               {
-                "id": "r1",
+                "id": "r",
                 "kind": "replica",
-                "label": "Replica",
-                "tone": "good"
+                "label": "Replicas x2",
+                "tone": "good",
+                "cpu": 30,
+                "sub": "index scans"
               }
             ],
             "edges": [
@@ -2336,11 +2646,11 @@
               },
               {
                 "from": "app",
-                "to": "db"
+                "to": "r"
               },
               {
-                "from": "app",
-                "to": "r1"
+                "from": "db",
+                "to": "r"
               }
             ]
           },
@@ -2348,97 +2658,100 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 29,
+              "value": 30,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 213,
+              "value": 15,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Suggestion timeouts",
               "value": 0,
-              "unit": "errors",
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Serve suggestion queries from read replicas, leaving the primary for writes."
+          "resultTitle": "300 ms scans become 3 ms lookups",
+          "resultBody": "A pg_trgm GIN index built CONCURRENTLY on the primary replicates to both replicas, and ILIKE on terms of 3+ characters now uses it. Each suggestion costs about 3 ms, so replicas fall to 30% CPU. Cost: a 1.5 GB index and slightly slower title writes."
         },
         {
-          "id": "run-typeahead-inside",
-          "label": "Run typeahead inside",
+          "id": "two-replicas",
+          "label": "Add two more replicas for suggestion traffic",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 92,
+              "value": 99,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 4000,
+              "value": 2200,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 80,
-              "unit": "errors",
+              "label": "Suggestion timeouts",
+              "value": 20,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Primary still hot",
-          "resultBody": "Reads are still landing on the write node."
+          "resultTitle": "Two replicas against 3,600 cores of work",
+          "resultBody": "12,000 queries/s at 300 ms of CPU each needs about 3,600 cores. Two more 32-core replicas add 64, so all four replicas sit at 99% and timeouts barely move."
         },
         {
-          "id": "block-typeahead-during",
-          "label": "Block typeahead during",
+          "id": "btree",
+          "label": "Create a B-tree index on the title column",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 90,
+              "value": 99,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 3520,
+              "value": 2400,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 60,
-              "unit": "errors",
+              "label": "Suggestion timeouts",
+              "value": 22,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Primary still hot",
-          "resultBody": "Block typeahead during writes"
+          "resultTitle": "Index built, planner ignores it",
+          "resultBody": "A B-tree only helps prefix matches like 'term%'. With a leading wildcard the planner still chooses a sequential scan, so CPU stays at 99% and the new index just adds write cost."
         }
       ],
       "hints": [
-        "Reads dominate this load.",
-        "Writes can stay on one primary.",
-        "Send reads to replicas."
+        "Replicas multiply capacity; they don't make a query cheaper.",
+        "Multiply queries per second by CPU time per query.",
+        "A leading wildcard needs an index built from pieces of each word."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "rr-12",
@@ -2448,37 +2761,37 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "BI warehouse on the OLTP primary",
-      "brief": "Nightly ETL still runs SELECT * joins on the production primary at 09:00.",
-      "constraint": "Analysts can tolerate minutes of lag.",
-      "question": "What isolates production from analytics?",
+      "title": "BI dashboards crush the dispatch database",
+      "brief": "FleetOps analysts run 40 BI dashboards straight against the OLTP Postgres primary, each scanning 200M-row trip tables. At 9 a.m. the primary hits 90% CPU and dispatch writes slow to 800 ms.",
+      "constraint": "BI data may be 15 minutes old, and analysts must be able to create their own tables.",
+      "question": "Where should the analytics workload live?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 8000,
+          "value": 6000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 88,
+          "value": 90,
           "unit": "%",
           "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 3200,
+          "value": 800,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 40,
-          "unit": "errors",
+          "label": "Dispatch timeouts",
+          "value": 2,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -2487,20 +2800,28 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Drivers"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "App",
-            "tone": "neutral"
+            "label": "Dispatch API",
+            "tone": "neutral",
+            "cpu": 40
+          },
+          {
+            "id": "bi",
+            "kind": "server",
+            "label": "BI dashboards",
+            "tone": "warn",
+            "sub": "200M-row scans"
           },
           {
             "id": "db",
             "kind": "db",
             "label": "Primary",
             "tone": "bad",
-            "cpu": 95
+            "cpu": 90
           }
         ],
         "edges": [
@@ -2511,38 +2832,63 @@
           {
             "from": "app",
             "to": "db"
+          },
+          {
+            "from": "bi",
+            "to": "db"
           }
         ]
       },
       "choices": [
         {
-          "id": "read-replicas",
-          "label": "Read replicas",
+          "id": "cdc",
+          "label": "Stream changes via CDC into a columnar warehouse",
           "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 3000,
+            "complexityScore": 4,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Right engine for scans; a pipeline to operate."
+          },
           "graphAfter": {
             "nodes": [
               {
                 "id": "users",
                 "kind": "users",
-                "label": "Users"
+                "label": "Drivers"
               },
               {
                 "id": "app",
                 "kind": "server",
-                "label": "App",
-                "tone": "good"
+                "label": "Dispatch API",
+                "tone": "good",
+                "cpu": 40
               },
               {
                 "id": "db",
                 "kind": "db",
                 "label": "Primary",
                 "tone": "good",
-                "cpu": 40
+                "cpu": 45
               },
               {
-                "id": "r1",
-                "kind": "replica",
-                "label": "Replica",
+                "id": "cdc",
+                "kind": "queue",
+                "label": "CDC stream",
+                "tone": "good"
+              },
+              {
+                "id": "wh",
+                "kind": "db",
+                "label": "Columnar warehouse",
+                "tone": "good",
+                "cpu": 50
+              },
+              {
+                "id": "bi",
+                "kind": "server",
+                "label": "BI dashboards",
                 "tone": "good"
               }
             ],
@@ -2556,8 +2902,16 @@
                 "to": "db"
               },
               {
-                "from": "app",
-                "to": "r1"
+                "from": "db",
+                "to": "cdc"
+              },
+              {
+                "from": "cdc",
+                "to": "wh"
+              },
+              {
+                "from": "bi",
+                "to": "wh"
               }
             ]
           },
@@ -2565,97 +2919,100 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 29,
+              "value": 45,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 213,
-              "unit": "ms",
-              "tone": "good"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
-              "tone": "good"
-            }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Point ETL and warehouse extracts at a dedicated replica."
-        },
-        {
-          "id": "raise-primary-iops",
-          "label": "Raise primary IOPS",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 92,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 4000,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 80,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Primary still hot",
-          "resultBody": "Reads are still landing on the write node."
-        },
-        {
-          "id": "export-through-public",
-          "label": "Export through public",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 90,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 3520,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
               "value": 60,
-              "unit": "errors",
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Dispatch timeouts",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Analytics moves to a warehouse",
+          "resultBody": "Debezium reads the primary's WAL through a logical replication slot and lands changes in a columnar warehouse about 2 minutes later. Dashboards scan compressed columns in seconds, analysts own their schema, and primary CPU falls to 45%. Cost: monitor the slot, because an unconsumed slot keeps WAL and fills the disk."
+        },
+        {
+          "id": "physical",
+          "label": "Give analysts a physical read replica",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 45,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 60,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Failed BI queries",
+              "value": 35,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Primary still hot",
-          "resultBody": "Export through the public API only"
+          "resultTitle": "Read-only standby rejects analyst tables",
+          "resultBody": "Dispatch recovers, but a physical standby is read-only, so CREATE TABLE fails. Long dashboard queries are also cancelled with \"conflict with recovery\" whenever vacuum on the primary removes rows they still need, and 35% of BI queries fail."
+        },
+        {
+          "id": "pg-dump",
+          "label": "Nightly pg_dump restored into an analytics copy",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 45,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 70,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Stale BI data",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Yesterday's numbers at 9 a.m.",
+          "resultBody": "The dump takes 3 hours of primary I/O each night, and dashboards show data up to 24 hours old, far past the 15-minute limit. Morning fleet planning runs on stale trips."
         }
       ],
       "hints": [
-        "Reads dominate this load.",
-        "Writes can stay on one primary.",
-        "Send reads to replicas."
+        "The analysts need to write their own tables, not just read.",
+        "A physical replica is a byte-for-byte, read-only copy of the primary.",
+        "Row stores and column stores are good at different queries; changes can flow from one to the other."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "rr-13",
@@ -2665,37 +3022,37 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Replica used for writes by mistake",
-      "brief": "A misconfigured ORM sends INSERT traffic to a replica and errors spike.",
-      "constraint": "Replicas are read-only.",
-      "question": "What routing rule is required?",
+      "title": "Bookings fail with \"read-only transaction\"",
+      "brief": "After a planned failover, CarePlus's old primary rejoined as a replica. App pools opened before the switch still point at it, so 30% of appointment bookings fail with \"cannot execute INSERT in a read-only transaction\".",
+      "constraint": "Failovers happen monthly for patching; nobody wants a manual app restart each time.",
+      "question": "How should the app find the current writer on its own?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 8000,
+          "value": 3000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 88,
+          "value": 40,
           "unit": "%",
-          "tone": "bad"
+          "tone": "good"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 3200,
+          "value": 150,
           "unit": "ms",
-          "tone": "bad"
+          "tone": "good"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 40,
-          "unit": "errors",
+          "label": "Failed bookings",
+          "value": 30,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -2704,20 +3061,30 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Patients"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "App",
-            "tone": "neutral"
+            "label": "Booking API",
+            "tone": "warn",
+            "cpu": 30,
+            "sub": "stale pools"
           },
           {
             "id": "db",
             "kind": "db",
-            "label": "Primary",
+            "label": "New primary",
+            "tone": "good",
+            "cpu": 40
+          },
+          {
+            "id": "old",
+            "kind": "replica",
+            "label": "Old primary",
             "tone": "bad",
-            "cpu": 95
+            "cpu": 25,
+            "sub": "now read-only"
           }
         ],
         "edges": [
@@ -2728,39 +3095,57 @@
           {
             "from": "app",
             "to": "db"
+          },
+          {
+            "from": "app",
+            "to": "old"
+          },
+          {
+            "from": "db",
+            "to": "old"
           }
         ]
       },
       "choices": [
         {
-          "id": "read-replicas",
-          "label": "Read replicas",
+          "id": "tsa",
+          "label": "Use target_session_attrs=read-write in the connection string",
           "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "complexityScore": 1,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "Self-healing writer discovery; brief errors at each failover."
+          },
           "graphAfter": {
             "nodes": [
               {
                 "id": "users",
                 "kind": "users",
-                "label": "Users"
+                "label": "Patients"
               },
               {
                 "id": "app",
                 "kind": "server",
-                "label": "App",
-                "tone": "good"
+                "label": "Booking API",
+                "tone": "good",
+                "cpu": 30,
+                "sub": "read-write only"
               },
               {
                 "id": "db",
                 "kind": "db",
-                "label": "Primary",
+                "label": "New primary",
                 "tone": "good",
-                "cpu": 40
+                "cpu": 42
               },
               {
-                "id": "r1",
+                "id": "old",
                 "kind": "replica",
-                "label": "Replica",
-                "tone": "good"
+                "label": "Old primary",
+                "tone": "good",
+                "cpu": 20,
+                "sub": "replica"
               }
             ],
             "edges": [
@@ -2773,8 +3158,8 @@
                 "to": "db"
               },
               {
-                "from": "app",
-                "to": "r1"
+                "from": "db",
+                "to": "old"
               }
             ]
           },
@@ -2782,97 +3167,100 @@
             {
               "key": "cpu",
               "label": "CPU",
+              "value": 42,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 140,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Failed bookings",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Writers found automatically",
+          "resultBody": "The connection string lists both hosts, and libpq keeps only the one accepting writes. The pool also discards any connection that returns a read-only error, so bookings recover within seconds of each failover. Cost: a few seconds of errors during every switch."
+        },
+        {
+          "id": "retry-3",
+          "label": "Retry failed bookings three times on the same pool",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 40,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 420,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Failed bookings",
               "value": 29,
               "unit": "%",
-              "tone": "good"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 213,
-              "unit": "ms",
-              "tone": "good"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
-              "tone": "good"
+              "tone": "bad"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Send all writes to the primary and only reads to replicas."
+          "resultTitle": "Same connection, same rejection",
+          "resultBody": "Each retry borrows another stale connection to the old primary and gets the same read-only error. Failed bookings stay near 29%, and the retries triple the load on the replica."
         },
         {
-          "id": "make-every-replica",
-          "label": "Make every replica",
+          "id": "promote-back",
+          "label": "Promote the old primary back to accept writes",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 92,
+              "value": 38,
               "unit": "%",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 4000,
+              "value": 130,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 80,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Primary still hot",
-          "resultBody": "Reads are still landing on the write node."
-        },
-        {
-          "id": "retry-writes-replica",
-          "label": "Retry writes replica",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 90,
+              "label": "Double bookings",
+              "value": 4,
               "unit": "%",
               "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 3520,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 60,
-              "unit": "errors",
-              "tone": "bad"
             }
           ],
-          "resultTitle": "Primary still hot",
-          "resultBody": "Retry writes on the replica"
+          "resultTitle": "Two writers, double-booked slots",
+          "resultBody": "Both nodes now accept writes and neither replicates to the other. Within minutes the same 9:00 slot is booked twice on different nodes, and the two histories can't be merged cleanly."
         }
       ],
       "hints": [
-        "Reads dominate this load.",
-        "Writes can stay on one primary.",
-        "Send reads to replicas."
+        "The database is healthy; the app is talking to the wrong node.",
+        "Connections opened before the failover still go to the old primary's address.",
+        "The client can check whether a server accepts writes before it keeps a connection."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "rr-14",
@@ -2882,37 +3270,37 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Mobile app polls the primary",
-      "brief": "A status screen polls every 2 seconds from millions of devices against one SQL primary.",
-      "constraint": "Status data is eventually consistent.",
-      "question": "How do you protect the write node?",
+      "title": "Two million phones poll the primary",
+      "brief": "PingMe's 2 million active devices poll GET /unread every 30 s, about 66,000 queries/s, all on the Postgres primary. It sits at 96% CPU and new-message writes now take 1.2 s.",
+      "constraint": "New messages must reach devices within 30 s; the unread count may lag by a few seconds.",
+      "question": "Where should the poll queries go?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 8000,
+          "value": 66000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 88,
+          "value": 96,
           "unit": "%",
           "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 3200,
+          "value": 1200,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 40,
-          "unit": "errors",
+          "label": "Poll timeouts",
+          "value": 6,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -2921,20 +3309,23 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "2M devices"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "App",
-            "tone": "neutral"
+            "label": "Messaging API",
+            "tone": "neutral",
+            "cpu": 40,
+            "sub": "40 servers"
           },
           {
             "id": "db",
             "kind": "db",
             "label": "Primary",
             "tone": "bad",
-            "cpu": 95
+            "cpu": 96,
+            "sub": "66k polls/s + writes"
           }
         ],
         "edges": [
@@ -2950,34 +3341,45 @@
       },
       "choices": [
         {
-          "id": "read-replicas",
-          "label": "Read replicas",
+          "id": "poll-replicas",
+          "label": "Serve the unread-count poll from a replica pool",
           "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 2800,
+            "complexityScore": 1,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Offloads tolerant reads; counts lag by milliseconds."
+          },
           "graphAfter": {
             "nodes": [
               {
                 "id": "users",
                 "kind": "users",
-                "label": "Users"
+                "label": "2M devices"
               },
               {
                 "id": "app",
                 "kind": "server",
-                "label": "App",
-                "tone": "good"
+                "label": "Messaging API",
+                "tone": "good",
+                "cpu": 40
               },
               {
                 "id": "db",
                 "kind": "db",
                 "label": "Primary",
                 "tone": "good",
-                "cpu": 40
+                "cpu": 30,
+                "sub": "writes only"
               },
               {
-                "id": "r1",
+                "id": "r",
                 "kind": "replica",
-                "label": "Replica",
-                "tone": "good"
+                "label": "Replicas x4",
+                "tone": "good",
+                "cpu": 60,
+                "sub": "polls"
               }
             ],
             "edges": [
@@ -2991,7 +3393,11 @@
               },
               {
                 "from": "app",
-                "to": "r1"
+                "to": "r"
+              },
+              {
+                "from": "db",
+                "to": "r"
               }
             ]
           },
@@ -2999,97 +3405,100 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 29,
+              "value": 60,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 213,
+              "value": 20,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Poll timeouts",
               "value": 0,
-              "unit": "errors",
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Shift polling reads onto replicas (and cache if needed) so the primary is not the poll target."
+          "resultTitle": "Polls move to four replicas",
+          "resultBody": "The poll endpoint reads from 4 replicas that lag about 200 ms, about 16,500 queries/s each at 60% CPU. The primary keeps only writes and drops to 30%, and new-message writes return to 15 ms. Cost: four replicas, and counts may trail a new message by a fraction of a second."
         },
         {
-          "id": "increase-poll-frequency",
-          "label": "Increase poll frequency",
+          "id": "slow-poll",
+          "label": "Stretch the poll interval to five minutes",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 92,
+              "value": 35,
               "unit": "%",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 4000,
+              "value": 20,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 80,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Primary still hot",
-          "resultBody": "Reads are still landing on the write node."
-        },
-        {
-          "id": "open-more-connections",
-          "label": "Open more connections",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
+              "label": "Late notifications",
               "value": 90,
               "unit": "%",
               "tone": "bad"
+            }
+          ],
+          "resultTitle": "Load gone, messages late",
+          "resultBody": "Queries drop tenfold and the primary recovers, but a new message now takes up to 5 minutes to appear. That breaks the 30-second promise for nearly every message sent."
+        },
+        {
+          "id": "app-cache",
+          "label": "Cache each user's poll response in app memory",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 3520,
+              "value": 1100,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 60,
-              "unit": "errors",
+              "label": "Poll timeouts",
+              "value": 5,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Primary still hot",
-          "resultBody": "Open more connections to the primary"
+          "resultTitle": "Forty caches, almost no hits",
+          "resultBody": "Polls are spread round-robin over 40 app servers, so each server sees a given device about once every 20 minutes. Entries expire before reuse, the hit rate is about 3%, and the primary stays at 94%."
         }
       ],
       "hints": [
-        "Reads dominate this load.",
-        "Writes can stay on one primary.",
-        "Send reads to replicas."
+        "Almost all of the primary's load is the same read, repeated.",
+        "The product allows the unread count to be a few seconds behind.",
+        "Reads that tolerate a little lag don't need the node that takes writes."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "rr-15",
@@ -3099,37 +3508,37 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Failover replica was never used for reads",
-      "brief": "A standby replica sits idle until disaster, while the primary is CPU-bound on SELECTs.",
-      "constraint": "The standby is already receiving the WAL stream.",
-      "question": "How do you get value from it before a disaster?",
+      "title": "Standby idles while the primary hits 92%",
+      "brief": "TaxEase's RDS primary runs at 92% CPU during filing season. Its Multi-AZ standby sits in another zone at 5% CPU, and the team wants to use it for 18,000 reads/s of return-status lookups.",
+      "constraint": "The database is on the largest instance class already, and zone-failure protection must stay.",
+      "question": "How do you add read capacity without weakening failover?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 8000,
+          "value": 18000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 88,
+          "value": 92,
           "unit": "%",
           "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 3200,
+          "value": 1600,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 40,
-          "unit": "errors",
+          "label": "Lookup timeouts",
+          "value": 5,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -3138,20 +3547,29 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Filers"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "App",
-            "tone": "neutral"
+            "label": "Returns API",
+            "tone": "neutral",
+            "cpu": 40
           },
           {
             "id": "db",
             "kind": "db",
             "label": "Primary",
             "tone": "bad",
-            "cpu": 95
+            "cpu": 92
+          },
+          {
+            "id": "sb",
+            "kind": "replica",
+            "label": "Multi-AZ standby",
+            "tone": "neutral",
+            "cpu": 5,
+            "sub": "not readable"
           }
         ],
         "edges": [
@@ -3162,26 +3580,38 @@
           {
             "from": "app",
             "to": "db"
+          },
+          {
+            "from": "db",
+            "to": "sb"
           }
         ]
       },
       "choices": [
         {
-          "id": "read-replicas",
-          "label": "Read replicas",
+          "id": "add-readers",
+          "label": "Add readable replicas; keep the standby for failover only",
           "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 6000,
+            "complexityScore": 2,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Separates read scale from HA; pay for both."
+          },
           "graphAfter": {
             "nodes": [
               {
                 "id": "users",
                 "kind": "users",
-                "label": "Users"
+                "label": "Filers"
               },
               {
                 "id": "app",
                 "kind": "server",
-                "label": "App",
-                "tone": "good"
+                "label": "Returns API",
+                "tone": "good",
+                "cpu": 40
               },
               {
                 "id": "db",
@@ -3191,10 +3621,19 @@
                 "cpu": 40
               },
               {
-                "id": "r1",
+                "id": "sb",
                 "kind": "replica",
-                "label": "Replica",
-                "tone": "good"
+                "label": "Multi-AZ standby",
+                "tone": "good",
+                "cpu": 5,
+                "sub": "failover only"
+              },
+              {
+                "id": "r",
+                "kind": "replica",
+                "label": "Read replicas x2",
+                "tone": "good",
+                "cpu": 55
               }
             ],
             "edges": [
@@ -3208,7 +3647,15 @@
               },
               {
                 "from": "app",
-                "to": "r1"
+                "to": "r"
+              },
+              {
+                "from": "db",
+                "to": "sb"
+              },
+              {
+                "from": "db",
+                "to": "r"
               }
             ]
           },
@@ -3216,32 +3663,65 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 29,
+              "value": 55,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 213,
+              "value": 45,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Lookup timeouts",
               "value": 0,
-              "unit": "errors",
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Promote it as a serving read replica for non-critical queries."
+          "resultTitle": "Reads moved, failover intact",
+          "resultBody": "Two async read replicas take the 18,000 lookups/s at about 55% CPU with around 100 ms of lag. The synchronous standby keeps its only job, so a zone failure still fails over with no lost commits, and primary CPU drops to 40%. Cost: two more instances."
         },
         {
-          "id": "keep-it-offline",
-          "label": "Keep it offline",
+          "id": "convert-standby",
+          "label": "Convert the standby into a read replica for lookups",
           "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 55,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 45,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "rpo",
+              "label": "Data at risk on failover",
+              "value": 5,
+              "unit": "s",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Reads fixed, failover gone",
+          "resultBody": "Lookups move and the primary recovers, but there is no synchronous standby any more. If the primary's zone fails, promoting the async replica takes minutes and can lose the last few seconds of submitted returns."
+        },
+        {
+          "id": "shard-state",
+          "label": "Shard returns across two primaries by state",
+          "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
@@ -3254,59 +3734,29 @@
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 4000,
+              "value": 1600,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 80,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Primary still hot",
-          "resultBody": "Reads are still landing on the write node."
-        },
-        {
-          "id": "run-backups-primary",
-          "label": "Run backups primary",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 90,
+              "label": "Lookup timeouts",
+              "value": 5,
               "unit": "%",
               "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 3520,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 60,
-              "unit": "errors",
-              "tone": "bad"
             }
           ],
-          "resultTitle": "Primary still hot",
-          "resultBody": "Run backups from the primary only"
+          "resultTitle": "Months of work for a read problem",
+          "resultBody": "Splitting the schema, rewriting cross-state queries, and migrating data takes a quarter. Filing season ends first, and the primary stays at 92% CPU for the rest of it."
         }
       ],
       "hints": [
-        "Reads dominate this load.",
-        "Writes can stay on one primary.",
-        "Send reads to replicas."
+        "The standby exists for one reason, and it isn't serving reads.",
+        "High availability and read scaling are separate jobs.",
+        "Asynchronous copies can take reads while the synchronous one waits for a failure."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "rr-16",
@@ -3316,37 +3766,37 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Catalog browse vs inventory writes",
-      "brief": "Browse traffic is 98% of QPS; stock updates are rare but must be correct.",
-      "constraint": "Browse pages can lag slightly; checkout cannot.",
-      "question": "How should database roles be split?",
+      "title": "Flash sale oversells items already gone",
+      "brief": "GearHub serves 50,000 product-page reads/s from replicas that lag 1-3 s on sale days. Stock counts come from the same replicas, so 6% of add-to-cart clicks in a flash sale reserve items that already sold out.",
+      "constraint": "The primary can absorb about 3,000 extra queries/s; add-to-cart runs at 2,000/s.",
+      "question": "Which reads must go to the primary?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 8000,
+          "value": 50000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 98,
+          "value": 68,
           "unit": "%",
-          "tone": "bad"
+          "tone": "warn"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 3200,
+          "value": 80,
           "unit": "ms",
-          "tone": "bad"
+          "tone": "good"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 40,
-          "unit": "errors",
+          "label": "Oversold carts",
+          "value": 6,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -3355,20 +3805,29 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Shoppers"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "App",
-            "tone": "neutral"
+            "label": "Store API",
+            "tone": "neutral",
+            "cpu": 45
           },
           {
             "id": "db",
             "kind": "db",
             "label": "Primary",
-            "tone": "bad",
-            "cpu": 95
+            "tone": "good",
+            "cpu": 50
+          },
+          {
+            "id": "r",
+            "kind": "replica",
+            "label": "Replicas x4",
+            "tone": "warn",
+            "cpu": 68,
+            "sub": "lag 1-3 s"
           }
         ],
         "edges": [
@@ -3379,39 +3838,57 @@
           {
             "from": "app",
             "to": "db"
+          },
+          {
+            "from": "app",
+            "to": "r"
+          },
+          {
+            "from": "db",
+            "to": "r"
           }
         ]
       },
       "choices": [
         {
-          "id": "read-replicas",
-          "label": "Read replicas",
+          "id": "stock-primary",
+          "label": "Check and reserve stock on the primary at add-to-cart",
           "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "complexityScore": 2,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "Strong reads only where money is at stake."
+          },
           "graphAfter": {
             "nodes": [
               {
                 "id": "users",
                 "kind": "users",
-                "label": "Users"
+                "label": "Shoppers"
               },
               {
                 "id": "app",
                 "kind": "server",
-                "label": "App",
-                "tone": "good"
+                "label": "Store API",
+                "tone": "good",
+                "cpu": 45
               },
               {
                 "id": "db",
                 "kind": "db",
                 "label": "Primary",
                 "tone": "good",
-                "cpu": 40
+                "cpu": 62,
+                "sub": "stock decrements"
               },
               {
-                "id": "r1",
+                "id": "r",
                 "kind": "replica",
-                "label": "Replica",
-                "tone": "good"
+                "label": "Replicas x4",
+                "tone": "warn",
+                "cpu": 68,
+                "sub": "browse only"
               }
             ],
             "edges": [
@@ -3425,7 +3902,11 @@
               },
               {
                 "from": "app",
-                "to": "r1"
+                "to": "r"
+              },
+              {
+                "from": "db",
+                "to": "r"
               }
             ]
           },
@@ -3433,97 +3914,100 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 32,
+              "value": 68,
               "unit": "%",
-              "tone": "good"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 213,
+              "value": 85,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Oversold carts",
               "value": 0,
-              "unit": "errors",
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Replicas for catalog reads; primary for inventory writes and checkout-critical reads."
+          "resultTitle": "Only the decision point reads fresh data",
+          "resultBody": "Browsing stays on replicas, but add-to-cart runs UPDATE stock = stock - 1 WHERE stock > 0 on the primary, which reserves and checks in one atomic step. 2,000 extra queries/s lift the primary to 62% and oversells drop to 0. Cost: add-to-cart pays a primary round trip."
         },
         {
-          "id": "one-node-every",
-          "label": "One node every",
+          "id": "all-primary",
+          "label": "Route all product reads to the primary on sale days",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 100,
+              "value": 99,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 4000,
+              "value": 2400,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 80,
-              "unit": "errors",
-              "tone": "bad"
+              "label": "Oversold carts",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
             }
           ],
-          "resultTitle": "Primary still hot",
-          "resultBody": "Reads are still landing on the write node."
+          "resultTitle": "Primary drowns in browse traffic",
+          "resultBody": "Stock is always fresh, but 50,000 reads/s land on a primary sized for writes plus a small margin. CPU hits 99%, stock updates queue behind page views, and p95 climbs to 2.4 s mid-sale."
         },
         {
-          "id": "replicas-writes-primary",
-          "label": "Replicas writes primary",
+          "id": "sync-rep",
+          "label": "Switch the replicas to synchronous replication",
           "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 100,
+              "value": 70,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 3520,
+              "value": 95,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 60,
-              "unit": "errors",
+              "label": "Oversold carts",
+              "value": 4,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Primary still hot",
-          "resultBody": "Replicas for writes and primary for reads"
+          "resultTitle": "Commits slower, reads still stale",
+          "resultBody": "With synchronous_commit on, commits wait for replicas to flush WAL, not to apply it, so a replica can still return a stock count from before the last sale. Oversells only fall to 4%, and every write gains about 3 ms."
         }
       ],
       "hints": [
-        "Reads dominate this load.",
-        "Writes can stay on one primary.",
-        "Send reads to replicas."
+        "Most reads here can be seconds old; a few can't.",
+        "The harm happens at one step: deciding whether an item is still available.",
+        "Make the check and the reservation a single step on the node that owns the truth."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "rr-17",
@@ -3960,37 +4444,37 @@
       "canonical": false,
       "severity": "P1",
       "xp": 50,
-      "title": "Session store on the same primary",
-      "brief": "Session lookups are 70% of primary QPS and crowd out order writes.",
-      "constraint": "Sessions are read-mostly and lossy within a short window.",
-      "question": "What is the least disruptive database split?",
+      "title": "Session lookups keep the primary at 94%",
+      "brief": "StudyHub stores sessions in a Postgres table on the primary. Every request reads its session and updates last_seen, so 45,000 req/s become 45,000 writes/s, and the primary sits at 94% CPU.",
+      "constraint": "Sessions expire after 30 idle minutes; losing one only forces a re-login.",
+      "question": "Where should sessions live?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 8000,
+          "value": 45000,
           "unit": "req/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 70,
+          "value": 94,
           "unit": "%",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "p95",
           "label": "p95 latency",
-          "value": 3200,
+          "value": 900,
           "unit": "ms",
           "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
-          "value": 40,
-          "unit": "errors",
+          "label": "Request timeouts",
+          "value": 3,
+          "unit": "%",
           "tone": "bad"
         }
       ],
@@ -3999,20 +4483,29 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users"
+            "label": "Students"
           },
           {
             "id": "app",
             "kind": "server",
-            "label": "App",
-            "tone": "neutral"
+            "label": "Course API",
+            "tone": "neutral",
+            "cpu": 45
           },
           {
             "id": "db",
             "kind": "db",
             "label": "Primary",
             "tone": "bad",
-            "cpu": 95
+            "cpu": 94,
+            "sub": "45k session writes/s"
+          },
+          {
+            "id": "r",
+            "kind": "replica",
+            "label": "Replica",
+            "tone": "good",
+            "cpu": 40
           }
         ],
         "edges": [
@@ -4023,26 +4516,49 @@
           {
             "from": "app",
             "to": "db"
+          },
+          {
+            "from": "app",
+            "to": "r"
+          },
+          {
+            "from": "db",
+            "to": "r"
           }
         ]
       },
       "choices": [
         {
-          "id": "read-replicas",
-          "label": "Read replicas",
+          "id": "redis",
+          "label": "Move sessions to Redis with a 30-minute sliding TTL",
           "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 400,
+            "complexityScore": 2,
+            "tradeoffSummary": "Ephemeral data in an ephemeral store; logouts if Redis is lost."
+          },
           "graphAfter": {
             "nodes": [
               {
                 "id": "users",
                 "kind": "users",
-                "label": "Users"
+                "label": "Students"
               },
               {
                 "id": "app",
                 "kind": "server",
-                "label": "App",
-                "tone": "good"
+                "label": "Course API",
+                "tone": "good",
+                "cpu": 45
+              },
+              {
+                "id": "cache",
+                "kind": "cache",
+                "label": "Redis sessions",
+                "tone": "good",
+                "cpu": 30,
+                "sub": "TTL 30 min"
               },
               {
                 "id": "db",
@@ -4052,10 +4568,11 @@
                 "cpu": 40
               },
               {
-                "id": "r1",
+                "id": "r",
                 "kind": "replica",
                 "label": "Replica",
-                "tone": "good"
+                "tone": "good",
+                "cpu": 40
               }
             ],
             "edges": [
@@ -4065,11 +4582,19 @@
               },
               {
                 "from": "app",
+                "to": "cache"
+              },
+              {
+                "from": "app",
                 "to": "db"
               },
               {
                 "from": "app",
-                "to": "r1"
+                "to": "r"
+              },
+              {
+                "from": "db",
+                "to": "r"
               }
             ]
           },
@@ -4077,280 +4602,33 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 23,
+              "value": 40,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 213,
-              "unit": "ms",
-              "tone": "good"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 0,
-              "unit": "errors",
-              "tone": "good"
-            }
-          ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Read sessions from replicas (or a dedicated session store) and keep writes on the primary."
-        },
-        {
-          "id": "put-session-writes",
-          "label": "Put session writes",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 74,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 4000,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 80,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Primary still hot",
-          "resultBody": "Reads are still landing on the write node."
-        },
-        {
-          "id": "block-checkouts-protect",
-          "label": "Block checkouts protect",
-          "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 72,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 3520,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
               "value": 60,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Primary still hot",
-          "resultBody": "Block checkouts to protect sessions"
-        }
-      ],
-      "hints": [
-        "Reads dominate this load.",
-        "Writes can stay on one primary.",
-        "Send reads to replicas."
-      ],
-      "nextId": null
-    },
-    {
-      "id": "rr-20",
-      "incidentCode": "INC-003-20",
-      "level": 3,
-      "patternId": "read-replicas",
-      "canonical": false,
-      "severity": "P1",
-      "xp": 50,
-      "title": "Schema migration locks the only node",
-      "brief": "An ALTER TABLE on the primary stalls both reads and writes for minutes.",
-      "constraint": "Most traffic during the window is reads.",
-      "question": "How do replicas help the user-facing path?",
-      "metricsBefore": [
-        {
-          "key": "rps",
-          "label": "Traffic",
-          "value": 8000,
-          "unit": "req/s",
-          "tone": "neutral"
-        },
-        {
-          "key": "cpu",
-          "label": "CPU",
-          "value": 88,
-          "unit": "%",
-          "tone": "bad"
-        },
-        {
-          "key": "p95",
-          "label": "p95 latency",
-          "value": 3200,
-          "unit": "ms",
-          "tone": "bad"
-        },
-        {
-          "key": "errors",
-          "label": "Errors",
-          "value": 40,
-          "unit": "errors",
-          "tone": "bad"
-        }
-      ],
-      "graphBefore": {
-        "nodes": [
-          {
-            "id": "users",
-            "kind": "users",
-            "label": "Users"
-          },
-          {
-            "id": "app",
-            "kind": "server",
-            "label": "App",
-            "tone": "neutral"
-          },
-          {
-            "id": "db",
-            "kind": "db",
-            "label": "Primary",
-            "tone": "bad",
-            "cpu": 95
-          }
-        ],
-        "edges": [
-          {
-            "from": "users",
-            "to": "app"
-          },
-          {
-            "from": "app",
-            "to": "db"
-          }
-        ]
-      },
-      "choices": [
-        {
-          "id": "read-replicas",
-          "label": "Read replicas",
-          "correct": true,
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "users",
-                "kind": "users",
-                "label": "Users"
-              },
-              {
-                "id": "app",
-                "kind": "server",
-                "label": "App",
-                "tone": "good"
-              },
-              {
-                "id": "db",
-                "kind": "db",
-                "label": "Primary",
-                "tone": "good",
-                "cpu": 40
-              },
-              {
-                "id": "r1",
-                "kind": "replica",
-                "label": "Replica",
-                "tone": "good"
-              }
-            ],
-            "edges": [
-              {
-                "from": "users",
-                "to": "app"
-              },
-              {
-                "from": "app",
-                "to": "db"
-              },
-              {
-                "from": "app",
-                "to": "r1"
-              }
-            ]
-          },
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 29,
-              "unit": "%",
-              "tone": "good"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 213,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Request timeouts",
               "value": 0,
-              "unit": "errors",
+              "unit": "%",
               "tone": "good"
             }
           ],
-          "resultTitle": "Incident solved",
-          "resultBody": "Keep serving reads from replicas while the primary applies the migration, then catch up."
+          "resultTitle": "Session traffic leaves the database",
+          "resultBody": "Each request now does a Redis GET and EXPIRE, about 0.3 ms, and Redis drops idle sessions itself. The primary sheds 45,000 writes/s and falls to 40% CPU, and p95 returns to 60 ms. Cost: a Redis pair to run, and a Redis loss logs everyone out."
         },
         {
-          "id": "run-same-alter",
-          "label": "Run same ALTER",
+          "id": "session-replica",
+          "label": "Read sessions from the replica, keep updates on the primary",
           "correct": false,
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 92,
-              "unit": "%",
-              "tone": "bad"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 4000,
-              "unit": "ms",
-              "tone": "bad"
-            },
-            {
-              "key": "errors",
-              "label": "Errors",
-              "value": 80,
-              "unit": "errors",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Primary still hot",
-          "resultBody": "Reads are still landing on the write node."
-        },
-        {
-          "id": "take-whole-site",
-          "label": "Take whole site",
-          "correct": false,
+          "approach": "anti_pattern",
           "retry": true,
           "metricsAfter": [
             {
@@ -4363,28 +4641,312 @@
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 3520,
+              "value": 800,
               "unit": "ms",
               "tone": "bad"
             },
             {
               "key": "errors",
-              "label": "Errors",
-              "value": 60,
-              "unit": "errors",
+              "label": "Login loops",
+              "value": 8,
+              "unit": "%",
               "tone": "bad"
             }
           ],
-          "resultTitle": "Primary still hot",
-          "resultBody": "Take the whole site down for every DDL"
+          "resultTitle": "Login loops, same write load",
+          "resultBody": "The last_seen updates are still 45,000 writes/s on the primary. New sessions also haven't replicated when the next request arrives, so 8% of logins bounce straight back to the login page."
+        },
+        {
+          "id": "token-index",
+          "label": "Add an index on the session token column",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 96,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Request timeouts",
+              "value": 3.5,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Index adds cost to every hit",
+          "resultBody": "Lookups already use the primary key, so reads gain nothing. Every last_seen update now maintains one more index, and primary CPU rises to 96%."
         }
       ],
       "hints": [
-        "Reads dominate this load.",
-        "Writes can stay on one primary.",
-        "Send reads to replicas."
+        "Count the writes, not just the reads.",
+        "Replicas can take reads, but every write still lands on the primary.",
+        "This data expires on its own and is cheap to lose."
       ],
-      "nextId": null
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "rr-20",
+      "incidentCode": "INC-003-20",
+      "level": 3,
+      "patternId": "read-replicas",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 50,
+      "title": "Schema change leaves replicas 40 minutes behind",
+      "brief": "A plain ALTER TABLE adding a column to KartKing's 400M-row orders table ran 40 minutes on the MySQL primary, then replayed for 40 more on each replica. Product pages served 40-minute-old data.",
+      "constraint": "Three more column changes to this table ship this month.",
+      "question": "How do you run the next change without the replica lag?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 30000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 85,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "lag",
+          "label": "Replica lag",
+          "value": 2400,
+          "unit": "s",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Stale product pages",
+          "value": 100,
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Shoppers"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Store API",
+            "tone": "neutral",
+            "cpu": 40
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Primary",
+            "tone": "good",
+            "cpu": 45
+          },
+          {
+            "id": "r",
+            "kind": "replica",
+            "label": "Replicas x3",
+            "tone": "bad",
+            "cpu": 85,
+            "sub": "replaying ALTER"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          },
+          {
+            "from": "app",
+            "to": "r"
+          },
+          {
+            "from": "db",
+            "to": "r"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "gh-ost",
+          "label": "Online migration with gh-ost throttled on replica lag",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "complexityScore": 3,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Slow, throttled migration; replicas stay fresh."
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Shoppers"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Store API",
+                "tone": "good",
+                "cpu": 40
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Primary",
+                "tone": "good",
+                "cpu": 50,
+                "sub": "gh-ost chunks"
+              },
+              {
+                "id": "r",
+                "kind": "replica",
+                "label": "Replicas x3",
+                "tone": "good",
+                "cpu": 55,
+                "sub": "lag < 1 s"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              },
+              {
+                "from": "app",
+                "to": "r"
+              },
+              {
+                "from": "db",
+                "to": "r"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 55,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "lag",
+              "label": "Replica lag",
+              "value": 0.8,
+              "unit": "s",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Stale product pages",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Schema changed, replicas never fell behind",
+          "resultBody": "gh-ost copies rows into a shadow table in small chunks, tails the binlog for new writes, and pauses whenever replica lag passes 1 s. The copy takes 6 hours, but lag stays under 1 s and the cut-over is an atomic rename. Cost: double the table's disk space during the copy."
+        },
+        {
+          "id": "night-alter",
+          "label": "Run the ALTER at 3 a.m. when traffic is lowest",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 80,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "lag",
+              "label": "Replica lag",
+              "value": 2400,
+              "unit": "s",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Stale product pages",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Same 40-minute lag, just at night",
+          "resultBody": "The replicas still replay the ALTER as one statement and fall 40 minutes behind. Night-shift shoppers see stale prices and stock, and the next three changes each need a 3 a.m. window."
+        },
+        {
+          "id": "reads-primary",
+          "label": "Send all reads to the primary during the ALTER",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "lag",
+              "label": "Replica lag",
+              "value": 2400,
+              "unit": "s",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Stale product pages",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Primary buckles under the reads",
+          "resultBody": "Pages are fresh, but 30,000 reads/s join the ALTER's I/O on the primary. CPU hits 99%, checkout writes wait behind page reads, and p95 climbs past 2 s for the whole 80 minutes."
+        }
+      ],
+      "hints": [
+        "The primary ran the ALTER online; the replicas are the ones that fell behind.",
+        "A replica applies one huge DDL statement as a single, blocking unit of work.",
+        "Break the change into small copies that can pause when the replicas fall behind."
+      ],
+      "nextId": null,
+      "reviewed": true
     },
     {
       "id": "rr-new-01",
