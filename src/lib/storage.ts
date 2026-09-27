@@ -12,6 +12,7 @@ import type {
   UserStats,
 } from "@/types";
 import {
+  BuilderResultDetails,
   DEFAULT_STATS,
   ProgressionOutcome,
   completeActivity,
@@ -202,9 +203,10 @@ export function submitBuilderResult(
   scenario: BuilderScenario,
   rewardXp: number,
   passed: boolean,
-  failureReasons: string[]
+  failureReasons: string[],
+  details?: BuilderResultDetails
 ): ProgressionOutcome {
-  return commit(recordBuilderResult(getUserStats(), scenario, rewardXp, passed, failureReasons, new Date()));
+  return commit(recordBuilderResult(getUserStats(), scenario, rewardXp, passed, failureReasons, new Date(), details));
 }
 
 export function submitReview(pattern: SystemDesignPattern, passed: boolean) {

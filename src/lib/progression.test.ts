@@ -153,7 +153,7 @@ test("mastery moves unseen → introduced → applied once → passed transfer �
   s = recordReview(s, p, true, at(1)).stats;
   assert.equal(getMasteryState(getEvidence(s, p.id), at(1)), "passed_transfer", "no reliable without defending the call");
 
-  // A self-assessed 100 counts half (50), below the bar; a graded 70 clears it.
+  // A self-assessed 100 is not evidence at all; a graded 70 clears the bar.
   s = recordReasoning(s, `${p.id}-why`, { score: 100, selfAssessed: true, patternId: p.id }, 30, at(1)).stats;
   assert.equal(getMasteryState(getEvidence(s, p.id), at(1)), "passed_transfer");
   s = recordReasoning(s, `${p.id}-10x`, { score: 70, selfAssessed: false, patternId: p.id }, 30, at(1)).stats;
@@ -354,4 +354,29 @@ test("defense and reasoning results are recorded; a self-assessment never overwr
   const self = recordReasoning(graded.stats, "caching-why", { score: 90, selfAssessed: true }, 30, T0);
   assert.equal(self.stats.reasoningResults?.["caching-why"]?.selfAssessed, false);
   assert.equal(self.xpAwarded, 0, "bonus is paid once per prompt");
+});
+
+test("a self-assessed reply pays at most half the bonus and never counts toward Reliable", () => {
+  const p = pattern("caching");
+  const self = recordReasoning(DEFAULT_STATS, "caching-why", { score: 100, selfAssessed: true, patternId: p.id }, 30, T0);
+  assert.equal(self.xpAwarded, 15);
+  assert.equal(getEvidence(self.stats, p.id).reasoningBest ?? 0, 0, "self-graded replies are not evidence");
+  const again = recordReasoning(self.stats, "caching-why", { score: 100, selfAssessed: true, patternId: p.id }, 30, T0);
+  assert.equal(again.xpAwarded, 0);
+  // A later graded answer tops the bonus up to the full amount, never more.
+  const graded = recordReasoning(self.stats, "caching-why", { score: 80, selfAssessed: false, patternId: p.id }, 30, T0);
+  assert.equal(graded.xpAwarded, 15);
+  assert.equal(getEvidence(graded.stats, p.id).reasoningBest, 80);
+});
+
+test("builder: hints are recorded, and only a first-try explanation counts as a builder pass", () => {
+  const s = getBuilderScenarioById("boss-scale");
+  assert.ok(s);
+  const retried = recordBuilderResult(onboarded(), s, 60, true, [], T0, { hintsUsed: 2, explainFirstTry: false });
+  const e = getEvidence(retried.stats, s.patternId);
+  assert.equal(e.hintsUsed, 2);
+  assert.equal(e.builderPasses, 0);
+  assert.ok(e.scenariosPassed.includes(s.id), "the scenario still reads as cleared");
+  const clean = recordBuilderResult(onboarded(), s, 60, true, [], T0, { explainFirstTry: true });
+  assert.equal(getEvidence(clean.stats, s.patternId).builderPasses, 1);
 });

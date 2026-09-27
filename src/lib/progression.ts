@@ -464,19 +464,40 @@ export function recordReasoning(
   let next: UserStats = keepPrev
     ? stats
     : { ...stats, reasoningResults: { ...(stats.reasoningResults ?? {}), [promptId]: { ...result, at: now.toISOString() } } };
-  if (result.patternId) {
-    // Self-assessment counts half toward the pattern's evidence.
-    const credited = result.selfAssessed ? Math.round(result.score / 2) : result.score;
+  if (result.patternId && !result.selfAssessed) {
+    // Only a graded answer counts toward the pattern's evidence (and so toward Reliable).
     const e = getEvidence(next, result.patternId);
-    next = withEvidence(next, result.patternId, { ...e, reasoningBest: Math.max(e.reasoningBest ?? 0, credited) });
+    next = withEvidence(next, result.patternId, { ...e, reasoningBest: Math.max(e.reasoningBest ?? 0, result.score) });
   }
   next = recordPractice(next, now);
 
   if (result.score < 60) return { stats: next, xpAwarded: 0, leveledUp: false, firstClear: false };
-  const claim = claimEvent(next, `reasoning:${promptId}:first`);
-  const xp = claim.awarded ? bonusXp : 0;
+  // A self-assessment pays at most half the graded bonus; a later graded answer can top it up to the full bonus.
+  const gradedKey = `reasoning:${promptId}:first`;
+  const selfKey = `reasoning:${promptId}:self`;
+  const selfXp = Math.floor(bonusXp * SELF_ASSESSED_XP_SHARE);
+  const events = next.awardedEvents ?? [];
+  let claim: { stats: UserStats; awarded: boolean };
+  let xp = 0;
+  if (result.selfAssessed) {
+    claim = events.includes(gradedKey) ? { stats: next, awarded: false } : claimEvent(next, selfKey);
+    xp = claim.awarded ? selfXp : 0;
+  } else {
+    claim = claimEvent(next, gradedKey);
+    xp = claim.awarded ? bonusXp - (events.includes(selfKey) ? selfXp : 0) : 0;
+  }
   const granted = grantXp(claim.stats, xp);
   return { stats: granted.stats, xpAwarded: xp, leveledUp: granted.leveledUp, firstClear: claim.awarded };
+}
+
+/** Self-assessed "defend your call" answers pay at most this share of the graded bonus. */
+export const SELF_ASSESSED_XP_SHARE = 0.5;
+
+export interface BuilderResultDetails {
+  /** Hints revealed since the last recorded submission. */
+  hintsUsed?: number;
+  /** False if the explain question needed a retry; such a pass doesn't count toward Reliable. */
+  explainFirstTry?: boolean;
 }
 
 /** Records a builder submission. Rewards only on pass; failures are kept as evidence. */
@@ -486,13 +507,16 @@ export function recordBuilderResult(
   rewardXp: number,
   passed: boolean,
   failureReasons: string[],
-  now: Date
+  now: Date,
+  details: BuilderResultDetails = {}
 ): ProgressionOutcome {
   const e = getEvidence(stats, scenario.patternId);
+  const reliablePass = passed && details.explainFirstTry !== false;
   let next = withEvidence(stats, scenario.patternId, {
     ...e,
     builderAttempts: e.builderAttempts + 1,
-    builderPasses: e.builderPasses + (passed ? 1 : 0),
+    builderPasses: e.builderPasses + (reliablePass ? 1 : 0),
+    hintsUsed: e.hintsUsed + (details.hintsUsed ?? 0),
     scenariosPassed:
       passed && !e.scenariosPassed.includes(scenario.id) ? [...e.scenariosPassed, scenario.id] : e.scenariosPassed,
     failureReasons: passed ? e.failureReasons : addFailureReasons(e.failureReasons, failureReasons),
