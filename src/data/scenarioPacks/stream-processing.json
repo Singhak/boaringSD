@@ -1,0 +1,1252 @@
+{
+  "version": 2,
+  "patternId": "stream-processing",
+  "patternName": "Streams & Event Processing",
+  "level": 21,
+  "phase": "Depth",
+  "canonicalId": "strm-01",
+  "nextCanonicalId": null,
+  "incidents": [
+    {
+      "id": "strm-01",
+      "incidentCode": "INC-021",
+      "level": 21,
+      "patternId": "stream-processing",
+      "canonical": true,
+      "severity": "P0",
+      "xp": 150,
+      "title": "One city melts one partition",
+      "brief": "Ride events are keyed by city_id across 64 partitions. New Year's Eve in NYC sends 40% of 90k events/s to partition 17. Its consumer is at 98% CPU and 4.2M messages behind; 63 others idle.",
+      "constraint": "Each driver's location updates must stay in order; cross-driver order does not matter.",
+      "question": "How should the topic be keyed?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 90000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 98,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 38000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 1200,
+          "unit": "errors",
+          "tone": "bad"
+        },
+        {
+          "key": "lag",
+          "label": "Consumer lag",
+          "value": 4200000,
+          "unit": "msgs",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "drivers",
+            "kind": "users",
+            "label": "Driver apps"
+          },
+          {
+            "id": "log",
+            "kind": "queue",
+            "label": "rides topic (64 parts)",
+            "cpu": 60,
+            "tone": "warn"
+          },
+          {
+            "id": "c17",
+            "kind": "worker",
+            "label": "Consumer p17",
+            "cpu": 98,
+            "tone": "bad"
+          },
+          {
+            "id": "cN",
+            "kind": "worker",
+            "label": "Consumers p0-p63",
+            "cpu": 12
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Dispatch store",
+            "cpu": 45
+          }
+        ],
+        "edges": [
+          {
+            "from": "drivers",
+            "to": "log"
+          },
+          {
+            "from": "log",
+            "to": "c17"
+          },
+          {
+            "from": "log",
+            "to": "cN"
+          },
+          {
+            "from": "c17",
+            "to": "db"
+          },
+          {
+            "from": "cN",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "key-driver",
+          "label": "Key events by driver_id instead of city",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 41,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 180,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            },
+            {
+              "key": "lag",
+              "label": "Consumer lag",
+              "value": 3000,
+              "unit": "msgs",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Load spreads, order holds",
+          "resultBody": "Millions of driver_ids hash evenly over 64 partitions, so NYC's 36k events/s lands on every consumer while each driver's updates still share one partition."
+        },
+        {
+          "id": "more-consumers",
+          "label": "Add 64 more consumers to the group",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 98,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 41000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1300,
+              "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "lag",
+              "label": "Consumer lag",
+              "value": 4600000,
+              "unit": "msgs",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sixty-four new idle consumers",
+          "resultBody": "A partition is read by one consumer per group, so the new consumers sit idle and partition 17 still has a single reader at 98% CPU.",
+          "retry": true
+        },
+        {
+          "id": "round-robin",
+          "label": "Drop the key and spray events round-robin",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 40,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 170,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 2900,
+              "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "lag",
+              "label": "Consumer lag",
+              "value": 2000,
+              "unit": "msgs",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Drivers jump backwards on the map",
+          "resultBody": "Lag clears, but one driver's updates now land on different partitions and are consumed out of order; 2,900 stale positions overwrite fresh ones each second.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "Look at how the 90k events/s are spread across 64 partitions.",
+        "A consumer group gives each partition to exactly one consumer.",
+        "Pick a key with many values that still groups what must stay ordered."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "strm-02",
+      "incidentCode": "INC-021",
+      "level": 21,
+      "patternId": "stream-processing",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 120,
+      "title": "Forty consumers, twelve working",
+      "brief": "An orders topic has 12 partitions and is 9M messages behind. The team scaled the consumer group from 12 to 40 pods, but lag keeps climbing at 3k/s.",
+      "constraint": "Per-order ordering must hold; the topic is keyed by order_id and orders finish within minutes.",
+      "question": "Why didn't scaling help, and what does?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 24000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 92,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 5200,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 310,
+          "unit": "errors",
+          "tone": "bad"
+        },
+        {
+          "key": "lag",
+          "label": "Consumer lag",
+          "value": 9000000,
+          "unit": "msgs",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Checkout API",
+            "cpu": 40
+          },
+          {
+            "id": "log",
+            "kind": "queue",
+            "label": "orders (12 parts)",
+            "cpu": 55,
+            "tone": "warn"
+          },
+          {
+            "id": "busy",
+            "kind": "worker",
+            "label": "12 busy consumers",
+            "cpu": 92,
+            "tone": "bad"
+          },
+          {
+            "id": "idle",
+            "kind": "worker",
+            "label": "28 idle consumers",
+            "cpu": 2
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Orders DB",
+            "cpu": 50
+          }
+        ],
+        "edges": [
+          {
+            "from": "api",
+            "to": "log"
+          },
+          {
+            "from": "log",
+            "to": "busy"
+          },
+          {
+            "from": "log",
+            "to": "idle"
+          },
+          {
+            "from": "busy",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "more-partitions",
+          "label": "Grow the topic to 48 partitions for new orders",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 48,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 900,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            },
+            {
+              "key": "lag",
+              "label": "Consumer lag",
+              "value": 40000,
+              "unit": "msgs",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Forty pods finally share work",
+          "resultBody": "With 48 partitions each of the 40 consumers owns one or two, so 9M messages drain in about 20 minutes; add them in a quiet window, since keys remap."
+        },
+        {
+          "id": "own-group",
+          "label": "Give each pod its own consumer group id",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 95,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 5600,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 4100,
+              "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "lag",
+              "label": "Consumer lag",
+              "value": 9000000,
+              "unit": "msgs",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Every order processed forty times",
+          "resultBody": "Separate groups each read the whole topic, so all 40 pods process every order; the DB sees 40x writes and 4,100 duplicate errors a second.",
+          "retry": true
+        },
+        {
+          "id": "bigger-pods",
+          "label": "Double the pod count again to 80",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 5400,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 330,
+              "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "lag",
+              "label": "Consumer lag",
+              "value": 9400000,
+              "unit": "msgs",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sixty-eight pods now idle",
+          "resultBody": "Maximum group parallelism equals the partition count, so still only 12 pods get partitions and lag keeps growing at 3k/s.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "Count partitions, then count consumers doing real work.",
+        "A group can use at most one consumer per partition.",
+        "Raise the ceiling, not the headcount."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "strm-03",
+      "incidentCode": "INC-021",
+      "level": 21,
+      "patternId": "stream-processing",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 120,
+      "title": "The group that never settles",
+      "brief": "Analytics consumers poll 500 records and call an enrichment API per record. A batch now takes 6 minutes; max.poll.interval is 5. Pods get evicted, the group rebalances every 90 s, and lag hits 12M.",
+      "constraint": "Enrichment calls average 700 ms and cannot get faster this week.",
+      "question": "What stops the rebalance storm?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 15000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 35,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 9000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 860,
+          "unit": "errors",
+          "tone": "bad"
+        },
+        {
+          "key": "lag",
+          "label": "Consumer lag",
+          "value": 12000000,
+          "unit": "msgs",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "log",
+            "kind": "queue",
+            "label": "clicks topic (30 parts)",
+            "cpu": 45
+          },
+          {
+            "id": "grp",
+            "kind": "worker",
+            "label": "Consumer group",
+            "cpu": 35,
+            "tone": "bad"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Enrichment API",
+            "cpu": 44,
+            "tone": "warn"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Warehouse",
+            "cpu": 20
+          }
+        ],
+        "edges": [
+          {
+            "from": "log",
+            "to": "grp"
+          },
+          {
+            "from": "grp",
+            "to": "api"
+          },
+          {
+            "from": "grp",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "small-batch",
+          "label": "Poll 50 records and use cooperative rebalancing",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 52,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 400,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            },
+            {
+              "key": "lag",
+              "label": "Consumer lag",
+              "value": 90000,
+              "unit": "msgs",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Pods stop getting evicted",
+          "resultBody": "A 50-record batch finishes in about 35 s, well inside the 5-minute poll limit, and cooperative-sticky assignment moves only the partitions that change owner."
+        },
+        {
+          "id": "session-timeout",
+          "label": "Raise session.timeout.ms from 10 s to 60 s",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 35,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 9400,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 900,
+              "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "lag",
+              "label": "Consumer lag",
+              "value": 12500000,
+              "unit": "msgs",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Heartbeats were never the problem",
+          "resultBody": "The heartbeat thread was fine; pods are evicted because they miss the 5-minute poll interval, so the storm continues every 90 s.",
+          "retry": true
+        },
+        {
+          "id": "add-pods",
+          "label": "Scale the consumer group from 30 to 60 pods",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 11000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1400,
+              "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "lag",
+              "label": "Consumer lag",
+              "value": 14000000,
+              "unit": "msgs",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "More members, longer rebalances",
+          "resultBody": "Only 30 partitions exist, and each extra member joining or leaving triggers another stop-the-world rebalance, so lag grows to 14M.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "Compare the batch time with max.poll.interval.",
+        "Evicted consumers trigger a rebalance for everyone.",
+        "Make each poll finish quickly and reshuffle less on rebalance."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "strm-04",
+      "incidentCode": "INC-021",
+      "level": 21,
+      "patternId": "stream-processing",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 120,
+      "title": "Ad clicks billed to the wrong minute",
+      "brief": "A game counts ad clicks per minute by arrival time. Phones offline on the subway upload in bursts, so 09:00 shows a 6x spike and advertisers are billed 7% wrong per minute.",
+      "constraint": "Billing is per minute of when the click happened; 99% of clicks arrive within 2 minutes.",
+      "question": "How should the windows be defined?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 60000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 72,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 800,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 540,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "phones",
+            "kind": "users",
+            "label": "Game clients"
+          },
+          {
+            "id": "log",
+            "kind": "queue",
+            "label": "clicks topic",
+            "cpu": 50
+          },
+          {
+            "id": "agg",
+            "kind": "worker",
+            "label": "Window job",
+            "cpu": 72,
+            "tone": "warn"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Billing store",
+            "cpu": 40,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "phones",
+            "to": "log"
+          },
+          {
+            "from": "log",
+            "to": "agg"
+          },
+          {
+            "from": "agg",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "event-time",
+          "label": "Window on event time with a 2-minute watermark",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 64,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 600,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Clicks land in the right minute",
+          "resultBody": "Each click counts in the minute it happened; the window closes once the watermark passes 2 minutes late, and the rare later clicks go to a correction feed."
+        },
+        {
+          "id": "hourly-proc",
+          "label": "Keep arrival time but widen windows to one hour",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 60,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 700,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 390,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still billed on arrival time",
+          "resultBody": "Hourly buckets hide the 09:00 spike, but a click made at 08:58 and uploaded at 09:03 still bills the wrong hour; per-minute billing is gone entirely.",
+          "retry": true
+        },
+        {
+          "id": "drop-late",
+          "label": "Discard clicks that arrive over 10 s late",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 58,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 820,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Real clicks thrown away",
+          "resultBody": "Subway uploads arrive minutes late, so about 9% of genuine clicks are dropped and advertisers are now underbilled instead of misbilled.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "When did the click happen versus when did it arrive?",
+        "Late data needs a rule for how long a window stays open.",
+        "Use the timestamp in the event, plus a lateness bound."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "strm-05",
+      "incidentCode": "INC-021",
+      "level": 21,
+      "patternId": "stream-processing",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 130,
+      "title": "Wallet credited twice after a crash",
+      "brief": "A wallet consumer writes credits to Postgres, then commits the Kafka offset. A pod OOM-killed between the two replays 2,000 events on restart; 0.3% of today's credits were paid twice.",
+      "constraint": "Every credit event carries a unique event_id; money must be applied once.",
+      "question": "How do you make credits effectively-once?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 8000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 81,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 450,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 2000,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "log",
+            "kind": "queue",
+            "label": "payments topic",
+            "cpu": 40
+          },
+          {
+            "id": "cons",
+            "kind": "worker",
+            "label": "Wallet consumer",
+            "cpu": 81,
+            "tone": "bad"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Wallet ledger",
+            "cpu": 70,
+            "tone": "warn"
+          }
+        ],
+        "edges": [
+          {
+            "from": "log",
+            "to": "cons"
+          },
+          {
+            "from": "cons",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "idem-sink",
+          "label": "Upsert by event_id, commit offsets in that transaction",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 58,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 210,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Replays become no-ops",
+          "resultBody": "A replayed event hits the unique event_id and does nothing, and storing the offset in the same Postgres transaction means credit and progress commit together."
+        },
+        {
+          "id": "commit-first",
+          "label": "Commit the offset before writing each credit",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 60,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 200,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1800,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Credits vanish instead",
+          "resultBody": "Committing first is at-most-once: a crash after the commit but before the write skips the event, so about 1,800 credits a day are never paid.",
+          "retry": true
+        },
+        {
+          "id": "kafka-eos",
+          "label": "Turn on Kafka transactions and idempotent producers",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 80,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 470,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1950,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Exactly-once stops at Kafka",
+          "resultBody": "Kafka transactions cover read-process-write between topics; the Postgres write sits outside them, so the crash still replays 2,000 credits.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "Which two writes can a crash separate?",
+        "Delivery is at least once; the sink must tolerate repeats.",
+        "Make the database the place that dedupes and remembers progress."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "strm-06",
+      "incidentCode": "INC-021",
+      "level": 21,
+      "patternId": "stream-processing",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 120,
+      "title": "Three days of bad fraud scores",
+      "brief": "A buggy fraud-model deploy wrote wrong risk scores for 72 hours. The transactions topic keeps 7 days (1.8B events). Live scoring must keep its 2 s freshness while you repair history.",
+      "constraint": "The scores table is rebuilt from the topic; live alerts cannot pause.",
+      "question": "How do you repair the scores?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 3000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 55,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 1800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 420,
+          "unit": "errors",
+          "tone": "bad"
+        },
+        {
+          "key": "lag",
+          "label": "Consumer lag",
+          "value": 1200,
+          "unit": "msgs",
+          "tone": "good"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "log",
+            "kind": "queue",
+            "label": "txns topic (7 d)",
+            "cpu": 55,
+            "tone": "warn"
+          },
+          {
+            "id": "live",
+            "kind": "worker",
+            "label": "Live scorer",
+            "cpu": 48
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Scores table",
+            "cpu": 42,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "log",
+            "to": "live"
+          },
+          {
+            "from": "live",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "replay-group",
+          "label": "Replay from the pre-bug offset into a new table",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 62,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1900,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            },
+            {
+              "key": "lag",
+              "label": "Consumer lag",
+              "value": 1300,
+              "unit": "msgs",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "History fixed, alerts stay live",
+          "resultBody": "A separate group seeks to the offset at deploy time, rescores 72 hours into a fresh table in about 3 hours, and the live group's 2 s freshness never slips."
+        },
+        {
+          "id": "reset-live",
+          "label": "Reset the live group's offsets to 72 hours ago",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 90,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 540000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 380,
+              "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "lag",
+              "label": "Consumer lag",
+              "value": 780000000,
+              "unit": "msgs",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Live alerts are now three days late",
+          "resultBody": "The live scorer must chew through 780M old events before it sees new transactions, so fraud alerts run hours behind during the repair.",
+          "retry": true
+        },
+        {
+          "id": "resend",
+          "label": "Ask upstream services to resend the last 72 hours",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 70,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2600,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 900,
+              "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "lag",
+              "label": "Consumer lag",
+              "value": 45000,
+              "unit": "msgs",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Upstream never kept a copy",
+          "resultBody": "The log is the retained source of truth; producers discarded those events after the ack, so only a fraction comes back and much of it is duplicated.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "Retention is 7 days and the bug lasted 3.",
+        "Offsets are per consumer group; replay does not have to touch the live one.",
+        "Seek a separate group to a timestamp and rebuild beside the live table."
+      ],
+      "nextId": null,
+      "reviewed": true
+    }
+  ]
+}

@@ -1,0 +1,1137 @@
+{
+  "version": 2,
+  "patternId": "auth-at-scale",
+  "patternName": "Auth at Scale",
+  "level": 23,
+  "phase": "Depth",
+  "canonicalId": "auth-01",
+  "nextCanonicalId": null,
+  "incidents": [
+    {
+      "id": "auth-01",
+      "incidentCode": "INC-023",
+      "level": 23,
+      "patternId": "auth-at-scale",
+      "canonical": true,
+      "severity": "P0",
+      "xp": 150,
+      "title": "Stolen admin token won't die",
+      "brief": "An engineer's laptop is stolen. Its admin JWT is valid for 24 h and 40 services verify it locally, so clicking 'revoke session' changes nothing.",
+      "constraint": "Revocation must take effect within minutes without a database read on every one of 90k req/s.",
+      "question": "How do you make revocation stick?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 90000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 62,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 85,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 1200,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users + thief"
+          },
+          {
+            "id": "gw",
+            "kind": "lb",
+            "label": "API gateway",
+            "cpu": 38
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "40 services",
+            "cpu": 62,
+            "tone": "warn"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Users DB",
+            "cpu": 48
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "gw"
+          },
+          {
+            "from": "gw",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "short-plus-denylist",
+          "label": "Cut access tokens to 10 minutes and denylist the jti in Redis",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 58,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 44,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Stolen token dies in seconds",
+          "resultBody": "The token's jti goes into a Redis denylist checked in under 1 ms and its refresh token is revoked; entries only need to live 10 minutes, until the token expires anyway."
+        },
+        {
+          "id": "db-lookup",
+          "label": "Check every token against the sessions table on each request",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 96,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 410,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 5200,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Postgres takes all 90k req/s",
+          "resultBody": "Revocation works, but 90k session reads a second push the users database past 95% CPU and checkout calls start timing out.",
+          "retry": true
+        },
+        {
+          "id": "rotate-key",
+          "label": "Rotate the JWT signing key to kill the stolen token now",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 900,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 38000,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Everyone logged out at once",
+          "resultBody": "A new signing key invalidates all 2M live tokens, not just the stolen one, so every user re-logs in and the login tier melts under 40k logins/s.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "A stateless token is valid until exp unless something says otherwise.",
+        "Shrink the window, then track only the few tokens revoked inside it.",
+        "Short access tokens plus refresh tokens, and a small denylist in Redis."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "auth-02",
+      "incidentCode": "INC-023",
+      "level": 23,
+      "patternId": "auth-at-scale",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 120,
+      "title": "Auth service called 360k times a second",
+      "brief": "Each of 12 microservices calls the auth service's /introspect endpoint on every request. 30k user req/s became 360k auth calls/s and p95 hit 640 ms.",
+      "constraint": "Tokens are signed JWTs; logout must still take effect within 10 minutes.",
+      "question": "How should services validate tokens?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 30000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 94,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 640,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 2100,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "gw",
+            "kind": "lb",
+            "label": "API gateway",
+            "cpu": 30
+          },
+          {
+            "id": "svc",
+            "kind": "server",
+            "label": "12 services",
+            "cpu": 55
+          },
+          {
+            "id": "auth",
+            "kind": "server",
+            "label": "Auth service",
+            "cpu": 96,
+            "tone": "bad"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Token DB",
+            "cpu": 71,
+            "tone": "warn"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "gw"
+          },
+          {
+            "from": "gw",
+            "to": "svc"
+          },
+          {
+            "from": "svc",
+            "to": "auth"
+          },
+          {
+            "from": "auth",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "cache-introspect",
+          "label": "Cache introspection results in each service for one hour",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 40,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 90,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Logouts lag by an hour",
+          "resultBody": "Auth CPU falls to 40%, but a revoked or logged-out token keeps working for up to 60 minutes in every service that cached it.",
+          "retry": true
+        },
+        {
+          "id": "gateway-verify",
+          "label": "Verify JWT signatures at the gateway with cached public keys",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 35,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 62,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Auth leaves the hot path",
+          "resultBody": "The gateway checks signature and exp in about 50 µs with keys it already holds, so 360k introspection calls/s drop to zero and auth only serves logins and refreshes."
+        },
+        {
+          "id": "scale-auth",
+          "label": "Triple the auth service fleet behind its own balancer",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 60,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 380,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 400,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Bigger bill, same fan-out",
+          "resultBody": "Three times the auth servers absorb 360k calls/s for now, but every request still waits on 12 extra hops and auth stays a single point of failure.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "Does a signed token need a network call to be checked?",
+        "The public key is enough to verify a signature and exp.",
+        "Validate once at the edge; keep the auth service for logins."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "auth-03",
+      "incidentCode": "INC-023",
+      "level": 23,
+      "patternId": "auth-at-scale",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 130,
+      "title": "Every new token rejected after rotation",
+      "brief": "The identity provider rotated its signing key at 09:00. Gateways cache the JWKS for 24 h and don't know the new kid, so 100% of fresh tokens get 401.",
+      "constraint": "The IdP's JWKS endpoint handles a few requests per minute, not per request.",
+      "question": "What should the gateways do?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 45000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 40,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 35,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 21000,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "gw",
+            "kind": "lb",
+            "label": "Gateways",
+            "cpu": 40,
+            "tone": "bad"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "API fleet",
+            "cpu": 28
+          },
+          {
+            "id": "idp",
+            "kind": "server",
+            "label": "Identity provider",
+            "cpu": 12
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "gw"
+          },
+          {
+            "from": "gw",
+            "to": "api"
+          },
+          {
+            "from": "gw",
+            "to": "idp"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "skip-verify",
+          "label": "Skip signature checks until the gateway caches expire",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 30,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Forged tokens accepted",
+          "resultBody": "The 401s stop, but for up to 24 hours a token with any signature passes, so anyone can mint an admin claim and walk in.",
+          "retry": true
+        },
+        {
+          "id": "fetch-always",
+          "label": "Fetch the JWKS from the IdP on every single request",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 55,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1400,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 45000,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Identity provider knocked over",
+          "resultBody": "45k JWKS fetches a second hit an endpoint sized for a few a minute; it falls over and every validation and login fails with it.",
+          "retry": true
+        },
+        {
+          "id": "refetch-on-kid",
+          "label": "Refetch the JWKS on an unknown kid, at most once a minute",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 38,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 34,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "New kid learned in one fetch",
+          "resultBody": "The first token with the new kid triggers one JWKS fetch, the gateways learn the key and 401s stop within seconds, without hammering the IdP."
+        }
+      ],
+      "hints": [
+        "The token's header says which key signed it.",
+        "An unknown kid means your key cache is stale, not that the token is forged.",
+        "Refresh keys on a kid miss, rate-limited; the IdP should publish new keys early."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "auth-04",
+      "incidentCode": "INC-023",
+      "level": 23,
+      "patternId": "auth-at-scale",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 120,
+      "title": "Logins melt after a security tweak",
+      "brief": "Security raised bcrypt cost from 10 to 14, so each hash takes 16x longer (~1 s of CPU). At the 09:00 peak of 800 logins/s, the auth pool sits at 99% and API calls time out.",
+      "constraint": "Hashes must stay slow for attackers; API traffic must not share the login bottleneck.",
+      "question": "What is the right fix?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 800,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 97,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 4200,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 3100,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "lb",
+            "kind": "lb",
+            "label": "Load balancer",
+            "cpu": 35
+          },
+          {
+            "id": "auth",
+            "kind": "server",
+            "label": "Auth + API pool",
+            "cpu": 99,
+            "tone": "bad"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Accounts DB",
+            "cpu": 20
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "lb"
+          },
+          {
+            "from": "lb",
+            "to": "auth"
+          },
+          {
+            "from": "auth",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "sha256",
+          "label": "Switch to SHA-256, which hashes in microseconds",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 12,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 40,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Cracked at GPU speed",
+          "resultBody": "A GPU tries billions of SHA-256 guesses a second, so a leaked table of 8M accounts falls in hours; login CPU drops but the hashes protect nobody.",
+          "retry": true
+        },
+        {
+          "id": "tune-isolate",
+          "label": "Tune to cost 12 (~250 ms) on a separate login pool",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 55,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 280,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Slow for attackers, not for you",
+          "resultBody": "Cost 12 is 4x cheaper than 14 yet still ~250 ms per guess, and on its own pool a login burst no longer starves token refresh and API calls."
+        },
+        {
+          "id": "cache-hash",
+          "label": "Cache verified password hashes in Redis for an hour",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 60,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "A fast oracle for every password",
+          "resultBody": "Logins get cheap, but Redis now holds a fast-to-check record of every recent password; one dump and attackers skip bcrypt entirely.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "Hashing should be slow per guess, but it only runs at login.",
+        "Pick a cost around 250 ms, not 1 s, and argon2id or bcrypt, never a fast hash.",
+        "Give password hashing its own capacity so it can't starve API traffic."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "auth-05",
+      "incidentCode": "INC-023",
+      "level": 23,
+      "patternId": "auth-at-scale",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 120,
+      "title": "Credential stuffing under the limit",
+      "brief": "1.2M login attempts an hour arrive from 40k residential IPs, each trying once every 2 minutes. The 100/min per-IP limit never trips and 0.6% of attempts succeed.",
+      "constraint": "Real users on shared office IPs must still log in without friction.",
+      "question": "Which defense actually stops this?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 330,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 86,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 520,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 7200,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Botnet + users"
+          },
+          {
+            "id": "lb",
+            "kind": "lb",
+            "label": "Edge limiter",
+            "cpu": 22
+          },
+          {
+            "id": "login",
+            "kind": "server",
+            "label": "Login API",
+            "cpu": 88,
+            "tone": "bad"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Accounts DB",
+            "cpu": 45
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "lb"
+          },
+          {
+            "from": "lb",
+            "to": "login"
+          },
+          {
+            "from": "login",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "tighter-ip",
+          "label": "Cut the per-IP limit from 100 to 5 per minute",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 86,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 520,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 7400,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Bots slip under, offices blocked",
+          "resultBody": "Each bot IP sends one attempt every 2 minutes, well under 5/min, while a 300-person office behind one NAT now gets 429s every morning.",
+          "retry": true
+        },
+        {
+          "id": "lockout",
+          "label": "Lock any account after five failed login attempts",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 84,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 9600,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Victims locked, attackers unfazed",
+          "resultBody": "Stuffing tries each leaked pair once, so valid pairs still succeed on the first attempt, and attackers can now lock out 50k real users on purpose.",
+          "retry": true
+        },
+        {
+          "id": "risk-challenge",
+          "label": "Challenge risky logins and reject known-breached passwords",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 48,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 190,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 300,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Stolen pairs stop working",
+          "resultBody": "New-device logins from high-failure IPs get a challenge and breached-password matches force a reset, so the 0.6% hit rate falls near zero while real users pass."
+        }
+      ],
+      "hints": [
+        "Each IP and each account is barely used; what is unusual is the pattern.",
+        "The passwords come from other sites' breaches.",
+        "Score logins by device and failure rate, challenge the risky ones, check breach lists."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "auth-06",
+      "incidentCode": "INC-023",
+      "level": 23,
+      "patternId": "auth-at-scale",
+      "canonical": false,
+      "severity": "P2",
+      "xp": 110,
+      "title": "Fresh tokens 'not yet valid'",
+      "brief": "After an autoscale, 6 of 40 new API nodes run 3 minutes slow because a firewall rule blocks NTP. Tokens issued seconds ago fail their nbf check there: 15% of requests get 401.",
+      "constraint": "Access tokens live 10 minutes and must stay revocable.",
+      "question": "How do you stop the random 401s?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 52000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 50,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 70,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 7800,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "lb",
+            "kind": "lb",
+            "label": "Load balancer",
+            "cpu": 45
+          },
+          {
+            "id": "old",
+            "kind": "server",
+            "label": "34 old nodes",
+            "cpu": 50
+          },
+          {
+            "id": "new",
+            "kind": "server",
+            "label": "6 new nodes",
+            "cpu": 22,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "lb"
+          },
+          {
+            "from": "lb",
+            "to": "old"
+          },
+          {
+            "from": "lb",
+            "to": "new"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "retry-401",
+          "label": "Retry every 401 once on a different API node",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 58,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 110,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1200,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "The broken nodes stay hidden",
+          "resultBody": "Most retries land on a healthy node, but 6 of 40 nodes still reject fresh tokens, 401 traffic doubles and the clock fault is never fixed.",
+          "retry": true
+        },
+        {
+          "id": "ntp-leeway",
+          "label": "Restore NTP on the new nodes and allow 60 s of leeway",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 47,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 64,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Clocks agree, tokens pass",
+          "resultBody": "The 6 drifted nodes resync to within milliseconds, and a 60-second leeway absorbs normal sub-second drift, so fresh tokens stop failing nbf checks."
+        },
+        {
+          "id": "longer-tokens",
+          "label": "Raise access token lifetime from 10 minutes to 24 hours",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 50,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 70,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 7800,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still not valid, now less revocable",
+          "resultBody": "The token's nbf is still 3 minutes ahead of the drifted clocks, so the 401s continue, and a stolen token now stays usable for a whole day.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "Only the new nodes reject tokens. What differs about them?",
+        "exp, nbf and iat are compared against the local clock.",
+        "Fix time sync, and allow a small leeway for normal drift."
+      ],
+      "nextId": null,
+      "reviewed": true
+    }
+  ]
+}

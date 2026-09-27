@@ -1,0 +1,1106 @@
+{
+  "version": 2,
+  "patternId": "id-generation",
+  "patternName": "ID Generation",
+  "level": 19,
+  "phase": "Depth",
+  "canonicalId": "idg-01",
+  "nextCanonicalId": null,
+  "incidents": [
+    {
+      "id": "idg-01",
+      "incidentCode": "INC-019",
+      "level": 19,
+      "patternId": "id-generation",
+      "canonical": true,
+      "severity": "P0",
+      "xp": 150,
+      "title": "Refund hit the wrong order",
+      "brief": "ShopKart split orders across 4 MySQL shards, each with its own AUTO_INCREMENT. Order #88,213,007 now exists on two shards, and 1,900 refunds a day land on the wrong customer.",
+      "constraint": "IDs must stay 64-bit BIGINTs, roughly time-sorted, and shards grow from 4 to 16 next quarter.",
+      "question": "How should new order IDs be generated?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 28000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 72,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 180,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 1900,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Shoppers"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Order API",
+            "cpu": 58
+          },
+          {
+            "id": "s1",
+            "kind": "db",
+            "label": "Shard 1 (auto-inc)",
+            "cpu": 72,
+            "tone": "bad"
+          },
+          {
+            "id": "s2",
+            "kind": "db",
+            "label": "Shard 2 (auto-inc)",
+            "cpu": 69,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "s1"
+          },
+          {
+            "from": "api",
+            "to": "s2"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "snowflake",
+          "label": "Snowflake IDs: 41-bit millisecond time, 10-bit worker, 12-bit sequence",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 55,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 62,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "One ID space for every shard",
+          "resultBody": "Each of up to 1,024 workers mints 4,096 IDs per millisecond without asking anyone, so the 4 shards can never collide and IDs still sort by time. Cost: worker IDs must be assigned uniquely."
+        },
+        {
+          "id": "offset-increment",
+          "label": "Set auto_increment_increment=4 with a different offset per shard",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 66,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 150,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1400,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Works until the reshard",
+          "resultBody": "Interleaving fixes today's 4 shards, but moving to 16 means changing the step on live tables; rows copied during the split collide again and refunds keep misrouting.",
+          "retry": true
+        },
+        {
+          "id": "uuid-v4",
+          "label": "Switch the order key to random UUIDv4 values on every shard",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 84,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 240,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 700,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Unique but too wide and random",
+          "resultBody": "UUIDv4 never collides, but it is 128 bits, breaking the 40 services that store BIGINT order IDs, and random inserts scatter across the B-tree so shard CPU climbs to 84%.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "Each shard's counter only knows about its own rows.",
+        "The constraint wants 64 bits, time order and more shards later.",
+        "Split the 64 bits into time, who generated it, and a per-millisecond counter."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "idg-02",
+      "incidentCode": "INC-019",
+      "level": 19,
+      "patternId": "id-generation",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 120,
+      "title": "UUID keys thrash the buffer pool",
+      "brief": "PayLedger inserts 30,000 transactions/s with UUIDv4 primary keys. The buffer pool hit rate fell from 99% to 71% and p95 insert latency is 45 ms.",
+      "constraint": "Keys must stay 128-bit UUIDs because partners already store them.",
+      "question": "What restores insert locality without changing the key format?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 30000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 88,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 45,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 620,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Ledger API",
+            "cpu": 41
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres (UUIDv4 PK)",
+            "cpu": 88,
+            "tone": "bad"
+          },
+          {
+            "id": "rep",
+            "kind": "replica",
+            "label": "Read replica",
+            "cpu": 35
+          }
+        ],
+        "edges": [
+          {
+            "from": "api",
+            "to": "db"
+          },
+          {
+            "from": "db",
+            "to": "rep"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "uuid-v7",
+          "label": "Generate UUIDv7 keys, which put a millisecond timestamp first",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 46,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 6,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "New rows land on the right edge",
+          "resultBody": "UUIDv7 keeps the 128-bit format partners expect, but its leading 48-bit timestamp makes the 30,000 inserts/s append to the newest index pages, so the hit rate returns to about 99%."
+        },
+        {
+          "id": "more-ram",
+          "label": "Double the buffer pool from 64 GB to 128 GB of RAM",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 74,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 30,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 380,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Bought a few weeks",
+          "resultBody": "More RAM holds more of the random pages for now, but the table grows by 2.6 billion rows a day and the working set outruns 128 GB again within weeks.",
+          "retry": true
+        },
+        {
+          "id": "hash-partition",
+          "label": "Hash-partition the table into 16 partitions by the UUID",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 86,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 42,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 590,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sixteen random indexes instead of one",
+          "resultBody": "Each partition still receives uniformly random keys, so every insert touches a cold page somewhere; locality is unchanged and planning overhead adds CPU.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "Where in the index does each new random key land?",
+        "Sequential keys keep writes on a few hot pages.",
+        "Some UUID versions start with the creation time."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "idg-03",
+      "incidentCode": "INC-019",
+      "level": 19,
+      "patternId": "id-generation",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 120,
+      "title": "Duplicate event IDs after NTP step",
+      "brief": "An NTP correction stepped one Snowflake worker's clock back 800 ms. It re-minted IDs for timestamps it had already used, and 3,100 Kafka events were deduplicated away as repeats.",
+      "constraint": "The worker must never emit the same ID twice, even when its clock jumps.",
+      "question": "What change stops the duplicates?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 52000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 61,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 20,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 3100,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "gen",
+            "kind": "server",
+            "label": "ID worker 17 (clock -800ms)",
+            "cpu": 61,
+            "tone": "bad"
+          },
+          {
+            "id": "q",
+            "kind": "queue",
+            "label": "Kafka events",
+            "cpu": 40
+          },
+          {
+            "id": "dedupe",
+            "kind": "worker",
+            "label": "Dedupe consumer",
+            "cpu": 55,
+            "tone": "warn"
+          }
+        ],
+        "edges": [
+          {
+            "from": "gen",
+            "to": "q"
+          },
+          {
+            "from": "q",
+            "to": "dedupe"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "refuse-backwards",
+          "label": "Track the last timestamp and wait or fail while the clock is behind",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 58,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 24,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "No reused timestamps",
+          "resultBody": "The worker compares each tick with the last millisecond it used and stalls or errors for up to 800 ms instead of reusing it; NTP is also set to slew, not step, so pauses stay rare."
+        },
+        {
+          "id": "wider-sequence",
+          "label": "Widen the sequence field from 12 bits to 16 bits",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 62,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 21,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 3100,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "More room, same collision",
+          "resultBody": "A wider sequence only raises IDs per millisecond. After the step the sequence resets to 0 for a timestamp already used, so the same 3,100 IDs are minted again.",
+          "retry": true
+        },
+        {
+          "id": "retry-on-conflict",
+          "label": "Catch duplicate-key errors in the DB and regenerate the ID",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 64,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 35,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 2400,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "The duplicates never hit the DB",
+          "resultBody": "Kafka consumers, caches and logs see the ID before any unique index does, so events are still dropped as repeats; the DB retry only covers one of several sinks.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "Snowflake assumes time only moves forward.",
+        "Which bits repeat when the timestamp repeats?",
+        "Remember the last millisecond the worker issued."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "idg-04",
+      "incidentCode": "INC-019",
+      "level": 19,
+      "patternId": "id-generation",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 120,
+      "title": "Two pods share worker ID 412",
+      "brief": "RideNow autoscales to 220 ID-generator pods. Each picks its Snowflake worker ID as hash(pod name) mod 1024, and 0.3% of trip IDs are now duplicates.",
+      "constraint": "Pods come and go every few minutes; a worker ID must never be live twice.",
+      "question": "How should pods get their worker IDs?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 64000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 57,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 18,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 190,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "lb",
+            "kind": "lb",
+            "label": "Internal LB",
+            "cpu": 30
+          },
+          {
+            "id": "p1",
+            "kind": "server",
+            "label": "Pod a7f (worker 412)",
+            "cpu": 57,
+            "tone": "bad"
+          },
+          {
+            "id": "p2",
+            "kind": "server",
+            "label": "Pod c19 (worker 412)",
+            "cpu": 54,
+            "tone": "bad"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Trips DB",
+            "cpu": 48
+          }
+        ],
+        "edges": [
+          {
+            "from": "lb",
+            "to": "p1"
+          },
+          {
+            "from": "lb",
+            "to": "p2"
+          },
+          {
+            "from": "p1",
+            "to": "db"
+          },
+          {
+            "from": "p2",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "lease-ids",
+          "label": "Lease worker IDs from etcd with a TTL renewed by heartbeat",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 52,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 18,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Each ID has exactly one owner",
+          "resultBody": "A pod claims a free ID with a compare-and-set lease and renews it every few seconds; if it dies the lease expires before the ID is reused. Cost: startup now depends on etcd."
+        },
+        {
+          "id": "random-id",
+          "label": "Pick a random worker ID between 0 and 1023 at startup",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 57,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 18,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 240,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "The birthday problem wins",
+          "resultBody": "With 220 pods drawing from 1,024 slots, the chance that at least two share an ID is above 99.99%, so duplicates keep appearing on every scale-up.",
+          "retry": true
+        },
+        {
+          "id": "ip-octet",
+          "label": "Use the last octet of the pod IP address as the worker ID",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 56,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 18,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 160,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "IPs repeat across subnets",
+          "resultBody": "The cluster spans four /24 subnets, so 10.0.1.23 and 10.0.3.23 both become worker 23, and recycled IPs can revive an ID still in use elsewhere.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "Hashing 220 names into 1,024 slots is a birthday problem.",
+        "Uniqueness needs one authority, not a local guess.",
+        "Think of a claim that expires if its owner dies."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "idg-05",
+      "incidentCode": "INC-019",
+      "level": 19,
+      "patternId": "id-generation",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 120,
+      "title": "Ticket server is the signup bottleneck",
+      "brief": "Every StreamBox signup asks one MySQL ticket server for the next ID with REPLACE INTO. At 18,000 IDs/s it sits at 94% CPU and signup p95 is 120 ms.",
+      "constraint": "IDs may have gaps but must never repeat after a failover.",
+      "question": "How do you take the ticket server off the hot path?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 18000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 94,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 120,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 850,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "New signups"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Signup API",
+            "cpu": 38
+          },
+          {
+            "id": "tix",
+            "kind": "db",
+            "label": "Ticket server",
+            "cpu": 94,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "tix"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "hi-lo",
+          "label": "Lease blocks of 10,000 IDs per server and hand them out in memory",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 9,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 11,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "One write per 10,000 IDs",
+          "resultBody": "Each API server bumps the counter by 10,000 in one UPDATE and serves IDs locally, so the ticket server sees about 2 writes/s. Cost: a crashed server leaves a gap of unused IDs."
+        },
+        {
+          "id": "redis-incr",
+          "label": "Move the counter to Redis INCR with asynchronous replication",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 22,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 9,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 520,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Failover rewinds the counter",
+          "resultBody": "Redis handles 18,000 INCR/s easily, but a failover promotes a replica a few hundred increments behind, and the next signups receive IDs that already belong to users.",
+          "retry": true
+        },
+        {
+          "id": "read-replicas",
+          "label": "Add two read replicas and spread ticket requests across them",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 95,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 130,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 900,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Replicas cannot mint tickets",
+          "resultBody": "Every ticket is a write, so only the primary can issue it; the replicas sit idle while the ticket server stays at 94% CPU and signups still wait.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "Every signup costs one write on a single row.",
+        "Gaps are allowed, so IDs can be reserved ahead.",
+        "Reserve many IDs with a single database round trip."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "idg-06",
+      "incidentCode": "INC-019",
+      "level": 19,
+      "patternId": "id-generation",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 120,
+      "title": "Scraper walked every invoice",
+      "brief": "BillFlow invoice links look like /invoice/100234. Over a weekend a scraper incremented the ID and downloaded 2.1M invoices; the IDs also reveal 9,000 new invoices a day to competitors.",
+      "constraint": "Internal joins must keep using the BIGINT primary key.",
+      "question": "What closes the leak?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 9000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 68,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 90,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 2100,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "bot",
+            "kind": "users",
+            "label": "Scraper botnet"
+          },
+          {
+            "id": "cdn",
+            "kind": "cdn",
+            "label": "Edge CDN",
+            "cpu": 20
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Invoice service",
+            "cpu": 68,
+            "tone": "bad"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Invoices DB",
+            "cpu": 55
+          }
+        ],
+        "edges": [
+          {
+            "from": "bot",
+            "to": "cdn"
+          },
+          {
+            "from": "cdn",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "opaque-authz",
+          "label": "Check invoice ownership and expose random 128-bit public IDs",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 31,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 40,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Nothing left to enumerate",
+          "resultBody": "Ownership checks stop the 2.1M downloads outright, and random public IDs reveal neither order nor volume, while joins keep the internal BIGINT. Cost: one extra indexed lookup per request."
+        },
+        {
+          "id": "base64",
+          "label": "Base64-encode the sequential IDs before putting them in links",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 66,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 88,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1900,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Encoding is not secrecy",
+          "resultBody": "The scraper decodes one link, sees 100234, and resumes incrementing within minutes; the daily invoice count is still readable from the decoded values.",
+          "retry": true
+        },
+        {
+          "id": "rate-limit",
+          "label": "Rate-limit invoice pages to 100 requests per minute per IP",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 60,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 85,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1500,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "The botnet has 40,000 IPs",
+          "resultBody": "Spread across 40,000 addresses the scraper stays under the limit, so the weekend haul barely shrinks, and anyone can still infer volume from two IDs a day apart.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "What stops a user from reading someone else's invoice?",
+        "Sequential public IDs leak both targets and business volume.",
+        "Separate the internal key from what goes in the URL."
+      ],
+      "nextId": null
+    }
+  ]
+}

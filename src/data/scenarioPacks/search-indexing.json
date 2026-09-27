@@ -1,0 +1,1192 @@
+{
+  "version": 2,
+  "patternId": "search-indexing",
+  "patternName": "Search & Inverted Indexes",
+  "level": 20,
+  "phase": "Depth",
+  "canonicalId": "srch-01",
+  "nextCanonicalId": null,
+  "incidents": [
+    {
+      "id": "srch-01",
+      "incidentCode": "INC-020",
+      "level": 20,
+      "patternId": "search-indexing",
+      "canonical": true,
+      "severity": "P0",
+      "xp": 150,
+      "title": "Product search melts the primary",
+      "brief": "The shop's search box runs WHERE title ILIKE '%boots%' on a 40M-row products table. At 3,000 searches/s the primary sits at 96% CPU and checkout writes time out.",
+      "constraint": "Search must stay under 200 ms p95 without slowing checkout writes.",
+      "question": "What should serve product search?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 3000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 96,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 4200,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 1900,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Shoppers"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Search API",
+            "cpu": 38
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres primary",
+            "cpu": 96,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "inverted",
+          "label": "Serve search from an inverted index of title terms",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 34,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 60,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Lookups instead of scans",
+          "resultBody": "The index maps each term like 'boots' straight to its 18k product IDs, so a query reads one posting list instead of scanning 40M rows; the primary drops back to checkout duty."
+        },
+        {
+          "id": "btree",
+          "label": "Add a B-tree index on the product title column",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 95,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 4100,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1850,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "The wildcard ignores the index",
+          "resultBody": "A B-tree is sorted by the title's first characters, so a leading % wildcard cannot seek into it; the planner still scans all 40M rows per search.",
+          "retry": true
+        },
+        {
+          "id": "redis",
+          "label": "Cache each query's results in Redis for 10 minutes",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 88,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3300,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1400,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "The long tail misses the cache",
+          "resultBody": "Only 12% of searches repeat within 10 minutes, so 88% still fall through to the ILIKE scan and the primary stays pinned near 90% CPU.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "What does a leading % wildcard do to a sorted index?",
+        "Search asks 'which rows contain this word', the reverse of a row lookup.",
+        "Map each term to the list of documents that contain it."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "srch-02",
+      "incidentCode": "INC-020",
+      "level": 20,
+      "patternId": "search-indexing",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 120,
+      "title": "Running shoes return zero results",
+      "brief": "A sports retailer's search finds 'running shoes' but not 'run shoe' or 'Running Shoes'. The index stores raw tokens with no lowercasing or stemming, and 18% of queries return nothing.",
+      "constraint": "Fix recall without re-architecting search or adding query latency.",
+      "question": "How should the text be analyzed?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 6500,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 42,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 85,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 1170,
+          "unit": "errors",
+          "tone": "bad"
+        },
+        {
+          "key": "zero",
+          "label": "Zero-result queries",
+          "value": 18,
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Shoppers"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Search API",
+            "cpu": 30
+          },
+          {
+            "id": "idx",
+            "kind": "replica",
+            "label": "Search nodes",
+            "cpu": 42,
+            "tone": "warn"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Catalog DB",
+            "cpu": 25
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "idx"
+          },
+          {
+            "from": "db",
+            "to": "idx"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "same-analyzer",
+          "label": "Run one lowercase-and-stem analyzer at index and query time",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 44,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 88,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 150,
+              "unit": "errors",
+              "tone": "good"
+            },
+            {
+              "key": "zero",
+              "label": "Zero-result queries",
+              "value": 3,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Both sides speak 'run shoe'",
+          "resultBody": "Documents and queries now pass through the same lowercase and stemming chain, so 'Running Shoes' and 'run shoe' both become run + shoe; zero-result queries fall from 18% to 3%."
+        },
+        {
+          "id": "query-only",
+          "label": "Stem only the query text and leave stored tokens untouched",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 42,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 86,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1300,
+              "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "zero",
+              "label": "Zero-result queries",
+              "value": 21,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Stemmed query, raw index",
+          "resultBody": "The query 'running' becomes 'run', but the index still holds 'Running' and 'running', so previously working searches miss too and zero results climb to 21%.",
+          "retry": true
+        },
+        {
+          "id": "fuzzy",
+          "label": "Match every query term with fuzzy edit distance two",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 81,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 640,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 900,
+              "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "zero",
+              "label": "Zero-result queries",
+              "value": 6,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Slow and oddly matched",
+          "resultBody": "Expanding each term to everything within two edits multiplies posting-list reads, so CPU jumps to 81% and 'shoe' now also matches 'shop' and 'show'.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "How can 'Running Shoes' and 'run shoe' become the same terms?",
+        "Tokens only match if the same rules produced them.",
+        "Apply the same analyzer chain to documents and to queries."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "srch-03",
+      "incidentCode": "INC-020",
+      "level": 20,
+      "patternId": "search-indexing",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 120,
+      "title": "Keyword-stuffed jobs rank first",
+      "brief": "A job board scores matches by raw term count. Listings repeating 'python' 60 times outrank real roles, and click-through on page one has fallen from 9% to 2%.",
+      "constraint": "Keep keyword search; relevance must reward real matches, not repetition.",
+      "question": "How should results be scored?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 4200,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 48,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 120,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 320,
+          "unit": "errors",
+          "tone": "bad"
+        },
+        {
+          "key": "ctr",
+          "label": "Page-one CTR",
+          "value": 2,
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Job seekers"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Search API",
+            "cpu": 35
+          },
+          {
+            "id": "idx",
+            "kind": "replica",
+            "label": "Search nodes",
+            "cpu": 48,
+            "tone": "warn"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "idx"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "bm25",
+          "label": "Score with BM25: saturate repeats, weight rare terms higher",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 49,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 124,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 40,
+              "unit": "errors",
+              "tone": "good"
+            },
+            {
+              "key": "ctr",
+              "label": "Page-one CTR",
+              "value": 8,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Repetition stops paying",
+          "resultBody": "BM25's term-frequency curve flattens after a few mentions, so the 60th 'python' adds almost nothing, while a rare term like 'django' counts for more; CTR recovers to 8%."
+        },
+        {
+          "id": "newest",
+          "label": "Sort every matching listing by posting date, newest first",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 40,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 110,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 290,
+              "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "ctr",
+              "label": "Page-one CTR",
+              "value": 3,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Fresh but irrelevant",
+          "resultBody": "Recency ignores how well a listing matches, so a new 'python-adjacent sales' post beats an exact senior Python role and spammers simply repost daily.",
+          "retry": true
+        },
+        {
+          "id": "popular",
+          "label": "Rank matches by how many applications each listing received",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 47,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 118,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 300,
+              "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "ctr",
+              "label": "Page-one CTR",
+              "value": 4,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Old winners keep winning",
+          "resultBody": "Listings already on page one collect the applications, so the stuffed posts that ranked first keep their lead and new relevant roles never surface.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "Should the 60th mention of a word count as much as the first?",
+        "A word that appears in every listing tells you little.",
+        "Use a score that saturates term frequency and weights rare terms."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "srch-04",
+      "incidentCode": "INC-020",
+      "level": 20,
+      "patternId": "search-indexing",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 120,
+      "title": "One term shard runs every query",
+      "brief": "A log platform shards its 2B-document index by term. Every query touching 'error' lands on one shard at 97% CPU, and multi-term queries ship huge posting lists between shards to intersect.",
+      "constraint": "Add shards without any one of them becoming the hot spot.",
+      "question": "How should the index be partitioned?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 9000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 97,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 2600,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 2400,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Engineers"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Query router",
+            "cpu": 44
+          },
+          {
+            "id": "hot",
+            "kind": "replica",
+            "label": "Term shard 'e-f'",
+            "cpu": 97,
+            "tone": "bad"
+          },
+          {
+            "id": "cold",
+            "kind": "replica",
+            "label": "Term shard 'p-r'",
+            "cpu": 22
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "hot"
+          },
+          {
+            "from": "api",
+            "to": "cold"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "by-doc",
+          "label": "Partition by document ID and scatter each query to all shards",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 51,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 180,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 30,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Load spreads evenly",
+          "resultBody": "Each of the 16 shards holds a slice of documents with its own local index, so 'error' is split 16 ways and intersections happen locally before a small top-k merge."
+        },
+        {
+          "id": "replicas",
+          "label": "Add three replicas behind the hot 'e-f' term shard",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 78,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1400,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1100,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "The hot spot just moves",
+          "resultBody": "Replicas split 'error' lookups four ways, but multi-term queries still pull 400M-entry posting lists across the network, and 'timeout' becomes the next 90% shard.",
+          "retry": true
+        },
+        {
+          "id": "cache-terms",
+          "label": "Cache posting lists for the 100 most frequent terms",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 90,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2100,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1900,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Cache churns on every write",
+          "resultBody": "Logs arrive at 200k lines/s, so the 'error' posting list changes every millisecond; cached copies are stale at once and the shard keeps rebuilding them.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "Which shard does a query for 'error AND timeout' need?",
+        "Frequent words make term-partitioned shards uneven.",
+        "Give every shard a slice of documents and merge per-shard results."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "srch-05",
+      "incidentCode": "INC-020",
+      "level": 20,
+      "patternId": "search-indexing",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 120,
+      "title": "Page 500 takes four seconds",
+      "brief": "A marketplace lets scrapers request page 500 of 20 results. Each of 12 shards must return its top 10,000 hits, and the coordinator sorts 120,000 to keep 20. p95 hits 3.8 s.",
+      "constraint": "Real users rarely pass page 5; bulk exports must still work.",
+      "question": "How should deep results be served?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 5500,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 91,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 3800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 700,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Clients + scrapers"
+          },
+          {
+            "id": "coord",
+            "kind": "server",
+            "label": "Coordinator",
+            "cpu": 91,
+            "tone": "bad"
+          },
+          {
+            "id": "s1",
+            "kind": "replica",
+            "label": "Shard 1",
+            "cpu": 64,
+            "tone": "warn"
+          },
+          {
+            "id": "s2",
+            "kind": "replica",
+            "label": "Shard 12",
+            "cpu": 66,
+            "tone": "warn"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "coord"
+          },
+          {
+            "from": "coord",
+            "to": "s1"
+          },
+          {
+            "from": "coord",
+            "to": "s2"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "cursor",
+          "label": "Cap offsets at 1,000 and page deeper with search_after cursors",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 38,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 140,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 20,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Each page costs the same",
+          "resultBody": "A search_after cursor asks each shard only for 20 hits past the last sort key, so page 500 costs what page 1 does and the coordinator merges 240 hits instead of 120,000."
+        },
+        {
+          "id": "more-shards",
+          "label": "Split the index into 24 shards so each returns fewer hits",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 96,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 4700,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 900,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Twice the hits to merge",
+          "resultBody": "Every shard must still return its own top 10,000 for page 500, so 24 shards send 240,000 hits and the coordinator's sort gets twice as expensive.",
+          "retry": true
+        },
+        {
+          "id": "heap",
+          "label": "Raise the coordinator heap from 8 GB to 32 GB",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 88,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 650,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Bigger heap, longer pauses",
+          "resultBody": "The 120,000-hit sort still runs on every deep page; the larger heap only defers garbage collection into 900 ms pauses that stall the shallow queries too.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "How many hits must each shard return for page 500?",
+        "The cost grows with offset plus size, times the shard count.",
+        "Page from the last sort key instead of an offset."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "srch-06",
+      "incidentCode": "INC-020",
+      "level": 20,
+      "patternId": "search-indexing",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 120,
+      "title": "Prices in search drift from the DB",
+      "brief": "The listings API writes Postgres, then calls the search index. When index calls time out, 0.4% of 90M listings keep stale prices, and buyers click $40 items that now cost $65.",
+      "constraint": "Search may lag the database by seconds but must never lose an update.",
+      "question": "How should changes reach the index?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 12000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 72,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 340,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 480,
+          "unit": "errors",
+          "tone": "bad"
+        },
+        {
+          "key": "stale",
+          "label": "Stale listings",
+          "value": 360000,
+          "unit": "docs",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Sellers"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Listings API",
+            "cpu": 72,
+            "tone": "warn"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres primary",
+            "cpu": 58
+          },
+          {
+            "id": "idx",
+            "kind": "replica",
+            "label": "Search nodes",
+            "cpu": 45
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "db"
+          },
+          {
+            "from": "api",
+            "to": "idx"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "cdc",
+          "label": "Stream the database changelog through a queue to indexers",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 41,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 95,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            },
+            {
+              "key": "stale",
+              "label": "Stale listings",
+              "value": 0,
+              "unit": "docs",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Every commit reaches search",
+          "resultBody": "CDC reads committed rows from the Postgres WAL into a durable queue, and indexers replay them with retries, so no update is lost and search trails the database by about 2 s."
+        },
+        {
+          "id": "retry-inline",
+          "label": "Retry each failed index write three times inside the request",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 80,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1100,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 210,
+              "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "stale",
+              "label": "Stale listings",
+              "value": 90000,
+              "unit": "docs",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Slower and still lossy",
+          "resultBody": "Retries add up to 3 s to every seller save during index slowdowns, and a crash between the DB commit and the index call still drops the update for good.",
+          "retry": true
+        },
+        {
+          "id": "nightly",
+          "label": "Rebuild the full index from Postgres every night",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 66,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 330,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "stale",
+              "label": "Stale listings",
+              "value": 1500000,
+              "unit": "docs",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "A day behind by design",
+          "resultBody": "A 90M-row nightly rebuild loads the primary for hours, and any price changed at 9 am stays wrong in search until the next night's run.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "What happens if the API crashes between the two writes?",
+        "The database already records every committed change in order.",
+        "Feed the index from the database's change stream, not the app."
+      ],
+      "nextId": null
+    }
+  ]
+}

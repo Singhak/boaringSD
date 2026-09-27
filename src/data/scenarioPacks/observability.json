@@ -1,0 +1,1171 @@
+{
+  "version": 2,
+  "patternId": "observability",
+  "patternName": "Observability & SLOs",
+  "level": 22,
+  "phase": "Depth",
+  "canonicalId": "obs-01",
+  "nextCanonicalId": null,
+  "incidents": [
+    {
+      "id": "obs-01",
+      "incidentCode": "INC-022",
+      "level": 22,
+      "patternId": "observability",
+      "canonical": true,
+      "severity": "P0",
+      "xp": 150,
+      "title": "Budget gone, pager silent",
+      "brief": "Checkout errors jump to 2% while CPU sits at 41%. No page fires because every alert watches CPU. At this rate the 99.9% SLO's 43-minute monthly budget is gone in 36 hours.",
+      "constraint": "On-call must be paged for user pain, not for busy machines.",
+      "question": "What should page the on-call engineer?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 18000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 41,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 210,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 360,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Shoppers"
+          },
+          {
+            "id": "lb",
+            "kind": "lb",
+            "label": "Load balancer",
+            "cpu": 20
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Checkout API",
+            "cpu": 41,
+            "tone": "bad"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Orders DB",
+            "cpu": 35
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "lb"
+          },
+          {
+            "from": "lb",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "burn-rate",
+          "label": "Page on error-budget burn rate over 1 h and 5 min windows",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 41,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 190,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 20,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Paged in four minutes",
+          "resultBody": "A 2% error rate burns the 0.1% budget at 20x, so the 1 h and 5 min burn-rate alert fires within minutes and clears once errors stop."
+        },
+        {
+          "id": "cpu-lower",
+          "label": "Lower the CPU alert threshold from 80% to 35%",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 41,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 210,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 360,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Paged all day for nothing",
+          "resultBody": "Checkout runs at 41% CPU on every normal afternoon, so the pager fires daily while a real error spike at 30% CPU stays silent.",
+          "retry": true
+        },
+        {
+          "id": "static-count",
+          "label": "Page when errors exceed 1,000 per minute",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 41,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 210,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 360,
+              "unit": "errors",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Quiet at night, loud at noon",
+          "resultBody": "At 18,000 req/s the 2% spike is 21,600 errors a minute and pages, but at 3 a.m. traffic the same 2% never crosses 1,000.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "Is 41% CPU a problem for a shopper?",
+        "The SLO says how many failures a month you can afford.",
+        "Alert on how fast that allowance is being spent, over a long and a short window."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "obs-02",
+      "incidentCode": "INC-022",
+      "level": 22,
+      "patternId": "observability",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 120,
+      "title": "The p99 that averaged away",
+      "brief": "The dashboard shows search p99 at 180 ms by averaging p99 across 40 hosts. Users report 1.4 s searches. Three hosts with a bad disk serve 8% of traffic.",
+      "constraint": "The fleet p99 must reflect what the slowest 1% of requests actually felt.",
+      "question": "How should the fleet-wide p99 be computed?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 26000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 64,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 180,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 90,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Searchers"
+          },
+          {
+            "id": "lb",
+            "kind": "lb",
+            "label": "Load balancer",
+            "cpu": 30
+          },
+          {
+            "id": "fast",
+            "kind": "server",
+            "label": "37 healthy hosts",
+            "cpu": 55
+          },
+          {
+            "id": "slow",
+            "kind": "server",
+            "label": "3 bad-disk hosts",
+            "cpu": 72,
+            "tone": "bad"
+          },
+          {
+            "id": "idx",
+            "kind": "db",
+            "label": "Search index",
+            "cpu": 48
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "lb"
+          },
+          {
+            "from": "lb",
+            "to": "fast"
+          },
+          {
+            "from": "lb",
+            "to": "slow"
+          },
+          {
+            "from": "fast",
+            "to": "idx"
+          },
+          {
+            "from": "slow",
+            "to": "idx"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "merge-hist",
+          "label": "Merge per-host latency histograms, then read p99",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 64,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1400,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 90,
+              "unit": "errors",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "The real tail shows up",
+          "resultBody": "Merged histograms put the fleet p99 at 1.4 s, matching user reports and pointing straight at the three bad-disk hosts."
+        },
+        {
+          "id": "max-p99",
+          "label": "Report the slowest host's p99 as fleet p99",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 64,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2100,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 90,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "One host sets the number",
+          "resultBody": "The worst host alone reads 2.1 s even though it serves under 3% of requests, so the chart overstates the tail and jumps with every noisy box.",
+          "retry": true
+        },
+        {
+          "id": "weighted-avg",
+          "label": "Average host p99s weighted by request count",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 64,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 290,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 90,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still an average of tails",
+          "resultBody": "Weighting nudges the number to 290 ms, but percentiles do not average: 8% of requests at 1.4 s still hides under a value users never see.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "Is an average of 40 percentiles itself a percentile?",
+        "You need the raw distribution, not 40 summaries of it.",
+        "Combine bucket counts from every host before picking the 99th percentile."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "obs-03",
+      "incidentCode": "INC-022",
+      "level": 22,
+      "patternId": "observability",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 120,
+      "title": "Fourteen services, no culprit",
+      "brief": "Checkout p99 rose from 400 ms to 2.8 s after a deploy. The request crosses 14 services and each team's dashboard looks green. Nobody can see where the 2.4 s goes.",
+      "constraint": "Find the slow hop without redeploying all 14 services twice.",
+      "question": "What gives the team the per-hop breakdown?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 9000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 38,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 2800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 140,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Shoppers"
+          },
+          {
+            "id": "gw",
+            "kind": "server",
+            "label": "API gateway",
+            "cpu": 38
+          },
+          {
+            "id": "cart",
+            "kind": "server",
+            "label": "Cart service",
+            "cpu": 30
+          },
+          {
+            "id": "tax",
+            "kind": "server",
+            "label": "Tax service",
+            "cpu": 26,
+            "tone": "bad"
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Payment service",
+            "cpu": 33
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Orders DB",
+            "cpu": 29
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "gw"
+          },
+          {
+            "from": "gw",
+            "to": "cart"
+          },
+          {
+            "from": "cart",
+            "to": "tax"
+          },
+          {
+            "from": "cart",
+            "to": "pay"
+          },
+          {
+            "from": "pay",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "trace-id",
+          "label": "Propagate a trace id header and record spans per hop",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 38,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 420,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 20,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Tax service caught waiting",
+          "resultBody": "The trace waterfall shows 2.3 s inside the tax service waiting on a new lock; rolling it back brings p99 from 2.8 s to 420 ms."
+        },
+        {
+          "id": "more-dash",
+          "label": "Add latency dashboards for each of the 14 services",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 38,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2800,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 140,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Fourteen green dashboards",
+          "resultBody": "Each service's own average looks fine because the slow calls are a small share of its traffic, so nothing links the 2.8 s requests together.",
+          "retry": true
+        },
+        {
+          "id": "debug-logs",
+          "label": "Turn on debug logging in all 14 services",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 52,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3100,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 170,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Logs pile up, still unlinked",
+          "resultBody": "Log volume grows 9x and CPU climbs to 52%, but with no shared id nobody can stitch one slow checkout's lines together across services.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "Each service is healthy on average. Which request is slow?",
+        "You need to follow one request across every hop.",
+        "Pass one id through every call and time each span."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "obs-04",
+      "incidentCode": "INC-022",
+      "level": 22,
+      "patternId": "observability",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P2",
+      "xp": 110,
+      "title": "The errors tracing never saw",
+      "brief": "0.05% of payments time out after 6 s. Tracing keeps a random 1% chosen at the gateway, so 99% of the 170k daily failures have no trace, including every one support asks about.",
+      "constraint": "Tracing storage may grow at most 20%.",
+      "question": "How should traces be sampled?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 4000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 44,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 320,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 2,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Payers"
+          },
+          {
+            "id": "gw",
+            "kind": "server",
+            "label": "Gateway (1% head)",
+            "cpu": 44
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Payment API",
+            "cpu": 40,
+            "tone": "bad"
+          },
+          {
+            "id": "q",
+            "kind": "queue",
+            "label": "Span pipeline",
+            "cpu": 20
+          },
+          {
+            "id": "store",
+            "kind": "db",
+            "label": "Trace store",
+            "cpu": 35
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "gw"
+          },
+          {
+            "from": "gw",
+            "to": "pay"
+          },
+          {
+            "from": "pay",
+            "to": "q"
+          },
+          {
+            "from": "q",
+            "to": "store"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "tail",
+          "label": "Tail-sample: keep all errors and slow traces, 1% of rest",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 46,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 320,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 2,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Every failure has a trace",
+          "resultBody": "Deciding after the request finishes keeps all 170,000 failed payments a day plus a 1% baseline, so storage grows about 5% instead of 100x."
+        },
+        {
+          "id": "head-100",
+          "label": "Raise head sampling at the gateway to 100%",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 58,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 360,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 2,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Storage bill up 100x",
+          "resultBody": "Every one of 345 million daily requests is stored, the span pipeline backs up and the trace store costs a hundred times the 20% budget.",
+          "retry": true
+        },
+        {
+          "id": "user-hash",
+          "label": "Sample 1% of users by hashing the user id",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 44,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 320,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 2,
+              "unit": "errors",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Still guessing up front",
+          "resultBody": "Hashing makes traces consistent per user, but the choice is still made before anyone knows the request will fail, so 99% of failures vanish.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "When does the gateway decide to keep a trace?",
+        "At that moment, does it know the request will fail?",
+        "Decide after the request completes, based on its outcome."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "obs-05",
+      "incidentCode": "INC-022",
+      "level": 22,
+      "patternId": "observability",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 120,
+      "title": "A label that ate the TSDB",
+      "brief": "A team added user_id as a label on http_requests_total. 2 M users x 30 endpoints x 5 status codes is 300 M series. The metrics store OOMs and the bill is up 12x.",
+      "constraint": "Keep per-user debugging possible without per-user metric series.",
+      "question": "What is the right fix?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 30000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 93,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 150,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 60,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "API fleet",
+            "cpu": 50
+          },
+          {
+            "id": "q",
+            "kind": "queue",
+            "label": "Metrics pipeline",
+            "cpu": 70,
+            "tone": "warn"
+          },
+          {
+            "id": "tsdb",
+            "kind": "db",
+            "label": "Metrics store",
+            "cpu": 93,
+            "tone": "bad"
+          },
+          {
+            "id": "dash",
+            "kind": "users",
+            "label": "On-call"
+          }
+        ],
+        "edges": [
+          {
+            "from": "api",
+            "to": "q"
+          },
+          {
+            "from": "q",
+            "to": "tsdb"
+          },
+          {
+            "from": "dash",
+            "to": "tsdb"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "drop-label",
+          "label": "Drop user_id from metrics and put it on traces and logs",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 40,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 150,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Back to 3,000 series",
+          "resultBody": "Without user_id the counter has 150 series per host, store memory falls from 93% to 40%, and per-user questions go to trace and log search."
+        },
+        {
+          "id": "scale-store",
+          "label": "Triple the metrics store's memory and shards",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 80,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 150,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 30,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Paying for every new user",
+          "resultBody": "Memory drops to 80% for now, but series grow with every signup, so the 12x bill becomes 36x and the OOM returns next quarter.",
+          "retry": true
+        },
+        {
+          "id": "slow-scrape",
+          "label": "Keep user_id but scrape every 5 minutes",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 90,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 150,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 55,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Same series, blurrier data",
+          "resultBody": "Cost comes from the 300 M distinct series, not the scrape rate, so memory stays at 90% while alerts now lag by five minutes.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "What multiplies to make 300 M?",
+        "Every unique label combination is its own series.",
+        "Keep unbounded ids out of metric labels; they belong on events."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "obs-06",
+      "incidentCode": "INC-022",
+      "level": 22,
+      "patternId": "observability",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P2",
+      "xp": 110,
+      "title": "Forty minutes to find one order",
+      "brief": "Support escalates 'order 88213 failed'. Free-text logs from 60 pods add up to 9 TB a day, and grepping for the order number takes 40 minutes and misses lines that never print it.",
+      "constraint": "Answer a single-request question in under a minute.",
+      "question": "What makes one request's logs findable?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 12000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 58,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 240,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 45,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Customers"
+          },
+          {
+            "id": "lb",
+            "kind": "lb",
+            "label": "Load balancer",
+            "cpu": 25
+          },
+          {
+            "id": "pods",
+            "kind": "server",
+            "label": "60 order pods",
+            "cpu": 58
+          },
+          {
+            "id": "logs",
+            "kind": "db",
+            "label": "Log cluster",
+            "cpu": 66,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "lb"
+          },
+          {
+            "from": "lb",
+            "to": "pods"
+          },
+          {
+            "from": "pods",
+            "to": "logs"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "json-reqid",
+          "label": "Emit JSON logs carrying an indexed request id field",
+          "correct": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 55,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 240,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 45,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "One query, 12 lines",
+          "resultBody": "Each line now has request_id, order_id and service fields, so a single indexed lookup returns all 12 lines for order 88213 in two seconds."
+        },
+        {
+          "id": "parallel-grep",
+          "label": "Grep all 60 pods in parallel with a faster regex",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 70,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 250,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 45,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Faster search, same gaps",
+          "resultBody": "Parallel grep cuts the wait to eight minutes and spikes log cluster CPU to 70%, yet lines that never mention 88213 are still missed.",
+          "retry": true
+        },
+        {
+          "id": "longer-keep",
+          "label": "Raise log retention from 7 to 30 days",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 62,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 240,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 45,
+              "unit": "errors",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "More haystack, no needle",
+          "resultBody": "Keeping 9 TB a day for 30 days quadruples storage and makes each grep slower, while nothing ties one request's lines together.",
+          "retry": true
+        }
+      ],
+      "hints": [
+        "Which lines of this order never print the order number?",
+        "Something must follow the request into every log line.",
+        "Give every line machine-readable fields, including one shared id."
+      ],
+      "nextId": null
+    }
+  ]
+}
