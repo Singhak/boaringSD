@@ -25,7 +25,9 @@ type Phase =
 /**
  * "Defend your call": a teammate pings you in chat and you answer in ≤280
  * characters. Graded against a rubric by the LLM grader, or self-assessed
- * against the model answer when no grader is available. Always skippable.
+ * when no grader is available: the learner ticks the rubric first, and only
+ * then sees the model answer. Self-assessment pays at most half the bonus and
+ * never counts toward Reliable mastery. Always skippable.
  */
 export default function ReasoningCard({ prompt, onDone }: ReasoningCardProps) {
   const [answer, setAnswer] = useState("");
@@ -150,9 +152,10 @@ export default function ReasoningCard({ prompt, onDone }: ReasoningCardProps) {
       {phase.kind === "self-assess" && (
         <div className="pl-11 space-y-2">
           <p className="text-xs text-slate-400">
-            {phase.reason}, so grade yourself. Compare with a strong answer and tick what yours covered.
+            {phase.reason}, so grade yourself: tick what your reply actually covered. You&apos;ll see a strong reply after.
+            Self-graded replies earn half the bonus.
           </p>
-          <blockquote className="text-sm text-slate-200 border-l-2 border-emerald-400/50 pl-3">{prompt.modelAnswer}</blockquote>
+          <blockquote className="text-sm text-slate-200 border-l-2 border-cyan-400/40 pl-3">{answer}</blockquote>
           <ul className="space-y-1">
             {prompt.rubric.map((r) => {
               const on = phase.ticked.includes(r.id);
@@ -183,9 +186,14 @@ export default function ReasoningCard({ prompt, onDone }: ReasoningCardProps) {
       )}
 
       {phase.kind === "self-scored" && (
-        <p className="pl-11 text-sm text-slate-200">
-          Self-assessed {phase.score}%. {phase.xp > 0 ? `+${phase.xp} XP Sharp Call bonus.` : ""}
-        </p>
+        <div className="pl-11 space-y-2">
+          <p className="text-sm text-slate-200">
+            Self-assessed {phase.score}%. {phase.xp > 0 ? `+${phase.xp} XP (half bonus for a self-graded reply).` : ""}
+          </p>
+          <p className="text-xs text-slate-400">A strong reply:</p>
+          <blockquote className="text-sm text-slate-200 border-l-2 border-emerald-400/50 pl-3">{prompt.modelAnswer}</blockquote>
+          <p className="text-[11px] text-slate-500">Self-graded replies don&apos;t count toward Reliable mastery.</p>
+        </div>
       )}
 
       {finalScore !== null && (

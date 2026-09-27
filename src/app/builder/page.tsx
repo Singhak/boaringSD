@@ -66,6 +66,7 @@ import {
 } from "@/lib/storage";
 import { ProgressionOutcome, getEvidence, isPatternCleared } from "@/lib/progression";
 import { useUserStats } from "@/lib/useUserStats";
+import { builderXpForStars, explainOutcome, type ExplainOutcome } from "@/lib/builderExplain";
 import type { ArchitectureNodeType, BuilderScenario, CustomNodeData, UserStats } from "@/types";
 
 const nodeTypes = { customNode: ArchNode };
@@ -263,8 +264,13 @@ function Workspace({ scenario, stats }: { scenario?: BuilderScenario; stats: Use
   const [tested, setTested] = useState<{ version: number; evaluation: ScenarioEvaluation } | null>(null);
   const [stressing, setStressing] = useState(false);
   const [hintsShown, setHintsShown] = useState(0);
-  const [explainPassed, setExplainPassed] = useState(false);
+  // Correctness of each explain submission; one retry, each wrong pick costs a star.
+  const [explainAnswers, setExplainAnswers] = useState<boolean[]>([]);
+  const explain = explainOutcome(explainAnswers);
+  // Hints already written to the evidence, so each submission records only new ones.
+  const hintsRecorded = useRef(0);
   const [outcome, setOutcome] = useState<ProgressionOutcome | null>(null);
+  const [outcomeStars, setOutcomeStars] = useState<1 | 2 | 3>(3);
   const counter = useRef(0);
 
   // The starting design is shown with its real load so the failure is visible before any change.
@@ -451,14 +457,29 @@ function Workspace({ scenario, stats }: { scenario?: BuilderScenario; stats: Use
       } else {
         playErrorSound();
         // Failures are practice evidence; they never award XP.
-        submitBuilderResult(scenario, pattern?.rewards.builderXp ?? 0, false, evaluation.failureReasons);
+        submitBuilderResult(scenario, pattern?.rewards.builderXp ?? 0, false, evaluation.failureReasons, {
+          hintsUsed: takeNewHints(),
+        });
       }
     }, 1200);
   };
 
+  const takeNewHints = () => {
+    const fresh = hintsShown - hintsRecorded.current;
+    hintsRecorded.current = hintsShown;
+    return Math.max(0, fresh);
+  };
+
   const submitDesign = () => {
-    if (!scenario || !freshTest?.canPass || !explainPassed) return;
-    const out = submitBuilderResult(scenario, pattern?.rewards.builderXp ?? 0, true, []);
+    if (!scenario || !freshTest?.canPass || !explain.done) return;
+    const out = submitBuilderResult(
+      scenario,
+      builderXpForStars(pattern?.rewards.builderXp ?? 0, explain.stars),
+      true,
+      explain.passed ? [] : ["explain"],
+      { hintsUsed: takeNewHints(), explainFirstTry: explain.firstTry }
+    );
+    setOutcomeStars(explain.stars);
     saveScenarioDesign(scenario.id, "passed", currentDesign());
     saveScenarioDesign(scenario.id, "draft", undefined);
     setOutcome(out);
@@ -477,7 +498,7 @@ function Workspace({ scenario, stats }: { scenario?: BuilderScenario; stats: Use
     setSelected(null);
     setTested(null);
     setOutcome(null);
-    setExplainPassed(false);
+    setExplainAnswers([]);
     if (!scenario) setTrafficRps(10000);
     setDesignVersion((v) => v + 1);
     if (scenario) saveScenarioDesign(scenario.id, "draft", undefined);
@@ -490,7 +511,7 @@ function Workspace({ scenario, stats }: { scenario?: BuilderScenario; stats: Use
     { label: "Inspect", done: designVersion > 0 || tested !== null },
     { label: "Build", done: designVersion > 0 },
     { label: "Stress test", done: freshTest !== null },
-    { label: "Explain", done: explainPassed },
+    { label: "Explain", done: explain.done },
     { label: "Submit", done: outcome !== null },
   ];
   const activeStep = steps.findIndex((s) => !s.done);
@@ -574,7 +595,7 @@ function Workspace({ scenario, stats }: { scenario?: BuilderScenario; stats: Use
               </ol>
 
               {outcome ? (
-                <BossResult scenario={scenario} outcome={outcome} baseline={baseline} evaluation={freshTest} onReset={resetDesign} />
+                <BossResult scenario={scenario} outcome={outcome} stars={outcomeStars} baseline={baseline} evaluation={freshTest} onReset={resetDesign} />
               ) : (
                 <>
                   <EvidencePanel baseline={baseline} evaluation={freshTest} stale={tested !== null && !freshTest} />
@@ -603,12 +624,16 @@ function Workspace({ scenario, stats }: { scenario?: BuilderScenario; stats: Use
 
                   {freshTest?.canPass && (
                     <div className="pt-5 border-t border-[var(--line)]">
-                      <QuestionCard
-                        eyebrow="Explain your design"
-                        question={scenario.explain}
-                        submitLabel="Submit explanation"
-                        onAnswer={(opt) => opt.isCorrect && setExplainPassed(true)}
-                      />
+                      {explain.done ? (
+                        <ExplainSummary explain={explain} question={scenario.explain} />
+                      ) : (
+                        <QuestionCard
+                          eyebrow={`Explain your design · ${explain.retriesLeft === 1 ? "last try, " : ""}each wrong pick costs a star`}
+                          question={scenario.explain}
+                          submitLabel="Submit explanation"
+                          onAnswer={(opt) => setExplainAnswers((a) => [...a, opt.isCorrect])}
+                        />
+                      )}
                     </div>
                   )}
 
@@ -631,7 +656,7 @@ function Workspace({ scenario, stats }: { scenario?: BuilderScenario; stats: Use
                         ? "Change the design, then stress test again"
                         : "Stress test architecture"}
                     </button>
-                  ) : explainPassed ? (
+                  ) : explain.done ? (
                     <button
                       type="button"
                       onClick={submitDesign}
@@ -931,15 +956,58 @@ function EvidencePanel({
   );
 }
 
+/** The explain gate once settled: stars earned, and the right answer if both tries missed. */
+function ExplainSummary({ explain, question }: { explain: ExplainOutcome; question: BuilderScenario["explain"] }) {
+  const answer = question.options.find((o) => o.isCorrect);
+  return (
+    <div
+      role="status"
+      className={`rounded-xl p-4 space-y-2 text-[13px] leading-relaxed border animate-fadeIn ${
+        explain.passed ? "bg-emerald-400/[0.06] border-emerald-400/25" : "bg-rose-400/[0.06] border-rose-400/25"
+      }`}
+    >
+      <p className={`font-semibold ${explain.passed ? "text-emerald-300" : "text-rose-300"}`}>
+        {explain.passed
+          ? explain.firstTry
+            ? "Explained on the first try"
+            : "Explained on the retry"
+          : "Out of retries"}{" "}
+        · <Stars count={explain.stars} />
+      </p>
+      {!explain.passed && answer && (
+        <p className="text-slate-300">
+          <span className="text-slate-400">The answer: </span>
+          {answer.label}
+        </p>
+      )}
+      {answer && <p className="text-slate-400">{answer.explanation}</p>}
+      {!explain.firstTry && (
+        <p className="text-[11px] text-slate-500">Only a first-try explanation counts toward Reliable mastery.</p>
+      )}
+    </div>
+  );
+}
+
+function Stars({ count }: { count: 1 | 2 | 3 }) {
+  return (
+    <span aria-label={`${count} of 3 stars`} className="text-amber-300">
+      {"★".repeat(count)}
+      <span className="text-slate-600">{"★".repeat(3 - count)}</span>
+    </span>
+  );
+}
+
 function BossResult({
   scenario,
   outcome,
+  stars,
   baseline,
   evaluation,
   onReset,
 }: {
   scenario: BuilderScenario;
   outcome: ProgressionOutcome;
+  stars: 1 | 2 | 3;
   baseline: ScenarioEvaluation | null;
   evaluation: ScenarioEvaluation | null;
   onReset: () => void;
@@ -952,7 +1020,7 @@ function BossResult({
     <div className="space-y-4" role="status">
       <div className="p-4 rounded-xl bg-emerald-400/[0.06] border border-emerald-400/25 animate-fadeIn">
         <p className="text-[15px] font-semibold text-emerald-300 flex items-center gap-2">
-          <CheckCircle2 className="w-4 h-4" /> Design passed
+          <CheckCircle2 className="w-4 h-4" /> Design passed · <Stars count={stars} />
         </p>
         <p className="text-[13px] text-slate-300 mt-1">
           {outcome.xpAwarded > 0 ? `+${outcome.xpAwarded} XP. ` : "No XP this time (replay bonus is once a day). "}
