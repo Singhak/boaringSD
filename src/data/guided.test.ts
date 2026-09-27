@@ -5,8 +5,8 @@ import { GUIDED_SCENARIOS } from "@/data/guided";
 
 const VALID_COMPONENTS = new Set(["client", "load_balancer", "server", "cache", "database", "replica", "cdn", "queue"]);
 
-test("there are at least 14 case studies", () => {
-  assert.ok(GUIDED_SCENARIOS.length >= 14, `expected >= 14 scenarios, got ${GUIDED_SCENARIOS.length}`);
+test("there are at least 16 case studies", () => {
+  assert.ok(GUIDED_SCENARIOS.length >= 16, `expected >= 16 scenarios, got ${GUIDED_SCENARIOS.length}`);
 });
 
 test("scenario ids are unique", () => {

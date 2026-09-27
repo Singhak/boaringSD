@@ -1635,4 +1635,241 @@ export const GUIDED_SCENARIOS: GuidedScenario[] = [
         "A Load Balancer fronts stateless API Servers that validate, persist the Notification to the Database, and enqueue it. Separate Queue topics per priority (critical OTPs never wait behind a bulk news blast) and per channel, partitioned by user_id, let each worker pool scale on its own. Workers read preferences and frequency caps from a Redis Cache, claim the dedupe_key with SET NX and a 24 h TTL so retries can't double-send, then call APNs/FCM/SMS/email with exponential backoff and a dead-letter queue. A broadcast is expanded into batches of ~500 tokens, so 20M devices become ~40k send jobs spread across the worker pool. Provider callbacks update DeliveryAttempt and prune dead tokens.",
     },
   },
+  {
+    id: "design-group-chat",
+    title: "Design Slack (Group Chat)",
+    subtitle: "Channel fan-out to online members, per-channel ordering, unread counts and presence",
+    category: "Real-Time Collaboration",
+    estimatedTime: "8 mins",
+    xpReward: 210,
+    problemStatement:
+      "Design team chat for 20M daily users in 500k workspaces. Channels range from 2 people to 100k (company-wide announcements). Users post about 1B messages/day (~12k/s average, ~40k/s peak), and a message should reach online channel members in under 500 ms. Every user sees an unread count per channel and a green dot for teammates who are online. How do you deliver, order and count messages?",
+    requirementsDiscovery: {
+      question: "Step 1: Clarifying Requirements. What belongs in the core group-chat MVP?",
+      options: [
+        {
+          id: "gc-req-1",
+          text: "Post to a channel, deliver to online members in <500 ms, per-channel order, unread counts",
+          isCorrect: true,
+          feedback: "Correct. Delivery, a stable order inside each channel, and 'how many did I miss' are the product. Global ordering across all channels is not needed, which is what makes this shardable.",
+        },
+        {
+          id: "gc-req-2",
+          text: "A single global message order across every channel and workspace, so all clients agree on one timeline",
+          isCorrect: false,
+          feedback: "Nobody reads two channels as one timeline. A global order needs one sequencer for 40k messages/s across every workspace, a bottleneck and a SPOF. Order within a channel is enough.",
+        },
+        {
+          id: "gc-req-3",
+          text: "Write each message into a per-user inbox row for every member, including the 100k-member channels",
+          isCorrect: false,
+          feedback: "One post to a 100k-member channel becomes 100k inbox writes. Store the message once per channel and track each member's read position instead (fan-out on read for history).",
+        },
+        {
+          id: "gc-req-4",
+          text: "End-to-end encryption with per-device keys for every channel on day one",
+          isCorrect: false,
+          feedback: "Workplace chat needs server-side search, retention and compliance export, which E2E encryption blocks. It is a deliberate product choice, not part of the delivery MVP.",
+        },
+      ],
+    },
+    entitiesDiscovery: {
+      instruction: "Step 2: Core Data Model. Select the entities needed to deliver, order and count messages:",
+      availableEntities: [
+        {
+          id: "gc-entity-message",
+          name: "Message",
+          attributes: ["channel_id: UUID (partition key)", "seq: bigint (per-channel, sort key)", "author_id: UUID", "body: text", "created_at: timestamp"],
+          isEssential: true,
+        },
+        {
+          id: "gc-entity-membership",
+          name: "ChannelMembership",
+          attributes: ["channel_id: UUID", "user_id: UUID", "last_read_seq: bigint", "muted: bool"],
+          isEssential: true,
+        },
+        {
+          id: "gc-entity-session",
+          name: "GatewaySession",
+          attributes: ["user_id: UUID", "gateway_node: string", "connected_at: timestamp", "last_heartbeat: timestamp"],
+          isEssential: true,
+        },
+        {
+          id: "gc-entity-inbox",
+          name: "UserInboxCopy",
+          attributes: ["user_id: UUID", "message_id: UUID", "body: text"],
+          isEssential: false,
+        },
+        {
+          id: "gc-entity-emoji",
+          name: "CustomEmojiPack",
+          attributes: ["workspace_id: UUID", "name: string", "image_url: string"],
+          isEssential: false,
+        },
+      ],
+      correctEntityIds: ["gc-entity-message", "gc-entity-membership", "gc-entity-session"],
+    },
+    apiDesignDiscovery: {
+      instruction: "Step 3: API Contracts. Select the endpoints for posting, receiving and catching up:",
+      availableApis: [
+        {
+          id: "gc-api-post",
+          method: "POST",
+          path: "/api/v1/channels/{channelId}/messages",
+          description: "Stores the message with the next per-channel seq (idempotent on a client message id) and publishes it for fan-out.",
+          isInitialCore: true,
+        },
+        {
+          id: "gc-api-ws",
+          method: "GET",
+          path: "/ws/v1/connect",
+          description: "Upgrades to a WebSocket; the gateway pushes new messages, typing and presence events for the user's channels.",
+          isInitialCore: true,
+        },
+        {
+          id: "gc-api-history",
+          method: "GET",
+          path: "/api/v1/channels/{channelId}/messages?after_seq=1042&limit=50",
+          description: "Catch-up after reconnect: pages messages after the client's last seen seq.",
+          isInitialCore: true,
+        },
+        {
+          id: "gc-api-read",
+          method: "POST",
+          path: "/api/v1/channels/{channelId}/read",
+          description: "Moves last_read_seq forward; unread count = channel head seq minus last_read_seq.",
+          isInitialCore: true,
+        },
+        {
+          id: "gc-api-poll",
+          method: "GET",
+          path: "/api/v1/channels/{channelId}/messages/poll?every=1s",
+          description: "Clients poll every channel once per second for new messages.",
+          isInitialCore: false,
+        },
+      ],
+      correctApiIds: ["gc-api-post", "gc-api-ws", "gc-api-history", "gc-api-read"],
+    },
+    architectureDiscovery: {
+      instruction: "Step 4: System Architecture. Assemble a stack that fans messages out to online members in under 500 ms:",
+      requiredComponents: ["load_balancer", "server", "cache", "queue", "database"],
+      explanation:
+        "Clients hold a WebSocket to a gateway Server behind a Load Balancer that supports long-lived connections. A post goes to the message service, which assigns the next per-channel seq and writes the Message to a Database partitioned by channel_id (a wide-column store works well). It then publishes to a Queue (Kafka) partitioned by channel_id, so order within a channel is preserved. Fan-out workers look up which gateways hold online members of that channel in a Redis Cache (user -> gateway, refreshed by heartbeats, which also drives presence) and push only to those gateways. Offline members are not written to at all: on reconnect the client calls history with after_seq. Unread counts come from head seq minus last_read_seq, so they cost nothing per message. For 100k-member channels, fan out per gateway instead of per user, and throttle presence updates to teammates who are actually visible.",
+    },
+  },
+  {
+    id: "design-feed-ranking",
+    title: "Design a Ranked News Feed",
+    subtitle: "Candidate generation, two-stage ranking, feature stores and feedback logging",
+    category: "Ranking & Personalization",
+    estimatedTime: "9 mins",
+    xpReward: 220,
+    problemStatement:
+      "Design the ranking layer for a social feed with 300M daily users. Each feed open must pick ~50 posts from the several thousand posts that the user's friends, pages and groups created in the last few days. Peak load is 200k feed requests/s, with a 300 ms budget end to end. Product wants the feed ordered by predicted engagement rather than time, and new posts should be eligible within a minute. How do you rank?",
+    requirementsDiscovery: {
+      question: "Step 1: Clarifying Requirements. What is the core of the ranking MVP?",
+      options: [
+        {
+          id: "fr-req-1",
+          text: "Pick ~50 posts from thousands of candidates by predicted engagement, in <300 ms",
+          isCorrect: true,
+          feedback: "Correct. The job is a funnel: gather candidates, score them, return the top ~50 inside the latency budget. Everything else (diversity, ads) plugs into that funnel.",
+        },
+        {
+          id: "fr-req-2",
+          text: "Run the full deep model on every post created in the last week for each feed open",
+          isCorrect: false,
+          feedback: "That's billions of posts per request. Ranking works on candidates: a cheap stage narrows thousands of eligible posts to a few hundred, and only those get the expensive model.",
+        },
+        {
+          id: "fr-req-3",
+          text: "Sort by time only, since engagement ranking is a later optimisation",
+          isCorrect: false,
+          feedback: "The requirement says ranked by predicted engagement. Chronological is a valid product choice, but it isn't this product, and it hides the real problem: choosing 50 of several thousand.",
+        },
+        {
+          id: "fr-req-4",
+          text: "Retrain the ranking model on every click so the feed reacts instantly",
+          isCorrect: false,
+          feedback: "Per-click retraining is unstable and expensive. Fresh signals come from real-time features (recent clicks, post velocity) feeding a model retrained on a schedule, e.g. daily.",
+        },
+      ],
+    },
+    entitiesDiscovery: {
+      instruction: "Step 2: Core Data Model. Select the entities the ranking pipeline needs:",
+      availableEntities: [
+        {
+          id: "fr-entity-candidate",
+          name: "CandidateIndex",
+          attributes: ["user_id: UUID", "post_ids: list<UUID> (recent, from followed sources)", "updated_at: timestamp"],
+          isEssential: true,
+        },
+        {
+          id: "fr-entity-features",
+          name: "FeatureStoreEntry",
+          attributes: ["entity_id: UUID (user or post)", "features: map<string, float>", "computed_at: timestamp"],
+          isEssential: true,
+        },
+        {
+          id: "fr-entity-impression",
+          name: "ImpressionLog",
+          attributes: ["request_id: UUID", "user_id: UUID", "post_id: UUID", "position: int", "score: float", "engaged: bool"],
+          isEssential: true,
+        },
+        {
+          id: "fr-entity-rendered",
+          name: "RenderedFeedHTML",
+          attributes: ["user_id: UUID", "html: text", "rendered_at: timestamp"],
+          isEssential: false,
+        },
+        {
+          id: "fr-entity-theme",
+          name: "UserThemePreference",
+          attributes: ["user_id: UUID", "dark_mode: bool"],
+          isEssential: false,
+        },
+      ],
+      correctEntityIds: ["fr-entity-candidate", "fr-entity-features", "fr-entity-impression"],
+    },
+    apiDesignDiscovery: {
+      instruction: "Step 3: API Contracts. Select the endpoints that serve and learn from the feed:",
+      availableApis: [
+        {
+          id: "fr-api-feed",
+          method: "GET",
+          path: "/api/v1/feed?cursor=abc&limit=50",
+          description: "Gathers candidates, runs light then heavy ranking, applies diversity rules, returns the top 50 with a cursor.",
+          isInitialCore: true,
+        },
+        {
+          id: "fr-api-events",
+          method: "POST",
+          path: "/api/v1/feed/events",
+          description: "Batched impressions, clicks, likes and dwell time, joined to the request_id that served them.",
+          isInitialCore: true,
+        },
+        {
+          id: "fr-api-score",
+          method: "POST",
+          path: "/internal/v1/rank:score",
+          description: "Model-serving endpoint: scores a batch of (user, post) feature vectors.",
+          isInitialCore: true,
+        },
+        {
+          id: "fr-api-retrain",
+          method: "POST",
+          path: "/api/v1/model/retrain?trigger=click",
+          description: "Retrains the ranking model synchronously whenever a user clicks a post.",
+          isInitialCore: false,
+        },
+      ],
+      correctApiIds: ["fr-api-feed", "fr-api-events", "fr-api-score"],
+    },
+    architectureDiscovery: {
+      instruction: "Step 4: System Architecture. Assemble a stack that ranks thousands of candidates per request in under 300 ms:",
+      requiredComponents: ["load_balancer", "server", "cache", "queue", "database"],
+      explanation:
+        "A Load Balancer routes feed requests to ranking Servers. Candidate generation reads the user's recent posts from followed sources out of a Cache-backed candidate index (built by fan-out on write for normal accounts, merged at read time for celebrities), giving a few thousand posts. A light model (e.g. logistic regression over a few cheap features) cuts that to ~500, and a heavy model on a model-serving tier scores those with user and post features fetched in one batch from a feature store (Redis Cache for online features, Database for the offline copy). Business rules then add diversity and remove near-duplicates. Every served list is logged with its request_id and scores; impressions and engagement flow through a Queue (Kafka) into the Database/warehouse, where training data is built by joining what was shown with what was clicked. Models retrain daily and are shipped behind an A/B test, while stream jobs keep real-time features such as post velocity fresh within a minute.",
+    },
+  },
 ];
