@@ -40,7 +40,7 @@ Users must never be paralyzed by onboarding forms or complex navigation menus. O
 | Area | Status | Notes |
 | :--- | :--- | :--- |
 | Answer integrity | **Live** | Every multiple-choice surface shuffles options per attempt (`src/lib/shuffle.ts`); answer leaks removed; `answerOrder.test.ts` guards it. |
-| Scenario content | **Live, growing** | 132 of 302 incidents pass the content-quality gate (`src/data/incidentQuality.ts`); the other 170 are hidden until rewritten per `docs/content-style.md`. Every level has 6+ playable War Room incidents. |
+| Scenario content | **Live** | All 332 incidents across 23 packs are hand-written or rewritten and pass the content-quality gate (`src/data/incidentQuality.ts`); each teaches a distinct facet of its pattern. New content follows `docs/content-style.md`; anything that fails the gate is hidden automatically. |
 | Replay variety | **Live** | War Room replays rotate incidents and apply procedural skins (traffic scale, region, occasion) via `src/lib/incidentSkin.ts`. |
 | Transfer check | **Live** | "Aftershock" question closes every War Room level; only a first-try pass counts as transfer evidence. |
 | Free-text reasoning | **Live** | "Defend your call" (≤280 chars) graded by an LLM against a server-side rubric (`/api/grade`, Gemini provider), with self-assessment fallback. Required for the Reliable tier. |
@@ -51,7 +51,7 @@ Users must never be paralyzed by onboarding forms or complex navigation menus. O
 | Telemetry inspector | **Illustrative** | Seeded from the incident's own graph and metrics and labelled illustrative; knobs removed from the War Room (they only work in the flight sim). |
 | Accounts / sync | **Not built** | Progress is local to the browser. The fake sign-in and the demo-user `/api/progress` mirror were removed. |
 | Procedural outage synthesizer | **Not built** | Replaced by incident rotation, skins and curveballs: on replays, a seeded 50% chance fires a second incident from the same pack after the fix. |
-| Coverage | **Growing** | Added levels 16–18 (Depth tier: CAP & PACELC, Consensus & Quorums, Storage Engines & Indexing), each with a 6-incident pack, a builder boss and 2 reasoning prompts. Added case studies: rate limiter, KV store, payments ledger, web crawler, typeahead, notifications (14 total). Still missing: ID generation, search, streams, observability, auth; chat and feed ranking case studies. |
+| Coverage | **Growing** | Added levels 16–18 (Depth tier: CAP & PACELC, Consensus & Quorums, Storage Engines & Indexing), each with a 6-incident pack, a builder boss and 2 reasoning prompts. Added case studies: rate limiter, KV store, payments ledger, web crawler, typeahead, notifications, group chat (Slack-style), ranked news feed (16 total). Added levels 19–23 (Operate tier: ID Generation, Search & Inverted Indexes, Streams & Event Processing, Observability & SLOs, Auth at Scale), each with a 6-incident pack, a builder boss and 2 reasoning prompts. The builder has no search-index or telemetry component, so those bosses model them with replicas and queues. |
 
 ---
 
@@ -62,7 +62,7 @@ graph TD
     subgraph Part1["PART I: ALREADY IMPLEMENTED (LIVE IN CODEBASE)"]
         A1["1. First-Run Incident Onboarding (Pushpa Mode)"]
         A2["2. War Room Engine, Tradeoff Cards & SRE Defense Gates"]
-        A3["3. 18-Level 4-Tier Pattern Campaign"]
+        A3["3. 23-Level 5-Tier Pattern Campaign"]
         A4["4. Architecture Builder & Multi-Path Boss Battles"]
         A5["5. 4-Stage FAANG Mock Interview Arena"]
         A6["6. 6-Axis Engineering Competency Mastery Radar"]
@@ -142,7 +142,7 @@ This section documents all features, engines, data models, and UI surfaces that 
 
 ---
 
-### 3. 18-Level 4-Tier Pattern Campaign & Roadmap
+### 3. 23-Level 5-Tier Pattern Campaign & Roadmap
 * **Status**: **Live**. Guided study mode is `?mode=study` (`?mode=guided` still accepted).
 * **Primary Files**:
   * [`src/app/campaign/page.tsx`](file:///d:/03-React/boaringSD/src/app/campaign/page.tsx)
@@ -236,7 +236,7 @@ This section documents all features, engines, data models, and UI surfaces that 
   * [`src/lib/progression.ts`](file:///d:/03-React/boaringSD/src/lib/progression.ts)
   * [`src/lib/storage.ts`](file:///d:/03-React/boaringSD/src/lib/storage.ts)
   * [`src/lib/useUserStats.ts`](file:///d:/03-React/boaringSD/src/lib/useUserStats.ts)
-  * [`src/lib/*.test.ts`](file:///d:/03-React/boaringSD/src/lib/) (157 automated tests: progression, builder wiring/budgets, answer order, content-quality gate, skins, estimation, grading, interview design, radar)
+  * [`src/lib/*.test.ts`](file:///d:/03-React/boaringSD/src/lib/) (167 automated tests: progression, builder wiring/budgets, answer order, content-quality gate, skins, estimation, grading, interview design, radar)
 * **Capabilities**:
   * **Honest Evidence Model**: Replaces superficial percentage progress with verified mastery states:  
     `Unseen ──► Introduced ──► Applied Once ──► Passed Transfer ──► Reliable ──► Needs Review`
@@ -280,7 +280,7 @@ This section details all planned enhancements, technical refactors, and advanced
   1. Remove or redirect orphaned `/challenge/[challengeId]` routes to the corresponding level on `/campaign/[chapterId]`.
   2. Embed `/learn/[lessonId]` as a contextual *"Read Concept Deep-Dive"* drawer/modal inside the level run rather than a standalone disconnected page.
   3. Streamline Navbar into two distinct groupings:
-     * **Core Quest**: Next Incident $\rightarrow$ 18-Level Map $\rightarrow$ Review Queue.
+     * **Core Quest**: Next Incident $\rightarrow$ 23-Level Map $\rightarrow$ Review Queue.
      * **Engineering Labs**: Architecture Builder Sandbox + Interview Arena.
   4. Update `README.md` to accurately document the 15-level pattern game, incident war rooms, and interview arena.
 
