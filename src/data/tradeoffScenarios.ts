@@ -40,21 +40,21 @@ export const PATTERN_TRADEOFFS: Record<string, PatternTradeoffSet> = {
           options: [
             {
               id: "tq-1",
-              text: "A cache hit is a ~0.5ms key lookup that skips Postgres entirely; each replica still runs every SELECT in full and has its own connection cap.",
+              text: "A cache hit is a sub-ms GET that skips Postgres; replicas still run every SELECT in full, each under its own connection cap.",
               isCorrect: true,
               feedback: "Spot on! Both options read hot rows from memory (Postgres keeps them in its buffer pool). The difference is work per read: a Redis GET is far cheaper than a full SQL query, so one cache node absorbs many times the reads of one replica for the money.",
             },
             {
               id: "tq-2",
-              text: "Redis reads stay strongly consistent with Postgres, whereas replicas always lag behind the primary's writes.",
+              text: "Cache-aside with delete-on-write keeps Redis strongly consistent with Postgres, whereas async replicas always lag the primary.",
               isCorrect: false,
-              feedback: "Backwards. Cache-aside is eventually consistent: between a write and the key's invalidation (or TTL expiry), readers can see stale values. Replicas lag too; neither option is strongly consistent here.",
+              feedback: "Backwards. Cache-aside is eventually consistent even with delete-on-write: between a write and the key's invalidation (or TTL expiry), and in read-miss/delete races, readers can see stale values. Replicas lag too; neither option is strongly consistent here.",
             },
             {
               id: "tq-3",
-              text: "Adding each replica requires restarting the primary, which this incident cannot afford right now.",
+              text: "Replicas would need synchronous_commit = remote_apply to avoid stale reads, roughly doubling write latency on the primary.",
               isCorrect: false,
-              feedback: "Adding a streaming replica doesn't restart the primary; it restores a base backup and then streams WAL. The real argument is cost per read: replicas run every query in full, whereas a cache skips the query entirely.",
+              feedback: "remote_apply is one way to get read-your-writes from replicas, but cache-aside is eventually consistent too, so staleness doesn't favor the cache. The real argument is cost per read: replicas run every query in full, whereas a cache hit skips the query entirely.",
             },
           ],
         },
@@ -63,19 +63,19 @@ export const PATTERN_TRADEOFFS: Record<string, PatternTradeoffSet> = {
           options: [
             {
               id: "sq-1",
-              text: "Cache stampede: when a hot key expires, thousands of concurrent misses hit the DB at once. Mitigate with singleflight or early refresh (XFetch).",
+              text: "Cache stampede: a hot key expires and thousands of concurrent misses hit the DB at once. Fix: singleflight or early refresh.",
               isCorrect: true,
               feedback: "Senior Architect answer! Thundering herd is the classic high-scale cache collapse.",
             },
             {
               id: "sq-2",
-              text: "Redis runs out of disk because its append-only file logs every GET at 1M requests/sec.",
+              text: "With appendfsync always, the AOF is fsynced on every command, so at 1M requests/sec disk IOPS becomes Redis's ceiling.",
               isCorrect: false,
-              feedback: "The AOF logs write commands only, never GETs. At 1M RPS of mostly reads, the pressure is on hot keys and on the DB when they expire, not on Redis's disk.",
+              feedback: "The AOF logs write commands only, never GETs, so reads never trigger an fsync. At 1M RPS of mostly reads, the pressure is on hot keys and on the DB when they expire, not on Redis's disk.",
             },
             {
               id: "sq-3",
-              text: "Once memory fills, LRU eviction starts dropping the hottest, most-requested keys first.",
+              text: "Once maxmemory is reached, allkeys-lru eviction thrashes, dropping the hottest keys and turning hits into DB misses.",
               isCorrect: false,
               feedback: "LRU evicts the least recently used keys, so hot keys are the last to go. The dangerous moment is when a hot key expires by TTL and every request misses at once.",
             },
@@ -125,13 +125,13 @@ export const PATTERN_TRADEOFFS: Record<string, PatternTradeoffSet> = {
           options: [
             {
               id: "sq-rep-1",
-              text: "Replicas saturate on CPU and connections, and WAL replay falls behind, so lag grows.",
+              text: "Replicas saturate CPU and connections, and WAL replay falls behind, so lag grows.",
               isCorrect: true,
               feedback: "Accurate! 10x traffic means 10x reads on each replica and 10x writes to replay. A busy replica replays WAL more slowly (and long queries can conflict with replay), so lag grows from milliseconds to seconds or more.",
             },
             {
               id: "sq-rep-2",
-              text: "The primary's disk fills up with WAL retained for the replicas.",
+              text: "The primary's disk fills with WAL segments held back for the three replicas, halting writes.",
               isCorrect: false,
               feedback: "WAL retention only balloons when a replica disconnects or a replication slot is abandoned. Under load, connected replicas keep consuming WAL; the first thing to break is replica CPU and connections, then lag.",
             },
@@ -162,15 +162,15 @@ export const PATTERN_TRADEOFFS: Record<string, PatternTradeoffSet> = {
           options: [
             {
               id: "tq-sc-1",
-              text: "Each server brings its own DB connection pool, so more servers push Postgres past max_connections and into lock contention.",
+              text: "Each server brings its own DB pool, so more servers push Postgres past max_connections and into contention.",
               isCorrect: true,
               feedback: "Fundamental systems lesson! Postgres runs one process per connection, so thousands of connections add memory and context-switch overhead. Scaling compute against a saturated database is like a DDoS on your own storage tier.",
             },
             {
               id: "tq-sc-2",
-              text: "The load balancer can't spread traffic evenly across more than a handful of backends, so new nodes sit idle.",
+              text: "New nodes boot with cold local caches, so every request they serve misses and goes straight to the DB until they warm up.",
               isCorrect: false,
-              feedback: "Load balancers handle hundreds of backends easily. The app tier was never the bottleneck: every extra server just sends more queries to the same saturated database.",
+              feedback: "Cold caches cause a short warm-up blip, not a lasting slowdown. The lasting harm is connections: the app tier was never the bottleneck, and every extra server adds another pool of connections to the same saturated database.",
             },
           ],
         },
@@ -185,9 +185,9 @@ export const PATTERN_TRADEOFFS: Record<string, PatternTradeoffSet> = {
             },
             {
               id: "sq-sc-2",
-              text: "App-server CPU, because each node now handles more requests.",
+              text: "App-server CPU, since each node now spends longer waiting on slow queries.",
               isCorrect: false,
-              feedback: "The opposite: each app node now gets a smaller share of traffic, so its CPU falls. The pain shows up downstream, as DB connections and lock waits.",
+              feedback: "Waiting on I/O doesn't burn CPU, and each app node now gets a smaller share of traffic, so its CPU falls. The pain shows up downstream, as DB connections and lock waits.",
             },
           ],
         },
@@ -225,13 +225,13 @@ export const PATTERN_TRADEOFFS: Record<string, PatternTradeoffSet> = {
           options: [
             {
               id: "tq-lb-1",
-              text: "TLS handshakes are CPU-heavy asymmetric crypto; offloading them frees app CPU and puts certificate rotation in one place.",
+              text: "TLS handshakes are CPU-heavy asymmetric crypto; offloading them frees app CPU and centralizes certificate rotation.",
               isCorrect: true,
               feedback: "Standard infrastructure architecture practice!",
             },
             {
               id: "tq-lb-2",
-              text: "Terminating at the LB keeps traffic encrypted end-to-end, all the way from the browser into the app process.",
+              text: "Terminating at the LB keeps traffic encrypted end-to-end, from the browser all the way into each app server's process.",
               isCorrect: false,
               feedback: "The opposite: after termination, the LB-to-backend hop is plaintext unless you re-encrypt it (TLS or mTLS to the backends). The reasons to terminate at the LB are CPU offload and one place to manage certificates.",
             },
@@ -242,15 +242,15 @@ export const PATTERN_TRADEOFFS: Record<string, PatternTradeoffSet> = {
           options: [
             {
               id: "sq-lb-1",
-              text: "One box's TLS CPU, file descriptors and ephemeral ports to backends; scale out L7 proxies behind an L4 tier (Maglev, ECMP, Anycast).",
+              text: "One box's TLS CPU, file descriptors and ephemeral ports; scale out L7 proxies behind an L4 tier (ECMP, Maglev, Anycast).",
               isCorrect: true,
               feedback: "Staff-level networking insight! An L4 layer spreads connections across many L7 proxies, and keep-alive pooling to backends cuts port churn and TIME_WAIT buildup.",
             },
             {
               id: "sq-lb-2",
-              text: "Round-robin backend selection gets too slow to compute once the pool grows past a few hundred nodes.",
+              text: "Least-connections picking needs a lock over the shared backend table, so selection latency climbs as backends are added.",
               isCorrect: false,
-              feedback: "Choosing a backend is O(1) for round-robin and cheap for least-connections. The per-request cost lives in TLS handshakes and connection handling, not the balancing algorithm.",
+              feedback: "Choosing a backend is O(1) for round-robin and cheap for least-connections (per-worker counters or power-of-two-choices avoid a global lock). The per-request cost lives in TLS handshakes and connection handling, not the balancing algorithm.",
             },
           ],
         },

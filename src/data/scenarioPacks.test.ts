@@ -2,20 +2,39 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { getAllScenarioPacks, getIncidentById, getWarRoomIncident } from "@/data/scenarioPacks";
-import { getPlayableIncidents, incidentQualityIssues } from "@/data/incidentQuality";
+import {
+  approachBadgeMismatches,
+  getPlayableIncidents,
+  incidentQualityIssues,
+  packQualityIssues,
+} from "@/data/incidentQuality";
 
 // Enough distinct War Room runs per level that replays don't feel repetitive.
 const MIN_WAR_ROOM_ROTATION = 5;
 
-test("every reviewed incident passes the content-quality gate", () => {
+test("every incident passes the content-quality gate, canonical and cascade ones included", () => {
   const failures: string[] = [];
+  const report: string[] = [];
   for (const pack of getAllScenarioPacks()) {
-    for (const inc of pack.incidents.filter((i) => i.reviewed)) {
-      const issues = incidentQualityIssues(inc, pack);
-      if (issues.length > 0) failures.push(`${inc.id}: ${issues.join(", ")}`);
-    }
+    const failing = pack.incidents
+      .map((inc) => ({ id: inc.id, issues: incidentQualityIssues(inc, pack) }))
+      .filter((f) => f.issues.length > 0);
+    failures.push(...failing.map((f) => `${f.id}: ${f.issues.join(", ")}`));
+    const mismatched = approachBadgeMismatches(pack);
+    report.push(
+      `${pack.patternId.padEnd(20)} ${pack.incidents.length - failing.length}/${pack.incidents.length} pass` +
+        (mismatched.length ? ` · correct not rated optimal: ${mismatched.join(", ")}` : "")
+    );
   }
+  if (failures.length > 0) console.log(`Content gate per pack:\n${report.join("\n")}`);
   assert.deepEqual(failures, []);
+});
+
+test("no pack uses 'bigger box / restart / more RAM' only as a wrong answer", () => {
+  const flagged = getAllScenarioPacks()
+    .filter((pack) => packQualityIssues(pack).includes("always-wrong-trope"))
+    .map((pack) => pack.patternId);
+  assert.deepEqual(flagged, []);
 });
 
 test("reviewed incidents have three choices with their own result text", () => {

@@ -143,7 +143,7 @@ export const INTERVIEW_PROBLEMS: InterviewProblem[] = [
         options: [
           {
             id: "fu-opt-1",
-            text: "Use a centralized Token/Counter Range Service (Zookeeper/Redis counter) where each worker receives a distinct pre-allocated 10,000 ID block, then Base62 encode the unique counter.",
+            text: "Hand each worker a disjoint pre-allocated range of 10,000 IDs from a ZooKeeper or Redis counter service, then Base62-encode the counter value.",
             isCorrect: true,
             feedback: "Outstanding answer! Distributing partitioned counter ranges eliminates race conditions without distributed row locks.",
           },
@@ -155,7 +155,7 @@ export const INTERVIEW_PROBLEMS: InterviewProblem[] = [
           },
           {
             id: "fu-opt-3",
-            text: "Compute MD5 or SHA-256 hash of the long URL, truncate to the first 7 characters, and insert directly without conflict detection.",
+            text: "Hash the long URL with MD5 or SHA-256, keep the first 7 Base62 characters as the key, and insert it directly.",
             isCorrect: false,
             feedback: "Truncating a cryptographic hash to 7 characters without collision deduplication triggers the Birthday Paradox, producing frequent key collisions at 100M URLs scale.",
           },
@@ -168,7 +168,7 @@ export const INTERVIEW_PROBLEMS: InterviewProblem[] = [
         options: [
           {
             id: "fu-opt-2-1",
-            text: "HTTP 302 Found: Browser re-contacts our server on every click, allowing accurate real-time click telemetry and analytics tracking.",
+            text: "HTTP 302 Found: the browser re-contacts our server on every click, so each redirect can be logged for real-time click analytics.",
             isCorrect: true,
             feedback: "Spot on! 301 is cached indefinitely by client browsers, which blinds your analytics engine from logging recurring clicks.",
           },
@@ -325,7 +325,7 @@ export const INTERVIEW_PROBLEMS: InterviewProblem[] = [
         options: [
           {
             id: "fu-tw-opt-1",
-            text: "Hybrid Push/Pull Model: Never push celebrity tweets into follower caches. When normal users read their timeline, pull celebrity tweets on the fly and merge them into the feed.",
+            text: "Hybrid push/pull: keep fan-out-on-write for normal accounts, but skip it for celebrities and merge their recent tweets into each feed at read time.",
             isCorrect: true,
             feedback: "Canonical staff engineer answer! Push for normal users (<5,000 followers) and dynamic pull-merge for high-follower celebrities.",
           },
@@ -506,13 +506,13 @@ export const INTERVIEW_PROBLEMS: InterviewProblem[] = [
         options: [
           {
             id: "fu-ub-opt-1",
-            text: "Use atomic conditional updates (Optimistic Locking with version checks in DB or Redis SETNX distributed lock) so only the first request succeeds while the second receives a graceful \"Trip already assigned\" response.",
+            text: "Use an atomic compare-and-set on trip status (UPDATE ... WHERE status = 'REQUESTED'), so the first accept wins and the second gets 'Trip already assigned'.",
             isCorrect: true,
             feedback: "Perfect! Distributed locking or atomic state transition `UPDATE trips SET driver_id = $1 WHERE id = $2 AND status = 'REQUESTED'` guarantees mutual exclusion.",
           },
           {
             id: "fu-ub-opt-2",
-            text: "Acquire an in-memory application mutex lock on the specific dispatch server handling the driver accept request.",
+            text: "Acquire an in-memory mutex keyed by trip ID on the dispatch server handling the accept request, and release it once the assignment commits.",
             isCorrect: false,
             feedback: "In-memory mutexes only protect against concurrency within a single process. In a distributed multi-node fleet, two drivers connect to different servers and both acquire their local mutex simultaneously.",
           },
@@ -531,13 +531,13 @@ export const INTERVIEW_PROBLEMS: InterviewProblem[] = [
         options: [
           {
             id: "fu-ub-opt-2-1",
-            text: "Spatial cell algorithms project 2D Earth coordinates into 1D 64-bit integer index hashes (Hilbert curves), turning expensive 2D spatial area scans into fast 1D range queries.",
+            text: "Space-filling curves (S2, GeoHash) map 2D coordinates to 1D 64-bit cell IDs, turning nearby-area searches into a few fast 1D range scans.",
             isCorrect: true,
             feedback: "Textbook staff engineer insight! S2 / GeoHash spatial locality enables logarithmic neighbor searches.",
           },
           {
             id: "fu-ub-opt-2-2",
-            text: "Because composite B-Tree database indexes on (latitude, longitude) can easily filter both axes simultaneously in sub-millisecond time.",
+            text: "A composite B-Tree index on (latitude, longitude) already filters both axes in one pass, so a bounding-box query on raw columns stays sub-millisecond.",
             isCorrect: false,
             feedback: "Incorrect; standard B-Trees can only range-scan on the leading column (latitude). Filtering longitude requires scanning every candidate row, causing massive disk I/O.",
           },
@@ -689,19 +689,19 @@ export const INTERVIEW_PROBLEMS: InterviewProblem[] = [
         options: [
           {
             id: "fu-ec-1-1",
-            text: "Strict partition ownership: partition inventory allocation per region upfront (e.g. 500 units US-East, 500 units US-West) or use a globally consensus-backed store (Google Spanner / CockroachDB with Raft/Paxos quorum) that refuses writes rather than allowing split-brain oversell.",
+            text: "Pre-split stock into per-region quotas (500 US-East, 500 US-West), or use a quorum store like Spanner that refuses writes rather than oversell.",
             isCorrect: true,
             feedback: "Masterful architect answer! Either pre-partition inventory quota by geographic datacenter or enforce Raft/Paxos consensus quorums.",
           },
           {
             id: "fu-ec-1-2",
-            text: "Coordinate every checkout via synchronous Two-Phase Commit (2PC / XA transactions) across both US-East and US-West before confirming inventory.",
+            text: "Coordinate every checkout with synchronous Two-Phase Commit (XA) across US-East and US-West, so both regions agree before stock is decremented.",
             isCorrect: false,
             feedback: "Cross-region 2PC incurs 100-200ms of inter-region network round-trip latency per phase, and any network partition blocks all global checkouts, violating high-availability requirements.",
           },
           {
             id: "fu-ec-1-3",
-            text: "Allow each region to independently decrement local inventory and asynchronously reconcile discrepancies via an eventual consistency background worker.",
+            text: "Let each region decrement its local inventory replica and reconcile the counts asynchronously with a background anti-entropy worker after failover.",
             isCorrect: false,
             feedback: "In a high-contention flash sale with 1,000 units and 50,000 buyers, asynchronous reconciliation will oversell inventory by thousands of orders before the discrepancy is noticed.",
           },
@@ -714,13 +714,13 @@ export const INTERVIEW_PROBLEMS: InterviewProblem[] = [
         options: [
           {
             id: "fu-ec-2-1",
-            text: "Transactional Outbox Pattern with Idempotency Keys: Store the pending order and payment intent in the same local ACID transaction, then use a reliable worker with idempotent payment gateway calls.",
+            text: "Transactional Outbox + idempotency key: write the order and payment intent in one local transaction, then a worker retries the gateway call with that key.",
             isCorrect: true,
             feedback: "Exact industry standard! Transactional Outbox + unique Idempotency Keys guarantees at-least-once payment delivery with exact-once execution.",
           },
           {
             id: "fu-ec-2-2",
-            text: "Wrap the payment API call inside the database ACID transaction and roll back the order record if the payment HTTP call times out.",
+            text: "Make the payment API call inside the order's database transaction, and roll the order row back if the gateway call times out, so nothing half-written remains.",
             isCorrect: false,
             feedback: "If the payment gateway processed the charge successfully but the network ACK timed out, rolling back the local database transaction abandons the order while the customer was already billed (orphaned charge).",
           },

@@ -41,7 +41,7 @@ export const CAMPAIGN_CHAPTERS: CampaignChapter[] = [
       options: [
         {
           id: "opt-1",
-          label: "Hardware has physical limits and vertical scaling creates a single point of failure (SPOF)",
+          label: "One box has a hardware ceiling and is a single point of failure for every user",
           isCorrect: true,
           explanation: "Hardware caps out, cost grows exponentially at the high end, and when that one machine reboots or crashes, 100% of your users go down.",
         },
@@ -53,7 +53,7 @@ export const CAMPAIGN_CHAPTERS: CampaignChapter[] = [
         },
         {
           id: "opt-3",
-          label: "Huge heaps cause long garbage-collection pauses, so more RAM makes the app slower",
+          label: "Huge heaps cause long GC pauses, so more RAM makes the app slower",
           isCorrect: false,
           explanation: "Large heaps can lengthen GC pauses, but that's a tuning problem (modern collectors handle 100+ GB heaps). It doesn't explain why you can't keep growing one machine, and it ignores the real risk: one box is one failure.",
         },
@@ -105,13 +105,13 @@ export const CAMPAIGN_CHAPTERS: CampaignChapter[] = [
       options: [
         {
           id: "opt-1",
-          label: "Active Health Checks (e.g., periodic GET /healthz probe)",
+          label: "Active health checks: the LB probes GET /healthz every few seconds",
           isCorrect: true,
           explanation: "The Load Balancer polls each backend node every few seconds. If a node fails consecutive checks, it is automatically evicted from the rotation pool.",
         },
         {
           id: "opt-2",
-          label: "Lower the DNS TTL to 30s and delete the dead server's A record",
+          label: "Lower the DNS TTL to 30s and delete the dead server's A record right away",
           isCorrect: false,
           explanation: "The backends sit behind the load balancer, not in public DNS. Even for DNS-routed setups, resolvers and clients often cache past the TTL, and a human has to notice and edit the record, which takes minutes, not seconds.",
         },
@@ -169,7 +169,7 @@ export const CAMPAIGN_CHAPTERS: CampaignChapter[] = [
       options: [
         {
           id: "opt-1",
-          label: "Replication Lag in Asynchronous DB Replication",
+          label: "Replication lag between the primary and its async replicas",
           isCorrect: true,
           explanation: "In asynchronous replication, the Primary commits first and ships WAL logs to replicas. Replicas usually replay changes within milliseconds, but under load the lag can reach hundreds of milliseconds or more.",
         },
@@ -233,19 +233,19 @@ export const CAMPAIGN_CHAPTERS: CampaignChapter[] = [
       options: [
         {
           id: "opt-1",
-          label: "Use Mutex Locks (single-flight) or probabilistic early expiration (XFetch)",
+          label: "Single-flight the recompute with a mutex, or refresh keys early (XFetch)",
           isCorrect: true,
           explanation: "Only the first request recomputes the key while the others wait for its result, so the DB sees one query per key (per app server with in-process singleflight, or fleet-wide with a Redis lock) instead of 10,000. Early expiration refreshes the key before it ever goes cold.",
         },
         {
           id: "opt-2",
-          label: "Remove the TTL from hot keys so they never expire at all",
+          label: "Remove the TTL from hot keys and update them in place on each write",
           isCorrect: false,
           explanation: "Pinning avoids this one expiry, but values go stale unless every write invalidates perfectly, memory fills with keys that are no longer hot, and an eviction or Redis restart still causes a cold-miss stampede.",
         },
         {
           id: "opt-3",
-          label: "Raise Postgres max_connections so all 10,000 queries can run",
+          label: "Raise Postgres max_connections so all 10,000 cache-miss queries can run",
           isCorrect: false,
           explanation: "Postgres still executes 10,000 copies of the same heavy query. Each extra connection is another backend process with its own memory, so CPU pegs and every other query slows down.",
         },
@@ -297,7 +297,7 @@ export const CAMPAIGN_CHAPTERS: CampaignChapter[] = [
       options: [
         {
           id: "opt-1",
-          label: "Content-based Cache Busting (e.g., app.a8f9c1.js with unique build hash)",
+          label: "Hash-versioned filenames (app.a8f9c1.js), so every build gets a new URL",
           isCorrect: true,
           explanation: "Hash-versioned filenames make new code a brand-new URL that no cache has seen. The assets can be cached for a year (immutable), while the small HTML that references them uses a short TTL, so a deploy takes effect on the next page load.",
         },
@@ -361,7 +361,7 @@ export const CAMPAIGN_CHAPTERS: CampaignChapter[] = [
       options: [
         {
           id: "opt-1",
-          label: "Message Acknowledgments (ACK) and Dead-Letter Queues (DLQ)",
+          label: "Explicit ACKs after processing, plus a dead-letter queue (DLQ)",
           isCorrect: true,
           explanation: "The queue only removes an item after the worker sends an explicit ACK. If the worker crashes, the unacked message is redelivered to another worker (at-least-once, so processing must be idempotent). Messages that keep failing are moved to the DLQ instead of blocking the queue.",
         },
@@ -425,7 +425,7 @@ export const CAMPAIGN_CHAPTERS: CampaignChapter[] = [
       options: [
         {
           id: "opt-1",
-          label: "Sub-partition the hot tenant by secondary key (e.g. user ID or date range) across multiple shards",
+          label: "Sub-partition the hot tenant by a secondary key (user ID, date) across shards",
           isCorrect: true,
           explanation: "Splitting the hot tenant's data across multiple nodes prevents one huge entity from overwhelming a single hardware partition.",
         },
@@ -437,7 +437,7 @@ export const CAMPAIGN_CHAPTERS: CampaignChapter[] = [
         },
         {
           id: "opt-3",
-          label: "Switch to consistent hashing with virtual nodes to rebalance shards",
+          label: "Switch to consistent hashing with virtual nodes to rebalance load across shards",
           isCorrect: false,
           explanation: "Virtual nodes even out many small keys, but with tenant ID as the shard key, every row for this tenant still hashes to the same place. The tenant itself needs a finer-grained key.",
         },
@@ -489,19 +489,19 @@ export const CAMPAIGN_CHAPTERS: CampaignChapter[] = [
       options: [
         {
           id: "opt-1",
-          label: "Route the author's read requests to the primary DB for a short time window after any mutation",
+          label: "Read the author's own requests from the primary for a short window after a write",
           isCorrect: true,
           explanation: "Pin the author to the primary for a window longer than your p99 replica lag, or carry a write timestamp/LSN and only read from replicas that have replayed it. The author sees fresh data while everyone else's reads stay on replicas.",
         },
         {
           id: "opt-2",
-          label: "Switch every replica to synchronous replication so reads are always fresh",
+          label: "Switch every replica to synchronous replication so that every read is always fresh",
           isCorrect: false,
           explanation: "Synchronous replication adds a replica round-trip to every write on the platform, and a slow replica now stalls commits. Replicas must also be set to wait for replay (remote_apply), not just flush. That's a heavy cost to fix one user's freshness.",
         },
         {
           id: "opt-3",
-          label: "Have the email service retry replica reads with backoff until it looks updated",
+          label: "Have the email service retry replica reads with backoff until the row looks updated",
           isCorrect: false,
           explanation: "The email service has no expected value to compare against, so a stale row looks valid. It reads the old address on the first try and sends the verification there.",
         },
@@ -553,7 +553,7 @@ export const CAMPAIGN_CHAPTERS: CampaignChapter[] = [
       options: [
         {
           id: "opt-1",
-          label: "Token Bucket algorithm with defined burst capacity and continuous refill rate",
+          label: "Token bucket with a set burst capacity and a steady per-client refill rate",
           isCorrect: true,
           explanation: "Token Bucket allows bursts up to the bucket's max depth while limiting the long-term sustained rate to the refill speed.",
         },
@@ -617,13 +617,13 @@ export const CAMPAIGN_CHAPTERS: CampaignChapter[] = [
       options: [
         {
           id: "opt-1",
-          label: "Move to HALF-OPEN after a cooldown and let a few trial requests through to test health",
+          label: "Go HALF-OPEN after a cooldown and let a few trial requests test the provider",
           isCorrect: true,
           explanation: "Half-Open acts as a canary probe: if test requests succeed, the circuit resets to CLOSED; if they fail, it immediately trips back to OPEN.",
         },
         {
           id: "opt-2",
-          label: "Close the circuit once the provider's status page shows green and resume",
+          label: "Close the circuit once the provider's status page shows green, then resume traffic",
           isCorrect: false,
           explanation: "Status pages lag reality and need a human to watch them. Flipping straight to CLOSED sends every queued checkout at once, and a provider that is still fragile falls over again.",
         },
@@ -681,7 +681,7 @@ export const CAMPAIGN_CHAPTERS: CampaignChapter[] = [
       options: [
         {
           id: "opt-1",
-          label: "Context-switching and memory overhead per connection overwhelm CPU cores, causing thrashing instead of productive work",
+          label: "Beyond a few per core, extra connections add context switching and lock contention",
           isCorrect: true,
           explanation: "A database can only actively run roughly as many queries as it has cores (plus a few for I/O waits). Past that, extra connections cost memory and cause context switching and lock contention. A small pool (tens, via PgBouncer) usually beats thousands.",
         },
@@ -693,7 +693,7 @@ export const CAMPAIGN_CHAPTERS: CampaignChapter[] = [
         },
         {
           id: "opt-3",
-          label: "Pools this large exhaust ephemeral TCP ports on the app containers first",
+          label: "Pools this large exhaust the ephemeral TCP ports on the app containers before the DB",
           isCorrect: false,
           explanation: "50 connections per container is nowhere near the ~28k ephemeral port range. The pain lands on the database: 5,000 backend processes competing for 8 cores.",
         },
@@ -745,13 +745,13 @@ export const CAMPAIGN_CHAPTERS: CampaignChapter[] = [
       options: [
         {
           id: "opt-1",
-          label: "Slow down or reject incoming ingestion requests at the edge to match consumer drain speed",
+          label: "Slow or reject new ingest at the edge until consumers drain the backlog again",
           isCorrect: true,
           explanation: "Pushing back on the producer protects system stability. The alternative is crashing with an Out Of Memory panic.",
         },
         {
           id: "opt-2",
-          label: "Autoscale the consumer group and keep accepting everything until it catches up",
+          label: "Autoscale the consumers and keep accepting everything until they catch up",
           isCorrect: false,
           explanation: "More consumers help when they are the bottleneck, but here the downstream is degraded, so new workers hit the same slow dependency. New pods also take minutes to boot while the last 10% of the queue fills in seconds.",
         },
@@ -809,7 +809,7 @@ export const CAMPAIGN_CHAPTERS: CampaignChapter[] = [
       options: [
         {
           id: "opt-1",
-          label: "Acquire an atomic distributed lock on the key; return 409 Conflict or wait on the in-flight lock",
+          label: "Claim the key atomically (SET NX); the duplicate waits or gets a 409 Conflict",
           isCorrect: true,
           explanation: "An atomic lock prevents race conditions: the concurrent request either waits for the first to write its result or receives a 409 Concurrent Mutation status.",
         },
@@ -821,7 +821,7 @@ export const CAMPAIGN_CHAPTERS: CampaignChapter[] = [
         },
         {
           id: "opt-3",
-          label: "Rely on a unique constraint on the orders table to reject the second insert",
+          label: "Put a unique constraint on the orders table to reject the second insert",
           isCorrect: false,
           explanation: "The constraint blocks a duplicate row, but if the payment provider is called before the insert, the card is already charged twice. The retry also gets a raw error instead of the original response.",
         },
@@ -873,7 +873,7 @@ export const CAMPAIGN_CHAPTERS: CampaignChapter[] = [
       options: [
         {
           id: "opt-1",
-          label: "Give each record one home region that owns its writes, or merge concurrent updates with CRDTs",
+          label: "Give each record a home region that owns its writes, or merge with CRDTs",
           isCorrect: true,
           explanation: "If only a record's home region may write it, the two updates are serialized there, at the cost of cross-region latency for remote users. For mergeable data like counters, CRDTs converge deterministically without losing either update.",
         },
@@ -885,7 +885,7 @@ export const CAMPAIGN_CHAPTERS: CampaignChapter[] = [
         },
         {
           id: "opt-3",
-          label: "Resolve conflicts with last-write-wins using each region's server clock",
+          label: "Resolve conflicts with last-write-wins, using each region's server timestamps",
           isCorrect: false,
           explanation: "LWW silently throws away one of the two updates, so a sale vanishes from inventory. Clock skew between regions also decides the winner, not real order.",
         },
@@ -937,7 +937,7 @@ export const CAMPAIGN_CHAPTERS: CampaignChapter[] = [
       options: [
         {
           id: "opt-1",
-          label: "Probes amplify DB load, and one dependency glitch makes the orchestrator restart every healthy pod",
+          label: "Every probe hits the DB, so one dependency blip fails and restarts all 200 pods",
           isCorrect: true,
           explanation: "Liveness probes should only check if the local process is alive. Deep dependency failures should mark readiness or fail gracefully, never trigger a total cluster reboot cascade.",
         },
@@ -1065,7 +1065,7 @@ export const CAMPAIGN_CHAPTERS: CampaignChapter[] = [
       options: [
         {
           id: "opt-1",
-          label: "One voter in each of three regions, accepting a cross-region round trip per commit",
+          label: "One voter per region across three regions, with a cross-region commit each",
           isCorrect: true,
           explanation: "Losing any region leaves 2 of 3 voters, still a majority. The cost: every commit waits for an ack from another region, roughly 60-100 ms.",
         },
@@ -1129,19 +1129,19 @@ export const CAMPAIGN_CHAPTERS: CampaignChapter[] = [
       options: [
         {
           id: "opt-1",
-          label: "Each insert now updates five index structures, multiplying the random page writes",
+          label: "Every insert must now update five indexes, multiplying random page writes",
           isCorrect: true,
           explanation: "Every secondary index is maintained on every write. Keep only indexes real queries need, or feed dashboards from a separate read-optimized store.",
         },
         {
           id: "opt-2",
-          label: "The dashboard queries now hold table locks that block concurrent inserts",
+          label: "The dashboard queries now hold table-level locks that block concurrent inserts",
           isCorrect: false,
           explanation: "Reads in MVCC databases don't block inserts. The slowdown shows up even with dashboards closed: it's the per-write index maintenance.",
         },
         {
           id: "opt-3",
-          label: "Indexes live in RAM and pushed the table's data pages out of memory",
+          label: "The new indexes filled RAM and pushed the table's hot data pages out of memory",
           isCorrect: false,
           explanation: "Indexes do compete for cache, but ingest here is write-bound. Five structures to update per row is the 10x cost.",
         },
@@ -1199,13 +1199,13 @@ export const CAMPAIGN_CHAPTERS: CampaignChapter[] = [
         },
         {
           id: "opt-2",
-          label: "Claim a free ID as an etcd lease with a TTL and renew it by heartbeat",
+          label: "Claim a free ID as an etcd lease and renew it by heartbeat",
           isCorrect: true,
           explanation: "One authority guarantees each ID has one live owner, and a dead pod's lease expires before the ID can be reused. Pod startup now depends on etcd being reachable.",
         },
         {
           id: "opt-3",
-          label: "Derive it from the last octet of the pod's IP address",
+          label: "Derive it from the last octet of the pod's IP address at startup",
           isCorrect: false,
           explanation: "Pods in different subnets share last octets, and recycled IPs can revive an ID another pod still holds.",
         },
@@ -1257,13 +1257,13 @@ export const CAMPAIGN_CHAPTERS: CampaignChapter[] = [
       options: [
         {
           id: "opt-1",
-          label: "Load a fresh index with refresh and replicas off, then flip the alias",
+          label: "Bulk-load a new index with refresh and replicas off, then swap the alias over",
           isCorrect: true,
           explanation: "Refreshing every second creates thousands of tiny segments to merge, and each replica re-indexes every document. Turn both off for the bulk load, restore them, then swap the alias atomically.",
         },
         {
           id: "opt-2",
-          label: "Rebuild into the live index overnight, when query traffic is at its lowest",
+          label: "Rebuild into the live index overnight, when query traffic is at its very lowest",
           isCorrect: false,
           explanation: "Night traffic doesn't fix the mixed state: old and new analyzers coexist in one index until the rebuild ends, and there's no old index to roll back to.",
         },
@@ -1327,7 +1327,7 @@ export const CAMPAIGN_CHAPTERS: CampaignChapter[] = [
         },
         {
           id: "opt-2",
-          label: "About 60 to 90, leaving room to double consumers without repartitioning",
+          label: "About 60 to 90, so consumers can double without repartitioning",
           isCorrect: true,
           explanation: "Parallelism stops at the partition count, so size for future peak (120k / 2k = 60) plus headroom. Adding consumers later is cheap; adding partitions remaps keys.",
         },
