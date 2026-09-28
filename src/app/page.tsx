@@ -144,7 +144,7 @@ export default function RootPage() {
         ) : (
           <div className="w-full max-w-2xl space-y-8 animate-fadeIn">
             <div className="flex items-center justify-center gap-3 text-xs text-slate-500">
-              <span className="num">Lv {stats.level}</span>
+              <span className="num">Rank {stats.level}</span>
               <span className="w-px h-3 bg-white/10" aria-hidden />
               <span className="num">{stats.currentXp} XP</span>
               <span className="w-px h-3 bg-white/10" aria-hidden />

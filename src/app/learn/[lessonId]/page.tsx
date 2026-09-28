@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { notFound, useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft, ArrowRight, Check, Clock, Lightbulb, RotateCcw, Zap } from "lucide-react";
 import Navbar from "@/components/Navbar";
@@ -9,9 +9,9 @@ import InteractiveStage from "@/components/simulation/InteractiveStage";
 import LevelUpModal from "@/components/LevelUpModal";
 import { StatStrip } from "@/components/run/RunVisuals";
 import type { Tone } from "@/components/run/RunVisuals";
-import { getConceptReveal, getLessonById, LESSONS } from "@/lib/lessons";
+import { getConceptReveal, getLessonById } from "@/lib/lessons";
 import { completeLesson } from "@/lib/storage";
-import { playAlarmSound, playDeploySound, playLevelUpSound } from "@/lib/sound";
+import { playAlarmSound, playDeploySound } from "@/lib/sound";
 import type { Lesson, SimulationState } from "@/types";
 
 const BADGE_BY_LESSON: Record<string, string> = {
@@ -63,7 +63,10 @@ const tone = (v: number, warn: number, bad: number): Tone => (v > bad ? "bad" : 
 export default function LessonPage() {
   const params = useParams();
   const lessonId = params?.lessonId as string;
-  const lesson = getLessonById(lessonId) || LESSONS[0];
+  const lesson = getLessonById(lessonId);
+  if (!lesson) {
+    notFound();
+  }
   // Remount on lesson change so all run state starts fresh.
   return <LessonRun key={lesson.id} lesson={lesson} />;
 }
@@ -93,8 +96,8 @@ function LessonRun({ lesson }: { lesson: Lesson }) {
     setStepIdx(next);
     if (next >= lesson.steps.length) {
       setTimeout(() => {
-        completeLesson(lesson.id, lesson.xpReward);
-        playLevelUpSound();
+        completeLesson(lesson.id, 0);
+        playDeploySound();
         setShowCelebration(true);
       }, 600);
     }
@@ -263,8 +266,8 @@ function LessonRun({ lesson }: { lesson: Lesson }) {
         isOpen={showCelebration}
         onClose={() => setShowCelebration(false)}
         title="Bottleneck fixed"
-        subtitle={`You solved the ${lesson.title} bottleneck and brought latency back down.`}
-        xpEarned={lesson.xpReward}
+        subtitle={`You stabilized the ${lesson.title} bottleneck. Pass the check challenge to verify understanding and earn ${lesson.xpReward} XP.`}
+        xpEarned={0}
         badgeEarned={BADGE_BY_LESSON[lesson.id] ?? "Cluster Engineer"}
         nextLabel="Take the challenge"
         onNext={() => router.push(`/challenge/${lesson.challenge.id}`)}

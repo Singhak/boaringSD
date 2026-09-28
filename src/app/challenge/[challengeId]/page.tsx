@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { notFound, useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -23,8 +23,11 @@ import { playSuccessSound, playErrorSound, playBlipSound } from "@/lib/sound";
 export default function ChallengePage() {
   const params = useParams();
   const router = useRouter();
-  const challengeId = (params?.challengeId as string) || "challenge-lb-1";
-  const challenge = getChallengeById(challengeId) || LESSONS[0].challenge;
+  const challengeId = params?.challengeId as string;
+  const challenge = getChallengeById(challengeId);
+  if (!challenge) {
+    notFound();
+  }
 
   const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null);
   const [isSubmitted, setIsSubmitted] = useState(false);

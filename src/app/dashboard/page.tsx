@@ -110,7 +110,7 @@ export default function DashboardPage() {
                 <p className="text-[13px] text-slate-500 leading-relaxed">
                   {daily.completedToday
                     ? "Your streak is safe. Extra runs still add evidence."
-                    : "Clear a level, pass a builder boss, or finish a due review. Opening pages doesn't count."}
+                    : "Clear a level, pass a builder boss, pass an estimate, or finish a due review. Failed attempts or clicking through lessons don't count."}
                 </p>
               </div>
             </div>
@@ -155,7 +155,7 @@ export default function DashboardPage() {
         <section className="surface grid grid-cols-2 lg:grid-cols-4 divide-x divide-y lg:divide-y-0 divide-[var(--line)] overflow-hidden">
           <div className="p-5 space-y-2">
             <span className="eyebrow">Rank</span>
-            <div className="num text-2xl text-white">Lv {stats.level}</div>
+            <div className="num text-2xl text-white">Rank {stats.level}</div>
             <p className="text-xs text-slate-400">{getRankTitle(stats.level)}</p>
           </div>
           <div className="p-5 space-y-2">
@@ -169,7 +169,7 @@ export default function DashboardPage() {
                 <div className="h-full bg-[var(--accent)] rounded-full" style={{ width: `${Math.round((xpIntoLevel / 150) * 100)}%` }} />
               </div>
               <p className="num text-[11px] text-slate-500">
-                {stats.nextLevelXp - stats.currentXp} XP to Lv {stats.level + 1}
+                {stats.nextLevelXp - stats.currentXp} XP to Rank {stats.level + 1}
               </p>
             </div>
           </div>
