@@ -136,8 +136,8 @@ test("Multi-path scenarios accept either archetype's component set", () => {
   assert.ok(withoutPaths.failureReasons.includes("require-cache"));
 });
 
-test("All 4 interview problems have scopeItems and estimationTargets", () => {
-  assert.equal(INTERVIEW_PROBLEMS.length, 4);
+test("All interview problems have scopeItems and estimationTargets", () => {
+  assert.ok(INTERVIEW_PROBLEMS.length >= 10, `Expected at least 10 interview problems, got ${INTERVIEW_PROBLEMS.length}`);
 
   for (const problem of INTERVIEW_PROBLEMS) {
     // 1. Scope items verification
@@ -160,6 +160,8 @@ test("All 4 interview problems have scopeItems and estimationTargets", () => {
 });
 
 test("Pattern tradeoff sets exist with multi-attribute metrics and defense questions", () => {
+  const keys = Object.keys(PATTERN_TRADEOFFS);
+  assert.equal(keys.length, 23, "All 23 patterns must have tradeoff sets");
   const cachingTradeoffs = PATTERN_TRADEOFFS["caching"];
   assert.ok(cachingTradeoffs);
   assert.ok(cachingTradeoffs.options.length >= 3);

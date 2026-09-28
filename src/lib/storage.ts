@@ -314,15 +314,25 @@ export function nextShuffleSeed(scope: string): string {
 // ---------------------------------------------------------------------------
 
 export function getFeatureUnlockStatus(stats: UserStats) {
-  const level = stats.level || 1;
   const chapters = stats.completedChapters || [];
-  const missions = stats.completedMissions || [];
-  const isExperienced = level >= 2 || chapters.length >= 1 || missions.length >= 2;
+  const clearedLevels = chapters.length;
 
   return {
     campaign: { unlocked: true, minLevel: 1, label: "Campaign" },
-    builder: { unlocked: isExperienced, minLevel: 2, label: "Architecture Sandbox" },
-    interview: { unlocked: isExperienced, minLevel: 2, label: "Interview Arena" },
-    challengeLab: { unlocked: level >= 3 || chapters.length >= 2, minLevel: 3, label: "Challenge Lab" },
+    builder: {
+      unlocked: clearedLevels >= 2 || chapters.includes("chapter-2"),
+      minLevel: 2,
+      label: "Architecture Sandbox",
+    },
+    interview: {
+      unlocked: clearedLevels >= 8 || chapters.includes("chapter-8"),
+      minLevel: 8,
+      label: "Interview Arena",
+    },
+    challengeLab: {
+      unlocked: clearedLevels >= 3 || chapters.includes("chapter-3"),
+      minLevel: 3,
+      label: "Case Studies",
+    },
   };
 }

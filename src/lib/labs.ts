@@ -30,7 +30,7 @@ export function getPracticeLabs(stats: UserStats): PracticeLab[] {
       href: "/builder",
       icon: Sparkles,
       unlocked: unlock.builder.unlocked,
-      unlockHint: "Unlocks after Level 1",
+      unlockHint: "Unlocks after Level 2",
     },
     {
       id: "interview",
@@ -40,7 +40,7 @@ export function getPracticeLabs(stats: UserStats): PracticeLab[] {
       href: "/interview",
       icon: Award,
       unlocked: unlock.interview.unlocked,
-      unlockHint: "Unlocks after Level 1",
+      unlockHint: "Unlocks after Level 8",
     },
     {
       id: "caseStudies",
@@ -50,7 +50,7 @@ export function getPracticeLabs(stats: UserStats): PracticeLab[] {
       href: "/guided",
       icon: Compass,
       unlocked: unlock.challengeLab.unlocked,
-      unlockHint: "Unlocks after Level 2",
+      unlockHint: "Unlocks after Level 3",
     },
     {
       id: "evolution",

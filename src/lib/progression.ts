@@ -22,13 +22,31 @@ import type {
 
 export const STATS_SCHEMA_VERSION = 3;
 export const XP_PER_LEVEL = 150;
+export const LEVEL_THRESHOLDS = [
+  0, 150, 300, 500, 750, 1050, 1400, 1800, 2250, 2750, 3300, 3900, 4550, 5250, 6000, 6800, 7650, 8550, 9500, 10500,
+  11550, 12650, 13800, 15000,
+];
+
+export function thresholdForLevel(level: number): number {
+  if (level <= 1) return 0;
+  const idx = level - 1;
+  if (idx < LEVEL_THRESHOLDS.length) return LEVEL_THRESHOLDS[idx];
+  const last = LEVEL_THRESHOLDS[LEVEL_THRESHOLDS.length - 1];
+  const extra = level - LEVEL_THRESHOLDS.length;
+  return last + extra * 1500;
+}
+
+export function nextLevelXpForLevel(level: number): number {
+  return thresholdForLevel(level + 1);
+}
+
 const REVIEW_INTERVAL_DAYS = [1, 3, 7, 30];
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export const DEFAULT_STATS: UserStats = {
   level: 1,
   currentXp: 0,
-  nextLevelXp: XP_PER_LEVEL,
+  nextLevelXp: LEVEL_THRESHOLDS[1],
   streakDays: 0,
   completedLessons: [],
   completedChallenges: [],
@@ -79,7 +97,11 @@ function addDays(date: Date, days: number): Date {
 // ---------------------------------------------------------------------------
 
 export function levelForXp(xp: number): number {
-  return Math.floor(Math.max(0, xp) / XP_PER_LEVEL) + 1;
+  const safeXp = Math.max(0, xp);
+  for (let lvl = LEVEL_THRESHOLDS.length; lvl >= 1; lvl--) {
+    if (safeXp >= thresholdForLevel(lvl)) return lvl;
+  }
+  return 1;
 }
 
 export function grantXp(stats: UserStats, amount: number): { stats: UserStats; leveledUp: boolean } {
@@ -91,7 +113,7 @@ export function grantXp(stats: UserStats, amount: number): { stats: UserStats; l
       ...stats,
       currentXp,
       level,
-      nextLevelXp: level * XP_PER_LEVEL,
+      nextLevelXp: nextLevelXpForLevel(level),
       totalScore: stats.totalScore + amount,
     },
     leveledUp: level > stats.level,
@@ -162,6 +184,40 @@ export function practicedToday(stats: UserStats, now: Date): boolean {
 // Generic activity completion (lessons, challenges, guided, interviews, missions)
 // ---------------------------------------------------------------------------
 
+export const DAILY_SIDE_XP_CAPS: Record<string, number> = {
+  estimate: 60,
+  builder: 180,
+  reasoning: 120,
+  interview: 150,
+  guided: 150,
+};
+
+export function applySideModeDailyCap(
+  stats: UserStats,
+  mode: string,
+  desiredXp: number,
+  now: Date
+): { stats: UserStats; allowedXp: number } {
+  if (desiredXp <= 0) return { stats, allowedXp: 0 };
+  const cap = DAILY_SIDE_XP_CAPS[mode];
+  if (cap === undefined) return { stats, allowedXp: desiredXp };
+  const today = toDateKey(now);
+  const prefix = `daily-side-xp:${mode}:${today}:`;
+  const existingEvents = stats.awardedEvents ?? [];
+  const todayEvent = existingEvents.find((k) => k.startsWith(prefix));
+  const currentEarned = todayEvent ? Number(todayEvent.slice(prefix.length)) || 0 : 0;
+  const remaining = Math.max(0, cap - currentEarned);
+  const allowedXp = Math.min(desiredXp, remaining);
+  if (allowedXp <= 0) return { stats, allowedXp: 0 };
+
+  const updatedEarned = currentEarned + allowedXp;
+  const cleaned = existingEvents.filter((k) => !k.startsWith(prefix));
+  return {
+    stats: { ...stats, awardedEvents: [...cleaned, `${prefix}${updatedEarned}`] },
+    allowedXp,
+  };
+}
+
 export type ActivityCollection =
   | "completedLessons"
   | "completedChallenges"
@@ -190,9 +246,24 @@ export function completeActivity(stats: UserStats, spec: ActivitySpec, now: Date
   (spec.badges ?? []).forEach((b) => badges.add(b));
   next = { ...next, unlockedBadges: [...badges] };
 
-  next = recordPractice(next, now);
-  const granted = grantXp(next, award.xp);
-  return { stats: granted.stats, xpAwarded: award.xp, leveledUp: granted.leveledUp, firstClear: award.firstClear };
+  // Only meaningful passed challenges/guided/missions count toward streak; clicking a lesson or finishing an interview does not
+  if (spec.collection !== "completedLessons" && spec.collection !== "completedInterviews") {
+    next = recordPractice(next, now);
+  }
+
+  let xpToAward = award.xp;
+  if (spec.collection === "completedInterviews") {
+    const capped = applySideModeDailyCap(next, "interview", xpToAward, now);
+    next = capped.stats;
+    xpToAward = capped.allowedXp;
+  } else if (spec.collection === "completedGuided") {
+    const capped = applySideModeDailyCap(next, "guided", xpToAward, now);
+    next = capped.stats;
+    xpToAward = capped.allowedXp;
+  }
+
+  const granted = grantXp(next, xpToAward);
+  return { stats: granted.stats, xpAwarded: xpToAward, leveledUp: granted.leveledUp, firstClear: award.firstClear };
 }
 
 // ---------------------------------------------------------------------------
@@ -423,12 +494,14 @@ export function recordEstimate(stats: UserStats, problemId: string, score: numbe
       },
     },
   };
-  next = recordPractice(next, now);
 
+  // Streak and XP are ONLY awarded on a passed estimate (>= 85)
   if (score < ESTIMATE_PASS_SCORE) return { stats: next, xpAwarded: 0, leveledUp: false, firstClear: false };
   const award = awardFirstOrReplay(next, `estimate:${problemId}`, Math.round(score / 5), 5, now);
-  const granted = grantXp(award.stats, award.xp);
-  return { stats: granted.stats, xpAwarded: award.xp, leveledUp: granted.leveledUp, firstClear: award.firstClear };
+  const capped = applySideModeDailyCap(award.stats, "estimate", award.xp, now);
+  next = recordPractice(capped.stats, now);
+  const granted = grantXp(next, capped.allowedXp);
+  return { stats: granted.stats, xpAwarded: capped.allowedXp, leveledUp: granted.leveledUp, firstClear: award.firstClear };
 }
 
 /** Stores the latest pillar scores for an interview problem. XP stays with completeActivity. */
@@ -439,7 +512,7 @@ export function recordInterviewResult(
   now: Date
 ): UserStats {
   return {
-    ...recordPractice(stats, now),
+    ...stats,
     interviewResults: { ...(stats.interviewResults ?? {}), [interviewId]: { ...result, at: now.toISOString() } },
   };
 }
@@ -486,8 +559,9 @@ export function recordReasoning(
     claim = claimEvent(next, gradedKey);
     xp = claim.awarded ? bonusXp - (events.includes(selfKey) ? selfXp : 0) : 0;
   }
-  const granted = grantXp(claim.stats, xp);
-  return { stats: granted.stats, xpAwarded: xp, leveledUp: granted.leveledUp, firstClear: claim.awarded };
+  const capped = applySideModeDailyCap(claim.stats, "reasoning", xp, now);
+  const granted = grantXp(capped.stats, capped.allowedXp);
+  return { stats: granted.stats, xpAwarded: capped.allowedXp, leveledUp: granted.leveledUp, firstClear: claim.awarded };
 }
 
 /** Self-assessed "defend your call" answers pay at most this share of the graded bonus. */
@@ -526,9 +600,10 @@ export function recordBuilderResult(
   if (!passed) return { stats: next, xpAwarded: 0, leveledUp: false, firstClear: false };
 
   const award = awardFirstOrReplay(next, `builder:${scenario.id}`, rewardXp, Math.round(rewardXp * 0.2), now);
-  next = recordPractice(award.stats, now);
-  const granted = grantXp(next, award.xp);
-  return { stats: granted.stats, xpAwarded: award.xp, leveledUp: granted.leveledUp, firstClear: award.firstClear };
+  const capped = applySideModeDailyCap(award.stats, "builder", award.xp, now);
+  next = recordPractice(capped.stats, now);
+  const granted = grantXp(next, capped.allowedXp);
+  return { stats: granted.stats, xpAwarded: capped.allowedXp, leveledUp: granted.leveledUp, firstClear: award.firstClear };
 }
 
 export function isReviewDue(evidence: PatternEvidence, now: Date): boolean {
@@ -766,7 +841,7 @@ export function migrateStats(raw: unknown, now: Date): UserStats {
     ...(r as Partial<UserStats>),
     currentXp,
     level,
-    nextLevelXp: level * XP_PER_LEVEL,
+    nextLevelXp: nextLevelXpForLevel(level),
     totalScore: asNumber(r.totalScore, currentXp),
     streakDays: asNumber(r.streakDays, 0),
     completedLessons: asStringArray(r.completedLessons),

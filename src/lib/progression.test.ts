@@ -8,6 +8,8 @@ import {
   getCurrentStreak,
   getEvidence,
   getMasteryState,
+  levelForXp,
+  nextLevelXpForLevel,
   migrateStats,
   recordBuilderResult,
   recordDefense,
@@ -380,3 +382,52 @@ test("builder: hints are recorded, and only a first-try explanation counts as a 
   const clean = recordBuilderResult(onboarded(), s, 60, true, [], T0, { explainFirstTry: true });
   assert.equal(getEvidence(clean.stats, s.patternId).builderPasses, 1);
 });
+
+test("XP levels grow progressively (150, 300, 500, 750...)", () => {
+  assert.equal(levelForXp(0), 1);
+  assert.equal(levelForXp(149), 1);
+  assert.equal(levelForXp(150), 2);
+  assert.equal(levelForXp(299), 2);
+  assert.equal(levelForXp(300), 3);
+  assert.equal(levelForXp(499), 3);
+  assert.equal(levelForXp(500), 4);
+  assert.equal(levelForXp(749), 4);
+  assert.equal(levelForXp(750), 5);
+  assert.equal(nextLevelXpForLevel(1), 150);
+  assert.equal(nextLevelXpForLevel(2), 300);
+  assert.equal(nextLevelXpForLevel(3), 500);
+  assert.equal(nextLevelXpForLevel(4), 750);
+});
+
+test("Streak counts only passed actions: failed estimate or clicking a lesson does not advance streak", () => {
+  // Failed estimate does not increment streak
+  const failedEst = recordEstimate(DEFAULT_STATS, "math-dau-qps-1", 40, T0);
+  assert.equal(failedEst.stats.streakDays, 0);
+  assert.equal(failedEst.stats.lastPracticeDate, undefined);
+
+  // Lesson complete does not increment streak
+  const lessonOutcome = completeActivity(DEFAULT_STATS, {
+    collection: "completedLessons",
+    id: "lesson-lb-1",
+    firstXp: 0,
+    replayXp: 0,
+  }, T0);
+  assert.equal(lessonOutcome.stats.streakDays, 0);
+
+  // Passed estimate (>= 85) DOES increment streak
+  const passedEst = recordEstimate(DEFAULT_STATS, "math-dau-qps-1", 95, T0);
+  assert.equal(passedEst.stats.streakDays, 1);
+});
+
+test("Side-mode daily XP cap limits maximum XP earned per mode per day", () => {
+  // Daily cap for estimates is 60 XP
+  let s = DEFAULT_STATS;
+  let totalAwarded = 0;
+  for (let i = 0; i < 5; i++) {
+    const res = recordEstimate(s, `prob-${i}`, 100, T0); // 20 XP each
+    s = res.stats;
+    totalAwarded += res.xpAwarded;
+  }
+  assert.equal(totalAwarded, 60, "Estimates capped at 60 XP per day");
+});
+
