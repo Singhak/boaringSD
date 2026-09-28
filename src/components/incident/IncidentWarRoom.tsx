@@ -153,14 +153,7 @@ export default function IncidentWarRoom({
   // Rendered client-side only (after stats load), so the seed can come from localStorage.
   const [shuffleSeed] = useState(() => nextShuffleSeed(`warroom:${initialIncidentId}`));
 
-  // Synchronize when initialIncidentId prop changes across levels
-  const [prevInitialIncidentId, setPrevInitialIncidentId] = useState(initialIncidentId);
-  if (prevInitialIncidentId !== initialIncidentId) {
-    setPrevInitialIncidentId(initialIncidentId);
-    setIncidentId(initialIncidentId);
-    setCurrentStep(0);
-    setIsDebrief(false);
-  }
+
 
   // Active incident state
   const baseIncident: IncidentV2 | undefined =
@@ -213,6 +206,24 @@ export default function IncidentWarRoom({
   // The defense is about what the player deployed, not the set's recommended option.
   const activeDefenseOption =
     tradeoffSet && pendingSuccessChoice ? pickDefenseOption(tradeoffSet, pendingSuccessChoice.label) : undefined;
+
+  // Synchronize when initialIncidentId prop changes across levels
+  const [prevInitialIncidentId, setPrevInitialIncidentId] = useState(initialIncidentId);
+  if (prevInitialIncidentId !== initialIncidentId) {
+    setPrevInitialIncidentId(initialIncidentId);
+    setIncidentId(initialIncidentId);
+    setCurrentStep(0);
+    setIsDebrief(false);
+    setIsAftershock(false);
+    setIsDefendingCall(false);
+    setLastWrong(null);
+    setWrongDeploys(0);
+    setHintsUsedTotal(0);
+    setFixRecorded(false);
+    setDefenseVerified(false);
+    setDefenseModalOpen(false);
+    setPendingSuccessChoice(null);
+  }
 
   // Per-incident state resets when a cascade, bill or curveball swaps the incident in.
   const resetIncidentState = (next: IncidentV2 | undefined) => {
@@ -374,10 +385,13 @@ export default function IncidentWarRoom({
     if (choice.correct) {
       // If an architectural tradeoff scenario exists and defense not yet verified, open defense modal
       if (tradeoffSet && !defenseVerified) {
-        setPendingSuccessChoice(choice);
-        setDefenseAttempt((n) => n + 1);
-        setDefenseModalOpen(true);
-        return;
+        const defenseOpt = pickDefenseOption(tradeoffSet, choice.label);
+        if (defenseOpt) {
+          setPendingSuccessChoice(choice);
+          setDefenseAttempt((n) => n + 1);
+          setDefenseModalOpen(true);
+          return;
+        }
       }
       executeDeploySuccess(choice);
       return;

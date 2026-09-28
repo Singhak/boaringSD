@@ -11,18 +11,12 @@ interface PushpaMissionWarRoomProps {
 
 export default function PushpaMissionWarRoom({
   onClose,
-  isStandalonePage = false,
 }: PushpaMissionWarRoomProps) {
   const router = useRouter();
 
   const handleAllCompleted = () => {
-    if (isStandalonePage) {
-      router.push("/campaign");
-    } else if (onClose) {
-      onClose();
-    } else {
-      router.push("/campaign");
-    }
+    onClose?.();
+    router.push("/campaign");
   };
 
   return (

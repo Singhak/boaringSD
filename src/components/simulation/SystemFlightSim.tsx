@@ -1,24 +1,17 @@
 "use client";
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
-  Activity,
   AlertOctagon,
-  AlertTriangle,
   ArrowRight,
-  CheckCircle2,
   Cpu,
   Database,
-  Flame,
-  Globe,
   Layers,
   Lightbulb,
-  Maximize2,
-  Play,
   RotateCcw,
   Server,
   ShieldCheck,
-  Sparkles,
   Star,
   Users,
   Volume2,
@@ -133,9 +126,9 @@ export default function SystemFlightSim({
   onClose,
   onAllCompleted,
 }: SystemFlightSimProps) {
+  const router = useRouter();
   // Current active incident ("hs-01" -> "lb-01")
   const [incidentId, setIncidentId] = useState<"hs-01" | "lb-01">(initialIncidentId);
-
   // SLA Error Budget (100% down to 0%)
   const [errorBudget, setErrorBudget] = useState(100);
   const [isSystemDown, setIsSystemDown] = useState(false);
@@ -150,6 +143,16 @@ export default function SystemFlightSim({
   const [stabilizeProgress, setStabilizeProgress] = useState(0); // 0 to 5
   const [isResolved, setIsResolved] = useState(false);
   const [mistakes, setMistakes] = useState(0);
+
+  const [prevInitialId, setPrevInitialId] = useState(initialIncidentId);
+  if (prevInitialId !== initialIncidentId) {
+    setPrevInitialId(initialIncidentId);
+    setIncidentId(initialIncidentId);
+    setAppliedFix(null);
+    setResolvedFix(null);
+    setIsResolved(false);
+    setIsSystemDown(false);
+  }
 
   // Drawer & Inspector
   const [selectedIntelId, setSelectedIntelId] = useState<string | null>(null);
@@ -572,6 +575,8 @@ export default function SystemFlightSim({
         onAllCompleted({ firstTry: mistakes === 0 });
       } else if (onClose) {
         onClose();
+      } else {
+        router.push("/campaign");
       }
     }
   };
@@ -619,6 +624,16 @@ export default function SystemFlightSim({
               {errorBudget.toFixed(0)}%
             </span>
           </div>
+
+          <button
+            type="button"
+            onClick={() => setSoundEnabled((v) => !v)}
+            className="p-1 rounded-md text-slate-400 hover:text-white transition-colors"
+            aria-label={soundEnabled ? "Mute sound effects" : "Turn sound effects on"}
+            title={soundEnabled ? "Mute" : "Sound on"}
+          >
+            {soundEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+          </button>
 
           {onClose && (
             <button
