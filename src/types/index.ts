@@ -195,7 +195,15 @@ export type ArchitectureNodeType =
   | "database"
   | "replica"
   | "cdn"
-  | "queue";
+  | "queue"
+  | "connection_pooler"
+  | "id_service"
+  | "observability"
+  | "auth_gateway"
+  | "search_index"
+  | "stream_processor"
+  | "consensus_cluster"
+  | "shard_router";
 
 export interface CustomNodeData {
   label: string;
@@ -206,6 +214,8 @@ export interface CustomNodeData {
   requestsHandled?: number;
   cacheHits?: number;
   down?: boolean; // killed by failure injection
+  isIdempotencyStore?: boolean;
+  clusterSize?: number;
   onRemove?: () => void;
 }
 
@@ -896,11 +906,12 @@ export interface TradeoffCardOption {
 export interface ArchitecturalArchetype {
   id: string;
   name: string;
-  description: string;
+  description?: string;
   requiredComponents: ArchitectureNodeType[];
   optionalComponents?: ArchitectureNodeType[];
   forbiddenComponents?: ArchitectureNodeType[];
-  maxLatencyP99Ms: number;
-  maxMonthlyCostUsd: number;
-  tradeoffSummary: string;
+  maxLatencyP99Ms?: number;
+  maxMonthlyCostUsd?: number;
+  tradeoffSummary?: string;
 }
+
