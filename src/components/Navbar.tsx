@@ -146,10 +146,10 @@ export default function Navbar() {
           <Link
             href="/dashboard"
             className="flex items-center gap-3 pl-3 pr-2.5 h-8 rounded-full border border-[var(--line)] bg-white/[0.02] hover:border-[var(--line-strong)] transition-colors"
-            title={`Level ${stats.level} · ${stats.currentXp} XP · ${levelsCleared} of ${allPatterns.length} levels cleared · ${streak}-day streak`}
+            title={`Rank ${stats.level} · ${stats.currentXp} XP · ${levelsCleared} of ${allPatterns.length} levels cleared · ${streak}-day streak`}
           >
             <span className="flex items-center gap-2">
-              <span className="text-[11px] font-semibold text-white">Lv {stats.level}</span>
+              <span className="text-[11px] font-semibold text-white">Rank {stats.level}</span>
               <span className="w-12 h-1 rounded-full bg-white/10 overflow-hidden hidden lg:block">
                 <span className="block h-full bg-[var(--accent)]" style={{ width: `${xpProgressPercent}%` }} />
               </span>
@@ -190,7 +190,7 @@ export default function Navbar() {
         <div className="md:hidden border-t border-[var(--line)] bg-[#07090f] px-4 pt-3 pb-4 space-y-4 animate-fadeIn">
           <div className="flex items-center justify-between text-xs">
             <span className="text-slate-300">
-              Lv {stats.level} · <span className="num">{stats.currentXp}</span> XP · {levelsCleared}/{allPatterns.length} levels
+              Rank {stats.level} · <span className="num">{stats.currentXp}</span> XP · {levelsCleared}/{allPatterns.length} levels
             </span>
             <span className="text-amber-300 flex items-center gap-1">
               <Flame className="w-3.5 h-3.5" /> {streak}-day streak

@@ -1,26 +1,19 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
-import Link from "next/link";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
   Calculator,
   Clock,
   Flame,
-  Sparkles,
   Trophy,
   CheckCircle2,
   AlertCircle,
-  HelpCircle,
   ArrowRight,
   RotateCcw,
   ChevronRight,
   Brain,
   Zap,
-  Volume2,
-  VolumeX,
   Target,
-  BarChart3,
-  Layers,
 } from "lucide-react";
 import confetti from "canvas-confetti";
 import {
@@ -33,6 +26,7 @@ import {
 import { playBlipSound, playErrorSound, playSuccessSound, playLevelUpSound } from "@/lib/sound";
 import { submitEstimate } from "@/lib/storage";
 import { parseEstimate } from "@/lib/estimation";
+import { deterministicShuffle } from "@/lib/shuffle";
 
 interface MentalMathTrainerProps {
   onPreflightComplete?: (accuracyScore: number) => void;
@@ -64,10 +58,15 @@ export default function MentalMathTrainer({
 
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Filter problems by category
-  const filteredProblems = MATH_PROBLEMS.filter(
-    (p) => selectedCategory === "all" || p.category === selectedCategory
-  );
+  const [sessionSeed, setSessionSeed] = useState(() => Date.now());
+
+  // Filter and randomize problem order so sprint mode draws randomly and never runs the same order twice
+  const filteredProblems = useMemo(() => {
+    const list = MATH_PROBLEMS.filter(
+      (p) => selectedCategory === "all" || p.category === selectedCategory
+    );
+    return deterministicShuffle(list, `math-sprint-${sessionSeed}`);
+  }, [selectedCategory, sessionSeed]);
   const currentProblem: MathProblem = filteredProblems[problemIndex % filteredProblems.length];
 
   // Timer tick for Blitz Mode; the round ends inside the tick that reaches 0
@@ -125,15 +124,8 @@ export default function MentalMathTrainer({
     setSolvedInSession(0);
     setBlitzCompleted(false);
     setProblemIndex(0);
+    setSessionSeed(Date.now());
     playBlipSound();
-  };
-
-  const handleResetBlitz = () => {
-    setTimeLeft(60);
-    setIsTimerActive(false);
-    setBlitzScore(0);
-    setCurrentStreak(0);
-    setBlitzCompleted(false);
   };
 
   const handleSubmit = (e?: React.FormEvent) => {
@@ -145,6 +137,9 @@ export default function MentalMathTrainer({
     const result = evaluateMathAnswer(currentProblem, num);
     setEvaluation(result);
     setShowDerivation(true);
+    if (isPreflightMode && onPreflightComplete) {
+      onPreflightComplete(result.accuracyScore);
+    }
     // Every attempt counts as evidence; XP only for a passing estimate (once per problem, small daily replay).
     submitEstimate(currentProblem.id, result.score);
 
