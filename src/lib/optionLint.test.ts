@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { getAllPatterns } from "@/data/patterns";
+import { getAllPatterns, getTransferQuestions } from "@/data/patterns";
 import { getAllCampaignChapters } from "@/data/campaign";
 import { INTERVIEW_PROBLEMS } from "@/data/interview";
 import { PATTERN_TRADEOFFS } from "@/data/tradeoffScenarios";
@@ -36,9 +36,12 @@ const SOURCES: Record<string, () => LintQuestion[]> = {
       }))
     ),
   patterns: () =>
-    getAllPatterns().flatMap((p) =>
-      (["diagnosis", "intervention", "transfer", "review"] as const).map((k) => fromQuiz(`${p.id}.${k}`, p[k].options))
-    ),
+    getAllPatterns().flatMap((p) => [
+      fromQuiz(`${p.id}.diagnosis`, p.diagnosis.options),
+      fromQuiz(`${p.id}.intervention`, p.intervention.options),
+      ...getTransferQuestions(p).map((t, idx) => fromQuiz(`${p.id}.transfer#${idx}`, t.options)),
+      fromQuiz(`${p.id}.review`, p.review.options),
+    ]),
   tradeoffScenarios: () =>
     Object.values(PATTERN_TRADEOFFS).flatMap((set) =>
       set.options.flatMap((o) => [

@@ -28,7 +28,7 @@ import { StatStrip, Stepper, Topology } from "@/components/run/RunVisuals";
 import type { Stat } from "@/components/run/RunVisuals";
 import { getCanonicalIncident, getIncidentById, getScenarioPackByPatternId, graphToTiers } from "@/data/scenarioPacks";
 import { getPlayableIncidents } from "@/data/incidentQuality";
-import { getAllPatterns } from "@/data/patterns";
+import { getAllPatterns, getRotatingTransferQuestion } from "@/data/patterns";
 import {
   playAlarmSound,
   playBlipSound,
@@ -164,7 +164,7 @@ export default function IncidentWarRoom({
   // Active incident state
   const baseIncident: IncidentV2 | undefined =
     getIncidentById(incidentId) || getCanonicalIncident(pattern?.levelNumber || 1);
-  const skin = useMemo(() => (skinSeed ? pickSkin(skinSeed) : null), [skinSeed]);
+  const skin = useMemo(() => (skinSeed ? pickSkin(skinSeed, baseIncident) : null), [skinSeed, baseIncident]);
   const incident = useMemo(
     () => (baseIncident && skin ? applySkin(baseIncident, skin) : baseIncident),
     [baseIncident, skin]
@@ -1262,6 +1262,15 @@ function AftershockPanel({
   onResolved: (firstTry: boolean) => void;
 }) {
   const [firstTry, setFirstTry] = useState<boolean | null>(null);
+  const transferIdx = useMemo(() => {
+    const parts = shuffleSeed.split("#");
+    const num = Number(parts[parts.length - 1]);
+    return Number.isFinite(num) ? num : 0;
+  }, [shuffleSeed]);
+  const transferQuestion = useMemo(
+    () => getRotatingTransferQuestion(pattern, transferIdx),
+    [pattern, transferIdx]
+  );
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto pr-1 animate-fadeIn">
@@ -1278,7 +1287,7 @@ function AftershockPanel({
         </div>
         <QuestionCard
           eyebrow="⚡ Aftershock · Same pattern, different product"
-          question={pattern.transfer}
+          question={transferQuestion}
           shuffleSeed={shuffleSeed}
           submitLabel="Deploy answer"
           continueLabel="Close the incident"

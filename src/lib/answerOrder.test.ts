@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { getAllPatterns } from "@/data/patterns";
+import { getAllPatterns, getTransferQuestions } from "@/data/patterns";
 import { getAllCampaignChapters } from "@/data/campaign";
 import { getAllScenarioPacks, getScenarioVariantForPattern } from "@/data/scenarioPacks";
 import { deterministicShuffle } from "@/lib/shuffle";
@@ -22,7 +22,7 @@ function correctPositions<T>(options: T[], isCorrect: (o: T) => boolean, key: st
 
 test("pattern questions: the correct option does not sit in a fixed slot across attempts", () => {
   for (const pattern of getAllPatterns()) {
-    for (const q of [pattern.diagnosis, pattern.intervention, pattern.transfer, pattern.review]) {
+    for (const q of [pattern.diagnosis, pattern.intervention, ...getTransferQuestions(pattern), pattern.review]) {
       const positions = correctPositions(q.options, (o) => o.isCorrect, q.question);
       assert.ok(positions.size > 1, `${pattern.id}: "${q.question}" always shows the answer in one slot`);
     }

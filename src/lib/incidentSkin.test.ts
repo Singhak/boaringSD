@@ -19,7 +19,7 @@ test("skins are deterministic per seed and vary across seeds", () => {
   assert.ok(skins.size > 4);
 });
 
-test("a skin never changes answers, ids, graph or non-traffic metrics", () => {
+test("a purely cosmetic skin (without variant) never changes answers, ids, graph or non-traffic metrics", () => {
   for (const pack of getAllScenarioPacks()) {
     for (const incident of getPlayableIncidents(pack)) {
       const skinned = applySkin(incident, pickSkin(incident.id));
@@ -32,5 +32,29 @@ test("a skin never changes answers, ids, graph or non-traffic metrics", () => {
       const nonTraffic = (ms: typeof incident.metricsBefore) => ms.filter((m) => m.key !== "rps");
       assert.deepEqual(nonTraffic(skinned.metricsBefore), nonTraffic(incident.metricsBefore));
     }
+  }
+});
+
+test("at least one incident per pack has a constraint variant that flips the correct choice", () => {
+  for (const pack of getAllScenarioPacks()) {
+    const flippingIncident = pack.incidents.find((inc) => {
+      if (!inc.variants || inc.variants.length === 0) return false;
+      const originalCorrect = inc.choices.find((c) => c.correct)?.id;
+      return inc.variants.some((v) => v.correctChoiceId !== originalCorrect);
+    });
+    assert.ok(
+      flippingIncident,
+      `${pack.patternId} has no incident variant that flips the correct choice`
+    );
+
+    const original = flippingIncident;
+    const variant = original.variants!.find(
+      (v) => v.correctChoiceId !== original.choices.find((c) => c.correct)?.id
+    )!;
+    const skinned = applySkin(original, { scale: 1, region: "us-east-1", occasion: "test", variant });
+    const newCorrect = skinned.choices.find((c) => c.correct)?.id;
+    assert.equal(newCorrect, variant.correctChoiceId);
+    assert.notEqual(newCorrect, original.choices.find((c) => c.correct)?.id);
+    assert.equal(skinned.constraint, variant.constraint);
   }
 });

@@ -22,7 +22,7 @@ import QuestionCard from "@/components/run/QuestionCard";
 import PostMortemCard from "@/components/run/PostMortemCard";
 import { MetricsStrip, RunStepper, RunTopology } from "@/components/run/RunVisuals";
 import { getAllCampaignChapters, getCampaignChapterById } from "@/data/campaign";
-import { getPatternByChapterId, getPatternById, getAllPatterns } from "@/data/patterns";
+import { getPatternByChapterId, getPatternById, getAllPatterns, getRotatingTransferQuestion } from "@/data/patterns";
 import { getPatternReplayVariant, getWarRoomIncident } from "@/data/scenarioPacks";
 import IncidentWarRoom from "@/components/incident/IncidentWarRoom";
 import SystemFlightSim from "@/components/simulation/SystemFlightSim";
@@ -156,7 +156,8 @@ export default function CampaignChapterPage({
             <SystemFlightSim
               initialIncidentId={pattern.levelNumber === 1 ? "hs-01" : "lb-01"}
               onAllCompleted={({ firstTry }) => {
-                // The flight sim has no transfer question, so it earns no transfer evidence.
+                // The flight sim plays both hs-01 (Level 1) and lb-01 (Level 2).
+                // Credit both levels so the learner earns evidence for both patterns.
                 completePatternRun(pattern, {
                   patternId: pattern.id,
                   diagnosisFirstTry: firstTry,
@@ -165,6 +166,19 @@ export default function CampaignChapterPage({
                   hintsUsed: 0,
                   failureReasons: firstTry ? [] : ["intervention"],
                 });
+                const otherPattern = getAllPatterns().find(
+                  (p) => p.levelNumber === (pattern.levelNumber === 1 ? 2 : 1)
+                );
+                if (otherPattern) {
+                  completePatternRun(otherPattern, {
+                    patternId: otherPattern.id,
+                    diagnosisFirstTry: firstTry,
+                    interventionFirstTry: firstTry,
+                    transferFirstTry: null,
+                    hintsUsed: 0,
+                    failureReasons: firstTry ? [] : ["intervention"],
+                  });
+                }
               }}
             />
           ) : (
@@ -647,7 +661,7 @@ function PatternRun({
                   key="transfer"
                   shuffleSeed={shuffleSeed}
                   eyebrow="Transfer: same pattern, different product"
-                  question={pattern.transfer}
+                  question={getRotatingTransferQuestion(pattern, stats?.patternProgress?.[pattern.id]?.runsCleared ?? 0)}
                   submitLabel="Check my answer"
                   continueLabel="See the result"
                   onAnswer={(opt, attempt) => {

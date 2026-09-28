@@ -1,16 +1,17 @@
-import type { IncidentChoice, IncidentMetric, IncidentV2 } from "@/types";
+import type { IncidentChoice, IncidentConstraintVariant, IncidentMetric, IncidentV2 } from "@/types";
 import { hashSeed } from "@/lib/shuffle";
 
 /**
- * Procedural "skins" make a replayed incident feel like a new outage without
- * touching the engineering: traffic numbers scale together (the fleet is
- * sized to match, so CPU and latency stay as authored), and the page gets a
- * different region and occasion. Correct answers never change.
+ * Procedural "skins" make a replayed incident feel like a new outage:
+ * - Traffic numbers scale together and regions/occasions rotate.
+ * - Constraint skins (where authored) can change the underlying business constraint
+ *   and flip which architectural option is correct.
  */
 export interface IncidentSkin {
   scale: number;
   region: string;
   occasion: string;
+  variant?: IncidentConstraintVariant;
 }
 
 const SCALES = [0.5, 0.75, 1.5, 2, 3];
@@ -26,12 +27,17 @@ const OCCASIONS = [
   "Marketing email just went out",
 ];
 
-export function pickSkin(seed: string): IncidentSkin {
+export function pickSkin(seed: string, incident?: IncidentV2): IncidentSkin {
   const h = Math.abs(hashSeed(seed));
+  let variant: IncidentConstraintVariant | undefined;
+  if (incident?.variants && incident.variants.length > 0) {
+    variant = incident.variants[h % incident.variants.length];
+  }
   return {
     scale: SCALES[h % SCALES.length],
     region: REGIONS[Math.floor(h / 7) % REGIONS.length],
     occasion: OCCASIONS[Math.floor(h / 53) % OCCASIONS.length],
+    ...(variant ? { variant } : {}),
   };
 }
 
@@ -60,16 +66,44 @@ function scaleMetrics(metrics: IncidentMetric[] | undefined, scale: number): Inc
 }
 
 export function applySkin(incident: IncidentV2, skin: IncidentSkin): IncidentV2 {
-  const choices: IncidentChoice[] = incident.choices.map((c) => ({
-    ...c,
-    resultBody: scaleTrafficText(c.resultBody, skin.scale),
-    metricsAfter: scaleMetrics(c.metricsAfter, skin.scale),
-  }));
+  const variant = skin.variant;
+  const metricsPatch = variant?.metricsPatch;
+
+  let scaledMetrics = incident.metricsBefore ? scaleMetrics(incident.metricsBefore, skin.scale) : undefined;
+  if (scaledMetrics && metricsPatch) {
+    scaledMetrics = scaledMetrics.map((m) =>
+      m.key in metricsPatch ? { ...m, value: metricsPatch[m.key]! } : m
+    );
+  }
+
+  const choices: IncidentChoice[] = incident.choices.map((c) => {
+    const isCorrect = variant ? c.id === variant.correctChoiceId : c.correct;
+    const override = variant?.resultOverrides?.[c.id];
+    const approach =
+      override?.approach ??
+      (variant ? (isCorrect ? "optimal" : c.approach === "optimal" ? "viable_with_tradeoffs" : c.approach) : c.approach);
+    const resultTitle = override?.resultTitle ?? c.resultTitle;
+    const resultBody = override?.resultBody
+      ? scaleTrafficText(override.resultBody, skin.scale)
+      : scaleTrafficText(c.resultBody, skin.scale);
+
+    return {
+      ...c,
+      correct: isCorrect,
+      approach,
+      resultTitle,
+      resultBody,
+      metricsAfter: scaleMetrics(c.metricsAfter, skin.scale),
+    };
+  });
+
+  const constraintText = variant?.constraint ?? incident.constraint;
+
   return {
     ...incident,
     brief: scaleTrafficText(incident.brief, skin.scale),
-    constraint: scaleTrafficText(incident.constraint, skin.scale),
-    metricsBefore: scaleMetrics(incident.metricsBefore, skin.scale) ?? incident.metricsBefore,
+    constraint: scaleTrafficText(constraintText, skin.scale),
+    metricsBefore: scaledMetrics ?? incident.metricsBefore,
     choices,
   };
 }

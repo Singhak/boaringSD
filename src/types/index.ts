@@ -415,6 +415,8 @@ export interface SystemDesignPattern {
   diagnosis: PatternQuestion;
   intervention: PatternQuestion;
   transfer: PatternQuestion;
+  /** Pool of transfer questions rotated on replays so aftershocks feel different. */
+  transfers?: PatternQuestion[];
   review: PatternQuestion;
   tradeoff: {
     whatFailed: string;
@@ -636,6 +638,21 @@ export interface MitigationStep {
   choices: IncidentChoice[];
 }
 
+export interface ChoiceResultOverride {
+  resultTitle?: string;
+  resultBody?: string;
+  approach?: ApproachKind;
+}
+
+/** Constraint skins that change which option is correct on replays. */
+export interface IncidentConstraintVariant {
+  id?: string;
+  constraint: string;
+  metricsPatch?: Partial<Record<string, number>>;
+  correctChoiceId: string;
+  resultOverrides?: Record<string, ChoiceResultOverride>;
+}
+
 export interface IncidentV2 {
   id: string;
   incidentCode: string;
@@ -666,6 +683,8 @@ export interface IncidentV2 {
   logs?: Record<string, string[]>;
   /** Cloud credit (USD/month) this incident may spend; defaults from the correct choice's cost. */
   creditBudget?: number;
+  /** Constraint skins: replays can flip the correct choice under new business constraints. */
+  variants?: IncidentConstraintVariant[];
 }
 
 export interface IncidentPackV2 {
