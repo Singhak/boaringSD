@@ -40,6 +40,7 @@ import {
 import { recordMissionComplete } from "@/lib/storage";
 import { BAND_AID_HOLD_MS, flightFixSpec, flightVictory } from "@/lib/flightSimFix";
 import type { FlightFixKey } from "@/lib/flightSimFix";
+import { FLIGHT_BURN_PER_TICK, burnBudget } from "@/lib/runEconomy";
 
 import { ComponentKind } from "@/types";
 
@@ -339,7 +340,7 @@ export default function SystemFlightSim({
       if (!spec) {
         // Error budget burn down
         if (errorBudgetRef.current <= 0) return;
-        const next = Math.max(0, errorBudgetRef.current - 1.2);
+        const next = burnBudget(errorBudgetRef.current, FLIGHT_BURN_PER_TICK);
         errorBudgetRef.current = next;
         setErrorBudget(next);
         if (next <= 0) {

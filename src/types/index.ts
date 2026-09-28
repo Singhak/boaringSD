@@ -582,6 +582,58 @@ export interface IncidentChoice {
   nextId?: string;
   metricsAfter?: IncidentMetric[];
   graphAfter?: IncidentGraph;
+  /** Wrong choices: a small change to graphBefore (a node goes red, a queue backs up) instead of a full graphAfter. */
+  graphPatch?: GraphPatch;
+  /**
+   * Wrong choices only: a band-aid that looks like it works. The deploy "holds",
+   * then this incident (an isCascade incident in the same pack) pages you: the delayed bill.
+   */
+  consequenceIncidentId?: string;
+}
+
+/** Changes applied on top of an incident's graphBefore. Node ids must exist in the graph or in addNodes. */
+export interface GraphPatch {
+  nodes?: { id: string; tone?: SystemTone; cpu?: number; sub?: string; label?: string }[];
+  addNodes?: IncidentNode[];
+  addEdges?: IncidentEdge[];
+}
+
+/** How an incident is played. Missing means "pick". */
+export type IncidentFormat = "pick" | "culprit" | "knob" | "two-step";
+
+/** Find the culprit: flag the failing node on the topology before the choices appear. */
+export interface CulpritSpec {
+  nodeId: string;
+  /** Shown once the right node is flagged: what the logs gave away. */
+  explanation: string;
+  /** Optional per-node feedback when the player flags the wrong node. */
+  wrongNodeFeedback?: Record<string, string>;
+}
+
+/** Tune the knob: drag a slider until the metrics go green, then apply it. Replaces the choice cards. */
+export interface KnobSpec {
+  label: string;
+  unit?: string;
+  min: number;
+  max: number;
+  step: number;
+  /** Starting value; must be outside the target range. */
+  start: number;
+  /** Inclusive range of values that fix the incident. */
+  target: [number, number];
+  /** What the player is asked, e.g. "Size the pool so p95 recovers without exhausting Postgres". */
+  question: string;
+  /** Anchor points (sorted by `at`, spanning min..max); metrics are linearly interpolated between them. */
+  curve: { at: number; metrics: { key: string; value: number }[] }[];
+  low: { title: string; body: string };
+  high: { title: string; body: string };
+  good: { title: string; body: string };
+}
+
+/** Two-step: mitigate first (shed load, scale out), then fix the root cause with the incident's choices. */
+export interface MitigationStep {
+  question: string;
+  choices: IncidentChoice[];
 }
 
 export interface IncidentV2 {
@@ -606,6 +658,14 @@ export interface IncidentV2 {
   choices: IncidentChoice[];
   hints: string[];
   nextId?: string;
+  format?: IncidentFormat;
+  culprit?: CulpritSpec;
+  knob?: KnobSpec;
+  mitigation?: MitigationStep;
+  /** Log lines per node id (2–4 each) for the telemetry inspector; required for "culprit" incidents. */
+  logs?: Record<string, string[]>;
+  /** Cloud credit (USD/month) this incident may spend; defaults from the correct choice's cost. */
+  creditBudget?: number;
 }
 
 export interface IncidentPackV2 {
