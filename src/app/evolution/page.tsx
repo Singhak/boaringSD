@@ -15,11 +15,19 @@ const TIER_OF: Record<ArchitectureNodeType, number> = {
   client: 0,
   cdn: 1,
   load_balancer: 2,
+  auth_gateway: 2,
   server: 3,
+  stream_processor: 3,
   queue: 4,
+  connection_pooler: 4,
+  shard_router: 4,
+  observability: 4,
   cache: 5,
   database: 5,
   replica: 5,
+  id_service: 5,
+  search_index: 5,
+  consensus_cluster: 5,
 };
 
 const STAGE_CHIP: Record<EvolutionStage["status"], string> = { healthy: "chip-ok", warning: "chip-warn", danger: "chip-bad" };

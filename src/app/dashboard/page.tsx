@@ -20,6 +20,8 @@ const KIND_LABELS: Record<NextActionKind, string> = {
   "builder-boss": "Builder boss",
   "pattern-run": "Next level",
   practice: "Practice",
+  interview: "Tier interview",
+  estimation: "Estimation gym",
 };
 
 const getRankTitle = (lvl: number) => {

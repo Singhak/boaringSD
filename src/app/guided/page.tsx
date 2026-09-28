@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, ArrowRight, Check, Clock, RotateCcw, X, Zap } from "lucide-react";
@@ -10,10 +10,12 @@ import LevelUpModal from "@/components/LevelUpModal";
 import QuestionCard from "@/components/run/QuestionCard";
 import ScenarioTabs from "@/components/run/ScenarioTabs";
 import SelectTile, { TileState } from "@/components/run/SelectTile";
-import { Stepper, T, Topology } from "@/components/run/RunVisuals";
+import { Stepper } from "@/components/run/RunVisuals";
+import ArchitectureCanvas, { makeArchNode } from "@/components/builder/ArchitectureCanvas";
+import type { Node, Edge } from "@xyflow/react";
 import { GUIDED_SCENARIOS } from "@/data/guided";
 import { completeGuided, nextShuffleSeed } from "@/lib/storage";
-import { checkPicks, orderPicks } from "@/lib/guidedPicks";
+import { checkPicks, orderPicks, type PickResult } from "@/lib/guidedPicks";
 import { playBlipSound, playErrorSound, playLevelUpSound, playSuccessSound } from "@/lib/sound";
 import type { ArchitectureNodeType, GuidedScenario } from "@/types";
 
@@ -22,16 +24,6 @@ const STEPS = [
   { id: "entities", label: "Entities" },
   { id: "apis", label: "APIs" },
   { id: "architecture", label: "Architecture" },
-];
-
-const COMPONENTS: { type: ArchitectureNodeType; label: string; desc: string }[] = [
-  { type: "cdn", label: "Edge CDN", desc: "Caches video chunks, images, and static assets globally" },
-  { type: "load_balancer", label: "Load balancer", desc: "Spreads HTTP/TCP requests across app servers" },
-  { type: "server", label: "Stateless app servers", desc: "Executes API business logic and socket sessions" },
-  { type: "cache", label: "In-memory cache", desc: "Answers repeated reads from RAM (Redis / Memcached)" },
-  { type: "queue", label: "Message queue", desc: "Decouples async jobs, fan-out, and transcoding" },
-  { type: "database", label: "Primary database", desc: "Durable ACID source of truth for persistent data" },
-  { type: "replica", label: "Read replicas", desc: "Offloads read queries horizontally from primary DB" },
 ];
 
 const stripStep = (s: string) => s.replace(/^Step \d+:\s*/i, "");
@@ -350,7 +342,6 @@ function PickStep({
 
 function ArchitectureStep({
   scenario,
-  seed,
   onPass,
   done,
 }: {
@@ -360,76 +351,126 @@ function ArchitectureStep({
   done: boolean;
 }) {
   const a = scenario.architectureDiscovery;
+  const initialNodes = useMemo<Node[]>(
+    () => [
+      makeArchNode("users", "client", "Users", 40, 220),
+      makeArchNode("db", "database", "Primary DB", 560, 220),
+    ],
+    []
+  );
+
+  const [nodes, setNodes] = useState<Node[]>(initialNodes);
+  const [, setEdges] = useState<Edge[]>([]);
+  const [checkResult, setCheckResult] = useState<PickResult | null>(null);
+
+  const handleGraphChange = useCallback((nextNodes: Node[], nextEdges: Edge[]) => {
+    setNodes(nextNodes);
+    setEdges(nextEdges);
+    setCheckResult(null);
+  }, []);
+
+  const handleSubmit = () => {
+    const placedTypes = Array.from(
+      new Set(
+        nodes
+          .map((n) => (n.data as { type?: ArchitectureNodeType })?.type)
+          .filter((t): t is ArchitectureNodeType => Boolean(t) && t !== "client")
+      )
+    );
+
+    const result = checkPicks(placedTypes, a.requiredComponents, true);
+    setCheckResult(result);
+
+    if (result.pass) {
+      playSuccessSound();
+      onPass();
+    } else {
+      playErrorSound();
+    }
+  };
+
+  const currentTypes = Array.from(
+    new Set(
+      nodes
+        .map((n) => (n.data as { type?: ArchitectureNodeType })?.type)
+        .filter((t): t is ArchitectureNodeType => Boolean(t) && t !== "client")
+    )
+  );
+
   return (
-    <div className="space-y-5">
-      <PickStep
-        eyebrow="Step 4 of 4 · Architecture"
-        title={stripStep(a.instruction)}
-        help="Pick only the building blocks this system needs to be fault-tolerant and horizontally scalable. Extra components are rejected. The diagram updates as you go."
-        noun="component"
-        exact
-        items={orderPicks(
-          COMPONENTS.map((c) => ({ ...c, id: c.type })),
-          `${seed}|architecture`
-        ).map((c) => ({
-          id: c.type,
-          content: (
-            <span className="block">
-              <span className="block text-[13px] font-semibold text-white">{c.label}</span>
-              <span className="block text-xs text-slate-500 mt-0.5">{c.desc}</span>
-            </span>
-          ),
-        }))}
-        correctIds={a.requiredComponents}
-        grid
-        submitLabel="Submit architecture"
-        continueLabel="Finish challenge"
-        passNote={a.explanation}
-        onPass={onPass}
-        locked={done}
-      >
-        {(selected) => {
-          const has = (t: ArchitectureNodeType) => selected.includes(t);
-          const slot = (t: ArchitectureNodeType, label: string, note?: string) =>
-            has(t) ? T(label, "new", note) : T(label, "idle", "not added");
+    <div className="surface p-6 sm:p-7 space-y-6">
+      <header className="space-y-2">
+        <div className="flex items-center gap-2">
+          <span className="chip chip-accent text-[11px]">Step 4 of 4 · Architecture</span>
+          <span className="chip">Canvas Builder</span>
+        </div>
+        <h2 className="text-2xl display">{stripStep(a.instruction)}</h2>
+        <p className="text-sm text-slate-400 max-w-3xl leading-relaxed">
+          Assemble the required system architecture on the canvas. Add components from the palette, wire the flow of traffic, and eliminate bottlenecks. Extra over-provisioned components will be rejected.
+        </p>
+      </header>
 
-          const tiers = [[T("Users")]];
-          if (has("cdn")) {
-            tiers.push([T("Edge CDN", "new", "global POPs")]);
-          }
-          tiers.push([slot("load_balancer", "Load balancer")]);
-          tiers.push([slot("server", "App servers", "stateless fleet")]);
+      {/* Canvas */}
+      <div className="rounded-xl overflow-hidden border border-[var(--line)]">
+        <ArchitectureCanvas
+          initialNodes={initialNodes}
+          initialEdges={[]}
+          onChange={handleGraphChange}
+          className="h-[480px] w-full"
+        />
+      </div>
 
-          const asyncRow = [];
-          if (has("cache")) asyncRow.push(T("In-Memory Cache", "new", "RAM"));
-          if (has("queue")) asyncRow.push(T("Message Queue", "new", "async"));
-          if (asyncRow.length > 0) tiers.push(asyncRow);
+      {/* Readout & Submit */}
+      <div className="flex flex-wrap items-center justify-between gap-4 pt-2">
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="eyebrow">Placed components ({currentTypes.length}):</span>
+          {currentTypes.length === 0 ? (
+            <span className="text-slate-500 italic">None added yet</span>
+          ) : (
+            currentTypes.map((t) => (
+              <span key={t} className="chip chip-ghost text-slate-300">
+                {t.replace(/_/g, " ")}
+              </span>
+            ))
+          )}
+        </div>
 
-          const storageRow = [slot("database", "Database", "primary")];
-          if (has("replica")) storageRow.push(T("Read Replicas", "new", "read pool"));
-          tiers.push(storageRow);
-
-          return (
-            <Topology
-              caption={<span className="eyebrow">Your architectural topology</span>}
-              tiers={tiers}
-            />
-          );
-        }}
-      </PickStep>
-
-      {done && (
-        <div className="flex flex-wrap items-center gap-3 pt-1 animate-fadeIn">
-          <span className="chip chip-ok">
-            <Check className="w-3 h-3" /> Challenge complete
-          </span>
-          <Link href="/builder" className="btn btn-primary">
-            Build it in the sandbox
+        {!done && (
+          <button type="button" onClick={handleSubmit} className="btn btn-primary">
+            Submit architecture
             <ArrowRight className="w-4 h-4" />
-          </Link>
-          <Link href="/evolution" className="btn btn-ghost">
-            See how it evolves
-          </Link>
+          </button>
+        )}
+      </div>
+
+      {/* Feedback banner */}
+      {checkResult && !checkResult.pass && (
+        <div className="surface-2 p-4 rounded-xl border border-rose-500/40 text-sm space-y-1 animate-fadeIn">
+          <p className="font-semibold text-rose-300 flex items-center gap-2">
+            <X className="w-4 h-4" /> Architecture review failed
+          </p>
+          <p className="text-slate-300 text-xs">
+            {checkResult.missing > 0 && `${checkResult.missing} required component(s) are missing from your architecture. `}
+            {checkResult.extra > 0 && `${checkResult.extra} unneeded or over-provisioned component(s) were added. Keep the design lean.`}
+          </p>
+        </div>
+      )}
+
+      {(done || (checkResult && checkResult.pass)) && (
+        <div className="surface-2 p-5 rounded-xl border border-emerald-500/40 space-y-3 animate-fadeIn">
+          <p className="font-semibold text-emerald-300 flex items-center gap-2">
+            <Check className="w-4 h-4" /> Architecture approved
+          </p>
+          <p className="text-xs text-slate-300 leading-relaxed">{a.explanation}</p>
+          <div className="flex flex-wrap items-center gap-3 pt-2">
+            <Link href="/builder" className="btn btn-primary btn-sm">
+              Build it in the sandbox
+              <ArrowRight className="w-3.5 h-3.5" />
+            </Link>
+            <Link href="/campaign" className="btn btn-ghost btn-sm">
+              Return to Campaign
+            </Link>
+          </div>
         </div>
       )}
     </div>
