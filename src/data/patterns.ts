@@ -1085,7 +1085,7 @@ export const PATTERNS: SystemDesignPattern[] = [
           id: "r-lat",
           label: "Accurate global counts, at the cost of a Redis round trip per request",
           isCorrect: true,
-          explanation: "Centralized counters stop per-server limits from leaking, at the cost of a sub-millisecond Redis call on every request, plus a dependency to plan for if Redis goes down.",
+          explanation: "Centralized counters stop per-server limits from leaking via atomic INCR or Lua scripts, at the cost of a network round trip per request and the operational reality that asynchronous replica failover can lose recent counts.",
         },
         {
           id: "r-loss",
@@ -1097,7 +1097,7 @@ export const PATTERNS: SystemDesignPattern[] = [
           id: "r-cpu",
           label: "Rate-limit decisions become eventually consistent across the fleet",
           isCorrect: false,
-          explanation: "That is the tradeoff of local or gossip-synced counters. A single Redis counter updated with atomic INCR is consistent; the cost is the extra network hop.",
+          explanation: "That is the tradeoff of local or gossip-synced counters. Redis counters updated with atomic INCR or Lua are consistent while the primary is healthy, though asynchronous replica failover can drop recent counts; the regular cost is the extra network hop.",
         },
       ],
     },

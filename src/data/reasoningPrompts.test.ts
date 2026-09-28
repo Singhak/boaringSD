@@ -37,8 +37,8 @@ const PATTERN_IDS: PatternId[] = [
   "auth-at-scale",
 ];
 
-test("has 50 prompts with unique ids", () => {
-  assert.equal(REASONING_PROMPTS.length, 50);
+test("has all 56 prompts with unique ids", () => {
+  assert.equal(REASONING_PROMPTS.length, 56);
   const ids = new Set(REASONING_PROMPTS.map((p) => p.id));
   assert.equal(ids.size, REASONING_PROMPTS.length);
 });

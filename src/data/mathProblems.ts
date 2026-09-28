@@ -1,10 +1,20 @@
 import { scoreEstimate } from "@/lib/estimation";
 
-export type MathCategory = "qps" | "storage" | "bandwidth" | "cache_ram" | "availability" | "cost";
+export type MathCategory =
+  | "qps"
+  | "storage"
+  | "bandwidth"
+  | "cache_ram"
+  | "shard_count"
+  | "replica_count"
+  | "availability"
+  | "cost";
+
 export type MathDifficulty = "beginner" | "intermediate" | "advanced";
 
 export interface MathProblem {
   id: string;
+  templateId?: string;
   title: string;
   category: MathCategory;
   difficulty: MathDifficulty;
@@ -16,7 +26,7 @@ export interface MathProblem {
   }[];
   canonicalAnswer: number;
   unit: string;
-  magnitudeLabel: string; // e.g., "RPS", "TB/year", "GB RAM", "minutes/year"
+  magnitudeLabel: string; // e.g., "RPS", "TB/year", "GB RAM", "minutes/year", "Shards", "Replicas"
   stepByStepDerivation: string[];
   ruleOfThumbTip: string;
 }
@@ -66,223 +76,396 @@ export function evaluateMathAnswer(problem: MathProblem, userAnswer: number): Ma
   }
 }
 
-export const MATH_PROBLEMS: MathProblem[] = [
+// ---------------------------------------------------------------------------
+// Dynamic Problem Generator Templates (Phase 5.5)
+// ---------------------------------------------------------------------------
+
+export interface MathTemplate {
+  templateId: string;
+  title: string;
+  category: MathCategory;
+  difficulty: MathDifficulty;
+  scenarioContext: string;
+  generate: (seed: number) => MathProblem;
+}
+
+export const MATH_TEMPLATES: MathTemplate[] = [
+  // 1. QPS: DAU to Average QPS
   {
-    id: "math-dau-qps-1",
+    templateId: "tpl-dau-qps",
     title: "Daily Active Users to Average QPS",
     category: "qps",
     difficulty: "beginner",
-    prompt: "A social media platform has 100 Million Daily Active Users (DAU). Each user performs an average of 20 API requests per day. What is the average Queries Per Second (QPS)?",
     scenarioContext: "Standard interview opener for Twitter, Threads, or Instagram feed design.",
-    parameters: [
-      { label: "Daily Active Users", value: "100,000,000" },
-      { label: "Requests per User/Day", value: "20" },
-      { label: "Seconds in a Day", value: "86,400 (approx. 100,000)" },
-    ],
-    canonicalAnswer: 23150,
-    unit: "requests/sec",
-    magnitudeLabel: "RPS",
-    stepByStepDerivation: [
-      "Total daily requests = 100,000,000 × 20 = 2,000,000,000 (2 Billion req/day)",
-      "Exact: 2,000,000,000 ÷ 86,400 ≈ 23,148 RPS",
-      "Rule-of-Thumb Shortcut: 2B ÷ 100,000 = 20,000 RPS (acceptable in fast interview)",
-    ],
-    ruleOfThumbTip: "1 Million requests/day ≈ 11.6 RPS (round to 12 RPS). So 2,000 Million = 2,000 × 12 ≈ 24,000 RPS.",
+    generate: (seed: number) => {
+      const dauChoices = [50_000_000, 100_000_000, 200_000_000, 400_000_000];
+      const actionsChoices = [10, 20, 25, 40];
+      const dau = dauChoices[Math.abs(seed) % dauChoices.length];
+      const actions = actionsChoices[Math.abs(Math.floor(seed / 7)) % actionsChoices.length];
+      const dauMillions = dau / 1_000_000;
+      const totalDaily = dau * actions;
+      const qps = Math.round(totalDaily / 86_400);
+
+      return {
+        id: `math-dau-qps-${dauMillions}m-${actions}`,
+        templateId: "tpl-dau-qps",
+        title: "Daily Active Users to Average QPS",
+        category: "qps",
+        difficulty: "beginner",
+        prompt: `A social platform has ${dauMillions} Million Daily Active Users (DAU). Each user performs an average of ${actions} API requests per day. What is the average Queries Per Second (QPS)?`,
+        scenarioContext: "Standard interview opener for Twitter, Threads, or Instagram feed design.",
+        parameters: [
+          { label: "Daily Active Users", value: `${dau.toLocaleString()} (${dauMillions}M)` },
+          { label: "Requests per User/Day", value: `${actions}` },
+          { label: "Seconds in a Day", value: "86,400 (approx. 100,000)" },
+        ],
+        canonicalAnswer: qps,
+        unit: "requests/sec",
+        magnitudeLabel: "RPS",
+        stepByStepDerivation: [
+          `Total daily requests = ${dau.toLocaleString()} × ${actions} = ${(totalDaily / 1_000_000_000).toFixed(1)} Billion req/day`,
+          `Exact: ${totalDaily.toLocaleString()} ÷ 86,400 ≈ ${qps.toLocaleString()} RPS`,
+          `Rule-of-Thumb Shortcut: ${totalDaily.toLocaleString()} ÷ 100,000 = ${Math.round(totalDaily / 100_000).toLocaleString()} RPS`,
+        ],
+        ruleOfThumbTip: `1 Million requests/day ≈ 11.6 RPS (round to 12 RPS). So ${(totalDaily / 1_000_000).toLocaleString()} Million ≈ ${Math.round((totalDaily / 1_000_000) * 11.6).toLocaleString()} RPS.`,
+      };
+    },
   },
+
+  // 2. QPS: Peak Multiplier
   {
-    id: "math-peak-qps-2",
+    templateId: "tpl-peak-qps",
     title: "Flash Sale Peak QPS Multiplier",
     category: "qps",
     difficulty: "beginner",
-    prompt: "An e-commerce service runs at an average of 40,000 QPS during business hours. During a Black Friday flash sale, traffic spikes by 2.5×. What peak QPS must the load balancer and ingress gateway be provisioned to handle?",
     scenarioContext: "High-traffic retail event planning (Amazon Prime Day, Alibaba 11.11).",
-    parameters: [
-      { label: "Average QPS", value: "40,000 RPS" },
-      { label: "Peak Multiplier", value: "2.5×" },
-    ],
-    canonicalAnswer: 100000,
-    unit: "requests/sec",
-    magnitudeLabel: "Peak RPS",
-    stepByStepDerivation: [
-      "Peak QPS = Average QPS × Peak Factor",
-      "40,000 × 2.5 = 100,000 RPS",
-    ],
-    ruleOfThumbTip: "Always design for 2× to 3× of average traffic to handle diurnal peaks and sudden flash events.",
+    generate: (seed: number) => {
+      const avgChoices = [20_000, 40_000, 60_000, 80_000];
+      const multChoices = [2.5, 3.0, 3.5, 4.0];
+      const avg = avgChoices[Math.abs(seed) % avgChoices.length];
+      const mult = multChoices[Math.abs(Math.floor(seed / 5)) % multChoices.length];
+      const peak = Math.round(avg * mult);
+
+      return {
+        id: `math-peak-qps-${avg}-${mult}x`,
+        templateId: "tpl-peak-qps",
+        title: "Flash Sale Peak QPS Multiplier",
+        category: "qps",
+        difficulty: "beginner",
+        prompt: `An e-commerce service runs at an average of ${avg.toLocaleString()} QPS. During a flash sale, traffic spikes by ${mult}×. What peak QPS must the ingress load balancer be provisioned to handle?`,
+        scenarioContext: "High-traffic retail event planning (Amazon Prime Day, Alibaba 11.11).",
+        parameters: [
+          { label: "Average QPS", value: `${avg.toLocaleString()} RPS` },
+          { label: "Peak Multiplier", value: `${mult}×` },
+        ],
+        canonicalAnswer: peak,
+        unit: "requests/sec",
+        magnitudeLabel: "Peak RPS",
+        stepByStepDerivation: [
+          `Peak QPS = Average QPS × Peak Factor`,
+          `${avg.toLocaleString()} × ${mult} = ${peak.toLocaleString()} RPS`,
+        ],
+        ruleOfThumbTip: "Always design for 2.5× to 4× of average traffic to handle diurnal peaks and sudden promotional flash events.",
+      };
+    },
   },
+
+  // 3. Storage: Yearly Projection
   {
-    id: "math-cache-pareto-3",
-    title: "RAM Cache Sizing (80/20 Pareto Rule)",
-    category: "cache_ram",
-    difficulty: "intermediate",
-    prompt: "Your system receives 500 Million read requests per day. The average response object size is 500 bytes. Following the 80/20 Pareto principle (caching the top 20% of hot daily items to satisfy 80% of traffic), how many Gigabytes (GB) of RAM are required for the Redis cluster?",
-    scenarioContext: "Essential sizing calculation before drawing a Redis or Memcached node in any interview.",
-    parameters: [
-      { label: "Daily Reads", value: "500,000,000" },
-      { label: "Payload Size", value: "500 Bytes" },
-      { label: "Hot Cache Ratio", value: "20% (0.20)" },
-    ],
-    canonicalAnswer: 50,
-    unit: "GB",
-    magnitudeLabel: "GB RAM",
-    stepByStepDerivation: [
-      "Hot items to cache = 500,000,000 × 0.20 = 100,000,000 keys",
-      "Raw RAM = 100,000,000 × 500 Bytes = 50,000,000,000 Bytes",
-      "Convert to GB: 50,000,000,000 ÷ 10^9 = 50 GB RAM (or ~46.5 GiB)",
-    ],
-    ruleOfThumbTip: "100 Million items × 500 Bytes = 50 GB. Always remember to add 25-30% buffer for Redis dict pointer overhead in production.",
-  },
-  {
-    id: "math-storage-yearly-4",
-    title: "5-Year Disk Storage Projection (TinyURL)",
+    templateId: "tpl-storage-yearly",
+    title: "Multi-Year Database Storage Projection",
     category: "storage",
     difficulty: "intermediate",
-    prompt: "TinyURL generates 100 Million new shortened URLs per month. Each record in PostgreSQL stores the 7-character Base62 key, the original long URL (avg 500 bytes), user ID, and timestamp metadata totaling 600 bytes. How many Terabytes (TB) of persistent database storage will be needed over 5 years?",
-    scenarioContext: "Database capacity planning for write-heavy services.",
-    parameters: [
-      { label: "New URLs / Month", value: "100,000,000" },
-      { label: "Record Size", value: "600 Bytes" },
-      { label: "Timeframe", value: "5 Years (60 Months)" },
-    ],
-    canonicalAnswer: 36,
-    unit: "TB",
-    magnitudeLabel: "TB",
-    stepByStepDerivation: [
-      "Total records over 5 years = 100,000,000/month × 60 months = 6,000,000,000 records (6 Billion)",
-      "Total Storage = 6,000,000,000 × 600 Bytes = 3,600,000,000,000 Bytes",
-      "Convert Bytes to TB: 3.6 × 10^12 ÷ 10^12 = 3.6 TB (Wait, 6B * 600B = 3.6 TB)",
-      "Correction: 100M * 600B = 60 GB/month. 60 GB * 60 months = 3,600 GB = 3.6 TB",
-    ],
-    ruleOfThumbTip: "100M records of 600 bytes = 60 GB per month. 60 GB × 12 = 720 GB/year × 5 years = 3.6 TB.",
+    scenarioContext: "Database capacity planning for write-heavy services (TinyURL, Message Store).",
+    generate: (seed: number) => {
+      const monthlyChoices = [50_000_000, 100_000_000, 200_000_000];
+      const bytesChoices = [400, 500, 600, 800];
+      const yearsChoices = [3, 5];
+      const monthly = monthlyChoices[Math.abs(seed) % monthlyChoices.length];
+      const bytes = bytesChoices[Math.abs(Math.floor(seed / 3)) % bytesChoices.length];
+      const years = yearsChoices[Math.abs(Math.floor(seed / 7)) % yearsChoices.length];
+      const monthlyM = monthly / 1_000_000;
+      const totalRecords = monthly * 12 * years;
+      const totalBytes = totalRecords * bytes;
+      const tb = Math.round((totalBytes / 1_000_000_000_000) * 10) / 10;
+
+      return {
+        id: `math-storage-${monthlyM}m-${bytes}b-${years}y`,
+        templateId: "tpl-storage-yearly",
+        title: `${years}-Year Disk Storage Projection`,
+        category: "storage",
+        difficulty: "intermediate",
+        prompt: `A service generates ${monthlyM} Million new records per month. Each database row totals ${bytes} bytes. How many Terabytes (TB) of persistent database storage will be needed over ${years} years?`,
+        scenarioContext: "Database capacity planning for write-heavy services.",
+        parameters: [
+          { label: "New Records / Month", value: `${monthlyM}M (${monthly.toLocaleString()})` },
+          { label: "Record Size", value: `${bytes} Bytes` },
+          { label: "Timeframe", value: `${years} Years (${years * 12} Months)` },
+        ],
+        canonicalAnswer: tb,
+        unit: "TB",
+        magnitudeLabel: "TB",
+        stepByStepDerivation: [
+          `Total records over ${years} years = ${monthlyM}M/mo × ${years * 12} mo = ${(totalRecords / 1_000_000_000).toFixed(1)} Billion records`,
+          `Total raw storage = ${totalRecords.toLocaleString()} × ${bytes} Bytes = ${totalBytes.toLocaleString()} Bytes`,
+          `Convert to TB: ${totalBytes.toLocaleString()} ÷ 10^12 = ${tb} TB`,
+        ],
+        ruleOfThumbTip: `${monthlyM}M records of ${bytes}B = ${(monthlyM * bytes) / 1000} GB/mo × ${years * 12} mo = ${tb} TB.`,
+      };
+    },
   },
+
+  // 4. Bandwidth: Video Streaming Egress
   {
-    id: "math-bandwidth-video-5",
+    templateId: "tpl-bandwidth-video",
     title: "Video Streaming Egress Bandwidth",
     category: "bandwidth",
     difficulty: "advanced",
-    prompt: "A video streaming platform has 5 Million concurrent active viewers. Each viewer streams 1080p HD video encoded at an average bitrate of 4 Megabits per second (Mbps). What is the total egress network throughput in Terabits per second (Tbps)?",
     scenarioContext: "Netflix, YouTube, or Twitch CDN egress sizing.",
-    parameters: [
-      { label: "Concurrent Viewers", value: "5,000,000" },
-      { label: "Stream Bitrate", value: "4 Mbps" },
-    ],
-    canonicalAnswer: 20,
-    unit: "Tbps",
-    magnitudeLabel: "Tbps",
-    stepByStepDerivation: [
-      "Total throughput = 5,000,000 viewers × 4 Mbps = 20,000,000 Mbps",
-      "Convert Mbps to Gbps: 20,000,000 ÷ 1,000 = 20,000 Gbps",
-      "Convert Gbps to Tbps: 20,000 ÷ 1,000 = 20 Tbps",
-    ],
-    ruleOfThumbTip: "1 Million streams at 4 Mbps = 4,000 Gbps = 4 Tbps. Therefore 5M streams = 20 Tbps. This proves why CDNs and ISP OpenConnect appliances are mandatory.",
+    generate: (seed: number) => {
+      const viewerChoices = [2_000_000, 5_000_000, 8_000_000, 10_000_000];
+      const bitrateChoices = [3, 4, 5, 8]; // Mbps
+      const viewers = viewerChoices[Math.abs(seed) % viewerChoices.length];
+      const bitrate = bitrateChoices[Math.abs(Math.floor(seed / 4)) % bitrateChoices.length];
+      const viewersM = viewers / 1_000_000;
+      const totalMbps = viewers * bitrate;
+      const tbps = Math.round(totalMbps / 1_000_000);
+
+      return {
+        id: `math-bandwidth-video-${viewersM}m-${bitrate}mbps`,
+        templateId: "tpl-bandwidth-video",
+        title: "Video Streaming Egress Bandwidth",
+        category: "bandwidth",
+        difficulty: "advanced",
+        prompt: `A video streaming platform has ${viewersM} Million concurrent active viewers. Each viewer streams video encoded at an average bitrate of ${bitrate} Megabits per second (Mbps). What is the total egress network throughput in Terabits per second (Tbps)?`,
+        scenarioContext: "Netflix, YouTube, or Twitch CDN egress sizing.",
+        parameters: [
+          { label: "Concurrent Viewers", value: `${viewers.toLocaleString()} (${viewersM}M)` },
+          { label: "Stream Bitrate", value: `${bitrate} Mbps` },
+        ],
+        canonicalAnswer: tbps,
+        unit: "Tbps",
+        magnitudeLabel: "Tbps",
+        stepByStepDerivation: [
+          `Total throughput = ${viewers.toLocaleString()} viewers × ${bitrate} Mbps = ${totalMbps.toLocaleString()} Mbps`,
+          `Convert Mbps to Gbps: ${totalMbps.toLocaleString()} ÷ 1,000 = ${(totalMbps / 1000).toLocaleString()} Gbps`,
+          `Convert Gbps to Tbps: ${(totalMbps / 1000).toLocaleString()} ÷ 1,000 = ${tbps} Tbps`,
+        ],
+        ruleOfThumbTip: `1 Million streams at ${bitrate} Mbps = ${bitrate} Tbps. Therefore ${viewersM}M streams = ${tbps} Tbps.`,
+      };
+    },
   },
+
+  // 5. Cache RAM: 80/20 Pareto
   {
-    id: "math-sla-nines-6",
-    title: "Four Nines (99.99%) Downtime Budget",
+    templateId: "tpl-cache-pareto",
+    title: "RAM Cache Sizing (80/20 Pareto Rule)",
+    category: "cache_ram",
+    difficulty: "intermediate",
+    scenarioContext: "Essential sizing calculation before drawing a Redis or Memcached node in any interview.",
+    generate: (seed: number) => {
+      const readChoices = [200_000_000, 500_000_000, 1_000_000_000];
+      const payloadChoices = [250, 500, 1000]; // bytes
+      const reads = readChoices[Math.abs(seed) % readChoices.length];
+      const payload = payloadChoices[Math.abs(Math.floor(seed / 3)) % payloadChoices.length];
+      const readsM = reads / 1_000_000;
+      const hotRatio = 0.2;
+      const hotItems = reads * hotRatio;
+      const ramGb = Math.round((hotItems * payload) / 1_000_000_000);
+
+      return {
+        id: `math-cache-pareto-${readsM}m-${payload}b`,
+        templateId: "tpl-cache-pareto",
+        title: "RAM Cache Sizing (80/20 Pareto Rule)",
+        category: "cache_ram",
+        difficulty: "intermediate",
+        prompt: `Your system receives ${readsM} Million read requests per day. The average response object size is ${payload} bytes. Following the 80/20 Pareto principle (caching top 20% of hot daily items), how many Gigabytes (GB) of RAM are required for the Redis cluster?`,
+        scenarioContext: "Essential sizing calculation before drawing a Redis node in any interview.",
+        parameters: [
+          { label: "Daily Reads", value: `${reads.toLocaleString()} (${readsM}M)` },
+          { label: "Payload Size", value: `${payload} Bytes` },
+          { label: "Hot Cache Ratio", value: "20% (0.20)" },
+        ],
+        canonicalAnswer: ramGb,
+        unit: "GB",
+        magnitudeLabel: "GB RAM",
+        stepByStepDerivation: [
+          `Hot items to cache = ${reads.toLocaleString()} × 0.20 = ${hotItems.toLocaleString()} keys`,
+          `Raw RAM = ${hotItems.toLocaleString()} × ${payload} Bytes = ${(hotItems * payload).toLocaleString()} Bytes`,
+          `Convert to GB: ${(hotItems * payload).toLocaleString()} ÷ 10^9 = ${ramGb} GB RAM`,
+        ],
+        ruleOfThumbTip: `Always remember to add 25-30% buffer for Redis hash-table pointer overhead in production.`,
+      };
+    },
+  },
+
+  // 6. Shard Count: Write Throughput
+  {
+    templateId: "tpl-shard-count-write",
+    title: "Database Shard Count for Write Sizing",
+    category: "shard_count",
+    difficulty: "intermediate",
+    scenarioContext: "Horizontal partitioning sizing when a single primary database saturates IOPS.",
+    generate: (seed: number) => {
+      const writeQpsChoices = [30_000, 50_000, 80_000, 100_000];
+      const nodeCapacityChoices = [5_000, 10_000];
+      const writeQps = writeQpsChoices[Math.abs(seed) % writeQpsChoices.length];
+      const cap = nodeCapacityChoices[Math.abs(Math.floor(seed / 4)) % nodeCapacityChoices.length];
+      const shards = Math.ceil(writeQps / cap);
+
+      return {
+        id: `math-shard-write-${writeQps}-${cap}`,
+        templateId: "tpl-shard-count-write",
+        title: "Database Shard Count for Write Sizing",
+        category: "shard_count",
+        difficulty: "intermediate",
+        prompt: `An online ledger requires sustained write throughput of ${writeQps.toLocaleString()} inserts/sec. Benchmarks confirm a single database node sustains at most ${cap.toLocaleString()} writes/sec before disk IOPS and lock queue saturation. What is the minimum number of database shards required?`,
+        scenarioContext: "Horizontal partitioning sizing when a single primary database saturates IOPS.",
+        parameters: [
+          { label: "Total Write Traffic", value: `${writeQps.toLocaleString()} writes/sec` },
+          { label: "Max Node Throughput", value: `${cap.toLocaleString()} writes/sec` },
+        ],
+        canonicalAnswer: shards,
+        unit: "shards",
+        magnitudeLabel: "Shards",
+        stepByStepDerivation: [
+          `Required Shards = Total Write QPS ÷ Max Node Capacity`,
+          `${writeQps.toLocaleString()} ÷ ${cap.toLocaleString()} = ${shards} shards`,
+        ],
+        ruleOfThumbTip: "Always round up to power of 2 or consistent hashing virtual nodes to simplify future resharding.",
+      };
+    },
+  },
+
+  // 7. Replica Count: Read Splitting
+  {
+    templateId: "tpl-replica-count",
+    title: "Read Replica Fleet Sizing",
+    category: "replica_count",
+    difficulty: "intermediate",
+    scenarioContext: "Relational database read-scaling and read/write splitting architecture.",
+    generate: (seed: number) => {
+      const readQpsChoices = [40_000, 60_000, 90_000, 120_000];
+      const replicaCapChoices = [10_000, 15_000];
+      const readQps = readQpsChoices[Math.abs(seed) % readQpsChoices.length];
+      const cap = replicaCapChoices[Math.abs(Math.floor(seed / 3)) % replicaCapChoices.length];
+      const replicas = Math.ceil(readQps / cap);
+
+      return {
+        id: `math-replica-read-${readQps}-${cap}`,
+        templateId: "tpl-replica-count",
+        title: "Read Replica Fleet Sizing",
+        category: "replica_count",
+        difficulty: "intermediate",
+        prompt: `Your application receives ${readQps.toLocaleString()} read queries per second. Read queries are split across PostgreSQL read replicas. Each replica instance comfortably serves ${cap.toLocaleString()} QPS at P99 < 20ms. What is the minimum number of read replicas needed?`,
+        scenarioContext: "Relational database read-scaling and read/write splitting architecture.",
+        parameters: [
+          { label: "Total Read QPS", value: `${readQps.toLocaleString()} reads/sec` },
+          { label: "Replica Safe Capacity", value: `${cap.toLocaleString()} reads/sec` },
+        ],
+        canonicalAnswer: replicas,
+        unit: "replicas",
+        magnitudeLabel: "Replicas",
+        stepByStepDerivation: [
+          `Required Replicas = Total Read QPS ÷ Replica Safe Capacity`,
+          `${readQps.toLocaleString()} ÷ ${cap.toLocaleString()} = ${replicas} replicas`,
+        ],
+        ruleOfThumbTip: "In production, add N+1 or N+2 redundancy so a replica node failure or restart does not trigger a cascading overload.",
+      };
+    },
+  },
+
+  // 8. Availability: Four Nines Downtime
+  {
+    templateId: "tpl-sla-nines",
+    title: "SLA Downtime Budget (Nines)",
     category: "availability",
     difficulty: "beginner",
-    prompt: "Your Service Level Objective (SLO) promises 99.99% availability ('Four Nines') across a 365-day calendar year. How many minutes of total unplanned downtime are permitted before breaching the SLA?",
     scenarioContext: "Site Reliability Engineering (SRE) error budget allocation.",
-    parameters: [
-      { label: "Availability Target", value: "99.99%" },
-      { label: "Minutes per Year", value: "525,600 (365 × 24 × 60)" },
-    ],
-    canonicalAnswer: 52.6,
-    unit: "minutes",
-    magnitudeLabel: "minutes/year",
-    stepByStepDerivation: [
-      "Downtime allowed = 100% - 99.99% = 0.01% = 0.0001",
-      "Total minutes in a year = 365 × 24 × 60 = 525,600 minutes",
-      "Allowed downtime = 525,600 × 0.0001 = 52.56 minutes ≈ 52.6 minutes/year",
-    ],
-    ruleOfThumbTip: "Rule of Nines: 99% = 3.65 days/yr; 99.9% = 8.76 hours/yr; 99.99% = 52.6 minutes/yr; 99.999% = 5.26 minutes/yr.",
+    generate: (seed: number) => {
+      const targets = [
+        { label: "99.9%", nines: 0.999, minutes: 525.6 },
+        { label: "99.99%", nines: 0.9999, minutes: 52.6 },
+        { label: "99.999%", nines: 0.99999, minutes: 5.3 },
+      ];
+      const item = targets[Math.abs(seed) % targets.length];
+
+      return {
+        id: `math-sla-${item.label.replace("%", "").replace(".", "-")}`,
+        templateId: "tpl-sla-nines",
+        title: `${item.label} Availability Downtime Budget`,
+        category: "availability",
+        difficulty: "beginner",
+        prompt: `Your Service Level Objective promises ${item.label} availability across a 365-day year. How many minutes of total unplanned downtime are permitted before breaching the SLA?`,
+        scenarioContext: "Site Reliability Engineering (SRE) error budget allocation.",
+        parameters: [
+          { label: "Availability Target", value: item.label },
+          { label: "Minutes per Year", value: "525,600 (365 × 24 × 60)" },
+        ],
+        canonicalAnswer: item.minutes,
+        unit: "minutes",
+        magnitudeLabel: "minutes/year",
+        stepByStepDerivation: [
+          `Downtime allowed = 100% - ${item.label} = ${(1 - item.nines).toFixed(5)}`,
+          `Total minutes in a year = 365 × 24 × 60 = 525,600 minutes`,
+          `Allowed downtime = 525,600 × ${(1 - item.nines).toFixed(5)} ≈ ${item.minutes} minutes/year`,
+        ],
+        ruleOfThumbTip: "Rule of Nines: 99% = 3.65 days/yr; 99.9% = 8.76 hours/yr; 99.99% = 52.6 minutes/yr; 99.999% = 5.26 minutes/yr.",
+      };
+    },
   },
+
+  // 9. Cost: S3 Object Storage
   {
-    id: "math-db-connection-pool-7",
-    title: "Connection Pool Sizing & Exhaustion",
-    category: "qps",
-    difficulty: "intermediate",
-    prompt: "A microservice fleet consists of 50 Kubernetes application pods. Each pod runs a web server with 30 worker threads, each opening direct database connections to a single PostgreSQL primary. The database has max_connections set to 500. How many total connections will the app fleet attempt to open, and what will the surplus/deficit be?",
-    scenarioContext: "Root cause analysis for Level 11 (Connection Pooling).",
-    parameters: [
-      { label: "App Pods", value: "50" },
-      { label: "Threads/Pod", value: "30" },
-      { label: "DB max_connections", value: "500" },
-    ],
-    canonicalAnswer: 1500,
-    unit: "connections",
-    magnitudeLabel: "Connections",
-    stepByStepDerivation: [
-      "Total connections requested = 50 pods × 30 threads = 1,500 connections",
-      "Database limit = 500 connections",
-      "1,500 > 500: Database connection pool immediately exhausts, rejecting 1,000 connections with 'FATAL: sorry, too many clients already'.",
-    ],
-    ruleOfThumbTip: "Postgres forks a process per connection (~10MB RAM each). Never connect hundreds of stateless app servers directly to Postgres; place PgBouncer or AWS RDS Proxy in between.",
-  },
-  {
-    id: "math-cdn-cost-savings-8",
-    title: "CDN Offload & Cloud Egress Cost",
-    category: "cost",
-    difficulty: "intermediate",
-    prompt: "An application serves 200 Terabytes (TB) of static image and video assets each month. Direct cloud egress from origin AWS servers costs $0.08 per GB. By deploying Cloudflare or CloudFront with an 85% cache hit ratio ($0.02/GB for CDN egress, and origin traffic drops to 15%), what are the monthly bandwidth savings in Dollars ($)?",
-    scenarioContext: "Architectural justification for adding CDN (Level 5 / Sprint 4).",
-    parameters: [
-      { label: "Monthly Egress", value: "200 TB (200,000 GB)" },
-      { label: "Origin Cost / GB", value: "$0.08" },
-      { label: "CDN Cache Hit Rate", value: "85%" },
-      { label: "CDN Egress Cost / GB", value: "$0.02" },
-    ],
-    canonicalAnswer: 10200,
-    unit: "USD/month",
-    magnitudeLabel: "$ savings/mo",
-    stepByStepDerivation: [
-      "Cost without CDN = 200,000 GB × $0.08 = $16,000/month",
-      "With CDN: 85% served at edge (170,000 GB × $0.02 = $3,400)",
-      "Origin fetches for remaining 15% (30,000 GB × $0.08 = $2,400)",
-      "Total cost with CDN = $3,400 + $2,400 = $5,800/month",
-      "Monthly Savings = $16,000 - $5,800 = $10,200/month (63.75% cost reduction)",
-    ],
-    ruleOfThumbTip: "CDNs not only reduce latency by 10x, they also dramatically cut multi-cloud egress transit bills.",
-  },
-  {
-    id: "math-kafka-partitions-9",
-    title: "Kafka Partitioning Throughput Sizing",
-    category: "bandwidth",
-    difficulty: "advanced",
-    prompt: "A real-time telemetry pipeline ingests 200,000 events per second. Each event payload is 1 Kilobyte (KB). In Kafka, a single topic partition comfortably sustains 10 Megabytes per second (MB/s) of write throughput without producer backpressure. What is the minimum number of partitions required for this topic?",
-    scenarioContext: "Message broker sizing for distributed event streams (Level 6 & Uber Dispatch).",
-    parameters: [
-      { label: "Event Rate", value: "200,000 events/sec" },
-      { label: "Event Size", value: "1 KB" },
-      { label: "Single Partition Max Throughput", value: "10 MB/sec" },
-    ],
-    canonicalAnswer: 20,
-    unit: "partitions",
-    magnitudeLabel: "Partitions",
-    stepByStepDerivation: [
-      "Total throughput = 200,000 events/sec × 1 KB = 200,000 KB/sec",
-      "Convert KB/sec to MB/sec: 200,000 ÷ 1,000 = 200 MB/sec",
-      "Minimum partitions = 200 MB/sec ÷ 10 MB/sec per partition = 20 partitions",
-    ],
-    ruleOfThumbTip: "Partitions are the unit of parallelism in Kafka. Always add 25-50% headroom for spikes (e.g. provision 24 or 32 partitions).",
-  },
-  {
-    id: "math-s3-storage-cost-10",
+    templateId: "tpl-s3-storage-cost",
     title: "Object Storage (S3) Cost Projection",
     category: "cost",
     difficulty: "beginner",
-    prompt: "Your media startup stores 2 Petabytes (PB) of video raw files in AWS S3 Standard storage. The price is $0.023 per GB per month. What is the monthly storage bill in Dollars ($)?",
     scenarioContext: "Cloud infrastructure budgeting in system design interviews.",
-    parameters: [
-      { label: "Data Volume", value: "2 PB (2,000,000 GB)" },
-      { label: "Cost per GB/Month", value: "$0.023" },
-    ],
-    canonicalAnswer: 46000,
-    unit: "USD/month",
-    magnitudeLabel: "$/month",
-    stepByStepDerivation: [
-      "Convert PB to GB: 2 PB = 2,000 TB = 2,000,000 GB",
-      "Monthly cost = 2,000,000 GB × $0.023 = $46,000 per month ($552,000/year)",
-    ],
-    ruleOfThumbTip: "1 PB of S3 Standard costs roughly $23,000/month. Moving cold data to S3 Glacier ($0.004/GB) saves ~80%.",
+    generate: (seed: number) => {
+      const pbChoices = [1, 2, 4, 5];
+      const pb = pbChoices[Math.abs(seed) % pbChoices.length];
+      const gb = pb * 1_000_000;
+      const rate = 0.023;
+      const cost = Math.round(gb * rate);
+
+      return {
+        id: `math-s3-${pb}pb`,
+        templateId: "tpl-s3-storage-cost",
+        title: `${pb}PB Object Storage Monthly Cost`,
+        category: "cost",
+        difficulty: "beginner",
+        prompt: `Your media service stores ${pb} Petabytes (PB) of raw video files in AWS S3 Standard storage. The price is $0.023 per GB per month. What is the monthly storage bill in Dollars ($)?`,
+        scenarioContext: "Cloud infrastructure budgeting in system design interviews.",
+        parameters: [
+          { label: "Data Volume", value: `${pb} PB (${gb.toLocaleString()} GB)` },
+          { label: "Cost per GB/Month", value: `$${rate}` },
+        ],
+        canonicalAnswer: cost,
+        unit: "USD/month",
+        magnitudeLabel: "$/month",
+        stepByStepDerivation: [
+          `Convert PB to GB: ${pb} PB = ${gb.toLocaleString()} GB`,
+          `Monthly cost = ${gb.toLocaleString()} GB × $0.023 = $${cost.toLocaleString()} per month`,
+        ],
+        ruleOfThumbTip: `1 PB of S3 Standard costs roughly $23,000/month. Moving colder archive tiers to S3 Glacier ($0.004/GB) saves ~80%.`,
+      };
+    },
   },
 ];
+
+/** Generates a problem from a specific template or random selection using a seed. */
+export function generateMathProblem(templateId?: string, seed: number = Date.now()): MathProblem {
+  const tpl = templateId
+    ? MATH_TEMPLATES.find((t) => t.templateId === templateId) || MATH_TEMPLATES[0]
+    : MATH_TEMPLATES[Math.abs(seed) % MATH_TEMPLATES.length];
+  return tpl.generate(seed);
+}
+
+/** Generates a complete set of problems covering all categories with varied numbers. */
+export function generateAllMathProblems(seed: number = 42): MathProblem[] {
+  return MATH_TEMPLATES.map((t, idx) => t.generate(seed + idx * 31));
+}
+
+// Initial statically exported problems generated from templates for backward compatibility
+export const MATH_PROBLEMS: MathProblem[] = generateAllMathProblems(2026);

@@ -580,6 +580,102 @@ export const REASONING_PROMPTS: ReasoningPrompt[] = [
     modelAnswer:
       "Catalog reads can be seconds stale, so CDN, caches and local replicas keep them under 50ms. Stock decrements go to one home region per SKU with an atomic 'stock > 0' check. Tradeoff: remote shoppers pay ~100ms more at checkout, and a partition can pause that SKU's sales.",
   },
+  {
+    id: "interview-whatsapp-chat",
+    interviewId: "interview-whatsapp-chat",
+    kind: "interview",
+    askedBy: "Tariq · Interviewer, staff architect",
+    prompt:
+      "50M concurrent WebSocket connections. Why maintain stateful gateway nodes instead of standard HTTP long-polling behind an Anycast load balancer?",
+    starters: ["WebSockets eliminate…", "HTTP polling creates…", "The tradeoff is…"],
+    rubric: [
+      { id: "handshake", criterion: "Explains HTTP polling creates continuous TLS handshake, header overhead, and socket churn at 50M connections", weight: 3 },
+      { id: "latency", criterion: "Identifies persistent bidirectional TCP/WebSocket streams as necessary for sub-100ms message delivery", weight: 2 },
+      { id: "stateful-cost", criterion: "Names the cost: gateway nodes are stateful, requiring connection tracking and rebalance logic on node crashes", weight: 2 },
+    ],
+    modelAnswer:
+      "HTTP polling incurs massive TLS handshake and header overhead across 50M users. Persistent WebSockets allow instant sub-100ms push with minimal idle keepalive bytes. Tradeoff: gateways become stateful, requiring session registries in Redis and graceful client reconnect logic.",
+  },
+  {
+    id: "interview-youtube-video",
+    interviewId: "interview-youtube-video",
+    kind: "interview",
+    askedBy: "Elena · Interviewer, media infrastructure lead",
+    prompt:
+      "You transcode uploaded video into 4-second HLS chunks across 4 resolutions. Defend chunking over streaming a single MP4 from origin servers.",
+    starters: ["HLS chunks allow…", "A single MP4…", "The tradeoff is…"],
+    rubric: [
+      { id: "bitrate", criterion: "Explains chunking enables client players to adapt video bitrate dynamically to shifting network bandwidth", weight: 3 },
+      { id: "cdn-cache", criterion: "Notes small static chunks can be cached efficiently across geo-distributed standard HTTP CDN edges", weight: 2 },
+      { id: "storage-cost", criterion: "Names the trade-off: higher storage amplification and encoding compute to transcode multiple resolutions", weight: 2 },
+    ],
+    modelAnswer:
+      "Chunking enables adaptive bitrate streaming: clients switch resolutions seamlessly as bandwidth fluctuates. Small static chunks also cache perfectly on global HTTP CDNs. Tradeoff: 4x storage amplification and heavy compute pipelines to encode multiple resolutions in parallel.",
+  },
+  {
+    id: "interview-web-crawler",
+    interviewId: "interview-web-crawler",
+    kind: "interview",
+    askedBy: "Vikram · Interviewer, search infra architect",
+    prompt:
+      "Your URL Frontier uses per-host politeness queues and an in-memory Bloom filter. Why separate politeness from priority, and what breaks without it?",
+    starters: ["Politeness prevents…", "Without politeness…", "The tradeoff is…"],
+    rubric: [
+      { id: "dos-target", criterion: "Explains politeness queues prevent concurrent workers from hammering a single hostname with DoS-level fetch rates", weight: 3 },
+      { id: "priority-decoupling", criterion: "Notes priority queues ensure important domains crawl first without violating per-host rate limits", weight: 2 },
+      { id: "queue-headroom", criterion: "Names the trade-off: memory overhead for millions of per-host queues and crawl latency for deep sites", weight: 2 },
+    ],
+    modelAnswer:
+      "Priority queues order what to crawl, but politeness queues ensure workers never DoS a domain by enforcing 1s delays per host. Without it, 100 workers hammer one blog and crash it. Tradeoff: complex two-tier queue scheduling and slower crawling on large sites.",
+  },
+  {
+    id: "interview-rate-limiter",
+    interviewId: "interview-rate-limiter",
+    kind: "interview",
+    askedBy: "Devon · Interviewer, security engineering lead",
+    prompt:
+      "At 2M RPS, you evaluate rate limits in Redis with atomic Lua scripts. If the Redis cluster partitions, do you fail open or fail closed?",
+    starters: ["We fail open…", "Failing closed…", "The tradeoff is…"],
+    rubric: [
+      { id: "availability", criterion: "Defends failing open: preserving core business API availability for paying clients during an internal outage", weight: 3 },
+      { id: "blast-radius", criterion: "Explains failing closed turns a rate-limiter blip into total global outage across all backend services", weight: 2 },
+      { id: "risk-mitigation", criterion: "Identifies the risk: backend DBs can be overwhelmed by spikes while open, requiring downstream circuit breakers", weight: 2 },
+    ],
+    modelAnswer:
+      "Fail open. An outage should degrade rate limiting, not take down paying users. Failing closed turns a cache blip into a SEV-0 outage. Tradeoff: backends risk being flooded during an attack, so downstream circuit breakers and coarse web server limits must protect them.",
+  },
+  {
+    id: "interview-typeahead-search",
+    interviewId: "interview-typeahead-search",
+    kind: "interview",
+    askedBy: "Aria · Interviewer, search platforms manager",
+    prompt:
+      "250k keystrokes/sec. You store precomputed top 5 suggestions at every Trie node instead of traversing subtrees at runtime. Defend the trade-off.",
+    starters: ["Precomputing makes…", "Traversing at runtime…", "The tradeoff is…"],
+    rubric: [
+      { id: "latency-o1", criterion: "Explains precomputed lists turn suggestion retrieval into O(1) from the prefix node, meeting <30ms latency", weight: 3 },
+      { id: "runtime-cost", criterion: "Notes traversing all leaf descendants at 250k QPS would saturate CPU cores and cause thread pool exhaustion", weight: 2 },
+      { id: "memory-tradeoff", criterion: "Identifies the cost: higher RAM footprint to store top phrases at internal nodes and slower offline updates", weight: 2 },
+    ],
+    modelAnswer:
+      "Precomputing top 5 suggestions at each node gives O(1) retrieval from the prefix, easily hitting sub-30ms P99 under 250k QPS. Traversing millions of leaf nodes at query time would pin CPU. Tradeoff: higher memory footprint and requiring offline MapReduce batch updates to rebuild.",
+  },
+  {
+    id: "interview-notification-service",
+    interviewId: "interview-notification-service",
+    kind: "interview",
+    askedBy: "Kiran · Interviewer, platform operations director",
+    prompt:
+      "Why isolate transactional OTP alerts and promotional marketing emails into distinct priority message queues rather than one unified queue?",
+    starters: ["Unified queues cause…", "Distinct priority queues…", "The tradeoff is…"],
+    rubric: [
+      { id: "head-of-line", criterion: "Explains separate queues prevent head-of-line blocking where a 10M marketing blast delays 2FA login codes", weight: 3 },
+      { id: "worker-sla", criterion: "Notes high-priority queues can have dedicated worker pools and aggressive SLAs (<3s delivery)", weight: 2 },
+      { id: "ops-cost", criterion: "Names the trade-off: increased operational complexity to manage multiple queues, worker pools, and routing rules", weight: 2 },
+    ],
+    modelAnswer:
+      "Unified queues cause head-of-line blocking: 2FA codes wait behind a 10M newsletter blast, missing login SLAs. Dedicated priority queues guarantee OTPs process in <3s regardless of bulk traffic. Tradeoff: more queue infrastructure, worker pools, and routing operations.",
+  },
   // ── CAP & PACELC ──────────────────────────────────────────────────────
   {
     id: "cap-pacelc-why",
