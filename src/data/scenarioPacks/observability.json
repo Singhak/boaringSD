@@ -589,7 +589,26 @@
         "You need the raw distribution, not 40 summaries of it.",
         "Combine bucket counts from every host before picking the 99th percentile."
       ],
-      "nextId": null
+      "nextId": null,
+      "variants": [
+        {
+          "id": "var-obs-tail",
+          "constraint": "Tracing storage costs exceed $15,000/month because 99.9% of traces represent fast, uninteresting 200 OK requests.",
+          "correctChoiceId": "max-p99",
+          "resultOverrides": {
+            "obs-02-tail-sample": {
+              "approach": "optimal",
+              "resultTitle": "Tail-based sampling keeps errors and slow spans while cutting 90% of cost",
+              "resultBody": "Sampling traces at the tail buffers traces in memory and saves only errors or p99 outliers, slashing storage bills."
+            },
+            "obs-02-sample-all": {
+              "approach": "anti_pattern",
+              "resultTitle": "100% trace sampling exhausted logging storage budgets",
+              "resultBody": "Ingesting billions of healthy 200 OK traces created massive network egress and disk retention costs with minimal diagnostic value."
+            }
+          }
+        }
+      ]
     },
     {
       "id": "obs-03",
@@ -2623,6 +2642,1009 @@
         "More memory only moves the date of the next OOM.",
         "Keep per-user ids in traces and logs, not in metric labels."
       ]
+    },
+    {
+      "id": "obs-07",
+      "incidentCode": "INC-022",
+      "level": 22,
+      "patternId": "observability",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 140,
+      "title": "High-cardinality user_id label explodes Prometheus TSDB memory",
+      "brief": "A developer adds `user_id` as a label to an HTTP request duration histogram, creating 15 million new time series that crash the Prometheus TSDB.",
+      "constraint": "Retain per-user debugging telemetry without exhausting TSDB memory.",
+      "question": "How should high-cardinality data be partitioned between metrics and traces?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 40000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 95,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 680,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 720,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "gateway",
+            "kind": "service",
+            "label": "API Gateway"
+          },
+          {
+            "id": "prom",
+            "kind": "db",
+            "label": "Prometheus TSDB (OOM)",
+            "cpu": 95,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "gateway",
+            "to": "prom"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "obs-07-drop-label",
+          "label": "Drop user_id from metric labels and attach it to distributed trace spans",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 38,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 24,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Metrics cardinality collapsed; tracing captured user context",
+          "resultBody": "Metrics require low-cardinality aggregation (e.g. status code, route); high-cardinality values belong in trace attributes or logs.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "obs-07-scrape-faster",
+          "label": "Shorten Prometheus scrape interval from 15 seconds to 1 second",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 980,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1400,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Faster scrape interval multiplied ingest load by 15x",
+          "resultBody": "Scraping 15 million time series every 1 second triggered immediate unrecoverable out-of-memory crashes on all scrape workers.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "prom",
+                "tone": "bad",
+                "sub": "terminal TSDB OOM"
+              }
+            ]
+          }
+        },
+        {
+          "id": "obs-07-disable-retention",
+          "label": "Set TSDB storage retention to 5 minutes so time series purge immediately",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 85,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 450,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 380,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Short retention destroyed historical observability dashboards",
+          "resultBody": "Purging data after 5 minutes made alerting rules, trend analysis, and incident post-mortems completely impossible.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "prom",
+                "tone": "bad",
+                "sub": "zero historical retention"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "TSDB memory scales with the number of unique label combinations (series cardinality).",
+        "A label with millions of distinct values (like user_id, order_id, or email) destroys time series databases.",
+        "Keep metrics bounded to low-cardinality tags (tier, status_code, region) and place IDs in traces."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "obs-08",
+      "incidentCode": "INC-022",
+      "level": 22,
+      "patternId": "observability",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 130,
+      "title": "Head-based trace sampling discards rare 5xx error traces",
+      "brief": "A 1% head-based probabilistic sampling rule discards 99% of requests at ingress, causing SREs to miss rare critical 500 error payment failures.",
+      "constraint": "Capture 100% of error and anomalous high-latency spans without inflating trace storage bills.",
+      "question": "Which sampling strategy guarantees retention of all error and outlier traces?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 35000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 52,
+          "unit": "%",
+          "tone": "neutral"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 80,
+          "unit": "ms",
+          "tone": "neutral"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 190,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "ingress",
+            "kind": "service",
+            "label": "Ingress Router"
+          },
+          {
+            "id": "collector",
+            "kind": "service",
+            "label": "OTel Collector",
+            "cpu": 52,
+            "tone": "neutral"
+          },
+          {
+            "id": "tempo",
+            "kind": "storage",
+            "label": "Trace Storage",
+            "cpu": 45,
+            "tone": "neutral"
+          }
+        ],
+        "edges": [
+          {
+            "from": "ingress",
+            "to": "collector"
+          },
+          {
+            "from": "collector",
+            "to": "tempo"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "obs-08-tail-sampling",
+          "label": "Deploy tail-based sampling collector to inspect traces upon completion",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 44,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 32,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Tail-based sampling preserved 100% of failed traces",
+          "resultBody": "Tail sampling buffers completed traces in memory, saving 100% of 5xx errors and slow outliers while sampling healthy 200s at 1%.",
+          "tradeoffs": {
+            "costMonthlyDelta": 25
+          }
+        },
+        {
+          "id": "obs-08-sample-100",
+          "label": "Set head-based sampling rate to 100% for all incoming requests globally",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 420,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 310,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "100% trace sampling exploded network and backend storage bills",
+          "resultBody": "Ingesting 35,000 full spans per second generated 15TB of trace data daily, blowing past monthly infrastructure budgets.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 420
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "tempo",
+                "tone": "bad",
+                "sub": "storage bill +$420/mo"
+              }
+            ]
+          }
+        },
+        {
+          "id": "obs-08-disable-traces",
+          "label": "Disable distributed tracing and rely entirely on stdout console logs",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 50,
+              "unit": "%",
+              "tone": "neutral"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 75,
+              "unit": "ms",
+              "tone": "neutral"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 280,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Console logs lost microservice causality and latency breakdowns",
+          "resultBody": "Without distributed trace IDs, debugging asynchronous multi-hop RPC failures required tedious manual log correlation.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": -50
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "collector",
+                "tone": "bad",
+                "sub": "tracing disabled"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Head-based sampling decides whether to keep a trace at the root before knowing if it will error.",
+        "Tail-based sampling collects spans into a buffer and decides based on the final HTTP status code and latency.",
+        "Tail sampling ensures 100% visibility into errors with low overall data volume."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "obs-09",
+      "incidentCode": "INC-022",
+      "level": 22,
+      "patternId": "observability",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 130,
+      "title": "Collector agent backpressure drops unbuffered telemetry metrics",
+      "brief": "During network blips to the observability SaaS vendor, local OpenTelemetry collector agents run out of memory buffer and drop millions of customer metrics.",
+      "constraint": "Buffer telemetry during network blips without exhausting node memory.",
+      "question": "How should OpenTelemetry collector queues be configured for resilience?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 31000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 72,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 160,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 540,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "apps",
+            "kind": "service",
+            "label": "App Pods"
+          },
+          {
+            "id": "collector",
+            "kind": "service",
+            "label": "OTel Agent (RAM Queue)",
+            "cpu": 72,
+            "tone": "bad"
+          },
+          {
+            "id": "saas",
+            "kind": "storage",
+            "label": "External Telemetry SaaS",
+            "cpu": 30,
+            "tone": "warn"
+          }
+        ],
+        "edges": [
+          {
+            "from": "apps",
+            "to": "collector"
+          },
+          {
+            "from": "collector",
+            "to": "saas"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "obs-09-file-storage-queue",
+          "label": "Configure file_storage disk-backed queue extension in collector exporter",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 42,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 35,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Persistent disk queue absorbed network outage cleanly",
+          "resultBody": "Disk-backed exporter queues spool telemetry to local storage during vendor outages and replay automatically upon reconnection.",
+          "tradeoffs": {
+            "costMonthlyDelta": 10
+          }
+        },
+        {
+          "id": "obs-09-drop-silently",
+          "label": "Configure drop_oldest policy to discard metrics immediately when RAM fills",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 45,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 30,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 890,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Silently dropping metrics created blind spots during incidents",
+          "resultBody": "Discarding data left operators with zero telemetry during the exact network outage periods when monitoring was most needed.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "collector",
+                "tone": "bad",
+                "sub": "dropped 40% telemetry data"
+              }
+            ]
+          }
+        },
+        {
+          "id": "obs-09-block-threads",
+          "label": "Block calling application HTTP worker threads until telemetry delivers",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 98,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 920,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1200,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Blocking application threads propagated telemetry outage to users",
+          "resultBody": "User requests froze waiting for telemetry exports, turning an internal observability blip into a total customer-facing outage.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "apps",
+                "tone": "bad",
+                "sub": "app thread pool lockup"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "In-memory queues in telemetry collectors quickly overflow when downstream endpoints slow down.",
+        "Disk-backed queues (`file_storage` in OTel) buffer data persistently without increasing JVM/Go heap.",
+        "Telemetry export must always remain asynchronous and never block foreground request handlers."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "obs-10",
+      "incidentCode": "INC-022",
+      "level": 22,
+      "patternId": "observability",
+      "canonical": false,
+      "severity": "P2",
+      "xp": 120,
+      "title": "Unindexed debug logs saturate log aggregation cluster ingest",
+      "brief": "A release deployed with `DEBUG` logging enabled outputs 250,000 log lines/second, flooding Kafka and elasticsearch log clusters and blowing disk quotas.",
+      "constraint": "Filter unnecessary debug chatter without redeploying microservices.",
+      "question": "How should dynamic log throttling be applied at the telemetry pipeline layer?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 29000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 88,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 340,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 110,
+          "unit": "errors",
+          "tone": "warn"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "apps",
+            "kind": "service",
+            "label": "App Fleet (DEBUG log)"
+          },
+          {
+            "id": "collector",
+            "kind": "service",
+            "label": "Log Ingestion (Flooded)",
+            "cpu": 88,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "apps",
+            "to": "collector"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "obs-10-filter-processor",
+          "label": "Deploy filterprocessor rule in collector pipeline to drop level == debug",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 36,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 22,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Pipeline filter dropped debug flood before cluster ingest",
+          "resultBody": "Filtering out non-essential debug payloads at the local collector agent reduced ingest volume by 80% without microservice rebuilds.",
+          "tradeoffs": {
+            "costMonthlyDelta": -80
+          }
+        },
+        {
+          "id": "obs-10-double-cluster",
+          "label": "Double log aggregation cluster node count to absorb the debug stream",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 65,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 190,
+              "unit": "ms",
+              "tone": "neutral"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 40,
+              "unit": "errors",
+              "tone": "neutral"
+            }
+          ],
+          "resultTitle": "Doubling cluster size dramatically increased infrastructure costs",
+          "resultBody": "Paying thousands of dollars to store repetitive debug chatter was economically wasteful and filled disks with noise.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 450
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "collector",
+                "tone": "warn",
+                "sub": "expensive over-provisioning"
+              }
+            ]
+          }
+        },
+        {
+          "id": "obs-10-disable-logging",
+          "label": "Turn off logging agent across all nodes and rely purely on SSH access",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 28,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 15,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 450,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Killing logging agent blinded engineers to real production errors",
+          "resultBody": "Disabling log aggregation prevented operations from seeing fatal errors and audit access records, violating compliance.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "collector",
+                "tone": "bad",
+                "sub": "zero centralized log visibility"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Collector pipelines (FluentBit, Logstash, Vector, OTel) allow declarative filtering rules.",
+        "Dropping debug logs at the edge stops network transit and backend indexing costs.",
+        "Production systems should emit INFO, WARN, and ERROR by default."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "obs-11",
+      "incidentCode": "INC-022",
+      "level": 22,
+      "patternId": "observability",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 130,
+      "title": "Missing W3C traceparent headers cause broken trace spans",
+      "brief": "Calls routed through an internal legacy reverse proxy strip unknown headers, breaking distributed trace trees into fragmented single-hop spans.",
+      "constraint": "Preserve end-to-end trace correlation across all internal microservice gateways.",
+      "question": "How should header propagation be standardized across distributed proxies?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 36000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 48,
+          "unit": "%",
+          "tone": "neutral"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 95,
+          "unit": "ms",
+          "tone": "neutral"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 160,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "client",
+            "kind": "users",
+            "label": "Frontend App"
+          },
+          {
+            "id": "proxy",
+            "kind": "service",
+            "label": "Legacy Proxy (Strips traceparent)",
+            "cpu": 48,
+            "tone": "bad"
+          },
+          {
+            "id": "backend",
+            "kind": "service",
+            "label": "Payment Service (New Root)",
+            "cpu": 42,
+            "tone": "warn"
+          }
+        ],
+        "edges": [
+          {
+            "from": "client",
+            "to": "proxy"
+          },
+          {
+            "from": "proxy",
+            "to": "backend"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "obs-11-w3c-propagation",
+          "label": "Configure proxy to forward W3C traceparent and tracestate headers",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 40,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 28,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "W3C headers restored end-to-end trace correlation",
+          "resultBody": "Forwarding standard `traceparent` headers allows downstream services to attach child spans to the existing parent trace ID seamlessly.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "obs-11-custom-cookie",
+          "label": "Encode trace context into custom session cookies encrypted by backend",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 68,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 140,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 210,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Cookie context failed for asynchronous background worker jobs",
+          "resultBody": "Cookies only work for browser HTTP requests, breaking context propagation for Kafka consumers and gRPC services.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "proxy",
+                "tone": "bad",
+                "sub": "asynchronous context lost"
+              }
+            ]
+          }
+        },
+        {
+          "id": "obs-11-random-spans",
+          "label": "Instruct backend services to generate fresh root trace IDs unconditionally",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 45,
+              "unit": "%",
+              "tone": "neutral"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 35,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 340,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Generating fresh roots made distributed tracing useless",
+          "resultBody": "Creating independent trace IDs at every hop eliminated the caller-callee relationship, making end-to-end latency inspection impossible.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "backend",
+                "tone": "bad",
+                "sub": "disconnected trace trees"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "W3C Trace Context defines `traceparent` (version, trace_id, parent_id, trace_flags).",
+        "If an intermediate proxy drops the header, downstream services assume they are the root of a new trace.",
+        "Ensure all reverse proxies, load balancers, and API gateways pass trace headers transparently."
+      ],
+      "nextId": null,
+      "reviewed": true
     }
   ]
 }

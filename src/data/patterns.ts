@@ -1,4 +1,5 @@
-import { PatternId, PatternObjective, SystemDesignPattern } from "@/types";
+import { PatternId, PatternObjective, PatternQuestion, SystemDesignPattern } from "@/types";
+import { ADDITIONAL_TRANSFERS } from "@/data/transferPools";
 
 // The campaign chapters are the world map; patterns are the semantic layer on top.
 // Each pattern links to an existing chapter (and its boss challenge) by ID.
@@ -3031,6 +3032,13 @@ export const PATTERNS: SystemDesignPattern[] = [
   },
 ];
 
+// Populate rotating transfers pool for each pattern (at least 4 transfer questions each)
+for (const p of PATTERNS) {
+  if (!p.transfers || p.transfers.length === 0) {
+    p.transfers = [p.transfer, ...(ADDITIONAL_TRANSFERS[p.id] ?? [])];
+  }
+}
+
 export function getAllPatterns(): SystemDesignPattern[] {
   return PATTERNS;
 }
@@ -3046,3 +3054,17 @@ export function getPatternByChapterId(chapterId: string): SystemDesignPattern | 
 export function getPatternIds(): PatternId[] {
   return PATTERNS.map((p) => p.id);
 }
+
+export function getTransferQuestions(pattern: SystemDesignPattern): PatternQuestion[] {
+  if (pattern.transfers && pattern.transfers.length > 0) {
+    return pattern.transfers;
+  }
+  const additional = ADDITIONAL_TRANSFERS[pattern.id] ?? [];
+  return [pattern.transfer, ...additional];
+}
+
+export function getRotatingTransferQuestion(pattern: SystemDesignPattern, runIndex: number): PatternQuestion {
+  const pool = getTransferQuestions(pattern);
+  return pool[Math.abs(runIndex) % pool.length];
+}
+

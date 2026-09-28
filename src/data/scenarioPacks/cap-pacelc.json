@@ -554,7 +554,26 @@
         "Keep strictness where divergence costs money."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-cap-ap",
+          "constraint": "Product is an ephemeral live chat room where showing recent messages immediately is critical, while dropped rooms during split are acceptable.",
+          "correctChoiceId": "longer-timeout",
+          "resultOverrides": {
+            "cap-02-ap": {
+              "approach": "optimal",
+              "resultTitle": "AP posture keeps live chat rooms active across partitions",
+              "resultBody": "Prioritizing availability allows users to continue chatting within their partition without room freezes."
+            },
+            "cap-02-cp": {
+              "approach": "anti_pattern",
+              "resultTitle": "CP posture locked chat rooms during the network split",
+              "resultBody": "Refusing writes locked out 60% of chat users, freezing active discussions during a live sporting event."
+            }
+          }
+        }
+      ]
     },
     {
       "id": "cap-casc-02",
@@ -2413,6 +2432,1039 @@
         "What resets a full heap without a 30 s election?"
       ],
       "nextId": null
+    },
+    {
+      "id": "cap-07",
+      "incidentCode": "INC-016",
+      "level": 16,
+      "patternId": "cap-pacelc",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 130,
+      "title": "Cross-DC read repair spikes normal query latency",
+      "brief": "With no network partition active, background read-repair across transatlantic regions pushes p95 latency to 340ms on simple catalog lookups.",
+      "constraint": "Catalog data is updated once daily; read latency must remain under 60ms globally during steady state.",
+      "question": "Under the PACELC theorem, what trade-off restores normal catalog read speed?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 38000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 58,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 340,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 12,
+          "unit": "errors",
+          "tone": "neutral"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "clients",
+            "kind": "users",
+            "label": "Global Users"
+          },
+          {
+            "id": "local-dc",
+            "kind": "db",
+            "label": "Local Replica",
+            "cpu": 58,
+            "tone": "warn"
+          },
+          {
+            "id": "remote-dc",
+            "kind": "replica",
+            "label": "Remote Replica",
+            "cpu": 45,
+            "tone": "warn"
+          }
+        ],
+        "edges": [
+          {
+            "from": "clients",
+            "to": "local-dc"
+          },
+          {
+            "from": "local-dc",
+            "to": "remote-dc"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "cap-07-local-read",
+          "label": "Serve catalog reads from local quorum and defer repair to off-peak",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 34,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 42,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "PACELC latency trade-off restored catalog speed",
+          "resultBody": "Under normal state (Else in PACELC), prioritizing Latency over Consistency avoids transatlantic blocking on read-repair.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "cap-07-sync-repair",
+          "label": "Force synchronous cross-region repair on all catalog read queries",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 78,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 490,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 45,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Transatlantic round-trips worsened read latency",
+          "resultBody": "Synchronous cross-region coordination forces every read to wait on transatlantic round-trips for non-critical catalog data.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 60
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "local-dc",
+                "tone": "bad",
+                "sub": "waiting on remote ACK"
+              },
+              {
+                "id": "remote-dc",
+                "tone": "bad",
+                "sub": "repair queue saturated"
+              }
+            ]
+          }
+        },
+        {
+          "id": "cap-07-two-phase",
+          "label": "Implement two-phase locking across both datacenters on every query",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 85,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 720,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 180,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Distributed locks created massive read contention",
+          "resultBody": "Acquiring distributed locks across WAN links for pure read queries introduces extreme lock contention and head-of-line blocking.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 120
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "local-dc",
+                "tone": "bad",
+                "sub": "lock wait timeouts"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "PACELC states that when there is no partition (E), choose Latency or Consistency.",
+        "Catalog updates happen once per day, making immediate cross-region consensus wasteful.",
+        "Local quorum avoids cross-continental round trips during standard queries."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "cap-08",
+      "incidentCode": "INC-016",
+      "level": 16,
+      "patternId": "cap-pacelc",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 140,
+      "title": "WAN jitter triggers dual-primary split-brain writes",
+      "brief": "Intermittent WAN packet loss causes the backup cluster in us-west to declare the us-east primary dead, accepting writes concurrently.",
+      "constraint": "Financial account ledger balances must never accept split diverging transactions.",
+      "question": "How should partition handling be hardened to guarantee consistency over availability?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 24000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 66,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 180,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 310,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "clients",
+            "kind": "users",
+            "label": "Payment Clients"
+          },
+          {
+            "id": "east",
+            "kind": "db",
+            "label": "East Primary",
+            "cpu": 66,
+            "tone": "warn"
+          },
+          {
+            "id": "west",
+            "kind": "db",
+            "label": "West Standby",
+            "cpu": 62,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "clients",
+            "to": "east"
+          },
+          {
+            "from": "clients",
+            "to": "west"
+          },
+          {
+            "from": "east",
+            "to": "west"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "cap-08-majority-lease",
+          "label": "Enforce third-party arbiter quorum lease before any leader promotion",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 45,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 52,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Quorum lease prevented split-brain leadership",
+          "resultBody": "By requiring an independent third witness region for leader leases, isolated regions cannot unilaterally claim leadership.",
+          "tradeoffs": {
+            "costMonthlyDelta": 45
+          }
+        },
+        {
+          "id": "cap-08-reduce-heartbeat",
+          "label": "Shorten heartbeat timeout to promote the backup cluster even faster",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 88,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 390,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 890,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Shorter heartbeat amplified false-positive failovers",
+          "resultBody": "Aggressive timeouts promoted the secondary on transient network hiccups, escalating the frequency of split-brain collisions.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "west",
+                "tone": "bad",
+                "sub": "promoted on false alarm"
+              },
+              {
+                "id": "east",
+                "tone": "bad",
+                "sub": "active dual primary"
+              }
+            ]
+          }
+        },
+        {
+          "id": "cap-08-dual-write-accept",
+          "label": "Allow writes on both clusters and merge conflicts later with timestamp",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 72,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 240,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 520,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Ledger balances silently corrupted by timestamp merge",
+          "resultBody": "Last-write-wins overwrote concurrent debits, violating the strict non-divergence financial ledger constraint.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 20
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "east",
+                "tone": "bad",
+                "sub": "conflicting ledger records"
+              },
+              {
+                "id": "west",
+                "tone": "bad",
+                "sub": "silent write loss"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Two regions cannot safely decide a majority during a complete network severance.",
+        "An odd-numbered voter or third-party arbiter prevents symmetric claims to leadership.",
+        "In CP systems, refusing writes on the minority side is essential to preserve safety."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "cap-09",
+      "incidentCode": "INC-016",
+      "level": 16,
+      "patternId": "cap-pacelc",
+      "canonical": false,
+      "severity": "P2",
+      "xp": 120,
+      "title": "Live stream viewer counts stale during chat storm",
+      "brief": "Real-time viewer counters lag behind by 45 seconds during viral celebrity streaming because counter updates require strict quorum serialization.",
+      "constraint": "Viewer counts can tolerate rough approximations (+-5%), but streaming chat must remain responsive.",
+      "question": "How should the counter architecture be relaxed to satisfy PACELC AP expectations?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 92000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 89,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 410,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 74,
+          "unit": "errors",
+          "tone": "warn"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "viewers",
+            "kind": "users",
+            "label": "Stream Viewers"
+          },
+          {
+            "id": "counter-db",
+            "kind": "db",
+            "label": "Strict Quorum DB",
+            "cpu": 89,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "viewers",
+            "to": "counter-db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "cap-09-crdt-counter",
+          "label": "Switch to local PN-counter CRDTs with periodic asynchronous gossip",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 38,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 24,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "CRDT counters absorbed massive concurrent increments",
+          "resultBody": "Conflict-free replicated data types allow local non-blocking increments, converging accurately without quorum locks.",
+          "tradeoffs": {
+            "costMonthlyDelta": 15
+          }
+        },
+        {
+          "id": "cap-09-serial-lock",
+          "label": "Route all viewer increments through a single distributed Redis lock",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 95,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 890,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 680,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Lock serialization bottlenecked the counter pipeline",
+          "resultBody": "Serializing 90,000 updates per second through a single lock created a catastrophic queue buildup.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 50
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "counter-db",
+                "tone": "bad",
+                "sub": "lock queue overflow"
+              }
+            ]
+          }
+        },
+        {
+          "id": "cap-09-write-all",
+          "label": "Write increments to every node synchronously to eliminate stale reads",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 96,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 950,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 430,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "All-node synchronous writes magnified system latency",
+          "resultBody": "Writing synchronously to all replicas means latency is bound by the slowest node, crashing overall throughput.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 70
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "counter-db",
+                "tone": "bad",
+                "sub": "all-node wait timeout"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Counters do not need linearizable ordering if operations are commutative.",
+        "CRDTs (Conflict-free Replicated Data Types) provide eventual consistency with zero write locking.",
+        "Trading strict consistency for low latency is the definition of the PA/EL branch in PACELC."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "cap-10",
+      "incidentCode": "INC-016",
+      "level": 16,
+      "patternId": "cap-pacelc",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 130,
+      "title": "Hinted handoff storm saturates disk on surviving nodes",
+      "brief": "During a 3-hour network partition, surviving nodes accepted writes on behalf of isolated peers, accumulating 400GB of hinted handoffs that threaten disk exhaustion.",
+      "constraint": "Do not drop confirmed user transactions, but prevent coordinator nodes from running out of disk.",
+      "question": "How should the hinted handoff accumulation be controlled during prolonged partitions?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 31000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 68,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 160,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 85,
+          "unit": "errors",
+          "tone": "warn"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "clients",
+            "kind": "users",
+            "label": "API Clients"
+          },
+          {
+            "id": "coordinator",
+            "kind": "db",
+            "label": "Coordinator Node",
+            "cpu": 68,
+            "tone": "bad"
+          },
+          {
+            "id": "isolated",
+            "kind": "replica",
+            "label": "Isolated Node",
+            "cpu": 10,
+            "tone": "neutral"
+          }
+        ],
+        "edges": [
+          {
+            "from": "clients",
+            "to": "coordinator"
+          },
+          {
+            "from": "coordinator",
+            "to": "isolated"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "cap-10-cap-hints",
+          "label": "Cap hint storage window and fail fast to consistency errors once full",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 46,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 48,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 5,
+              "unit": "errors",
+              "tone": "neutral"
+            }
+          ],
+          "resultTitle": "Hint storage bounding protected coordinator survival",
+          "resultBody": "Limiting hint retention to 1 hour preserves disk safety; subsequent writes fail cleanly instead of crashing coordinators.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "cap-10-unlimited-hints",
+          "label": "Disable disk limits and keep spooling hints indefinitely in RAM buffer",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 620,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 740,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Coordinator nodes crashed with Out-Of-Memory errors",
+          "resultBody": "Spooling unbounded hints into memory exhausted JVM heaps, taking down surviving nodes that were serving traffic.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "coordinator",
+                "tone": "bad",
+                "sub": "heap OOM crash"
+              }
+            ]
+          }
+        },
+        {
+          "id": "cap-10-silent-drop",
+          "label": "Silently discard hints without returning any write error to callers",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 42,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 55,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 310,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Silent data loss corrupted customer order histories",
+          "resultBody": "Dropping hints without alerting callers acknowledged writes that never persisted, corrupting downstream records.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "isolated",
+                "tone": "bad",
+                "sub": "unrecoverable missing data"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Hinted handoff is an availability mechanism (AP) intended for brief transient disconnects.",
+        "Prolonged partitions turn hint queues into disk-filling liabilities.",
+        "Failing fast when hint thresholds are breached preserves node stability."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "cap-11",
+      "incidentCode": "INC-016",
+      "level": 16,
+      "patternId": "cap-pacelc",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 130,
+      "title": "Cross-region session checkout reads stale inventory reservation",
+      "brief": "Shoppers completing checkout in Asia see items disappear mid-payment because inventory read consistency level was set to ONE across global nodes.",
+      "constraint": "Checkout inventory reservations must be monotonic without double-booking items.",
+      "question": "Which quorum tuning guarantees strong read-your-own-writes across global regions?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 29000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 52,
+          "unit": "%",
+          "tone": "neutral"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 110,
+          "unit": "ms",
+          "tone": "neutral"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 215,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "checkout",
+            "kind": "service",
+            "label": "Checkout API"
+          },
+          {
+            "id": "local-node",
+            "kind": "db",
+            "label": "Local Region DB",
+            "cpu": 52,
+            "tone": "neutral"
+          },
+          {
+            "id": "primary-node",
+            "kind": "db",
+            "label": "Global Primary DB",
+            "cpu": 55,
+            "tone": "neutral"
+          }
+        ],
+        "edges": [
+          {
+            "from": "checkout",
+            "to": "local-node"
+          },
+          {
+            "from": "local-node",
+            "to": "primary-node"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "cap-11-local-quorum",
+          "label": "Enforce LOCAL_QUORUM reads and writes with session consistency tokens",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 48,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 36,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Session token guarantees causal inventory reads",
+          "resultBody": "Passing session tokens ensures subsequent reads reflect the caller's own reservation writes without global roundtrips.",
+          "tradeoffs": {
+            "costMonthlyDelta": 25
+          }
+        },
+        {
+          "id": "cap-11-all-quorum",
+          "label": "Switch all read and write queries globally to synchronous ALL quorum",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 89,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 680,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 410,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Global ALL quorum crushed throughput and availability",
+          "resultBody": "Requiring confirmation from every node globally caused requests to fail whenever any single remote region experienced jitter.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 110
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "primary-node",
+                "tone": "bad",
+                "sub": "waiting for ALL acks"
+              }
+            ]
+          }
+        },
+        {
+          "id": "cap-11-async-sleep",
+          "label": "Add artificial client sleep delays before calling checkout confirmation",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 61,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 850,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 160,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sleep delays degraded checkout UX without safety",
+          "resultBody": "Arbitrary sleeps failed during replication lag spikes and unnecessarily penalised fast network connections.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "checkout",
+                "tone": "bad",
+                "sub": "client thread pool exhausted"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Session consistency guarantees that a client always reads their own previous writes.",
+        "LOCAL_QUORUM satisfies R + W > N locally without incurring inter-region latency.",
+        "Global ALL sacrifices availability whenever a single remote node degrades."
+      ],
+      "nextId": null,
+      "reviewed": true
     }
   ]
 }

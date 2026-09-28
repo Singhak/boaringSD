@@ -548,7 +548,26 @@
         "Sequential keys keep writes on a few hot pages.",
         "Some UUID versions start with the creation time."
       ],
-      "nextId": null
+      "nextId": null,
+      "variants": [
+        {
+          "id": "var-idg-uuid7",
+          "constraint": "System must output standard RFC-compliant 128-bit UUID strings required by partner banking APIs.",
+          "correctChoiceId": "more-ram",
+          "resultOverrides": {
+            "idg-02-uuid7": {
+              "approach": "optimal",
+              "resultTitle": "UUIDv7 provides time-ordered clustering in standard UUID format",
+              "resultBody": "UUIDv7 satisfies the 128-bit RFC standard format while keeping timestamp bits first to prevent B-tree page fragmentation."
+            },
+            "idg-02-snowflake": {
+              "approach": "anti_pattern",
+              "resultTitle": "64-bit integer IDs were rejected by banking partner schemas",
+              "resultBody": "Partner systems strictly validated UUID regexes; 64-bit integers failed API schema validation checks."
+            }
+          }
+        }
+      ]
     },
     {
       "id": "idg-03",
@@ -2349,6 +2368,987 @@
         "gp2 volumes drop to baseline IOPS once burst credits run out.",
         "etcd's commit speed is bounded by its disk's fsync latency."
       ]
+    },
+    {
+      "id": "idg-07",
+      "incidentCode": "INC-019",
+      "level": 19,
+      "patternId": "id-generation",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 140,
+      "title": "NTP clock step backwards halts Snowflake ID generation",
+      "brief": "An unscheduled NTP time synchronization steps system clocks backwards by 80ms, causing Snowflake workers to reject ID generation to avoid duplicate keys.",
+      "constraint": "Preserve unique 64-bit integer IDs without failing client requests during clock adjustments.",
+      "question": "How should Snowflake generators handle backwards clock drift safely?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 48000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 55,
+          "unit": "%",
+          "tone": "neutral"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 120,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 1450,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "clients",
+            "kind": "users",
+            "label": "Order Services"
+          },
+          {
+            "id": "gen",
+            "kind": "service",
+            "label": "Snowflake Generator",
+            "cpu": 55,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "clients",
+            "to": "gen"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "idg-07-wait-drift",
+          "label": "Pause thread execution until clock catches up or switch NTP to slew mode",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 38,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 26,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "NTP slewing and spin-pause prevented ID collision",
+          "resultBody": "Slewing adjusts time gradually without backward steps; brief spin-pausing handles millisecond jitter without failing requests.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "idg-07-ignore-clock",
+          "label": "Ignore the backward clock step and continue generating duplicate timestamps",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 48,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 22,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 920,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Reused timestamps caused duplicate primary key violations",
+          "resultBody": "Generating IDs with backwards timestamps caused sequence collisions with previously issued keys, corrupting orders.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gen",
+                "tone": "bad",
+                "sub": "duplicate ID collisions"
+              }
+            ]
+          }
+        },
+        {
+          "id": "idg-07-random-fallback",
+          "label": "Fallback to generating pseudo-random 32-bit integers during clock drift",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 42,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 25,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 680,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "32-bit random integers produced massive birthday paradox collisions",
+          "resultBody": "Random 32-bit integers suffer birthday attacks at just tens of thousands of requests, colliding on database insert.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gen",
+                "tone": "bad",
+                "sub": "birthday collision failure"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Snowflake relies on monotonically advancing timestamps to prevent ID reuse.",
+        "NTP step adjustments jump time backwards, whereas NTP slewing gradually speeds or slows tick rates.",
+        "Short backwards drift can be absorbed by brief busy-wait spinning until time passes the last recorded millisecond."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "idg-08",
+      "incidentCode": "INC-019",
+      "level": 19,
+      "patternId": "id-generation",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 130,
+      "title": "Random UUIDv4 primary keys cause database page fragmentation",
+      "brief": "An e-commerce order table with 100M rows indexed by random UUIDv4 suffers extreme B-Tree leaf page splits, quadrupling storage size and slowing inserts.",
+      "constraint": "Maintain globally unique IDs generated without coordination, but preserve sequential insert locality.",
+      "question": "Which ID format provides decentralized generation while maintaining time-ordered locality?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 26000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 81,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 290,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 45,
+          "unit": "errors",
+          "tone": "warn"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "service",
+            "label": "Checkout Nodes"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "PostgreSQL Database",
+            "cpu": 81,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "idg-08-uuidv7",
+          "label": "Migrate primary keys to UUIDv7 with millisecond timestamp prefixes",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 41,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 32,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "UUIDv7 restored sequential B-Tree append locality",
+          "resultBody": "UUIDv7 embeds Unix timestamps in the most significant bits, turning random inserts into sequential appends on B-Tree leaf pages.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "idg-08-increase-ram",
+          "label": "Double database server RAM so the entire fragmented index fits in cache",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 68,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 160,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 20,
+              "unit": "errors",
+              "tone": "neutral"
+            }
+          ],
+          "resultTitle": "Adding RAM delayed but did not fix ongoing page split bloat",
+          "resultBody": "The index continued to fragment as table size expanded, quickly outpacing the new memory capacity and inflating monthly bills.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 350
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "warn",
+                "sub": "expensive RAM band-aid"
+              }
+            ]
+          }
+        },
+        {
+          "id": "idg-08-hash-keys",
+          "label": "Hash UUIDv4 keys with SHA-256 before inserting into the primary table",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 410,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 85,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Hashing keys increased CPU load without fixing randomness",
+          "resultBody": "Cryptographic hashing produces uniformly distributed output, maintaining the exact same random insertion pattern.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "sub": "wasted hashing CPU cycles"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "UUIDv4 is 122 bits of pure randomness, scattering inserts across the entire B-Tree.",
+        "UUIDv7 and ULID combine a 48-bit timestamp prefix with random entropy bits.",
+        "Time-prefixed IDs write sequentially to the rightmost leaf page, eliminating 95% of splits."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "idg-09",
+      "incidentCode": "INC-019",
+      "level": 19,
+      "patternId": "id-generation",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 130,
+      "title": "Sequence bit exhaustion during sub-millisecond flash sale burst",
+      "brief": "A single Snowflake worker instance receives 6,000 requests in 0.8ms during a flash sale, exhausting its 12-bit sequence counter (4,096 max IDs/ms).",
+      "constraint": "Handle traffic spikes exceeding 4,096 IDs per millisecond per node without ID collision.",
+      "question": "How should Snowflake generators handle sequence overflow within a single millisecond?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 65000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 70,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 95,
+          "unit": "ms",
+          "tone": "neutral"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 890,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "traffic",
+            "kind": "users",
+            "label": "Flash Sale Shoppers"
+          },
+          {
+            "id": "worker",
+            "kind": "service",
+            "label": "Snowflake Pod (Overflow)",
+            "cpu": 70,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "traffic",
+            "to": "worker"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "idg-09-spin-tick",
+          "label": "Block and spin-wait until the next millisecond tick or distribute worker IDs",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 48,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 24,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Spin-waiting to next millisecond prevented sequence wrap",
+          "resultBody": "When the 12-bit sequence counter fills, spinning until the clock advances by 1ms safely resets the sequence counter without collisions.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "idg-09-wrap-zero",
+          "label": "Wrap sequence counter back to zero immediately within the same millisecond",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 50,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 18,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1200,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Sequence wrap caused catastrophic duplicate IDs",
+          "resultBody": "Wrapping the sequence counter within the same millisecond produced duplicate IDs, violating database primary key constraints.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "worker",
+                "tone": "bad",
+                "sub": "duplicate primary key crashes"
+              }
+            ]
+          }
+        },
+        {
+          "id": "idg-09-fail-request",
+          "label": "Reject excess requests with HTTP 429 and instruct clients to back off",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 45,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 30,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 750,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Excessive client rejections caused high checkout abandonment",
+          "resultBody": "Failing user orders when a 1ms spin-wait would have succeeded caused massive revenue loss during the flash sale.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "worker",
+                "tone": "bad",
+                "sub": "dropped customer purchases"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "A 12-bit sequence allows 4,096 IDs per millisecond per generator node.",
+        "If 4,096 IDs are exhausted in under 1ms, the generator must pause until the clock ticks to the next millisecond.",
+        "Scaling horizontally with distinct worker IDs spreads throughput across nodes."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "idg-10",
+      "incidentCode": "INC-019",
+      "level": 19,
+      "patternId": "id-generation",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 140,
+      "title": "Centralized ticket server database crash halts order processing",
+      "brief": "A centralized MySQL Ticket Server using REPLACE INTO to issue sequential auto-increment IDs crashes under high lock contention, freezing checkout.",
+      "constraint": "Remove single point of failure in ID allocation while preserving monotonic ordering.",
+      "question": "How should centralized ticket servers be replaced for high availability?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 33000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 95,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 750,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 1600,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "orders",
+            "kind": "service",
+            "label": "Order API Services"
+          },
+          {
+            "id": "ticket-db",
+            "kind": "db",
+            "label": "Central Ticket MySQL",
+            "cpu": 95,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "orders",
+            "to": "ticket-db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "idg-10-distributed-ranges",
+          "label": "Allocate chunked ID ranges in memory (e.g. 5,000 IDs per worker lease)",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 42,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 19,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Chunked range allocations eliminated database contention",
+          "resultBody": "Workers fetch blocks of IDs in a single atomic transaction and serve them locally from RAM, reducing database calls by 99.9%.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "idg-10-add-slaves",
+          "label": "Deploy read replicas to serve REPLACE INTO tickets concurrently",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 89,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 580,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 980,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Replicas cannot handle write ticket auto-increments",
+          "resultBody": "Read replicas cannot execute auto-increment ticket writes without causing massive duplicate IDs and replication divergence.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 90
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "ticket-db",
+                "tone": "bad",
+                "sub": "split auto-increment clashes"
+              }
+            ]
+          }
+        },
+        {
+          "id": "idg-10-retry-forever",
+          "label": "Configure clients to retry ticket server queries with infinite loops",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 990,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 2100,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Infinite retries completed a full thundering herd outage",
+          "resultBody": "Client connection pools filled up and crashed all application tiers trying to talk to the dead ticket database.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "orders",
+                "tone": "bad",
+                "sub": "connection exhaustion crash"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Flickr ticket servers used auto-increment with step offsets, but centralized databases remain bottlenecks.",
+        "Chunking or leasing ID ranges (e.g. Hi/Lo algorithm) serves IDs from memory.",
+        "A single round trip to the database can provision 10,000 IDs for an application pod."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "idg-11",
+      "incidentCode": "INC-019",
+      "level": 19,
+      "patternId": "id-generation",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 130,
+      "title": "Worker ID collision after autoscaling Kubernetes pod restart",
+      "brief": "During a horizontal scale-out event, two new worker pods read the same static worker_id configuration, producing conflicting IDs in production.",
+      "constraint": "Ensure dynamic, conflict-free worker ID assignment without static pod configuration.",
+      "question": "How should worker node IDs be coordinated dynamically in autoscaling clusters?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 39000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 58,
+          "unit": "%",
+          "tone": "neutral"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 65,
+          "unit": "ms",
+          "tone": "neutral"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 480,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "k8s",
+            "kind": "service",
+            "label": "Autoscaler"
+          },
+          {
+            "id": "pod1",
+            "kind": "service",
+            "label": "Pod A (Worker ID: 4)",
+            "cpu": 58,
+            "tone": "bad"
+          },
+          {
+            "id": "pod2",
+            "kind": "service",
+            "label": "Pod B (Worker ID: 4)",
+            "cpu": 56,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "k8s",
+            "to": "pod1"
+          },
+          {
+            "from": "k8s",
+            "to": "pod2"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "idg-11-etcd-lease",
+          "label": "Acquire ephemeral worker ID leases from etcd or Consul on pod startup",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 43,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 28,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Dynamic coordinator lease prevented worker ID overlap",
+          "resultBody": "Dynamic coordination through etcd/Consul guarantees each pod registers a strictly unique worker ID that expires if the pod dies.",
+          "tradeoffs": {
+            "costMonthlyDelta": 15
+          }
+        },
+        {
+          "id": "idg-11-random-worker-id",
+          "label": "Assign random worker IDs between 1 and 1024 without any coordination",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 55,
+              "unit": "%",
+              "tone": "neutral"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 50,
+              "unit": "ms",
+              "tone": "neutral"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 240,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Random worker IDs frequently collided due to birthday paradox",
+          "resultBody": "With only 1024 worker slots, running dozens of pods created an unacceptable 50%+ probability of identical worker IDs.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "pod1",
+                "tone": "bad",
+                "sub": "random ID collision"
+              }
+            ]
+          }
+        },
+        {
+          "id": "idg-11-ip-address",
+          "label": "Truncate pod IP addresses and use low-order bytes as worker IDs",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 52,
+              "unit": "%",
+              "tone": "neutral"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 45,
+              "unit": "ms",
+              "tone": "neutral"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 310,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Truncated IP octets collided across different subnet blocks",
+          "resultBody": "Pods on different CIDR subnets shared identical low-order bytes (e.g. 10.0.1.15 and 10.0.2.15), leading to ID duplication.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "pod2",
+                "tone": "bad",
+                "sub": "subnet octet collision"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Snowflake allocates 10 bits for worker/datacenter IDs (up to 1,024 nodes).",
+        "Hardcoding worker IDs in config maps or environment variables fails during auto-scaling.",
+        "Coordination services provide atomic, ephemeral sequential leases for pod registration."
+      ],
+      "nextId": null,
+      "reviewed": true
     }
   ]
 }

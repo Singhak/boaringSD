@@ -75,10 +75,21 @@ test(`every level has at least ${MIN_WAR_ROOM_ROTATION} playable War Room incide
   assert.deepEqual(thin, []);
 });
 
-test("War Room rotation starts with the canonical incident and then varies", () => {
+test("War Room rotation starts with the canonical incident (or non-canonical for tutorial levels) and then varies", () => {
   for (const pack of getAllScenarioPacks()) {
     const first = getWarRoomIncident(pack.patternId, 0);
-    assert.ok(first?.canonical || first?.id === pack.canonicalId, `${pack.patternId} should open on its canonical incident`);
+    const isTutorial = pack.patternId === "horizontal-scaling" || pack.patternId === "load-balancing";
+    if (isTutorial) {
+      assert.ok(
+        !first?.canonical && first?.id !== pack.canonicalId,
+        `${pack.patternId} should open on a non-canonical incident to avoid repeating onboarding`
+      );
+    } else {
+      assert.ok(
+        first?.canonical || first?.id === pack.canonicalId,
+        `${pack.patternId} should open on its canonical incident`
+      );
+    }
     const second = getWarRoomIncident(pack.patternId, 1);
     assert.ok(second, `${pack.patternId} has no second incident`);
   }
@@ -93,6 +104,18 @@ test("incident ids are unique and cascade links resolve", () => {
       for (const c of inc.choices) {
         if (c.cascadeIncidentId) assert.ok(getIncidentById(c.cascadeIncidentId), `${inc.id}/${c.id} cascades to a missing incident`);
       }
+    }
+  }
+});
+
+test("Phase 3.3: levels 16 to 23 have at least 15 playable incidents each", () => {
+  for (const pack of getAllScenarioPacks()) {
+    if (pack.level >= 16) {
+      const playable = getPlayableIncidents(pack);
+      assert.ok(
+        playable.length >= 15,
+        `${pack.patternId} (level ${pack.level}) has only ${playable.length} playable incidents (expected >= 15)`
+      );
     }
   }
 });

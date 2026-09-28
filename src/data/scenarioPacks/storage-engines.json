@@ -394,7 +394,26 @@
         "A probabilistic filter per file."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-se-btree",
+          "constraint": "Workload is 97% point lookups and range scans on user_id; write throughput is under 50 ops/sec.",
+          "correctChoiceId": "hash-index",
+          "resultOverrides": {
+            "se-02-btree": {
+              "approach": "optimal",
+              "resultTitle": "B+ Tree engine delivers sub-ms point lookups and scans",
+              "resultBody": "With mostly read lookups and rare writes, B+ Trees avoid LSM compaction overhead and provide predictable single-seek reads."
+            },
+            "se-02-lsm": {
+              "approach": "anti_pattern",
+              "resultTitle": "LSM engine added bloom filter and multi-SSTable read amplification",
+              "resultBody": "Point reads in LSM trees checked multiple SSTable levels, doubling read latencies compared to a direct B+ Tree lookup."
+            }
+          }
+        }
+      ]
     },
     {
       "id": "se-03",
@@ -2495,6 +2514,997 @@
         "Could a filter be split and cached piece by piece, like data?"
       ],
       "nextId": null
+    },
+    {
+      "id": "se-07",
+      "incidentCode": "INC-018",
+      "level": 18,
+      "patternId": "storage-engines",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 130,
+      "title": "Size-tiered compaction consumes 50% temporary disk headroom",
+      "brief": "An LSM-tree database running Size-Tiered Compaction Strategy (STCS) runs out of disk space during peak compaction of large SSTables.",
+      "constraint": "Maintain stable disk footprint without requiring 50% free disk overhead.",
+      "question": "Which compaction strategy reduces temporary disk amplification for large datasets?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 34000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 76,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 260,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 190,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "service",
+            "label": "Ingest Service"
+          },
+          {
+            "id": "storage",
+            "kind": "db",
+            "label": "LSM Database",
+            "cpu": 76,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "storage"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "se-07-leveled-compaction",
+          "label": "Migrate storage engine tables to Leveled Compaction Strategy (LCS)",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 48,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 45,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Leveled compaction capped temporary space overhead",
+          "resultBody": "Leveled compaction splits data into fixed-size SSTables (e.g. 160MB), requiring only ~10% temporary disk headroom instead of 50%.",
+          "tradeoffs": {
+            "costMonthlyDelta": 40
+          }
+        },
+        {
+          "id": "se-07-disable-compaction",
+          "label": "Disable background compaction entirely to preserve remaining disk space",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 89,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 720,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 580,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Read amplification exploded as SSTable count climbed",
+          "resultBody": "Without compaction, thousands of SSTable files accumulated, causing reads to touch hundreds of files and exhausting file handles.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "storage",
+                "tone": "bad",
+                "sub": "unmerged SSTable explosion"
+              }
+            ]
+          }
+        },
+        {
+          "id": "se-07-delete-wal",
+          "label": "Periodically purge write-ahead logs every 60 seconds to free disk blocks",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 65,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 220,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 890,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "WAL deletion caused catastrophic data loss on restart",
+          "resultBody": "Deleting active write-ahead logs destroyed unflushed memtable durability, resulting in missing customer transactions.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "storage",
+                "tone": "bad",
+                "sub": "durability violation"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "STCS merges SSTables of similar size, requiring up to 100% of the table size in free temporary space.",
+        "Leveled compaction (LCS) compacts small fixed-size chunks, dramatically lowering space amplification.",
+        "Never disable compaction in LSM trees as it leads to unbounded read amplification."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "se-08",
+      "incidentCode": "INC-018",
+      "level": 18,
+      "patternId": "storage-engines",
+      "canonical": false,
+      "severity": "P2",
+      "xp": 120,
+      "title": "Missing bloom filters cause excessive disk seeks on missing keys",
+      "brief": "A high volume of negative lookups (querying keys that do not exist) causes 100% SSD read IOPS saturation on an LSM-tree database.",
+      "constraint": "Filter out non-existent key lookups before hitting disk without inflating RAM usage.",
+      "question": "What storage engine index data structure prevents reading SSTables for missing keys?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 45000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 82,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 190,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 15,
+          "unit": "errors",
+          "tone": "neutral"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "api",
+            "kind": "service",
+            "label": "User Lookup API"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "RocksDB Store",
+            "cpu": 82,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "api",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "se-08-bloom-filter",
+          "label": "Configure 10 bits per key Bloom filters on all SSTables in memory",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 36,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 18,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Bloom filters deflected 99% of negative disk lookups",
+          "resultBody": "Bloom filters quickly prove key absence in memory, eliminating unnecessary disk block reads for missing records.",
+          "tradeoffs": {
+            "costMonthlyDelta": 20
+          }
+        },
+        {
+          "id": "se-08-full-table-scan",
+          "label": "Execute linear full scans on all SSTables to guarantee key verification",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 98,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 890,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 420,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Full scans collapsed storage IO bandwidth completely",
+          "resultBody": "Reading every SSTable block sequentially maximized disk read saturation and throttled all other concurrent queries.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "sub": "disk read IOPS 100%"
+              }
+            ]
+          }
+        },
+        {
+          "id": "se-08-disable-cache",
+          "label": "Bypass operating system page cache to read directly from raw block devices",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 88,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 450,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 180,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Direct I/O eliminated caching benefits for hot index blocks",
+          "resultBody": "Disabling OS buffer caches forced every metadata lookup to hit the physical SSD, doubling overall latency.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "sub": "page cache bypassed"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "LSM trees must check multiple SSTable files unless an in-memory filter verifies the key is absent.",
+        "Bloom filters provide a fast probabilistic check with zero false negatives.",
+        "Allocating ~10 bits per key in RAM provides approximately a 1% false positive rate."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "se-09",
+      "incidentCode": "INC-018",
+      "level": 18,
+      "patternId": "storage-engines",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 140,
+      "title": "Write stalls trigger when memtable flush falls behind WAL",
+      "brief": "A massive bulk ingest causes active memtables to fill faster than background flush threads can write SSTables to disk, triggering a full engine write stall.",
+      "constraint": "Absorb write ingest bursts without stalling incoming client API calls.",
+      "question": "How should memtable and flush concurrency be tuned to eliminate write stalls?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 52000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 88,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 490,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 850,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "ingest",
+            "kind": "service",
+            "label": "Ingest Pipeline"
+          },
+          {
+            "id": "memtable",
+            "kind": "db",
+            "label": "Memtables (Full)",
+            "cpu": 88,
+            "tone": "bad"
+          },
+          {
+            "id": "disk",
+            "kind": "storage",
+            "label": "SSTable Storage",
+            "cpu": 50,
+            "tone": "neutral"
+          }
+        ],
+        "edges": [
+          {
+            "from": "ingest",
+            "to": "memtable"
+          },
+          {
+            "from": "memtable",
+            "to": "disk"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "se-09-tune-buffers",
+          "label": "Increase max_write_buffer_number and allocate dedicated flush worker threads",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 52,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 38,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Expanded buffer pipeline absorbed ingest surges",
+          "resultBody": "Allowing more immutable memtables in queue and parallelizing flush threads prevented the engine from freezing incoming writes.",
+          "tradeoffs": {
+            "costMonthlyDelta": 60
+          }
+        },
+        {
+          "id": "se-09-shrink-memtable",
+          "label": "Reduce write buffer size to 4MB so flushes trigger more frequently",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 780,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 920,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Tiny memtables generated millions of tiny SSTable files",
+          "resultBody": "Flushing tiny files overwhelmed the L0 compaction queue, triggering immediate write stalls and severe compaction debt.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "memtable",
+                "tone": "bad",
+                "sub": "L0 file backlog stall"
+              }
+            ]
+          }
+        },
+        {
+          "id": "se-09-drop-bulk",
+          "label": "Drop writes automatically whenever memtable memory utilization crosses 80%",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 60,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 120,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1200,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Dropping writes caused unrecoverable data ingestion loss",
+          "resultBody": "Silently dropping customer data violated durability guarantees instead of safely backpressuring producers.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "memtable",
+                "tone": "bad",
+                "sub": "dropping 30% of writes"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "LSM engines stall writes when the number of unflushed immutable memtables exceeds limits.",
+        "Increasing write buffer count provides headroom to absorb high-throughput write bursts.",
+        "Parallel background flush threads ensure data writes to disk as fast as memory accumulates."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "se-10",
+      "incidentCode": "INC-018",
+      "level": 18,
+      "patternId": "storage-engines",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 130,
+      "title": "B-Tree page split churn fragments random write workload",
+      "brief": "A relational database using B+ Tree storage suffers 8x write amplification and 35% empty page bloat under heavy random UUID inserts.",
+      "constraint": "Reduce page splits and fragmentation without changing the core relational database schema.",
+      "question": "How should index fill factors or insert ordering be configured to reduce page splits?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 18000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 79,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 280,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 34,
+          "unit": "errors",
+          "tone": "neutral"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "writer",
+            "kind": "service",
+            "label": "Order Service"
+          },
+          {
+            "id": "btree",
+            "kind": "db",
+            "label": "B-Tree Database",
+            "cpu": 79,
+            "tone": "warn"
+          }
+        ],
+        "edges": [
+          {
+            "from": "writer",
+            "to": "btree"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "se-10-fill-factor",
+          "label": "Lower index fill factor to 70% to reserve space for random leaf inserts",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 47,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 39,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Adjusted fill factor stopped recursive page splitting",
+          "resultBody": "Leaving 30% free headroom on leaf pages allows random inserts to land without triggering expensive page allocations.",
+          "tradeoffs": {
+            "costMonthlyDelta": 15
+          }
+        },
+        {
+          "id": "se-10-fill-100",
+          "label": "Set fill factor to 100% to pack index pages completely full on disk",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 96,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 650,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 290,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "100% fill factor triggered continuous page splits",
+          "resultBody": "Every single random insert into a completely full leaf forced a 50/50 page split, doubling disk I/O and lock contention.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "btree",
+                "tone": "bad",
+                "sub": "continuous page splits"
+              }
+            ]
+          }
+        },
+        {
+          "id": "se-10-drop-indexes",
+          "label": "Drop primary key indexes and perform table lookups with table scans",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 980,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 450,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Dropping primary indexes made queries unacceptably slow",
+          "resultBody": "Removing indexes forced every single point query to scan millions of rows, crippling system responsiveness.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "btree",
+                "tone": "bad",
+                "sub": "full sequential table scans"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Random primary keys (like UUIDv4) insert into arbitrary leaf pages of a B+ Tree.",
+        "When a target page is 100% full, the database must split the page and rewrite parent pointers.",
+        "Lowering fill factor leaves spare slots for random inserts, dramatically reducing splits."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "se-11",
+      "incidentCode": "INC-018",
+      "level": 18,
+      "patternId": "storage-engines",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 130,
+      "title": "Unthrottled compaction saturates NVMe IOPS during business peak",
+      "brief": "Midday compaction kicks in with unconstrained disk read/write bandwidth, pushing disk utilization to 100% and degrading p99 user request latencies.",
+      "constraint": "Keep user read latency under 50ms while ensuring compaction still completes.",
+      "question": "How should compaction background I/O bandwidth be throttled?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 39000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 73,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 310,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 68,
+          "unit": "errors",
+          "tone": "warn"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "clients",
+            "kind": "users",
+            "label": "User Queries"
+          },
+          {
+            "id": "engine",
+            "kind": "db",
+            "label": "Storage Engine",
+            "cpu": 73,
+            "tone": "warn"
+          },
+          {
+            "id": "nvme",
+            "kind": "storage",
+            "label": "NVMe SSD (100% IOPS)",
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "clients",
+            "to": "engine"
+          },
+          {
+            "from": "engine",
+            "to": "nvme"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "se-11-rate-limit-io",
+          "label": "Enforce compaction rate-limiting token bucket at 100MB/s on disk I/O",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 44,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 29,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Compaction rate limiting preserved interactive IOPS",
+          "resultBody": "Throttling background compaction I/O ensures user-facing read operations get priority access to disk controllers.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "se-11-max-priority",
+          "label": "Raise compaction thread process priority to realtime above query threads",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 98,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 920,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 780,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Realtime compaction starved all interactive customer queries",
+          "resultBody": "Elevating compaction priority caused background processes to preempt client threads, crashing user request fulfillment.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "engine",
+                "tone": "bad",
+                "sub": "query threads starved"
+              }
+            ]
+          }
+        },
+        {
+          "id": "se-11-restart-loop",
+          "label": "Reboot storage nodes whenever disk IOPS utilization exceeds 90%",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 82,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 760,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 890,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Reboots restarted interrupted compactions from zero",
+          "resultBody": "Rebooting the node aborted active compactions, only for the same heavy compactions to re-trigger immediately on startup.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "engine",
+                "tone": "bad",
+                "sub": "reboot restart compaction loop"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Compaction is an asynchronous background maintenance job that should yield to foreground traffic.",
+        "Rate limiting compaction bandwidth prevents disk saturation without stopping data cleanup.",
+        "RocksDB and Cassandra both provide rate-limiting controls for compaction I/O throughput."
+      ],
+      "nextId": null,
+      "reviewed": true
     }
   ]
 }

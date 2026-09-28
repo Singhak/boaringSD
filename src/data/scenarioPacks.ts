@@ -154,10 +154,14 @@ export function getWarRoomIncident(patternId: string, runIndex: number): Inciden
   const pack = getScenarioPackByPatternId(patternId);
   if (!pack) return undefined;
   const canonical = getCanonicalIncident(patternId);
-  const rotation = [
-    ...(canonical ? [canonical] : []),
-    ...getPlayableIncidents(pack).filter((inc) => !inc.isCascade && inc.id !== canonical?.id),
-  ];
+  const nonCanonical = getPlayableIncidents(pack).filter((inc) => !inc.isCascade && inc.id !== canonical?.id);
+  // For levels 1 and 2, players already solved the canonical incidents (hs-01, lb-01) in onboarding.
+  // Their first campaign run (runIndex 0) should give them a fresh non-canonical incident.
+  const isTutorialPattern = patternId === "horizontal-scaling" || patternId === "load-balancing";
+  const rotation =
+    isTutorialPattern && nonCanonical.length > 0
+      ? [...nonCanonical, ...(canonical ? [canonical] : [])]
+      : [...(canonical ? [canonical] : []), ...nonCanonical];
   if (rotation.length === 0) return undefined;
   return rotation[Math.abs(runIndex) % rotation.length];
 }

@@ -512,7 +512,26 @@
         "Tokens only match if the same rules produced them.",
         "Apply the same analyzer chain to documents and to queries."
       ],
-      "nextId": null
+      "nextId": null,
+      "variants": [
+        {
+          "id": "var-srch-postgres",
+          "constraint": "Document collection is small (10,000 articles) and team has zero operational budget or headcount for managing OpenSearch clusters.",
+          "correctChoiceId": "query-only",
+          "resultOverrides": {
+            "srch-02-postgres": {
+              "approach": "optimal",
+              "resultTitle": "Postgres tsvector full-text index provides zero-cost search",
+              "resultBody": "For 10,000 documents, PostgreSQL GIN/tsvector search executes in <5ms without adding operational cluster complexity."
+            },
+            "srch-02-opensearch": {
+              "approach": "anti_pattern",
+              "resultTitle": "Dedicated OpenSearch cluster added $800/mo in needless overhead",
+              "resultBody": "Provisioning a multi-node cluster for 10k documents introduced synchronization lag and operational toil with no performance gain."
+            }
+          }
+        }
+      ]
     },
     {
       "id": "srch-03",
@@ -2523,6 +2542,1003 @@
         "The database commit is the only write that must succeed synchronously.",
         "Record the change in the same transaction and deliver it later."
       ]
+    },
+    {
+      "id": "srch-07",
+      "incidentCode": "INC-020",
+      "level": 20,
+      "patternId": "search-indexing",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 130,
+      "title": "Aggressive 1-second refresh interval causes segment proliferation",
+      "brief": "An Elasticsearch cluster experiences severe CPU spikes and I/O thrashing because indices configured with refresh_interval: 1s generate thousands of tiny segments.",
+      "constraint": "Restore indexing throughput and query performance without breaking search visibility for business operations.",
+      "question": "How should index refresh and segment merging intervals be tuned?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 32000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 89,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 380,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 85,
+          "unit": "errors",
+          "tone": "warn"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "ingest",
+            "kind": "service",
+            "label": "Logstash Ingest"
+          },
+          {
+            "id": "es",
+            "kind": "db",
+            "label": "Elasticsearch Cluster",
+            "cpu": 89,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "ingest",
+            "to": "es"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "srch-07-tune-refresh",
+          "label": "Increase index.refresh_interval to 30s and allow tiered segment merges",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 42,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 45,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Relaxed refresh interval cut segment churn by 90%",
+          "resultBody": "Extending refresh intervals allows Lucene to build larger in-memory buffers, creating fewer, larger disk segments and saving CPU.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "srch-07-force-merge",
+          "label": "Trigger continuous forceMerge to max_num_segments=1 every 2 minutes",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 950,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 650,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Continuous force-merging overwhelmed disk write bandwidth",
+          "resultBody": "Forcing merges on an actively written index rewrites gigabytes of unchanged data repeatedly, triggering severe I/O stalls.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "es",
+                "tone": "bad",
+                "sub": "I/O write saturation stall"
+              }
+            ]
+          }
+        },
+        {
+          "id": "srch-07-disable-flush",
+          "label": "Disable translog flushing completely to prevent Lucene from writing disk",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 75,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 240,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 890,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Disabling translog created catastrophic data loss on crash",
+          "resultBody": "The translog is required for crash durability; disabling it meant uncommitted documents vanished during unexpected node reboots.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "es",
+                "tone": "bad",
+                "sub": "translog durability lost"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Every refresh creates a new Lucene segment file that must be searched and merged.",
+        "Near-real-time (NRT) search default of 1 second is intended for interactive UI, not bulk data.",
+        "Increasing refresh_interval to 30s dramatically improves write throughput and reduces merge load."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "srch-08",
+      "incidentCode": "INC-020",
+      "level": 20,
+      "patternId": "search-indexing",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 130,
+      "title": "Leading wildcard search triggers full index postings scan",
+      "brief": "Users issuing search queries like `*service-worker` cause massive thread pool exhaustion because leading wildcards cannot use the inverted index terms prefix tree.",
+      "constraint": "Support fast prefix and suffix search queries without full-index term scanning.",
+      "question": "Which index tokenization structure enables high-performance leading wildcard searches?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 19000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 92,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 680,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 340,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "clients",
+            "kind": "users",
+            "label": "Search Users"
+          },
+          {
+            "id": "search-node",
+            "kind": "db",
+            "label": "Search Engine (92% CPU)",
+            "cpu": 92,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "clients",
+            "to": "search-node"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "srch-08-ngram-token",
+          "label": "Index fields with edge_ngram and reverse token filters for prefix lookups",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 44,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 36,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "N-gram and reverse filters converted scans into fast lookups",
+          "resultBody": "Indexing reversed tokens or n-gram subwords allows Lucene's finite state transducer (FST) to locate matches without full scans.",
+          "tradeoffs": {
+            "costMonthlyDelta": 30
+          }
+        },
+        {
+          "id": "srch-08-allow-leading",
+          "label": "Increase search thread pool queue size to buffer more wildcard queries",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 980,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 780,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Expanding thread queue compounded the CPU bottleneck",
+          "resultBody": "Buffering more expensive scans caused thread queues to overflow, resulting in OutOfMemory heap crashes.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "search-node",
+                "tone": "bad",
+                "sub": "search thread pool OOM"
+              }
+            ]
+          }
+        },
+        {
+          "id": "srch-08-regex-scan",
+          "label": "Translate all user queries to unanchored regular expressions at gateway",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 96,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 890,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 490,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Unanchored regex scans were equally slow and CPU intensive",
+          "resultBody": "Unanchored regex evaluation forces the exact same linear iteration over every term in the Lucene dictionary.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "search-node",
+                "tone": "bad",
+                "sub": "regex term iteration stall"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Inverted index term dictionaries are organized alphabetically like a phone book.",
+        "Looking up `*suffix` requires reading every single term unless tokens are pre-reversed.",
+        "Edge n-grams or the `wildcard` field type index sub-sequences for fast point queries."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "srch-09",
+      "incidentCode": "INC-020",
+      "level": 20,
+      "patternId": "search-indexing",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 130,
+      "title": "Deep pagination with from/size causes JVM heap exhaustion",
+      "brief": "Web scrapers requesting page 10,000 via `from: 100000, size: 20` force every shard to serialize 100,000 documents into coordinating node memory.",
+      "constraint": "Support deep dataset traversal without quadratic memory consumption.",
+      "question": "Which query mechanism replaces deep from/size pagination efficiently?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 24000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 84,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 520,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 290,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "scrapers",
+            "kind": "users",
+            "label": "Scraper Bots"
+          },
+          {
+            "id": "coordinator",
+            "kind": "db",
+            "label": "Coordinating Node",
+            "cpu": 84,
+            "tone": "bad"
+          },
+          {
+            "id": "shards",
+            "kind": "replica",
+            "label": "Data Shards (x5)",
+            "cpu": 78,
+            "tone": "warn"
+          }
+        ],
+        "edges": [
+          {
+            "from": "scrapers",
+            "to": "coordinator"
+          },
+          {
+            "from": "coordinator",
+            "to": "shards"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "srch-09-search-after",
+          "label": "Enforce search_after with tie-breaker doc sort key instead of deep offset",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 41,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 32,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Cursor-based search_after eliminated heap bloat",
+          "resultBody": "search_after uses the values from the previous page's last document to resume lookup directly at the cursor without fetching earlier rows.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "srch-09-raise-max-result",
+          "label": "Increase index.max_result_window setting from 10,000 to 1,000,000",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 98,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 950,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 890,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Raising result window triggered immediate cluster crash",
+          "resultBody": "Allowing million-offset pagination allowed scrapers to request 1M items per query, crashing coordinating nodes with OutOfMemory.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "coordinator",
+                "tone": "bad",
+                "sub": "heap OutOfMemory crash"
+              }
+            ]
+          }
+        },
+        {
+          "id": "srch-09-scroll-context",
+          "label": "Open long-lived 60-minute scroll contexts for all web scraper requests",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 88,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 610,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 480,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Scroll contexts pinned open old segments and leaked memory",
+          "resultBody": "Holding thousands of concurrent 1-hour scroll contexts prevented segment merging cleanup, consuming massive disk and heap space.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 40
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "coordinator",
+                "tone": "bad",
+                "sub": "scroll context accumulation"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "With `from: N`, each shard must fetch N + size documents, sort them, and return them.",
+        "For 5 shards and from 100k, the coordinator must collect and sort 500,000 documents.",
+        "`search_after` is stateless, cursor-based pagination that costs O(size) rather than O(from + size)."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "srch-10",
+      "incidentCode": "INC-020",
+      "level": 20,
+      "patternId": "search-indexing",
+      "canonical": false,
+      "severity": "P2",
+      "xp": 120,
+      "title": "Unbalanced custom routing creates hotspot on single search shard",
+      "brief": "Routing documents by country_code directs 60% of all global user search indexing to a single shard (US), overloading one node while others sit idle.",
+      "constraint": "Distribute documents evenly across shards without losing single-shard query locality when filtering.",
+      "question": "How should shard routing keys be restructured to prevent country hotspots?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 37000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 86,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 290,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 120,
+          "unit": "errors",
+          "tone": "warn"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "traffic",
+            "kind": "users",
+            "label": "Search Requests"
+          },
+          {
+            "id": "hot-shard",
+            "kind": "db",
+            "label": "Node 1 (Shard 0 - US)",
+            "cpu": 86,
+            "tone": "bad"
+          },
+          {
+            "id": "idle-shard",
+            "kind": "db",
+            "label": "Node 2 (Shard 1 - Rest)",
+            "cpu": 18,
+            "tone": "good"
+          }
+        ],
+        "edges": [
+          {
+            "from": "traffic",
+            "to": "hot-shard"
+          },
+          {
+            "from": "traffic",
+            "to": "idle-shard"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "srch-10-composite-route",
+          "label": "Route using compound key of tenant_id combined with salted hash bucket",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 39,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 34,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Composite routing balanced load across all cluster nodes",
+          "resultBody": "Splitting massive countries into consistent sub-buckets spreads the data evenly across shards while keeping shard counts predictable.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "srch-10-random-route",
+          "label": "Randomize routing completely so every document lands on a random shard",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 78,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 210,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 25,
+              "unit": "errors",
+              "tone": "neutral"
+            }
+          ],
+          "resultTitle": "Random routing forced every query to scatter-gather all shards",
+          "resultBody": "Scattering documents randomly meant every search had to query every shard in the cluster, multiplying cluster-wide query load.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "hot-shard",
+                "tone": "warn",
+                "sub": "scatter-gather broadcast"
+              },
+              {
+                "id": "idle-shard",
+                "tone": "warn",
+                "sub": "scatter-gather broadcast"
+              }
+            ]
+          }
+        },
+        {
+          "id": "srch-10-single-shard",
+          "label": "Reindex entire cluster into a single giant shard on a larger server",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 95,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 740,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 390,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Single giant shard hit Lucene document count and memory limits",
+          "resultBody": "A single shard cannot exceed Lucene's 2-billion document limit and eliminated all parallel CPU search capability.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 280
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "hot-shard",
+                "tone": "bad",
+                "sub": "single giant shard limit"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Custom routing keys direct documents with matching keys to the exact same shard.",
+        "Skewed keys (like country='US' or tenant='demo') create severe shard hotspots.",
+        "Salting high-cardinality keys spreads traffic across multiple shards while preserving bucketing."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "srch-11",
+      "incidentCode": "INC-020",
+      "level": 20,
+      "patternId": "search-indexing",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 140,
+      "title": "Fielddata heap explosion on high-cardinality terms aggregation",
+      "brief": "An ad-hoc terms aggregation on an analyzed `user_comment` text field loads millions of unique string tokens into JVM heap, triggering stop-the-world GC.",
+      "constraint": "Enable analytical aggregations without loading analyzed string arrays into memory.",
+      "question": "How should mappings be updated to prevent heap-based fielddata loading?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 28000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 96,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 890,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 1200,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "bi",
+            "kind": "service",
+            "label": "Analytics Dashboard"
+          },
+          {
+            "id": "es-node",
+            "kind": "db",
+            "label": "Data Node (GC Pause 14s)",
+            "cpu": 96,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "bi",
+            "to": "es-node"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "srch-11-doc-values",
+          "label": "Map fields as non-analyzed keyword to utilize columnar doc_values on disk",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 43,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 29,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "On-disk doc_values eliminated JVM heap pressure",
+          "resultBody": "doc_values store columnar data on disk managed by the OS page cache, eliminating in-memory heap fielddata structures entirely.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "srch-11-increase-fielddata",
+          "label": "Increase indices.fielddata.cache.size limit to 80% of JVM heap space",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 990,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1800,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Allowing more fielddata memory triggered terminal heap crashes",
+          "resultBody": "Allocating 80% of heap to fielddata starved queries and Lucene indexing, causing permanent OutOfMemory process crashes.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "es-node",
+                "tone": "bad",
+                "sub": "terminal OutOfMemory crash"
+              }
+            ]
+          }
+        },
+        {
+          "id": "srch-11-restart-nodes",
+          "label": "Execute scheduled hourly rolling restarts of nodes to clear heap cache",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 85,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 520,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 410,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Hourly reboots caused constant shard recovery overhead",
+          "resultBody": "Restarting nodes forced constant cluster green/yellow rebalancing and the first dashboard query immediately re-filled the heap.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "es-node",
+                "tone": "bad",
+                "sub": "continuous shard relocation"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Aggregations on analyzed `text` fields require building an un-inverted index in JVM heap called `fielddata`.",
+        "`fielddata` is notorious for causing catastrophic OutOfMemory errors on high-cardinality fields.",
+        "Using `keyword` fields leverages `doc_values`, which are stored on-disk and page-cached."
+      ],
+      "nextId": null,
+      "reviewed": true
     }
   ]
 }

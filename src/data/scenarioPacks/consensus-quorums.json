@@ -671,7 +671,26 @@
         "Spread an odd count across failure domains."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-cq-local",
+          "constraint": "Datacenter WAN link to remote region has 200ms latency and high packet loss; writes cannot wait for cross-WAN consensus.",
+          "correctChoiceId": "four-tiebreak",
+          "resultOverrides": {
+            "cq-02-local": {
+              "approach": "optimal",
+              "resultTitle": "Local quorum ensures fast writes without WAN dependencies",
+              "resultBody": "Restricting consensus quorums to the local region keeps write latencies under 5ms, replicating asynchronously to remote sites."
+            },
+            "cq-02-global": {
+              "approach": "anti_pattern",
+              "resultTitle": "Global quorum writes stalled on the 200ms WAN link",
+              "resultBody": "Requiring majority across remote regions pushed write latency to 200ms+ and caused client timeout cascades."
+            }
+          }
+        }
+      ]
     },
     {
       "id": "cq-03",
@@ -2493,6 +2512,1033 @@
         "Is the problem the protocol, or the hardware it runs on?"
       ],
       "nextId": null
+    },
+    {
+      "id": "cq-07",
+      "incidentCode": "INC-017",
+      "level": 17,
+      "patternId": "consensus-quorums",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 140,
+      "title": "Disjoint network partition causes Raft election disruption",
+      "brief": "An isolated follower node reconnects with an incremented election term and immediately triggers term inflation, dethroning the active leader.",
+      "constraint": "Prevent term disruptive election cascades from disconnected or partitioned nodes.",
+      "question": "What consensus protocol phase prevents reconnecting stale followers from disrupting the leader?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 41000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 74,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 290,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 620,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "clients",
+            "kind": "users",
+            "label": "App Clients"
+          },
+          {
+            "id": "leader",
+            "kind": "db",
+            "label": "Raft Leader",
+            "cpu": 74,
+            "tone": "warn"
+          },
+          {
+            "id": "isolated-node",
+            "kind": "replica",
+            "label": "Reconnecting Node",
+            "cpu": 40,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "clients",
+            "to": "leader"
+          },
+          {
+            "from": "isolated-node",
+            "to": "leader"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "cq-07-prevote",
+          "label": "Enable Pre-Vote protocol phase to verify candidate quorum before term bump",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 42,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 38,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Pre-Vote phase shielded leader from term disruption",
+          "resultBody": "Pre-Vote requires a candidate to confirm majority reachability before incrementing its term, stopping partition disruptions.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "cq-07-ignore-terms",
+          "label": "Configure the active leader to unconditionally reject incoming higher terms",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 89,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 580,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 920,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Ignoring higher terms broke fundamental Raft safety",
+          "resultBody": "Unconditionally rejecting higher terms causes dual-leader split-brain and violates Raft linearizability guarantees.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "leader",
+                "tone": "bad",
+                "sub": "split-brain dual leader"
+              }
+            ]
+          }
+        },
+        {
+          "id": "cq-07-manual-failover",
+          "label": "Disable automated leader elections entirely and rely on manual CLI triggers",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 55,
+              "unit": "%",
+              "tone": "neutral"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 310,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 430,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Manual elections caused prolonged unplanned cluster downtime",
+          "resultBody": "Disabling automated failovers left the cluster completely down whenever genuine hardware faults occurred on the leader.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "leader",
+                "tone": "bad",
+                "sub": "elections disabled"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Raft Section 9.6 specifies Pre-Vote to prevent disruption from partitioned nodes.",
+        "A candidate should not increment its term unless a majority would vote for it.",
+        "Pre-Vote probes the cluster state before initiating a formal election."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "cq-08",
+      "incidentCode": "INC-017",
+      "level": 17,
+      "patternId": "consensus-quorums",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 130,
+      "title": "Follower snapshot transfer starves leader heartbeat channel",
+      "brief": "A lagging replica requests a 50GB log snapshot. Streaming the snapshot saturates network bandwidth, causing leader heartbeats to time out.",
+      "constraint": "Replicas must catch up without interrupting live client consensus throughput.",
+      "question": "How should snapshot streaming be isolated from normal consensus traffic?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 36000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 78,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 240,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 380,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "leader",
+            "kind": "db",
+            "label": "Leader Node",
+            "cpu": 78,
+            "tone": "warn"
+          },
+          {
+            "id": "lagging-peer",
+            "kind": "replica",
+            "label": "Lagging Replica",
+            "cpu": 65,
+            "tone": "bad"
+          },
+          {
+            "id": "healthy-peer",
+            "kind": "replica",
+            "label": "Healthy Replica",
+            "cpu": 38,
+            "tone": "good"
+          }
+        ],
+        "edges": [
+          {
+            "from": "leader",
+            "to": "lagging-peer"
+          },
+          {
+            "from": "leader",
+            "to": "healthy-peer"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "cq-08-throttle-snapshot",
+          "label": "Rate-limit snapshot streaming and pin heartbeats to dedicated TCP socket",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 44,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 32,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Dedicated heartbeat channel preserved consensus stability",
+          "resultBody": "Isolating control plane heartbeats from heavy snapshot data transfers prevents head-of-line blocking and false election triggers.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "cq-08-drop-snapshot",
+          "label": "Truncate lagging replica log and resume without transferring snapshot",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 65,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 190,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 710,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Skipping snapshot caused permanent state divergence",
+          "resultBody": "Resuming without missing log history created state machine corruption and panic assertions on the recovering replica.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "lagging-peer",
+                "tone": "bad",
+                "sub": "corrupted state divergence"
+              }
+            ]
+          }
+        },
+        {
+          "id": "cq-08-double-timeout",
+          "label": "Increase cluster election timeout to 120 seconds for all nodes",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 71,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 340,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 490,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Massive election timeout delayed real outage recovery",
+          "resultBody": "Setting a 2-minute election timeout meant genuine leader crashes caused 2 minutes of unmitigated service downtime.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "leader",
+                "tone": "bad",
+                "sub": "election delayed 120s"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Large data replication must never choke the lightweight RPC heartbeats that maintain consensus.",
+        "Separate sockets or QoS priority queues ensure control messages stay timely.",
+        "Rate limiting background catch-up transfers prevents network saturation."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "cq-09",
+      "incidentCode": "INC-017",
+      "level": 17,
+      "patternId": "consensus-quorums",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 140,
+      "title": "Stale leader read returns uncommitted transaction data",
+      "brief": "An isolated Raft leader continues serving local reads after losing contact with the majority, returning stale account balance data to clients.",
+      "constraint": "All reads must be strictly linearizable without serving stale state.",
+      "question": "Which Raft read optimization ensures linearizability without full log append overhead?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 27000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 62,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 140,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 240,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "clients",
+            "kind": "users",
+            "label": "Read Clients"
+          },
+          {
+            "id": "stale-leader",
+            "kind": "db",
+            "label": "Deposed Leader",
+            "cpu": 62,
+            "tone": "bad"
+          },
+          {
+            "id": "new-leader",
+            "kind": "db",
+            "label": "True Majority Leader",
+            "cpu": 55,
+            "tone": "good"
+          }
+        ],
+        "edges": [
+          {
+            "from": "clients",
+            "to": "stale-leader"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "cq-09-read-index",
+          "label": "Enforce ReadIndex heartbeat round to confirm active majority lease",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 46,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 34,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "ReadIndex verified leader legitimacy before serving",
+          "resultBody": "ReadIndex requires the leader to exchange quick heartbeat RPCs with a majority before returning data, guaranteeing linearizability.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "cq-09-local-memory",
+          "label": "Serve all read queries directly from local memory without confirmation",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 40,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 20,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 680,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Direct local reads served severely stale and invalid data",
+          "resultBody": "A partitioned or deposed leader served old state while the true majority had already committed new updates.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "stale-leader",
+                "tone": "bad",
+                "sub": "serving phantom state"
+              }
+            ]
+          }
+        },
+        {
+          "id": "cq-09-full-append",
+          "label": "Log a full disk-synced Raft write entry for every single read request",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 460,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 310,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Disk-synced read entries destroyed read throughput",
+          "resultBody": "Writing a new consensus log entry and calling fsync for every read request caused severe I/O exhaustion.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 130
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "stale-leader",
+                "tone": "bad",
+                "sub": "disk WAL write bottleneck"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Linearizable reads require verifying that the leader has not been superseded.",
+        "ReadIndex verifies the leader still holds the majority without writing a new log entry to disk.",
+        "Leader lease or ReadIndex ensures read safety without write log bloat."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "cq-10",
+      "incidentCode": "INC-017",
+      "level": 17,
+      "patternId": "consensus-quorums",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 130,
+      "title": "Witness node latency drags down quorum commit latency",
+      "brief": "A 3-node cluster deployed with one witness node on high-latency satellite internet spikes commit latency on all client writes.",
+      "constraint": "Maintain 3-node quorum fault tolerance while meeting a 50ms p95 latency budget.",
+      "question": "How should quorum membership and network topology be configured to eliminate the lag?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 22000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 54,
+          "unit": "%",
+          "tone": "neutral"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 310,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 45,
+          "unit": "errors",
+          "tone": "warn"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "leader",
+            "kind": "db",
+            "label": "Leader (AZ-1)",
+            "cpu": 54,
+            "tone": "neutral"
+          },
+          {
+            "id": "replica",
+            "kind": "replica",
+            "label": "Voter (AZ-2)",
+            "cpu": 51,
+            "tone": "neutral"
+          },
+          {
+            "id": "witness",
+            "kind": "replica",
+            "label": "Witness (Satellite)",
+            "cpu": 20,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "leader",
+            "to": "replica"
+          },
+          {
+            "from": "leader",
+            "to": "witness"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "cq-10-move-witness",
+          "label": "Relocate witness node to a low-latency cloud availability zone",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 41,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 28,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Low-latency witness restored commit performance",
+          "resultBody": "Placing the third quorum member in an adjacent low-latency zone allows 2-of-3 quorums to acknowledge writes in single-digit ms.",
+          "tradeoffs": {
+            "costMonthlyDelta": 30
+          }
+        },
+        {
+          "id": "cq-10-single-node",
+          "label": "Demote the cluster to a single standalone leader without any quorum",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 38,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 19,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 120,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Single node configuration created zero fault tolerance",
+          "resultBody": "Removing quorum replication leaves the entire system vulnerable to total data loss on any node failure.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": -50
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "leader",
+                "tone": "bad",
+                "sub": "single point of failure"
+              }
+            ]
+          }
+        },
+        {
+          "id": "cq-10-batch-commit",
+          "label": "Force writes to wait for all three nodes including satellite witness",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 68,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 640,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 390,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "All-node requirement compounded the high latency",
+          "resultBody": "Waiting for uncoordinated 3-of-3 acknowledgments bound cluster write speed to the slowest satellite link.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "witness",
+                "tone": "bad",
+                "sub": "satellite lag bottleneck"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Quorum write speed is determined by the median latency among the fastest (N/2 + 1) nodes.",
+        "Witness nodes participate in votes and should reside in low-latency network topologies.",
+        "Never place a required voting member on high-latency or unstable transit links."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "cq-11",
+      "incidentCode": "INC-017",
+      "level": 17,
+      "patternId": "consensus-quorums",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 130,
+      "title": "Disk sync latency on single follower stalls cluster log pipeline",
+      "brief": "A degraded SSD on a follower node takes 80ms to fsync each log entry, causing the leader's append pipeline to back up under synchronous RPC blocking.",
+      "constraint": "Ensure healthy followers can advance the commit index without waiting on degraded peers.",
+      "question": "How should the leader manage asynchronous replication pipelining?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 28000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 72,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 210,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 160,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "leader",
+            "kind": "db",
+            "label": "Raft Leader",
+            "cpu": 72,
+            "tone": "warn"
+          },
+          {
+            "id": "fast-follower",
+            "kind": "replica",
+            "label": "Fast Replica",
+            "cpu": 45,
+            "tone": "good"
+          },
+          {
+            "id": "slow-follower",
+            "kind": "replica",
+            "label": "Degraded Disk Replica",
+            "cpu": 30,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "leader",
+            "to": "fast-follower"
+          },
+          {
+            "from": "leader",
+            "to": "slow-follower"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "cq-11-pipelined-append",
+          "label": "Advance commit index as soon as any majority confirms the log entry",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 43,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 31,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Majority quorum commit unblocked the replication pipeline",
+          "resultBody": "Consensus only requires majority acknowledgment; pipelined RPCs allow fast followers to commit without blocking on the slow node.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "cq-11-wait-all-sync",
+          "label": "Block leader write commits until all replicas finish disk sync",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 84,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 480,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 490,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Leader throughput bound to slowest degraded disk",
+          "resultBody": "Waiting for every node to fsync turns consensus into an all-or-nothing chain, nullifying quorum fault tolerance.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "leader",
+                "tone": "bad",
+                "sub": "head-of-line blocked"
+              }
+            ]
+          }
+        },
+        {
+          "id": "cq-11-disable-fsync",
+          "label": "Disable fsync completely on all cluster nodes and rely on RAM buffer",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 39,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 15,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 380,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Disabling fsync risked cluster-wide data loss on power cut",
+          "resultBody": "Operating without disk synchronization causes unrecoverable log corruption if servers experience power interruption.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "leader",
+                "tone": "bad",
+                "sub": "unpersisted volatile memory"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "In a 3-node cluster, the leader and any 1 follower constitute a valid quorum.",
+        "Pipelined replication transmits logs concurrently rather than lock-stepping.",
+        "A degraded follower should never block the leader from committing entries acknowledged by healthy peers."
+      ],
+      "nextId": null,
+      "reviewed": true
     }
   ]
 }

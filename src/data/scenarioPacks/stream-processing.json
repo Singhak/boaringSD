@@ -679,7 +679,26 @@
         "Raise the ceiling, not the headcount."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-strm-stateless",
+          "constraint": "Events require only stateless JSON field scrubbing before writing to S3 data lake; no windowing or state is needed.",
+          "correctChoiceId": "own-group",
+          "resultOverrides": {
+            "strm-02-lambda": {
+              "approach": "optimal",
+              "resultTitle": "Stateless worker functions scale simply and cost-effectively",
+              "resultBody": "Without state or aggregation windows, lightweight stateless consumers process records cheaply without state backend maintenance."
+            },
+            "strm-02-flink": {
+              "approach": "anti_pattern",
+              "resultTitle": "Stateful Flink cluster introduced complex checkpointing overhead",
+              "resultBody": "Running a stateful streaming cluster for pure stateless mapping wasted resources on RocksDB checkpoints and state management."
+            }
+          }
+        }
+      ]
     },
     {
       "id": "strm-03",
@@ -1904,7 +1923,7 @@
         {
           "key": "surge",
           "label": "Surge multiplier",
-          "value": 1.0,
+          "value": 1,
           "unit": "x",
           "tone": "bad"
         },
@@ -2763,6 +2782,989 @@
         "The replay's deadline is measured in hours; the live path's in seconds.",
         "Give the backfill a fixed slice of the database and let it take longer."
       ]
+    },
+    {
+      "id": "strm-07",
+      "incidentCode": "INC-021",
+      "level": 21,
+      "patternId": "stream-processing",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 130,
+      "title": "Delayed mobile events dropped by overly strict watermark",
+      "brief": "A Flink billing pipeline with a 5-second bounded-out-of-orderness watermark drops 12% of mobile billing events arriving with cellular network latency.",
+      "constraint": "Capture late-arriving financial telemetry without delaying real-time event window emission.",
+      "question": "How should late data handling be configured in event-time stream processing?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 58000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 65,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 140,
+          "unit": "ms",
+          "tone": "neutral"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 690,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "mobile",
+            "kind": "users",
+            "label": "Mobile Apps (Lagging)"
+          },
+          {
+            "id": "stream",
+            "kind": "service",
+            "label": "Flink Window Operator",
+            "cpu": 65,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "mobile",
+            "to": "stream"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "strm-07-side-output",
+          "label": "Route late events to a side-output dead-letter stream for reconciliation",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 48,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 45,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Side outputs safely captured late billing events",
+          "resultBody": "Routing late arrivals to a side-output Kafka topic allows on-time windows to fire while late data is reconciled asynchronously.",
+          "tradeoffs": {
+            "costMonthlyDelta": 20
+          }
+        },
+        {
+          "id": "strm-07-extend-watermark",
+          "label": "Increase watermark out-of-orderness delay from 5 seconds to 2 hours",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 89,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 890,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 150,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Massive watermark delay broke real-time stream SLAs",
+          "resultBody": "Holding event-time watermarks back by 2 hours delayed all downstream real-time alerts and bloated operator state memory.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 60
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "stream",
+                "tone": "bad",
+                "sub": "2-hour state retention bloat"
+              }
+            ]
+          }
+        },
+        {
+          "id": "strm-07-processing-time",
+          "label": "Switch pipeline from event time to ingestion processing time clock",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 50,
+              "unit": "%",
+              "tone": "neutral"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 40,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 920,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Processing time corrupted historical billing calculations",
+          "resultBody": "Aggregating by processing arrival time lumped delayed events into the wrong calendar days, violating billing accounting rules.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "stream",
+                "tone": "bad",
+                "sub": "incorrect calendar day attribution"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Event time reflects when an action occurred; processing time is when the engine observed it.",
+        "Watermarks tell the engine when to close a window and produce a result.",
+        "Late data arriving after the watermark can be emitted to a side-output rather than silently dropped."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "strm-08",
+      "incidentCode": "INC-021",
+      "level": 21,
+      "patternId": "stream-processing",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 130,
+      "title": "Session window state unbounded growth across idle devices",
+      "brief": "A user clickstream session window aggregator accumulates 2TB of RocksDB state because disconnected IoT devices never emit a closing event.",
+      "constraint": "Bound state size and prune abandoned sessions without dropping active user streams.",
+      "question": "How should state lifecycle and retention be bounded in stream processing?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 44000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 78,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 310,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 45,
+          "unit": "errors",
+          "tone": "warn"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "iot",
+            "kind": "users",
+            "label": "IoT Devices (Idle)"
+          },
+          {
+            "id": "state-backend",
+            "kind": "storage",
+            "label": "RocksDB State (2TB)",
+            "cpu": 78,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "iot",
+            "to": "state-backend"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "strm-08-state-ttl",
+          "label": "Configure StateTtlConfig with 24-hour expiration on inactive session keys",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 44,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 38,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "State TTL purged abandoned sessions automatically",
+          "resultBody": "Setting an explicit state TTL purges keys that haven't received updates for 24 hours, capping disk state and stabilizing checkpoint times.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "strm-08-clear-state",
+          "label": "Purge the entire RocksDB state backend directory every midnight via cron",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 650,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 890,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Blind state purging destroyed active session metrics",
+          "resultBody": "Deleting backend directories destroyed live session state for actively browsing users, causing inaccurate metric reports.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "state-backend",
+                "tone": "bad",
+                "sub": "corrupted state wipeout"
+              }
+            ]
+          }
+        },
+        {
+          "id": "strm-08-disk-expansion",
+          "label": "Attach 10TB additional storage disks without modifying state config",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 72,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 290,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 30,
+              "unit": "errors",
+              "tone": "neutral"
+            }
+          ],
+          "resultTitle": "Adding disk delayed failure but inflated checkpoint times",
+          "resultBody": "Unbounded state continued to grow linearly; checkpoint durations climbed past 15 minutes, eventually stalling the cluster.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 310
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "state-backend",
+                "tone": "warn",
+                "sub": "expensive unbounded storage"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Session windows group events by periods of activity separated by gaps of inactivity.",
+        "Abandoned keys consume storage indefinitely unless explicitly expired.",
+        "State TTL allows streaming engines to automatically prune stale state during background compaction."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "strm-09",
+      "incidentCode": "INC-021",
+      "level": 21,
+      "patternId": "stream-processing",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 140,
+      "title": "Consumer group rebalance storm stalls partition consumption",
+      "brief": "A single slow consumer thread in a Kafka consumer group exceeds `max.poll.interval.ms`, triggering a group-wide rebalance that pauses all partition processing.",
+      "constraint": "Prevent stop-the-world partition rebalances when individual consumer tasks experience lag.",
+      "question": "How should consumer assignment and heartbeat configuration be tuned?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 62000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 68,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 410,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 820,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "kafka",
+            "kind": "queue",
+            "label": "Kafka Topic (16 Partitions)"
+          },
+          {
+            "id": "consumer",
+            "kind": "service",
+            "label": "Consumer Group (Rebalancing)",
+            "cpu": 68,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "kafka",
+            "to": "consumer"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "strm-09-cooperative-sticky",
+          "label": "Adopt CooperativeStickyAssignor and offload long jobs to thread pool",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 42,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 31,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Cooperative rebalancing maintained active stream flow",
+          "resultBody": "Cooperative rebalancing only revokes partitions that must migrate, allowing unaffected consumers to continue processing without interruption.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "strm-09-huge-poll-interval",
+          "label": "Increase max.poll.interval.ms to 24 hours to prevent rebalance triggers",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 50,
+              "unit": "%",
+              "tone": "neutral"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 340,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 650,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Dead consumer instances went undetected for hours",
+          "resultBody": "Setting a 24-hour poll interval prevented dead workers from being removed, leaving their assigned partitions completely frozen.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "consumer",
+                "tone": "bad",
+                "sub": "frozen unassigned partitions"
+              }
+            ]
+          }
+        },
+        {
+          "id": "strm-09-single-consumer",
+          "label": "Consolidate all partition processing into a single monolithic consumer",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 98,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 920,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 980,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Single consumer collapsed under total cluster traffic",
+          "resultBody": "A single consumer instance was completely unable to keep up with 60,000 req/sec, causing consumer lag to grow indefinitely.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": -40
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "consumer",
+                "tone": "bad",
+                "sub": "infinite consumer lag growth"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Eager rebalancing revokes all partition assignments across the entire group during any membership change.",
+        "Cooperative sticky rebalancing migrates only necessary partitions incrementally without stopping the world.",
+        "Never perform blocking synchronous I/O directly inside the Kafka poll loop."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "strm-10",
+      "incidentCode": "INC-021",
+      "level": 21,
+      "patternId": "stream-processing",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 130,
+      "title": "Two-phase commit sink transaction timeout aborts checkpoint",
+      "brief": "An exactly-once Kafka sink transaction aborts because heavy compaction causes checkpoint duration to exceed `transaction.timeout.ms` (15 minutes).",
+      "constraint": "Maintain end-to-end exactly-once delivery semantics without transaction abort churn.",
+      "question": "How should transaction coordinator timeouts and checkpoint cadences be coordinated?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 41000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 74,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 260,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 410,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "flink",
+            "kind": "service",
+            "label": "Flink 2PC Coordinator",
+            "cpu": 74,
+            "tone": "warn"
+          },
+          {
+            "id": "kafka",
+            "kind": "queue",
+            "label": "Kafka Sink (Aborting 2PC)",
+            "cpu": 60,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "flink",
+            "to": "kafka"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "strm-10-align-timeouts",
+          "label": "Align transaction.timeout.ms safely above checkpoint duration limits",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 45,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 34,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Aligned 2PC timeouts eliminated abort cycles",
+          "resultBody": "Setting Kafka transaction timeout higher than checkpoint duration guarantees open transactions are committed before timing out.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "strm-10-at-least-once",
+          "label": "Downgrade sink semantic to at-least-once and disable two-phase commit",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 42,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 28,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 520,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "At-least-once semantics produced duplicate financial transactions",
+          "resultBody": "Without 2PC transactional guarantees, downstream payment ledgers received duplicate records whenever tasks restarted.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "kafka",
+                "tone": "bad",
+                "sub": "duplicate transaction records"
+              }
+            ]
+          }
+        },
+        {
+          "id": "strm-10-disable-checkpoints",
+          "label": "Disable streaming checkpoints completely and run purely in memory buffer",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 38,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 20,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 890,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Disabling checkpoints caused complete data loss on pod restart",
+          "resultBody": "Operating without checkpoints eliminates fault tolerance; when a worker died, the entire stream state was permanently lost.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "flink",
+                "tone": "bad",
+                "sub": "no fault tolerance recovery"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Flink's TwoPhaseCommitSinkFunction opens a transaction in Kafka that commits when a checkpoint succeeds.",
+        "If checkpointing takes longer than Kafka's transaction timeout, Kafka aborts the open transaction.",
+        "Ensure transaction.timeout.ms is safely higher than the checkpoint timeout plus buffer."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "strm-11",
+      "incidentCode": "INC-021",
+      "level": 21,
+      "patternId": "stream-processing",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 130,
+      "title": "Key skew hot partition throttles single stream task operator",
+      "brief": "A stream analytics pipeline keyed by `merchant_id` routes 40% of all events to a single task slot (Amazon), causing massive backpressure upstream.",
+      "constraint": "Distribute workload evenly across all operator parallel tasks without breaking aggregate accuracy.",
+      "question": "Which stream repartitioning technique solves extreme key skew?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 54000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 85,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 380,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 140,
+          "unit": "errors",
+          "tone": "warn"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "source",
+            "kind": "queue",
+            "label": "Ingest Kafka Source"
+          },
+          {
+            "id": "hot-task",
+            "kind": "service",
+            "label": "Task Slot 1 (Amazon 99%)",
+            "cpu": 99,
+            "tone": "bad"
+          },
+          {
+            "id": "idle-task",
+            "kind": "service",
+            "label": "Task Slot 2 (Idle)",
+            "cpu": 15,
+            "tone": "good"
+          }
+        ],
+        "edges": [
+          {
+            "from": "source",
+            "to": "hot-task"
+          },
+          {
+            "from": "source",
+            "to": "idle-task"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "strm-11-salting",
+          "label": "Salt skewed keys with random prefix for pre-aggregation then global merge",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 43,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 33,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Two-stage salted aggregation eliminated key hotspot",
+          "resultBody": "Adding random salts (e.g. merchant_id_1..10) distributes the hot key across 10 parallel slots before a lightweight final merge.",
+          "tradeoffs": {
+            "costMonthlyDelta": 10
+          }
+        },
+        {
+          "id": "strm-11-round-robin",
+          "label": "Rebalance every stream event randomly without preserving key grouping",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 68,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 180,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 620,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Random rebalance broke stateful per-merchant windowing",
+          "resultBody": "Scattering events across slots without keys made stateful per-merchant count and sum operations completely inaccurate.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "hot-task",
+                "tone": "bad",
+                "sub": "corrupted state grouping"
+              }
+            ]
+          }
+        },
+        {
+          "id": "strm-11-single-core",
+          "label": "Run the hot merchant on a dedicated bare-metal server with 128 cores",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 80,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 240,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 90,
+              "unit": "errors",
+              "tone": "neutral"
+            }
+          ],
+          "resultTitle": "Single-core task thread still bottlenecked the key pipeline",
+          "resultBody": "Because stream tasks are single-threaded per key partition, extra CPU cores sat idle while one core remained 100% pegged.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 450
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "hot-task",
+                "tone": "warn",
+                "sub": "expensive idle bare-metal cores"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "In stream engines (like Flink keyBy or Kafka partitioning), all events with the same key route to one thread.",
+        "When one key accounts for 40% of traffic, vertical scaling fails because a single thread handles the key.",
+        "Two-stage aggregation (key + random salt, followed by global sum) parallelizes hot keys seamlessly."
+      ],
+      "nextId": null,
+      "reviewed": true
     }
   ]
 }

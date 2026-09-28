@@ -534,7 +534,26 @@
           "db": "The token DB is busy because auth is busy; its queries are healthy.",
           "gw": "The gateway passes through the same 30k req/s as last week."
         }
-      }
+      },
+      "variants": [
+        {
+          "id": "var-auth-redis",
+          "constraint": "High-security banking platform strictly requires instantaneous session termination across all devices upon password reset.",
+          "correctChoiceId": "cache-introspect",
+          "resultOverrides": {
+            "auth-02-redis-session": {
+              "approach": "optimal",
+              "resultTitle": "Centralized session store guarantees immediate revocation",
+              "resultBody": "Storing active session tokens in Redis enables instant invalidation across all user devices when compromised."
+            },
+            "auth-02-pure-jwt": {
+              "approach": "anti_pattern",
+              "resultTitle": "Stateless JWTs remained valid after user password reset",
+              "resultBody": "Because stateless tokens carry their own validation, compromised JWTs continued working until their 1-hour expiration."
+            }
+          }
+        }
+      ]
     },
     {
       "id": "auth-03",
@@ -2533,6 +2552,1007 @@
         "Remember devices that already passed a login."
       ],
       "nextId": null
+    },
+    {
+      "id": "auth-07",
+      "incidentCode": "INC-023",
+      "level": 23,
+      "patternId": "auth-at-scale",
+      "canonical": false,
+      "severity": "P0",
+      "xp": 140,
+      "title": "JWKS cache miss stampede during token signing key rotation",
+      "brief": "When an identity provider rotates its RSA signing key, 200 microservices simultaneously fetch the new `.well-known/jwks.json`, taking down the auth server.",
+      "constraint": "Enable seamless key rotation without dogpiling the JWKS authorization endpoint.",
+      "question": "How should JWKS caching and key rollover be orchestrated across microservices?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 46000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 96,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 850,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 1800,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "services",
+            "kind": "service",
+            "label": "200 Microservices"
+          },
+          {
+            "id": "jwks-auth",
+            "kind": "db",
+            "label": "IdP JWKS Endpoint (Crash)",
+            "cpu": 96,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "services",
+            "to": "jwks-auth"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "auth-07-prepublish-keys",
+          "label": "Pre-publish new keys 24h ahead and cache JWKS with stale-while-revalidate",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 39,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 26,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Key pre-publishing eliminated rotation stampedes",
+          "resultBody": "Publishing the upcoming public key before using it to sign tokens ensures microservice JWKS caches already have the key when new tokens land.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "auth-07-no-cache-jwks",
+          "label": "Disable JWKS local caching so every microservice fetches keys per request",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 990,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 2400,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Disabling caching paralyzed all microservice communications",
+          "resultBody": "Making 46,000 HTTP calls per second to fetch JWKS keys crushed the identity provider and added hundreds of milliseconds of latency.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "jwks-auth",
+                "tone": "bad",
+                "sub": "JWKS HTTP denial of service"
+              }
+            ]
+          }
+        },
+        {
+          "id": "auth-07-never-rotate",
+          "label": "Stop rotating signing keys and use a permanent hardcoded RSA key pair",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 45,
+              "unit": "%",
+              "tone": "neutral"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 30,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 350,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Never rotating keys violated security compliance mandates",
+          "resultBody": "Static signing keys violate SOC2 and PCI-DSS compliance requirements and leave the system defenseless if a private key leaks.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "jwks-auth",
+                "tone": "bad",
+                "sub": "compliance audit failure"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "JWKS files contain public keys identified by a Key ID (`kid`).",
+        "During rotation, the identity provider should add the new key to JWKS hours before signing tokens with it.",
+        "`stale-while-revalidate` serves cached keys immediately while refreshing in the background."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "auth-08",
+      "incidentCode": "INC-023",
+      "level": 23,
+      "patternId": "auth-at-scale",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 130,
+      "title": "Synchronous token revocation check saturates central Redis master",
+      "brief": "Checking a central Redis token revocation blocklist on every API request consumes 85,000 queries/second, bottlenecking cluster throughput.",
+      "constraint": "Verify revocations within 60 seconds without querying a central database per request.",
+      "question": "How should token revocation checks be decoupled for high throughput?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 85000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 92,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 340,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 290,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "gateways",
+            "kind": "service",
+            "label": "Edge Gateways"
+          },
+          {
+            "id": "redis",
+            "kind": "db",
+            "label": "Central Redis Master (92% CPU)",
+            "cpu": 92,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "gateways",
+            "to": "redis"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "auth-08-short-jwt-bloom",
+          "label": "Issue short 5-minute JWTs and broadcast revocation Bloom filters to edge",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 41,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 20,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Short JWTs and edge Bloom filters eliminated Redis bottlenecks",
+          "resultBody": "Short-lived tokens expire naturally in 5 minutes; explicit revocations are broadcast to in-memory edge Bloom filters with zero database queries.",
+          "tradeoffs": {
+            "costMonthlyDelta": 20
+          }
+        },
+        {
+          "id": "auth-08-increase-redis-pool",
+          "label": "Increase Redis client connection pool to 5,000 connections per gateway",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 98,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 720,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 890,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Massive connection pool crashed Redis with memory exhaustion",
+          "resultBody": "Opening thousands of concurrent TCP sockets to a single-threaded Redis process multiplied context switching and crashed Redis.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "redis",
+                "tone": "bad",
+                "sub": "connection exhaustion collapse"
+              }
+            ]
+          }
+        },
+        {
+          "id": "auth-08-no-revocation",
+          "label": "Disable token revocation entirely and issue non-expiring 10-year tokens",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 35,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 15,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 480,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Non-expiring tokens made stolen user credentials permanent",
+          "resultBody": "Stolen user tokens could never be invalidated, leaving hacked user accounts vulnerable to unauthorized account takeover.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gateways",
+                "tone": "bad",
+                "sub": "compromised account vulnerability"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Stateless JWTs cannot be revoked without state storage or short expiration windows.",
+        "Short token expiry (e.g. 5–15 minutes) limits the window of vulnerability automatically.",
+        "Bloom filters or local caches updated via pub/sub let gateways check revocations in memory."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "auth-09",
+      "incidentCode": "INC-023",
+      "level": 23,
+      "patternId": "auth-at-scale",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 130,
+      "title": "Bloated JWT claim payload triggers HTTP 431 header overflow",
+      "brief": "Teams pack user permissions, roles, and org hierarchies into JWT tokens, inflating token size to 12KB and causing upstream NGINX proxies to reject requests.",
+      "constraint": "Ensure requests pass HTTP header limits (<4KB) while maintaining role authorization.",
+      "question": "How should JWT claim payloads be designed for scale?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 39000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 65,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 110,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 1400,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "clients",
+            "kind": "users",
+            "label": "Web Clients"
+          },
+          {
+            "id": "nginx",
+            "kind": "service",
+            "label": "NGINX Gateway (HTTP 431)",
+            "cpu": 65,
+            "tone": "bad"
+          },
+          {
+            "id": "api",
+            "kind": "service",
+            "label": "API Services",
+            "cpu": 35,
+            "tone": "good"
+          }
+        ],
+        "edges": [
+          {
+            "from": "clients",
+            "to": "nginx"
+          },
+          {
+            "from": "nginx",
+            "to": "api"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "auth-09-trim-claims",
+          "label": "Emit lean JWTs with subject ID and tenant ID, fetching roles on gateway cache",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 42,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 25,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Lean JWT tokens resolved header size overflow cleanly",
+          "resultBody": "Keeping JWTs small (<1KB) avoids proxy buffer limits; granular permission sets are resolved and cached on internal gateway tiers.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "auth-09-raise-proxy-buffers",
+          "label": "Increase NGINX large_client_header_buffers to 64k across all proxies",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 84,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 220,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 120,
+              "unit": "errors",
+              "tone": "neutral"
+            }
+          ],
+          "resultTitle": "Inflated header buffers doubled proxy memory footprints",
+          "resultBody": "Allocating 64KB buffers per connection bloated proxy memory and failed whenever third-party CDNs or mobile clients enforced strict limits.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 75
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "nginx",
+                "tone": "warn",
+                "sub": "bloated memory connection footprint"
+              }
+            ]
+          }
+        },
+        {
+          "id": "auth-09-post-body",
+          "label": "Convert all HTTP GET requests to POST so tokens travel inside JSON bodies",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 78,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 310,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 680,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Converting GET to POST broke browser caching and CDN edge routing",
+          "resultBody": "Using POST bodies for read queries destroyed HTTP caching, broke RESTful conventions, and increased latency across client devices.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "nginx",
+                "tone": "bad",
+                "sub": "CDN caching disabled"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "JWTs travel on every single HTTP request in the `Authorization: Bearer <token>` header.",
+        "Most CDNs, reverse proxies, and browsers cap headers at 4KB to 8KB.",
+        "Tokens should contain identity claims (sub, iss, exp), not thousands of fine-grained permissions."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "auth-10",
+      "incidentCode": "INC-023",
+      "level": 23,
+      "patternId": "auth-at-scale",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 130,
+      "title": "Intensive RSA signature verification saturates gateway CPU",
+      "brief": "An API Gateway verifying RSA-4096 JWT signatures across 75,000 req/s burns 95% CPU solely evaluating modular exponentiation math.",
+      "constraint": "Verify asymmetric cryptographic signatures at high throughput without saturating CPU.",
+      "question": "Which cryptographic algorithm provides fast verification for high-throughput tokens?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 75000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 95,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 310,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 380,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "clients",
+            "kind": "users",
+            "label": "API Traffic"
+          },
+          {
+            "id": "gateway",
+            "kind": "service",
+            "label": "API Gateway (RSA Crypto)",
+            "cpu": 95,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "clients",
+            "to": "gateway"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "auth-10-migrate-eddsa",
+          "label": "Migrate token signing algorithm to Ed25519 (EdDSA) or ECDSA P-256",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 38,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 18,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Elliptic curve verification reduced CPU consumption by 80%",
+          "resultBody": "Ed25519 provides equivalent 128-bit cryptographic security with signature verification speeds roughly 5x faster than RSA.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "auth-10-skip-verify",
+          "label": "Inspect JWT claims by decoding base64 without verifying the signature",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 25,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 12,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 950,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Skipping verification allowed complete authentication bypass",
+          "resultBody": "Failing to verify the signature allowed malicious attackers to forge arbitrary user and admin roles in base64 payloads.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gateway",
+                "tone": "bad",
+                "sub": "critical authentication bypass"
+              }
+            ]
+          }
+        },
+        {
+          "id": "auth-10-scale-gateway",
+          "label": "Scale out API gateway fleet to 60 instances running high-CPU servers",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 65,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 120,
+              "unit": "ms",
+              "tone": "neutral"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 50,
+              "unit": "errors",
+              "tone": "neutral"
+            }
+          ],
+          "resultTitle": "Brute-force server scaling inflated infrastructure spend",
+          "resultBody": "Scaling up dozens of expensive servers to perform inefficient RSA math wasted budget without solving the algorithmic bottleneck.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 600
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gateway",
+                "tone": "warn",
+                "sub": "60 instances (+$600/mo)"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "RSA-4096 requires intensive modular exponentiation calculations.",
+        "Elliptic curve algorithms (EdDSA / Ed25519 or ES256) offer smaller key sizes and vastly faster signature computation.",
+        "Never skip signature verification in production."
+      ],
+      "nextId": null,
+      "reviewed": true
+    },
+    {
+      "id": "auth-11",
+      "incidentCode": "INC-023",
+      "level": 23,
+      "patternId": "auth-at-scale",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 130,
+      "title": "OAuth2 token introspection latency spikes downstream service call chain",
+      "brief": "Microservices validate opaque bearer tokens by calling the OAuth2 `/oauth/introspect` endpoint synchronously, adding 45ms to every internal RPC call.",
+      "constraint": "Eliminate network hops for internal token verification while preserving auth integrity.",
+      "question": "How should authentication tokens be validated across internal microservices?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 42000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 72,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 340,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 180,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "client",
+            "kind": "users",
+            "label": "Client Apps"
+          },
+          {
+            "id": "gateway",
+            "kind": "service",
+            "label": "Edge Gateway"
+          },
+          {
+            "id": "service-a",
+            "kind": "service",
+            "label": "Internal Service A",
+            "cpu": 72,
+            "tone": "warn"
+          },
+          {
+            "id": "idp",
+            "kind": "db",
+            "label": "OAuth2 Introspect Endpoint",
+            "cpu": 85,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "client",
+            "to": "gateway"
+          },
+          {
+            "from": "gateway",
+            "to": "service-a"
+          },
+          {
+            "from": "service-a",
+            "to": "idp"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "auth-11-gateway-translation",
+          "label": "Verify token once at gateway and pass short-lived signed internal JWTs",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 38,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 24,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Edge token translation eliminated internal introspection hops",
+          "resultBody": "The API gateway validates external tokens and mints a short-lived internal JWT, allowing downstream services to verify claims cryptographically.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "auth-11-cache-introspect",
+          "label": "Cache introspection responses in memory on every service for 2 hours",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 55,
+              "unit": "%",
+              "tone": "neutral"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 160,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 320,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "2-hour local caching allowed revoked tokens to access sensitive APIs",
+          "resultBody": "Caching introspection responses for 2 hours meant revoked user sessions continued to make unauthorized calls across microservices.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "service-a",
+                "tone": "bad",
+                "sub": "revoked token unauthorized access"
+              }
+            ]
+          }
+        },
+        {
+          "id": "auth-11-mutual-tls-only",
+          "label": "Remove user tokens entirely and trust all internal traffic via mutual TLS",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 40,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 22,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 490,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Removing user tokens eliminated end-user auditability",
+          "resultBody": "Relying purely on mTLS identifies the calling service but loses the authenticated user identity, breaking authorization and audit logs.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "service-a",
+                "tone": "bad",
+                "sub": "missing end-user identity context"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Opaque tokens require remote network introspection (RFC 7662) to discover token validity.",
+        "Calling introspection from dozens of microservices multiplies RPC hops and latency.",
+        "The 'Token Exchange / Gateway Translation' pattern translates opaque tokens into signed internal JWTs."
+      ],
+      "nextId": null,
+      "reviewed": true
     }
   ]
 }
