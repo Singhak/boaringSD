@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import {
+  AlertTriangle,
   BookOpen,
   CheckCircle2,
   Copy,
@@ -112,6 +113,19 @@ export default function ConceptIntelDrawer({ intelId, onClose }: ConceptIntelDra
             {intel.whyItWorks}
           </p>
         </section>
+
+        {/* When It Fails */}
+        {intel.whenItFails && (
+          <section className="p-4 rounded-xl border border-rose-500/25 bg-rose-500/[0.04] space-y-1.5">
+            <span className="eyebrow text-rose-300 flex items-center gap-1.5">
+              <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
+              When It Breaks Down
+            </span>
+            <p className="text-sm text-rose-100/90 leading-relaxed">
+              {intel.whenItFails}
+            </p>
+          </section>
+        )}
 
         {/* Tradeoffs */}
         <section className="space-y-3">

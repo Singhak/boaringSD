@@ -3,6 +3,7 @@
 import React from "react";
 import { Check, X } from "lucide-react";
 import { visibleChoiceChips, type ChipTone } from "@/lib/choiceChips";
+import GlossaryText from "@/components/common/GlossaryText";
 import type { IncidentChoice } from "@/types";
 
 const CARD_CHIP_CLASS: Record<ChipTone, string> = {
@@ -74,7 +75,9 @@ export default function ChoiceCards({
                     "▶"
                   )}
                 </span>
-                <span className="text-xs sm:text-sm font-medium leading-snug break-words">{choice.label}</span>
+                <span className="text-xs sm:text-sm font-medium leading-snug break-words">
+                  <GlossaryText text={choice.label} />
+                </span>
               </div>
               <span className="text-[11px] text-slate-500 group-hover:text-cyan-300 transition-colors shrink-0 mt-0.5">
                 Deploy

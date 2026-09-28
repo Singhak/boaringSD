@@ -6,6 +6,7 @@ import {
   AlertTriangle,
   ArrowRight,
   Check,
+  FileText,
   Flame,
   HelpCircle,
   Lightbulb,
@@ -88,7 +89,7 @@ import { buildDebriefSummary } from "@/lib/debriefSummary";
 import type { DebriefSummary } from "@/lib/debriefSummary";
 import { pickDefenseOption } from "@/lib/defenseQuestions";
 import { resolveConceptIntelId } from "@/data/conceptIntel";
-import type { CampaignChapter, ComponentKind, IncidentChoice, IncidentGraph, IncidentMetric, IncidentV2, SystemDesignPattern } from "@/types";
+import type { CampaignChapter, IncidentChoice, IncidentGraph, IncidentMetric, IncidentNode, IncidentV2, SystemDesignPattern, TelemetryLogEntry } from "@/types";
 
 interface IncidentWarRoomProps {
   initialIncidentId?: string;
@@ -181,7 +182,10 @@ export default function IncidentWarRoom({
   const [isSubmitted, setIsSubmitted] = useState<boolean>(false);
   const [hintsRevealed, setHintsRevealed] = useState<number>(0);
   const [selectedIntelId, setSelectedIntelId] = useState<string | null>(null);
-  const [inspectedRole, setInspectedRole] = useState<ComponentKind | null>(null);
+  const [inspectedNodeId, setInspectedNodeId] = useState<string | null>(null);
+  const inspectedNode =
+    (activeGraph ?? incident?.graphBefore)?.nodes.find((n) => n.id === inspectedNodeId) ??
+    incident?.graphBefore.nodes.find((n) => n.id === inspectedNodeId);
 
   // Formats: find the culprit, two-step mitigation, tune the knob.
   const [stage, setStage] = useState<Stage>(() => initialStage(incident));
@@ -230,6 +234,7 @@ export default function IncidentWarRoom({
     setDefenseVerified(false);
     setDefenseModalOpen(false);
     setPendingSuccessChoice(null);
+    setInspectedNodeId(null);
   };
 
   const [prevIncidentId, setPrevIncidentId] = useState(incidentId);
@@ -832,30 +837,20 @@ export default function IncidentWarRoom({
               </div>
 
               {/* Digital Detective Telemetry Shortcuts */}
-              {stage !== "culprit" && (
+              {stage !== "culprit" && incident.graphBefore.nodes.length > 0 && (
                 <div className="shrink-0 flex flex-wrap items-center gap-1.5 pt-1 pb-1">
                   <span className="text-[11px] text-slate-400 font-mono">Inspect Logs:</span>
-                  <button
-                    type="button"
-                    onClick={() => setInspectedRole("server")}
-                    className="btn btn-ghost !py-0.5 !px-2 !text-[11px] border border-white/10 hover:border-cyan-400 text-cyan-300 cursor-pointer"
-                  >
-                    🖥️ App Server Logs
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setInspectedRole("db")}
-                    className="btn btn-ghost !py-0.5 !px-2 !text-[11px] border border-white/10 hover:border-purple-400 text-purple-300 cursor-pointer"
-                  >
-                    🗄️ PostgreSQL Slow Queries
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setInspectedRole("cache")}
-                    className="btn btn-ghost !py-0.5 !px-2 !text-[11px] border border-white/10 hover:border-amber-400 text-amber-300 cursor-pointer"
-                  >
-                    ⚡ Redis Cache Vitals
-                  </button>
+                  {incident.graphBefore.nodes.map((node) => (
+                    <button
+                      key={node.id}
+                      type="button"
+                      onClick={() => setInspectedNodeId(node.id)}
+                      className="btn btn-ghost !py-0.5 !px-2 !text-[11px] border border-white/10 hover:border-cyan-400 text-slate-300 hover:text-cyan-300 cursor-pointer flex items-center gap-1"
+                    >
+                      <FileText className="w-3 h-3 text-cyan-400" />
+                      {node.label}
+                    </button>
+                  ))}
                 </div>
               )}
             </section>
@@ -1079,10 +1074,10 @@ export default function IncidentWarRoom({
 
       <ConceptIntelDrawer intelId={selectedIntelId} onClose={() => setSelectedIntelId(null)} />
 
-      {inspectedRole && (
+      {inspectedNode && (
         <TelemetryInspector
-          telemetry={telemetryForIncident(inspectedRole, activeGraph, activeMetrics)}
-          onClose={() => setInspectedRole(null)}
+          telemetry={telemetryForIncident(inspectedNode, activeMetrics, incident?.logs)}
+          onClose={() => setInspectedNodeId(null)}
         />
       )}
 
@@ -1307,17 +1302,51 @@ function AftershockPanel({
  * metrics so the numbers match what the player sees. Knobs are omitted: in the
  * War Room the fix is deployed from the choice cards, not from sliders.
  */
-function telemetryForIncident(role: ComponentKind, graph: IncidentGraph | null, metrics: IncidentMetric[]) {
-  const node = graph?.nodes.find((n) => n.kind === role);
+function telemetryForIncident(
+  node: IncidentNode,
+  metrics: IncidentMetric[],
+  incidentLogs?: Record<string, string[]>
+) {
   const metric = (key: string) => metrics.find((m) => m.key === key)?.value;
-  const overloaded = node ? node.tone === "bad" || (node.cpu ?? 0) > 85 : false;
+  const overloaded = node.tone === "bad" || (node.cpu ?? 0) > 85;
   const p95 = metric("p95");
   const errors = metric("errors");
-  return getMockTelemetryForNode(node?.id ?? `node-${role}`, role, overloaded, {
-    ...(node?.label ? { nodeName: node.label } : {}),
-    ...(typeof node?.cpu === "number" ? { cpuUsage: node.cpu } : {}),
+  const authoredLines = incidentLogs?.[node.id];
+
+  const authoredLogEntries: TelemetryLogEntry[] | undefined = authoredLines
+    ? authoredLines.map((line, idx) => {
+        const lower = line.toLowerCase();
+        const isFatal = lower.includes("fatal") || lower.includes("panic") || lower.includes("crash");
+        const isError =
+          isFatal ||
+          lower.includes("error") ||
+          lower.includes("fail") ||
+          lower.includes("timeout") ||
+          lower.includes("overflow") ||
+          lower.includes("drop");
+        const isWarn =
+          !isError &&
+          (lower.includes("warn") ||
+            lower.includes("slow") ||
+            lower.includes("high") ||
+            lower.includes("lag") ||
+            lower.includes("exceed"));
+        return {
+          timestamp: `00:0${idx + 1}.000`,
+          level: isFatal ? "FATAL" : isError ? "ERROR" : isWarn ? "WARN" : "INFO",
+          source: node.id,
+          message: line,
+          highlight: isError || isWarn,
+        };
+      })
+    : undefined;
+
+  return getMockTelemetryForNode(node.id, node.kind, overloaded, {
+    nodeName: node.label,
+    ...(typeof node.cpu === "number" ? { cpuUsage: node.cpu } : {}),
     ...(p95 !== undefined ? { p99LatencyMs: p95 } : {}),
     ...(errors !== undefined ? { errorRate: errors } : {}),
+    ...(authoredLogEntries ? { logs: authoredLogEntries } : {}),
     knobs: [],
   });
 }
@@ -1451,6 +1480,36 @@ function CampaignDebriefScreen({
           </div>
         </section>
       </div>
+
+      {/* Real architectural takeaway: 3 one-line lesson cards */}
+      {pattern.tradeoff && (
+        <section className="space-y-2.5 animate-fadeIn" aria-label="Architectural Lessons">
+          <div className="flex items-center gap-2">
+            <span className="eyebrow text-cyan-300">Staff Takeaways · {pattern.title}</span>
+            <span className="text-[11px] text-slate-500 font-mono">3 core lessons from this incident</span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+            <div className="p-3.5 rounded-xl border border-rose-500/30 bg-rose-500/[0.04] space-y-1">
+              <span className="flex items-center gap-1.5 font-semibold text-rose-300">
+                <span className="w-2 h-2 rounded-full bg-rose-400" /> What failed?
+              </span>
+              <p className="text-slate-200 leading-snug">{pattern.tradeoff.whatFailed}</p>
+            </div>
+            <div className="p-3.5 rounded-xl border border-emerald-500/30 bg-emerald-500/[0.04] space-y-1">
+              <span className="flex items-center gap-1.5 font-semibold text-emerald-300">
+                <span className="w-2 h-2 rounded-full bg-emerald-400" /> Why did the fix work?
+              </span>
+              <p className="text-slate-200 leading-snug">{pattern.tradeoff.whyFixWorked}</p>
+            </div>
+            <div className="p-3.5 rounded-xl border border-amber-500/30 bg-amber-500/[0.04] space-y-1">
+              <span className="flex items-center gap-1.5 font-semibold text-amber-300">
+                <span className="w-2 h-2 rounded-full bg-amber-400" /> When is it not enough?
+              </span>
+              <p className="text-slate-200 leading-snug">{pattern.tradeoff.insufficientWhen}</p>
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* Campaign Navigation CTAs */}
       <div className="flex flex-col sm:flex-row sm:items-center gap-3 pt-2">
