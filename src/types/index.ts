@@ -730,6 +730,7 @@ export interface ConceptIntel {
     whenToUse: string;
     sampleDialogue: string;
   };
+  whenItFails?: string;
 }
 
 // ============================================================================
