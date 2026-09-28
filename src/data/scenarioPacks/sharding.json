@@ -2896,38 +2896,38 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Two customers received the same order number",
-      "brief": "After splitting orders across 8 MySQL shards, each shard kept its own AUTO_INCREMENT. Order #48213377 now exists on shards 2 and 5; 1,400 support tickets and duplicate invoices in 3 days.",
-      "constraint": "IDs must stay 64-bit integers and roughly time-ordered, because the mobile app paginates by id.",
-      "question": "How do you generate unique ids across shards?",
+      "title": "Mega-tenant onboarding overwhelms Shard 3 (Tenant Skew)",
+      "brief": "A multi-tenant platform shards by tenant_id across 8 MySQL nodes. Today enterprise customer 'OmniCorp' onboarded with 250,000 employees. All 25,000 writes/s for OmniCorp land on Shard 3, pegging its CPU at 98% and IOPS at 100%, causing query timeouts for 400 smaller tenants sharing that shard.",
+      "constraint": "OmniCorp writes must be distributed across nodes without losing the ability to query their data efficiently.",
+      "question": "How do you rebalance the hot tenant across the shard cluster?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Order inserts",
-          "value": 30000,
+          "label": "Tenant writes",
+          "value": 25000,
           "unit": "writes/s",
           "tone": "neutral"
         },
         {
           "key": "cpu",
-          "label": "CPU",
-          "value": 55,
+          "label": "Shard 3 CPU",
+          "value": 98,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "idle_cpu",
+          "label": "Shards 1,2,4-8 CPU",
+          "value": 12,
           "unit": "%",
           "tone": "neutral"
         },
         {
-          "key": "errors",
-          "label": "Duplicate ids",
-          "value": 470,
-          "unit": "per day",
-          "tone": "bad"
-        },
-        {
           "key": "p95",
           "label": "p95 latency",
-          "value": 40,
+          "value": 2400,
           "unit": "ms",
-          "tone": "good"
+          "tone": "bad"
         }
       ],
       "graphBefore": {
@@ -2935,236 +2935,142 @@
           {
             "id": "app",
             "kind": "server",
-            "label": "Order service"
-          },
-          {
-            "id": "s1",
-            "kind": "db",
-            "label": "Shard 2",
-            "tone": "bad",
-            "cpu": 55,
-            "sub": "AUTO_INCREMENT"
-          },
-          {
-            "id": "s2",
-            "kind": "db",
-            "label": "Shard 5",
-            "tone": "bad",
-            "cpu": 54,
-            "sub": "AUTO_INCREMENT"
+            "label": "Tenant API"
           },
           {
             "id": "s3",
             "kind": "db",
-            "label": "Shards 1-8",
-            "tone": "neutral",
-            "cpu": 52
+            "label": "Shard 3 (Hot)",
+            "tone": "bad",
+            "cpu": 98,
+            "sub": "OmniCorp + 400 tenants"
+          },
+          {
+            "id": "s_other",
+            "kind": "db",
+            "label": "Shards 1,2,4-8",
+            "tone": "good",
+            "cpu": 12,
+            "sub": "idle"
           }
         ],
         "edges": [
           {
             "from": "app",
-            "to": "s1"
-          },
-          {
-            "from": "app",
-            "to": "s2"
-          },
-          {
-            "from": "app",
             "to": "s3"
+          },
+          {
+            "from": "app",
+            "to": "s_other"
           }
         ]
       },
       "choices": [
         {
-          "id": "snowflake",
-          "label": "Snowflake-style ids: timestamp, shard number, sequence",
+          "id": "compound-key",
+          "label": "Shard large tenants by compound key tenant_id + hash(user_id)",
           "correct": true,
           "approach": "optimal",
-          "graphAfter": {
-            "nodes": [
-              {
-                "id": "app",
-                "kind": "server",
-                "label": "Order service",
-                "tone": "good",
-                "sub": "snowflake ids"
-              },
-              {
-                "id": "s1",
-                "kind": "db",
-                "label": "Shard 2",
-                "tone": "good",
-                "cpu": 55
-              },
-              {
-                "id": "s2",
-                "kind": "db",
-                "label": "Shard 5",
-                "tone": "good",
-                "cpu": 54
-              },
-              {
-                "id": "s3",
-                "kind": "db",
-                "label": "Shards 1-8",
-                "tone": "good",
-                "cpu": 52
-              }
-            ],
-            "edges": [
-              {
-                "from": "app",
-                "to": "s1"
-              },
-              {
-                "from": "app",
-                "to": "s2"
-              },
-              {
-                "from": "app",
-                "to": "s3"
-              }
-            ]
-          },
           "metricsAfter": [
             {
-              "key": "errors",
-              "label": "Duplicate ids",
-              "value": 0,
-              "unit": "per day",
+              "key": "cpu",
+              "label": "Shard 3 CPU",
+              "value": 24,
+              "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 40,
+              "value": 35,
               "unit": "ms",
               "tone": "good"
-            },
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 55,
-              "unit": "%",
-              "tone": "neutral"
             }
           ],
-          "resultTitle": "Unique by construction, no coordinator",
-          "resultBody": "Each id packs 41 bits of milliseconds, 10 bits of shard or worker number and a 12-bit sequence, so no two shards can ever mint the same value, ids stay 64-bit and time-sortable, and no network call is needed. Cost: clocks must be monitored, since a clock stepping backwards can repeat ids unless the generator waits.",
+          "resultTitle": "Enterprise load evenly spread across all shards",
+          "resultBody": "Partitioning large enterprise tenants on a compound key (tenant_id + hash(user_id)) spreads OmniCorp's 250,000 users evenly across all 8 shards instead of concentrating on one. Shard 3 CPU immediately drops to 24%, restoring normal sub-50ms query times for all colocated tenants.",
           "tradeoffs": {
-            "costMonthlyDelta": 0
+            "costMonthlyDelta": 100
           }
         },
         {
-          "id": "central",
-          "label": "Issue every id from one central AUTO_INCREMENT table",
+          "id": "random-shard",
+          "label": "Hash every row randomly across shards regardless of tenant",
           "correct": false,
           "approach": "anti_pattern",
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "errors",
-              "label": "Duplicate ids",
-              "value": 0,
-              "unit": "per day",
-              "tone": "good"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 210,
-              "unit": "ms",
-              "tone": "warn"
-            },
-            {
-              "key": "cpu",
-              "label": "ID DB CPU",
-              "value": 96,
-              "unit": "%",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "A new single point of failure",
-          "resultBody": "Duplicates stop, but all 30,000 inserts/s now wait on one database for an id. It runs at 96% CPU, adds a network hop to every insert, and when it fails every shard stops taking orders.",
-          "tradeoffs": {
-            "costMonthlyDelta": 250
-          },
-          "graphPatch": {
-            "addNodes": [
-              {
-                "id": "idgen",
-                "kind": "db",
-                "label": "Central ID table",
-                "tone": "bad",
-                "cpu": 96,
-                "sub": "every insert waits here"
-              }
-            ],
-            "addEdges": [
-              {
-                "from": "app",
-                "to": "idgen"
-              }
-            ]
-          }
-        },
-        {
-          "id": "uuid4",
-          "label": "Switch every primary key to a random UUIDv4 value",
-          "correct": false,
-          "approach": "viable_with_tradeoffs",
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "errors",
-              "label": "Duplicate ids",
-              "value": 0,
-              "unit": "per day",
-              "tone": "good"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 95,
-              "unit": "ms",
-              "tone": "warn"
-            },
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 68,
-              "unit": "%",
-              "tone": "warn"
-            }
-          ],
-          "resultTitle": "Unique, but breaks pagination",
-          "resultBody": "Random 128-bit ids are unique, but they are not 64-bit and not time-ordered, so the app's pagination by id breaks, and random inserts scatter across the B-tree, raising insert latency to 95 ms.",
           "tradeoffs": {
             "costMonthlyDelta": 0
           },
           "graphPatch": {
             "nodes": [
               {
-                "id": "s1",
-                "tone": "warn",
-                "cpu": 68,
-                "sub": "random B-tree inserts"
-              },
-              {
                 "id": "app",
-                "tone": "bad",
-                "sub": "pagination by id broken"
+                "sub": "scatter-gather across 8 shards",
+                "tone": "warn"
               }
             ]
-          }
+          },
+          "metricsAfter": [
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3200,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "cpu",
+              "label": "Shard 3 CPU",
+              "value": 75,
+              "unit": "%",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Destroys data locality and forces scatter-gather on every query",
+          "resultBody": "Random hashing destroys tenant isolation: every tenant query must now scatter to all 8 shards and gather in memory, multiplying network hops and collapsing throughput."
+        },
+        {
+          "id": "vertical-scale-shard",
+          "label": "Upgrade Shard 3 to a 128-core memory-optimized cloud instance",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "tradeoffs": {
+            "costMonthlyDelta": 1800
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "s3",
+                "sub": "128-core instance ($1800/mo)",
+                "tone": "warn",
+                "cpu": 52
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "Shard 3 CPU",
+              "value": 52,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 380,
+              "unit": "ms",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Expensive temporary band-aid",
+          "resultBody": "Upgrading Shard 3 temporarily buys headroom but costs $1,800/month extra and collapses as soon as OmniCorp's user activity doubles or another large enterprise client hashes to Shard 3."
         }
       ],
       "hints": [
-        "Each shard is counting on its own, starting from the same place.",
-        "Uniqueness can come from coordination, or from structure inside the id itself.",
-        "What if part of every id identified the shard that created it?"
+        "One tenant is orders of magnitude larger than average, skewing a single partition.",
+        "A pure tenant_id key puts all data for that customer on one physical machine.",
+        "Adding a secondary dimension to the shard key (like user_id) allows a single tenant's rows to distribute across multiple nodes."
       ],
       "nextId": null,
       "reviewed": true
@@ -3689,7 +3595,7 @@
       "severity": "P0",
       "xp": 50,
       "title": "Newest shard range takes every insert",
-      "brief": "EventPipe range-shards events on a time-ordered UUIDv1-style id. All 40k inserts/s land in the newest range, pinning shard 8 at 97% CPU while shards 1-7 idle at 10%.",
+      "brief": "EventPipe range-shards events on a time-ordered UUIDv7 id. All 40k inserts/s land in the newest range, pinning shard 8 at 97% CPU while shards 1-7 idle at 10%.",
       "constraint": "Consumers fetch events by id only; ordering lives in a separate timestamp column.",
       "question": "What key property removes the hot tail range?",
       "metricsBefore": [

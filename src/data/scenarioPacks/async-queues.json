@@ -4250,85 +4250,63 @@
       "canonical": false,
       "severity": "P0",
       "xp": 50,
-      "title": "Paid orders never reach the warehouse",
-      "brief": "Freshbox's order handler commits to Postgres, then publishes OrderPlaced to Kafka. When a pod dies between the two steps, from OOM kills or deploys, the event is lost. Last week 1,140 paid orders never shipped.",
-      "constraint": "The warehouse must only ever see orders that were actually committed.",
-      "question": "How do you guarantee every committed order produces its event?",
+      "title": "Corrupted payload crashes consumers in infinite retry loop",
+      "brief": "A third-party webhook emitted an order with an unexpected null currency field. Every warehouse worker pod crashes upon deserialization, throws an unhandled error, and restarts. Because the uncommitted offset remains at the front of the queue, the partition is completely wedged with 120,000 pending orders behind it.",
+      "constraint": "Healthy queued orders must resume processing immediately without permanently discarding the corrupted event.",
+      "question": "How do you unblock consumer processing without losing the bad event?",
       "metricsBefore": [
         {
           "key": "rps",
-          "label": "Orders",
-          "value": 900,
-          "unit": "req/s",
+          "label": "Ingest rate",
+          "value": 1500,
+          "unit": "events/s",
           "tone": "neutral"
         },
         {
-          "key": "cpu",
-          "label": "CPU",
-          "value": 55,
-          "unit": "%",
-          "tone": "warn"
+          "key": "lag",
+          "label": "Consumer queue lag",
+          "value": 120000,
+          "unit": "messages",
+          "tone": "bad"
+        },
+        {
+          "key": "crashes",
+          "label": "Worker crash rate",
+          "value": 48,
+          "unit": "crashes/min",
+          "tone": "bad"
         },
         {
           "key": "p95",
-          "label": "p95 latency",
-          "value": 140,
-          "unit": "ms",
-          "tone": "good"
-        },
-        {
-          "key": "missing",
-          "label": "Orders never shipped",
-          "value": 1140,
-          "unit": "/week",
+          "label": "Processing delay",
+          "value": 3600,
+          "unit": "s",
           "tone": "bad"
         }
       ],
       "graphBefore": {
         "nodes": [
           {
-            "id": "users",
-            "kind": "users",
-            "label": "Customers"
-          },
-          {
             "id": "app",
             "kind": "server",
-            "label": "Order service",
-            "tone": "warn",
-            "cpu": 55,
-            "sub": "commit, then publish"
-          },
-          {
-            "id": "db",
-            "kind": "db",
-            "label": "Postgres",
-            "tone": "good",
-            "cpu": 40
+            "label": "Ingest gateway"
           },
           {
             "id": "queue",
             "kind": "queue",
-            "label": "Kafka",
-            "tone": "good"
+            "label": "Order topic",
+            "tone": "bad",
+            "sub": "120k messages queued"
           },
           {
             "id": "worker",
             "kind": "worker",
-            "label": "Warehouse consumer",
-            "tone": "good",
-            "cpu": 30
+            "label": "Warehouse worker",
+            "tone": "bad",
+            "sub": "CrashLoopBackOff"
           }
         ],
         "edges": [
-          {
-            "from": "users",
-            "to": "app"
-          },
-          {
-            "from": "app",
-            "to": "db"
-          },
           {
             "from": "app",
             "to": "queue"
@@ -4341,77 +4319,44 @@
       },
       "choices": [
         {
-          "id": "outbox",
-          "label": "Write the event to an outbox table in the order's transaction",
+          "id": "dlq-retry",
+          "label": "Route failing message to a Dead-Letter Queue (DLQ) after 3 retries",
           "correct": true,
           "approach": "optimal",
           "metricsAfter": [
             {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 57,
-              "unit": "%",
-              "tone": "warn"
+              "key": "lag",
+              "label": "Consumer queue lag",
+              "value": 0,
+              "unit": "messages",
+              "tone": "good"
+            },
+            {
+              "key": "crashes",
+              "label": "Worker crash rate",
+              "value": 0,
+              "unit": "crashes/min",
+              "tone": "good"
             },
             {
               "key": "p95",
-              "label": "p95 latency",
-              "value": 150,
+              "label": "Processing delay",
+              "value": 120,
               "unit": "ms",
-              "tone": "good"
-            },
-            {
-              "key": "missing",
-              "label": "Orders never shipped",
-              "value": 0,
-              "unit": "/week",
               "tone": "good"
             }
           ],
-          "resultTitle": "The event commits with the order",
-          "resultBody": "The order row and its outbox row commit together or not at all. A relay (Debezium reading the WAL) publishes outbox rows to Kafka and marks them sent, so a crash only delays an event. Missing orders drop to 0. Cost: delivery is at-least-once, so the warehouse consumer must dedupe by order ID.",
+          "resultTitle": "Poison pill isolated to Dead-Letter Queue",
+          "resultBody": "After 3 failed retries with exponential backoff, the consumer forwards the unparseable payload to an isolated Dead-Letter Queue (DLQ) and commits the partition offset. Normal order processing resumes immediately, draining the 120k backlog in seconds, while on-call engineers safely inspect the single malformed payload.",
           "tradeoffs": {
-            "costMonthlyDelta": 150
+            "costMonthlyDelta": 50
           }
         },
         {
-          "id": "publish-first",
-          "label": "Publish OrderPlaced to Kafka before committing the order",
+          "id": "drop-payload",
+          "label": "Catch deserialization errors and silently discard invalid messages",
           "correct": false,
           "approach": "anti_pattern",
-          "retry": true,
-          "metricsAfter": [
-            {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 55,
-              "unit": "%",
-              "tone": "warn"
-            },
-            {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 145,
-              "unit": "ms",
-              "tone": "good"
-            },
-            {
-              "key": "missing",
-              "label": "Orders never shipped",
-              "value": 0,
-              "unit": "/week",
-              "tone": "warn"
-            },
-            {
-              "key": "ghost",
-              "label": "Phantom shipments",
-              "value": 820,
-              "unit": "/week",
-              "tone": "bad"
-            }
-          ],
-          "resultTitle": "Events for orders that never existed",
-          "resultBody": "Lost events stop, but 3% of orders roll back after publishing, for example on failed fraud checks. The warehouse now packs about 820 boxes a week for orders that were never committed.",
           "tradeoffs": {
             "costMonthlyDelta": 0
           },
@@ -4419,62 +4364,71 @@
             "nodes": [
               {
                 "id": "worker",
-                "tone": "bad",
-                "sub": "820 ghost orders a week"
+                "sub": "dropping unparseable orders",
+                "tone": "warn"
               }
             ]
-          }
-        },
-        {
-          "id": "retry-publish",
-          "label": "Retry the Kafka publish three times in the request handler",
-          "correct": false,
-          "approach": "viable_with_tradeoffs",
-          "retry": true,
+          },
           "metricsAfter": [
             {
-              "key": "cpu",
-              "label": "CPU",
-              "value": 58,
-              "unit": "%",
+              "key": "lag",
+              "label": "Consumer queue lag",
+              "value": 0,
+              "unit": "messages",
               "tone": "warn"
             },
             {
-              "key": "p95",
-              "label": "p95 latency",
-              "value": 190,
-              "unit": "ms",
+              "key": "crashes",
+              "label": "Worker crash rate",
+              "value": 0,
+              "unit": "crashes/min",
               "tone": "good"
-            },
-            {
-              "key": "missing",
-              "label": "Orders never shipped",
-              "value": 700,
-              "unit": "/week",
-              "tone": "bad"
             }
           ],
-          "resultTitle": "Retries don't survive a dead pod",
-          "resultBody": "Retries cover brief broker errors, but an OOM-killed or redeployed pod never runs its retry loop. Missing orders fall only from 1,140 to about 700 a week, and slow retries add 50 ms to p95.",
+          "resultTitle": "Silent data loss without audit trail",
+          "resultBody": "Catching and dropping invalid messages unblocks the queue, but silent drops eliminate all forensic data and permanently drop real paid orders without alerting customer support."
+        },
+        {
+          "id": "scale-consumers",
+          "label": "Scale the consumer worker replica count from 10 to 50 pods",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
           "tradeoffs": {
-            "costMonthlyDelta": 0
+            "costMonthlyDelta": 400
           },
           "graphPatch": {
             "nodes": [
               {
-                "id": "app",
-                "tone": "bad",
-                "cpu": 58,
-                "sub": "retries die with the pod"
+                "id": "worker",
+                "sub": "50 pods crashing in loop",
+                "tone": "bad"
               }
             ]
-          }
+          },
+          "metricsAfter": [
+            {
+              "key": "crashes",
+              "label": "Worker crash rate",
+              "value": 240,
+              "unit": "crashes/min",
+              "tone": "bad"
+            },
+            {
+              "key": "lag",
+              "label": "Consumer queue lag",
+              "value": 140000,
+              "unit": "messages",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "All 50 pods crash on the same head-of-line poison pill",
+          "resultBody": "Because the bad message sits at the current uncommitted partition offset, every newly spawned consumer partition reader hits the same unparseable payload and crashes immediately, multiplying cluster memory thrashing."
         }
       ],
       "hints": [
-        "Two separate systems are written one after the other with no shared commit.",
-        "Changing the order of the two writes changes which failure you get.",
-        "Make the event part of the same database write as the order."
+        "A single unprocessable payload is blocking all subsequent valid messages in the partition.",
+        "Catching the error must not result in unrecorded, irrecoverable data loss.",
+        "Divert failing messages into a side channel (DLQ) so the main consumer pipeline can advance."
       ],
       "nextId": null,
       "reviewed": true
