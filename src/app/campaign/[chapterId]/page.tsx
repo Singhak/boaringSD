@@ -2,7 +2,7 @@
 
 import React, { use, useEffect, useState } from "react";
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, useRouter } from "next/navigation";
 import {
   ArrowLeft,
   ArrowRight,
@@ -23,7 +23,7 @@ import PostMortemCard from "@/components/run/PostMortemCard";
 import { MetricsStrip, RunStepper, RunTopology } from "@/components/run/RunVisuals";
 import { getAllCampaignChapters, getCampaignChapterById } from "@/data/campaign";
 import { getPatternByChapterId, getPatternById, getAllPatterns, getRotatingTransferQuestion } from "@/data/patterns";
-import { getPatternReplayVariant, getWarRoomIncident } from "@/data/scenarioPacks";
+import { getCanonicalIncident, getPatternReplayVariant, getWarRoomIncident } from "@/data/scenarioPacks";
 import IncidentWarRoom from "@/components/incident/IncidentWarRoom";
 import SystemFlightSim from "@/components/simulation/SystemFlightSim";
 
@@ -74,6 +74,7 @@ export default function CampaignChapterPage({
   }
 
   const stats = useUserStats();
+  const router = useRouter();
   const total = getAllCampaignChapters().length;
   const [simMode, setSimMode] = useState<"warroom" | "flight">("warroom");
 
@@ -155,6 +156,10 @@ export default function CampaignChapterPage({
           ) : simMode === "flight" && pattern.levelNumber <= 2 ? (
             <SystemFlightSim
               initialIncidentId={pattern.levelNumber === 1 ? "hs-01" : "lb-01"}
+              onClose={() => {
+                setSimMode("warroom");
+                router.push("/campaign");
+              }}
               onAllCompleted={({ firstTry }) => {
                 // The flight sim plays both hs-01 (Level 1) and lb-01 (Level 2).
                 // Credit both levels so the learner earns evidence for both patterns.
@@ -179,6 +184,7 @@ export default function CampaignChapterPage({
                     failureReasons: firstTry ? [] : ["intervention"],
                   });
                 }
+                router.push("/campaign");
               }}
             />
           ) : (
@@ -270,7 +276,7 @@ function WarRoomLevel({
       key={`warroom-${pattern.id}-${runIndex}`}
       pattern={pattern}
       chapter={chapter}
-      initialIncidentId={incident?.id || "hs-01"}
+      initialIncidentId={incident?.id || getCanonicalIncident(pattern.id)?.id || "hs-01"}
       skinSeed={runIndex > 0 ? `${pattern.id}#${runIndex}` : undefined}
       onNewRun={() => setRunIndex((i) => i + 1)}
     />
@@ -840,6 +846,9 @@ function RunResult({
           >
             <RotateCcw className="w-3.5 h-3.5" /> Replay run
           </button>
+          <Link href="/campaign" className="btn btn-ghost">
+            Return to Level Map
+          </Link>
         </div>
       </div>
     </section>
