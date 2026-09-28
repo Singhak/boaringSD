@@ -18,19 +18,28 @@ export function approachRating(approach: IncidentChoice["approach"]): { label: s
 
 /**
  * Chips shown on a choice card. Cost and consistency are trade-off data the
- * player reasons with, so they always show. The approach rating and the
- * cascade warning give the answer away, so they wait until this choice is deployed.
+ * player reasons with, so they show before a deploy, but only when every
+ * sibling choice has that field too: a chip that only the right answer carries
+ * is an answer leak. The approach rating and the cascade warning give the
+ * answer away, so they wait until this choice is deployed.
  */
-export function visibleChoiceChips(choice: IncidentChoice, submitted: boolean): ChoiceChip[] {
+export function visibleChoiceChips(
+  choice: IncidentChoice,
+  submitted: boolean,
+  siblings: IncidentChoice[] = [choice]
+): ChoiceChip[] {
   const chips: ChoiceChip[] = [];
   const rating = approachRating(choice.approach);
   if (submitted && rating) chips.push({ kind: "approach", ...rating });
 
+  const everyHasCost = siblings.every((c) => c.tradeoffs?.costMonthlyDelta !== undefined);
+  const everyHasConsistency = siblings.every((c) => !!c.tradeoffs?.consistencyGuarantee);
+
   const cost = choice.tradeoffs?.costMonthlyDelta;
-  if (cost !== undefined) {
+  if (cost !== undefined && (submitted || everyHasCost)) {
     chips.push({ kind: "cost", label: cost > 0 ? `+$${cost}/mo` : "$0/mo", tone: "neutral" });
   }
-  if (choice.tradeoffs?.consistencyGuarantee) {
+  if (choice.tradeoffs?.consistencyGuarantee && (submitted || everyHasConsistency)) {
     chips.push({ kind: "consistency", label: choice.tradeoffs.consistencyGuarantee, tone: "neutral" });
   }
   if (submitted && choice.cascadeIncidentId) {

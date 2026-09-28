@@ -24,3 +24,17 @@ test("after deploying, the approach rating appears; trade-off chips show either 
   assert.ok(costed);
   assert.ok(visibleChoiceChips(costed, false).some((c) => c.kind === "cost"));
 });
+
+test("a trade-off chip only the correct choice carries stays hidden until deploy", () => {
+  const leaks: string[] = [];
+  for (const pack of getAllScenarioPacks()) {
+    for (const inc of pack.incidents) {
+      for (const kind of ["cost", "consistency"] as const) {
+        const showing = inc.choices.filter((c) => visibleChoiceChips(c, false, inc.choices).some((x) => x.kind === kind));
+        // Either every card shows the chip or none does; a partial set points at the answer.
+        if (showing.length > 0 && showing.length < inc.choices.length) leaks.push(`${inc.id}: ${kind}`);
+      }
+    }
+  }
+  assert.deepEqual(leaks, []);
+});

@@ -34,6 +34,7 @@ const RUNS_KEY = "sd_quest_run_progress_v1";
 const DESIGNS_KEY = "sd_quest_builder_designs_v1";
 const ROTATION_KEY = "sd_quest_rotation_state_v1";
 const SHUFFLE_KEY = "sd_quest_shuffle_nonce_v1";
+const COMBO_KEY = "sd_quest_combo_v1";
 export const STATS_EVENT = "sd_quest_stats_updated";
 
 type Result = { stats: UserStats; leveledUp: boolean };
@@ -158,15 +159,16 @@ export function saveReasoningResult(
   return commit(recordReasoning(getUserStats(), promptId, result, bonusXp, new Date()));
 }
 
-export function recordMissionComplete(missionId: string, xpReward: number): ProgressionOutcome {
+/** `multiplier` is the War Room combo (x1–x3); it scales first-clear and replay XP alike. */
+export function recordMissionComplete(missionId: string, xpReward: number, multiplier = 1): ProgressionOutcome {
   return commit(
     completeActivity(
       getUserStats(),
       {
         collection: "completedMissions",
         id: missionId,
-        firstXp: xpReward,
-        replayXp: 15,
+        firstXp: Math.round(xpReward * multiplier),
+        replayXp: Math.round(15 * multiplier),
         badges: ["pushpa_first_responder"],
         onFirstClear: (s) => ({
           ...s,
@@ -290,6 +292,16 @@ export function saveScenarioRotationState(key: string, value: number): void {
  * so answer positions can't be memorised. Call once per attempt (e.g. in a
  * lazy useState initializer of a client-only component).
  */
+/** First-try, hint-free fixes in a row, carried across runs and levels. */
+export function readCombo(): number {
+  const n = readJson<number>(COMBO_KEY, 0);
+  return typeof n === "number" && n > 0 ? Math.floor(n) : 0;
+}
+
+export function saveCombo(combo: number): void {
+  writeJson(COMBO_KEY, Math.max(0, Math.floor(combo)));
+}
+
 export function nextShuffleSeed(scope: string): string {
   const all = readJson<Record<string, number>>(SHUFFLE_KEY, {});
   const n = (all[scope] ?? 0) + 1;
