@@ -18,7 +18,7 @@
       "title": "Celebrity post spike",
       "brief": "A viral post is read 150,000 times in two minutes, but the database is still serving the same row over and over.",
       "constraint": "The content is identical across reads and does not change often.",
-      "question": "What is your primary optimization?",
+      "question": "Now what stops the viral post from pinning Postgres?",
       "metricsBefore": [
         {
           "key": "rps",
@@ -284,7 +284,21 @@
             }
           ],
           "resultTitle": "Connection Starvation!",
-          "resultBody": "The hot row already sits in the buffer pool, so disk was never the limit. 2,000 backends now fight over the same row's buffer lock and CPU scheduler; context switching pushes p95 from 1,800 ms to 2,250 ms and errors triple."
+          "resultBody": "The hot row already sits in the buffer pool, so disk was never the limit. 2,000 backends now fight over the same row's buffer lock and CPU scheduler; context switching pushes p95 from 1,800 ms to 2,250 ms and errors triple.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "cpu": 97,
+                "sub": "2,000 backends, one row"
+              },
+              {
+                "id": "app",
+                "tone": "bad",
+                "sub": "waiting on pool"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -292,7 +306,112 @@
         "The database is burning CPU re-answering an identical question, not waiting on disk.",
         "Keep a copy of the answer somewhere much cheaper to read than Postgres."
       ],
-      "nextId": "cdn-01"
+      "nextId": "cdn-01",
+      "format": "two-step",
+      "mitigation": {
+        "question": "Postgres is at 92% and climbing. What buys you time right now?",
+        "choices": [
+          {
+            "id": "m-flag-widgets",
+            "label": "Flag off the live view counter and related-posts widget",
+            "correct": true,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 64,
+                "unit": "%",
+                "tone": "warn"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 600,
+                "unit": "ms",
+                "tone": "warn"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 4,
+                "unit": "errors",
+                "tone": "warn"
+              }
+            ],
+            "resultTitle": "Load shed, page still up",
+            "resultBody": "Each view now runs 2 queries instead of 5, so DB CPU drops from 92% to 64% and p95 to 600 ms. The post itself still reads Postgres on every view, so the spike will return with the next share wave."
+          },
+          {
+            "id": "m-restart-db",
+            "label": "Restart the Postgres primary to clear piled-up backends",
+            "correct": false,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 99,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 3200,
+                "unit": "ms",
+                "tone": "bad"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 200,
+                "unit": "errors",
+                "tone": "bad"
+              }
+            ],
+            "resultTitle": "Cold restart, hot reconnect",
+            "resultBody": "Postgres was down for 40 seconds, then all 150,000 reads/s reconnected at once against an empty buffer cache. CPU hit 99% within a minute and errors spiked tenfold."
+          },
+          {
+            "id": "m-failover",
+            "label": "Fail over reads to the standby in another availability zone",
+            "correct": false,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 94,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 1900,
+                "unit": "ms",
+                "tone": "bad"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 45,
+                "unit": "errors",
+                "tone": "bad"
+              }
+            ],
+            "resultTitle": "Same row, new box",
+            "resultBody": "The failover cost 30 seconds of errors, and the standby now serves the identical hot row to the identical traffic from a colder cache. It reaches 94% CPU in two minutes."
+          }
+        ]
+      }
     },
     {
       "id": "cache-stampede-01",
@@ -583,7 +702,16 @@
             }
           ],
           "resultTitle": "Memory Exhaustion & Stale State",
-          "resultBody": "Infinite TTL causes Redis RAM exhaustion when millions of keys accumulate, and edits to the post are never reflected."
+          "resultBody": "Infinite TTL causes Redis RAM exhaustion when millions of keys accumulate, and edits to the post are never reflected.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cache",
+                "tone": "bad",
+                "sub": "RAM 98%, stale post"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -591,7 +719,8 @@
         "Consider synchronizing access so only one process queries the database on a cache miss (Singleflight/Mutex).",
         "Or consider probabilistically refreshing the key in the background before TTL expires."
       ],
-      "nextId": "cdn-01"
+      "nextId": "cdn-01",
+      "reviewed": true
     },
     {
       "id": "replica-lag-01",
@@ -801,7 +930,16 @@
           ],
           "resultTitle": "Writes Now Wait on Every Replica",
           "resultBody": "Stale reads stopped, but each comment commit now blocks until all replicas acknowledge it: p95 jumps from 180 ms to 465 ms, and when one replica paused for a disk snapshot every write in the system stalled with it.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "warn",
+                "sub": "commits wait on replicas"
+              }
+            ]
+          }
         },
         {
           "id": "client-sleep",
@@ -840,7 +978,20 @@
               "unit": "inconsistencies",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "1 s spinner"
+              },
+              {
+                "id": "replica",
+                "tone": "bad",
+                "sub": "lag 1.4 s under load"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -848,7 +999,8 @@
         "Making every write wait for every replica fixes the author's view by slowing everyone else.",
         "Consider routing only the writing user to the primary for a few seconds after a write (read-your-writes session token)."
       ],
-      "nextId": "cdn-01"
+      "nextId": "cdn-01",
+      "reviewed": true
     },
     {
       "id": "cache-02",
@@ -1033,7 +1185,10 @@
             }
           ],
           "resultTitle": "Hot key absorbed in app memory",
-          "resultBody": "Each of the 60 app nodes now answers the SKU from local memory in well under a microsecond and asks Redis at most once per second, so shard 7 drops from 180,000 to ~60 reads/s. Cost: a price change can take up to 1 s to show on each node, and every node holds its own copy."
+          "resultBody": "Each of the 60 app nodes now answers the SKU from local memory in well under a microsecond and asks Redis at most once per second, so shard 7 drops from 180,000 to ~60 reads/s. Cost: a price change can take up to 1 s to show on each node, and every node holds its own copy.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "reshard",
@@ -1065,7 +1220,23 @@
             }
           ],
           "resultTitle": "Hot slot moved, still hot",
-          "resultBody": "Resharding moved the SKU's slot to a fresh node, but all 180,000 reads/s for one key still land on whichever node owns it; slot migration traffic pushed p95 to 600 ms mid-sale."
+          "resultBody": "Resharding moved the SKU's slot to a fresh node, but all 180,000 reads/s for one key still land on whichever node owns it; slot migration traffic pushed p95 to 600 ms mid-sale.",
+          "tradeoffs": {
+            "costMonthlyDelta": 1200
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "hot",
+                "cpu": 97,
+                "sub": "slot moved, still hot"
+              },
+              {
+                "id": "rest",
+                "sub": "12 new nodes idle"
+              }
+            ]
+          }
         },
         {
           "id": "longer-timeout",
@@ -1084,20 +1255,32 @@
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 900,
+              "value": 450,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
               "label": "Redis timeouts",
-              "value": 140,
+              "value": 60,
               "unit": "/s",
               "tone": "warn"
             }
           ],
-          "resultTitle": "Timeouts traded for queueing",
-          "resultBody": "Fewer calls time out, but shard 7's single command thread is still at 98%; requests now wait up to 500 ms, app threads pile up behind them, and p95 climbs from 420 ms to 900 ms."
+          "resultTitle": "Timeouts quiet down, for now",
+          "resultBody": "Calls that failed at 50 ms now wait and succeed, so errors fall from 310/s to 60/s and the spill onto Postgres stops. Shard 7 is still at 98% CPU, and busy app threads are climbing 3% a minute.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "threads 70% busy, rising"
+              }
+            ]
+          },
+          "consequenceIncidentId": "cache-bill-01"
         }
       ],
       "hints": [
@@ -1239,7 +1422,10 @@
             }
           ],
           "resultTitle": "Every visit to a profile shares one key",
-          "resultBody": "The key becomes profile:{id}:v1, so the 400,000 daily share links for a popular profile all read one entry. Hit rate climbs from 3% to 96% and Postgres drops to 21% CPU. The ?ref= value is still logged by the app before the cache lookup, so analytics keep their click IDs."
+          "resultBody": "The key becomes profile:{id}:v1, so the 400,000 daily share links for a popular profile all read one entry. Hit rate climbs from 3% to 96% and Postgres drops to 21% CPU. The ?ref= value is still logged by the app before the cache lookup, so analytics keep their click IDs.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "longer-ttl",
@@ -1278,7 +1464,19 @@
             }
           ],
           "resultTitle": "Longer life for keys nobody reuses",
-          "resultBody": "Each click ID appears once, so a 24-hour TTL just keeps millions of single-use entries around. Redis memory grows by 30 GB and starts evicting, while the hit rate moves from 3% to 4%."
+          "resultBody": "Each click ID appears once, so a 24-hour TTL just keeps millions of single-use entries around. Redis memory grows by 30 GB and starts evicting, while the hit rate moves from 3% to 4%.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cache",
+                "tone": "bad",
+                "sub": "+30 GB, evicting, 4% hit"
+              }
+            ]
+          }
         },
         {
           "id": "replicas",
@@ -1317,7 +1515,36 @@
             }
           ],
           "resultTitle": "Load spread, cache still useless",
-          "resultBody": "Three databases now share the 58,000 misses per second, so each sits near 58% CPU and p95 halves. You pay about $2,400 a month for replicas while Redis still hits only 3% of requests."
+          "resultBody": "Three databases now share the 58,000 misses per second, so each sits near 58% CPU and p95 halves. You pay about $2,400 a month for replicas while Redis still hits only 3% of requests.",
+          "tradeoffs": {
+            "costMonthlyDelta": 2400
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "warn",
+                "cpu": 58,
+                "sub": "misses split 3 ways"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "reps",
+                "kind": "replica",
+                "label": "2 read replicas",
+                "tone": "warn",
+                "cpu": 58,
+                "sub": "cache still 3% hit"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "cache",
+                "to": "reps"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1445,7 +1672,10 @@
             }
           ],
           "resultTitle": "The database has the final say",
-          "resultBody": "Pages still read the cached count, but checkout runs UPDATE stock SET qty = qty - 1 WHERE sku = ? AND qty > 0 and fails the order if no row changes. Oversells drop to 0. Cost: 1,200 writes/s queue on one hot row, adding ~5 ms to checkout, and a page may briefly show stock that is already gone."
+          "resultBody": "Pages still read the cached count, but checkout runs UPDATE stock SET qty = qty - 1 WHERE sku = ? AND qty > 0 and fails the order if no row changes. Oversells drop to 0. Cost: 1,200 writes/s queue on one hot row, adding ~5 ms to checkout, and a page may briefly show stock that is already gone.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "short-ttl",
@@ -1477,7 +1707,23 @@
             }
           ],
           "resultTitle": "A smaller race window is still a race",
-          "resultBody": "Counts now refresh every second, so Postgres serves 60 times more stock reads and climbs to 71% CPU. At 1,200 checkouts per second, a single stale second still let 38 orders through after the last pair sold."
+          "resultBody": "Counts now refresh every second, so Postgres serves 60 times more stock reads and climbs to 71% CPU. At 1,200 checkouts per second, a single stale second still let 38 orders through after the last pair sold.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "cpu": 71,
+                "sub": "60x stock reads"
+              },
+              {
+                "id": "cache",
+                "sub": "stock TTL 1 s"
+              }
+            ]
+          }
         },
         {
           "id": "write-through",
@@ -1509,7 +1755,23 @@
             }
           ],
           "resultTitle": "Read-modify-write races in the app",
-          "resultBody": "Each app node does GET, subtracts one, then SET. Two nodes that read 12 both write 11, so decrements are lost and the cache keeps showing stock. Redis and Postgres also drift whenever one write fails, and 210 orders still oversell."
+          "resultBody": "Each app node does GET, subtracts one, then SET. Two nodes that read 12 both write 11, so decrements are lost and the cache keeps showing stock. Redis and Postgres also drift whenever one write fails, and 210 orders still oversell.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cache",
+                "tone": "bad",
+                "sub": "lost decrements"
+              },
+              {
+                "id": "app",
+                "sub": "GET-then-SET races"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1651,7 +1913,10 @@
             }
           ],
           "resultTitle": "The cache is warm before it is trusted",
-          "resultBody": "A job reads the 50,000 hottest keys from yesterday's access log (82% of traffic) and loads them at a rate Postgres can absorb. Traffic then moves 10% at a time, so misses grow slowly. Postgres peaks at 38% and the cutover takes 25 minutes instead of 1."
+          "resultBody": "A job reads the 50,000 hottest keys from yesterday's access log (82% of traffic) and loads them at a rate Postgres can absorb. Traffic then moves 10% at a time, so misses grow slowly. Postgres peaks at 38% and the cutover takes 25 minutes instead of 1.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "bigger-pool",
@@ -1690,7 +1955,19 @@
             }
           ],
           "resultTitle": "More connections, same CPU",
-          "resultBody": "Postgres was CPU-bound, not short of connections. 800 backends now fight for the same cores and lock manager, p95 rises from 4.2 s to 6.1 s, and errors grow because each query waits longer."
+          "resultBody": "Postgres was CPU-bound, not short of connections. 800 backends now fight for the same cores and lock manager, p95 rises from 4.2 s to 6.1 s, and errors grow because each query waits longer.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "cpu": 100,
+                "sub": "800/800 backends"
+              }
+            ]
+          }
         },
         {
           "id": "add-replica",
@@ -1729,7 +2006,28 @@
             }
           ],
           "resultTitle": "Two empty caches instead of one",
-          "resultBody": "The replica copies the new node's contents, which is nothing. It improves failover later, but every read tonight still misses and goes to Postgres."
+          "resultBody": "The replica copies the new node's contents, which is nothing. It improves failover later, but every read tonight still misses and goes to Postgres.",
+          "tradeoffs": {
+            "costMonthlyDelta": 80
+          },
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "crep",
+                "kind": "cache",
+                "label": "Redis replica",
+                "tone": "bad",
+                "cpu": 5,
+                "sub": "empty too"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "cache",
+                "to": "crep"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1857,7 +2155,10 @@
             }
           ],
           "resultTitle": "Cache reads stay inside the region",
-          "resultBody": "Each GET now costs ~0.5 ms instead of 90 ms, so p95 falls from 520 ms to 45 ms. US writes publish invalidations that reach Frankfurt in ~100 ms, well inside the 2-second limit. Cost: a second cluster, about $1,800 a month, and a cold start while the EU cache fills."
+          "resultBody": "Each GET now costs ~0.5 ms instead of 90 ms, so p95 falls from 520 ms to 45 ms. US writes publish invalidations that reach Frankfurt in ~100 ms, well inside the 2-second limit. Cost: a second cluster, about $1,800 a month, and a cold start while the EU cache fills.",
+          "tradeoffs": {
+            "costMonthlyDelta": 1800
+          }
         },
         {
           "id": "bigger-redis",
@@ -1889,7 +2190,20 @@
             }
           ],
           "resultTitle": "Faster server, same ocean",
-          "resultBody": "Redis was answering in 0.2 ms; the other 89.8 ms of each GET is the round trip across the Atlantic. The bigger instance costs twice as much and p95 stays at 515 ms."
+          "resultBody": "Redis was answering in 0.2 ms; the other 89.8 ms of each GET is the round trip across the Atlantic. The bigger instance costs twice as much and p95 stays at 515 ms.",
+          "tradeoffs": {
+            "costMonthlyDelta": 900
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cache",
+                "label": "Redis us-east-1 (2x size)",
+                "cpu": 15,
+                "sub": "still 90 ms RTT"
+              }
+            ]
+          }
         },
         {
           "id": "pipeline",
@@ -1921,7 +2235,18 @@
             }
           ],
           "resultTitle": "One trip across the Atlantic instead of four",
-          "resultBody": "Batching saves three round trips, so p95 drops from 520 ms to 210 ms. Every request still crosses the Atlantic once, and pages that need a second dependent lookup still pay 180 ms."
+          "resultBody": "Batching saves three round trips, so p95 drops from 520 ms to 210 ms. Every request still crosses the Atlantic once, and pages that need a second dependent lookup still pay 180 ms.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "1 RTT per request, 210 ms"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2038,7 +2363,10 @@
             }
           ],
           "resultTitle": "Ranks come from an ordered structure",
-          "resultBody": "Each match result runs ZADD, and rank reads use ZREVRANK; both are O(log N), about 25 steps for 30 million players. Ranks update in milliseconds and Postgres drops to 18% CPU. Cost: ~3 GB of Redis memory, and a rebuild job from Postgres if the set is lost."
+          "resultBody": "Each match result runs ZADD, and rank reads use ZREVRANK; both are O(log N), about 25 steps for 30 million players. Ranks update in milliseconds and Postgres drops to 18% CPU. Cost: ~3 GB of Redis memory, and a rebuild job from Postgres if the set is lost.",
+          "tradeoffs": {
+            "costMonthlyDelta": 150
+          }
         },
         {
           "id": "cache-60s",
@@ -2070,7 +2398,34 @@
             }
           ],
           "resultTitle": "Stale ranks, and misses are still slow",
-          "resultBody": "Players look up their rank right after a match, which is exactly when their cached value is out of date. Most lookups miss anyway, the ones that hit break the 1-second rule, and each miss still counts millions of rows."
+          "resultBody": "Players look up their rank right after a match, which is exactly when their cached value is out of date. Most lookups miss anyway, the ones that hit break the 1-second rule, and each miss still counts millions of rows.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "cpu": 70,
+                "sub": "misses still COUNT(*)"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "rc",
+                "kind": "cache",
+                "label": "Rank cache 60 s",
+                "tone": "warn",
+                "sub": "stale after matches"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "rc"
+              }
+            ]
+          }
         },
         {
           "id": "score-index",
@@ -2102,7 +2457,19 @@
             }
           ],
           "resultTitle": "The index still has to be walked",
-          "resultBody": "COUNT(*) WHERE score > ? now scans the index instead of the table, but a mid-ranked player still counts 15 million entries. p95 halves to 1.1 s and the database stays at 82% CPU."
+          "resultBody": "COUNT(*) WHERE score > ? now scans the index instead of the table, but a mid-ranked player still counts 15 million entries. p95 halves to 1.1 s and the database stays at 82% CPU.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "cpu": 82,
+                "sub": "walks 15M index entries"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2245,7 +2612,10 @@
             }
           ],
           "resultTitle": "Requests fetch bytes, not megabytes",
-          "resultBody": "Scalar fields live in a hash and the member list moves to its own key. A typical call reads about 300 bytes, so Redis traffic drops from 9.6 Gbps to under 0.5 Gbps and parsing cost disappears. Cost: code that edited the blob must now update individual fields."
+          "resultBody": "Scalar fields live in a hash and the member list moves to its own key. A typical call reads about 300 bytes, so Redis traffic drops from 9.6 Gbps to under 0.5 Gbps and parsing cost disappears. Cost: code that edited the blob must now update individual fields.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "gzip",
@@ -2284,7 +2654,24 @@
             }
           ],
           "resultTitle": "Network relieved, CPU buried",
-          "resultBody": "The blob shrinks to ~120 KB, so the Redis NIC falls to 30%. Each request now inflates and parses the full 400 KB, pushing app CPU from 85% to 97%, and p95 barely moves."
+          "resultBody": "The blob shrinks to ~120 KB, so the Redis NIC falls to 30%. Each request now inflates and parses the full 400 KB, pushing app CPU from 85% to 97%, and p95 barely moves.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "cpu": 97,
+                "sub": "inflate + parse 400 KB"
+              },
+              {
+                "id": "cache",
+                "tone": "warn",
+                "sub": "NIC 30%"
+              }
+            ]
+          }
         },
         {
           "id": "read-replicas",
@@ -2323,7 +2710,28 @@
             }
           ],
           "resultTitle": "Bandwidth split, parsing unchanged",
-          "resultBody": "Each replica now carries a third of the 9.6 Gbps, so network pressure drops. The app still downloads and parses 400 KB per request, CPU stays at 85%, and you pay for three more nodes."
+          "resultBody": "Each replica now carries a third of the 9.6 Gbps, so network pressure drops. The app still downloads and parses 400 KB per request, CPU stays at 85%, and you pay for three more nodes.",
+          "tradeoffs": {
+            "costMonthlyDelta": 300
+          },
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "rr",
+                "kind": "cache",
+                "label": "3 Redis replicas",
+                "tone": "warn",
+                "cpu": 40,
+                "sub": "3.2 Gbps each"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "rr"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2465,7 +2873,10 @@
             }
           ],
           "resultTitle": "The new prices were already warm",
-          "resultBody": "At 11:30 a job writes price:v2:{sku} for all 80,000 items. At 12:00 one config key switches reads from v1 to v2, so every page shows the sale price at once and every read still hits. Cost: a second copy of the prices, about 40 MB, until v1 expires."
+          "resultBody": "At 11:30 a job writes price:v2:{sku} for all 80,000 items. At 12:00 one config key switches reads from v1 to v2, so every page shows the sale price at once and every read still hits. Cost: a second copy of the prices, about 40 MB, until v1 expires.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "cron-delete",
@@ -2504,7 +2915,25 @@
             }
           ],
           "resultTitle": "80,000 misses at the busiest second",
-          "resultBody": "Prices are correct, but the cache is empty exactly when 50,000 req/s arrive. Postgres faces ten times its 5,000-miss limit, hits 100% CPU, and checkout times out for three minutes."
+          "resultBody": "Prices are correct, but the cache is empty exactly when 50,000 req/s arrive. Postgres faces ten times its 5,000-miss limit, hits 100% CPU, and checkout times out for three minutes.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 100,
+                "sub": "50k misses/s at noon"
+              },
+              {
+                "id": "cache",
+                "tone": "bad",
+                "sub": "emptied at 12:00"
+              }
+            ]
+          }
         },
         {
           "id": "short-ttl",
@@ -2543,7 +2972,24 @@
             }
           ],
           "resultTitle": "Fresh prices, all-day overload",
-          "resultBody": "The stale window shrinks to 5 seconds, but 80,000 keys expiring every 5 seconds means 16,000 misses per second, over three times what Postgres can take. It runs at 96% CPU all day, not just at noon."
+          "resultBody": "The stale window shrinks to 5 seconds, but 80,000 keys expiring every 5 seconds means 16,000 misses per second, over three times what Postgres can take. It runs at 96% CPU all day, not just at noon.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 96,
+                "sub": "16k misses/s all day"
+              },
+              {
+                "id": "cache",
+                "sub": "TTL 5 s"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2685,7 +3131,10 @@
             }
           ],
           "resultTitle": "The scan no longer pollutes the cache",
-          "resultBody": "The export streams 40 million rows from a replica that lags seconds behind, and never touches Redis. The hot 2 million titles stay resident, so the 07:00 hit rate stays at 98%. Cost: one replica, about $900 a month, and the export runs against slightly stale data."
+          "resultBody": "The export streams 40 million rows from a replica that lags seconds behind, and never touches Redis. The hot 2 million titles stay resident, so the 07:00 hit rate stays at 98%. Cost: one replica, about $900 a month, and the export runs against slightly stale data.",
+          "tradeoffs": {
+            "costMonthlyDelta": 900
+          }
         },
         {
           "id": "double-memory",
@@ -2724,7 +3173,23 @@
             }
           ],
           "resultTitle": "The scan is bigger than any cache",
-          "resultBody": "40 million titles at ~3 KB each is 120 GB, so the export still cycles through and evicts the hot set. You pay twice as much for Redis and the morning hit rate rises from 41% to 45%."
+          "resultBody": "40 million titles at ~3 KB each is 120 GB, so the export still cycles through and evicts the hot set. You pay twice as much for Redis and the morning hit rate rises from 41% to 45%.",
+          "tradeoffs": {
+            "costMonthlyDelta": 450
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cache",
+                "label": "Redis LRU 32 GB",
+                "sub": "45% hit, still evicting"
+              },
+              {
+                "id": "db",
+                "cpu": 90
+              }
+            ]
+          }
         },
         {
           "id": "export-ttl",
@@ -2763,7 +3228,22 @@
             }
           ],
           "resultTitle": "The damage is done before expiry",
-          "resultBody": "The cold keys now expire by 04:00, but LRU already evicted the hot titles while the export was writing. Memory is free at 07:00, yet the hot set must be refilled from Postgres, so the hit rate only reaches 52%."
+          "resultBody": "The cold keys now expire by 04:00, but LRU already evicted the hot titles while the export was writing. Memory is free at 07:00, yet the hot set must be refilled from Postgres, so the hit rate only reaches 52%.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cache",
+                "sub": "hot set evicted by 04:00"
+              },
+              {
+                "id": "db",
+                "cpu": 88
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2880,7 +3360,10 @@
             }
           ],
           "resultTitle": "Flags read from RAM, refreshed in the background",
-          "resultBody": "Each pod reloads the 30-row table every 5 seconds, so Postgres sees 40 queries per second instead of 12,000. Flag reads take nanoseconds and a flip reaches every pod within 5 s. If Postgres is down, pods keep the last good copy. Cost: flags can be up to 5 seconds old."
+          "resultBody": "Each pod reloads the 30-row table every 5 seconds, so Postgres sees 40 queries per second instead of 12,000. Flag reads take nanoseconds and a flip reaches every pod within 5 s. If Postgres is down, pods keep the last good copy. Cost: flags can be up to 5 seconds old.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "redis-ttl",
@@ -2912,7 +3395,35 @@
             }
           ],
           "resultTitle": "The kill switch takes a minute",
-          "resultBody": "Postgres load drops, but each request now makes 30 Redis lookups and depends on Redis being up. A flipped kill switch can stay cached for up to 60 seconds, twelve times the 5-second requirement."
+          "resultBody": "Postgres load drops, but each request now makes 30 Redis lookups and depends on Redis being up. A flipped kill switch can stay cached for up to 60 seconds, twelve times the 5-second requirement.",
+          "tradeoffs": {
+            "costMonthlyDelta": 120
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "good",
+                "cpu": 15
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "fr",
+                "kind": "cache",
+                "label": "Flag Redis",
+                "tone": "warn",
+                "cpu": 30,
+                "sub": "60 s TTL, 30 GETs/req"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "fr"
+              }
+            ]
+          }
         },
         {
           "id": "load-once",
@@ -2944,7 +3455,23 @@
             }
           ],
           "resultTitle": "Fast until you need to flip one",
-          "resultBody": "Database load disappears, but the flags never change without a restart. The next kill-switch flip needs a rolling restart of 200 pods and takes 12 minutes to reach them all."
+          "resultBody": "Database load disappears, but the flags never change without a restart. The next kill-switch flip needs a rolling restart of 200 pods and takes 12 minutes to reach them all.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "flags frozen until restart"
+              },
+              {
+                "id": "db",
+                "tone": "good",
+                "cpu": 8
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3072,7 +3599,10 @@
             }
           ],
           "resultTitle": "Absences answered from Redis",
-          "resultBody": "The first lookup of each missing ID stores a small tombstone; revisits in the scraper's 80-second cycle are answered in ~0.5 ms. Postgres CPU falls from 91% to 24%. Cost: ~120 MB of Redis for 2 million tombstones, and the create-product path must delete a tombstone or a new item 404s for up to 10 minutes."
+          "resultBody": "The first lookup of each missing ID stores a small tombstone; revisits in the scraper's 80-second cycle are answered in ~0.5 ms. Postgres CPU falls from 91% to 24%. Cost: ~120 MB of Redis for 2 million tombstones, and the create-product path must delete a tombstone or a new item 404s for up to 10 minutes.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "index",
@@ -3104,7 +3634,19 @@
             }
           ],
           "resultTitle": "The index already existed",
-          "resultBody": "product_id is the primary key and was already indexed, with each lookup served from memory in well under a millisecond. The cost is 25,000 round-trips and backend wakeups per second, so CPU stays at 90%."
+          "resultBody": "product_id is the primary key and was already indexed, with each lookup served from memory in well under a millisecond. The cost is 25,000 round-trips and backend wakeups per second, so CPU stays at 90%.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "cpu": 90,
+                "sub": "index already existed"
+              }
+            ]
+          }
         },
         {
           "id": "ip-limit",
@@ -3136,7 +3678,37 @@
             }
           ],
           "resultTitle": "Rotating IPs slip past the limit",
-          "resultBody": "The scraper spreads across 3,000 IPs, so each stays under the limit; Postgres load barely moves, while shoppers behind one corporate NAT start getting throttled."
+          "resultBody": "The scraper spreads across 3,000 IPs, so each stays under the limit; Postgres load barely moves, while shoppers behind one corporate NAT start getting throttled.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "cpu": 86
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "rl",
+                "kind": "server",
+                "label": "IP rate limiter",
+                "tone": "warn",
+                "sub": "3,000 IPs under limit"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "users",
+                "to": "rl"
+              },
+              {
+                "from": "rl",
+                "to": "app"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3268,7 +3840,10 @@
             }
           ],
           "resultTitle": "Edits visible on the next read",
-          "resultBody": "The write path commits to Postgres and then issues DEL on that price key; the next read misses once and loads the new price. 200 edits/hour add only ~200 extra DB reads, so CPU stays near 27%. Cost: a slow concurrent reader can still re-cache the old value, so keep a short TTL as a safety net."
+          "resultBody": "The write path commits to Postgres and then issues DEL on that price key; the next read misses once and loads the new price. 200 edits/hour add only ~200 extra DB reads, so CPU stays near 27%. Cost: a slow concurrent reader can still re-cache the old value, so keep a short TTL as a safety net.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "cache-first",
@@ -3300,7 +3875,19 @@
             }
           ],
           "resultTitle": "Cache ahead of the truth",
-          "resultBody": "About 3% of edits fail validation or roll back in Postgres, but the cache already advertises those prices; buyers now check out at prices that were never committed, 40 times a minute."
+          "resultBody": "About 3% of edits fail validation or roll back in Postgres, but the cache already advertises those prices; buyers now check out at prices that were never committed, 40 times a minute.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cache",
+                "tone": "bad",
+                "sub": "uncommitted prices"
+              }
+            ]
+          }
         },
         {
           "id": "short-ttl",
@@ -3332,7 +3919,20 @@
             }
           ],
           "resultTitle": "Database drowns in misses",
-          "resultBody": "Staleness falls to 1 s, but all 50,000 price keys now expire every second; Postgres CPU jumps from 26% to 88% and p95 rises from 45 ms to 400 ms."
+          "resultBody": "Staleness falls to 1 s, but all 50,000 price keys now expire every second; Postgres CPU jumps from 26% to 88% and p95 rises from 45 ms to 400 ms.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 88,
+                "sub": "50k keys expire/s"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3449,7 +4049,10 @@
             }
           ],
           "resultTitle": "Eviction now costs a miss, not a cart",
-          "resultBody": "Cart writes go to Postgres first, and Redis holds active carts for 2 hours. An evicted cart is reloaded on the next read in ~3 ms. Carts lost drops to 0. Cost: roughly 600 extra writes per second on Postgres."
+          "resultBody": "Cart writes go to Postgres first, and Redis holds active carts for 2 hours. An evicted cart is reloaded on the next read in ~3 ms. Carts lost drops to 0. Cost: roughly 600 extra writes per second on Postgres.",
+          "tradeoffs": {
+            "costMonthlyDelta": 200
+          }
         },
         {
           "id": "noeviction",
@@ -3488,7 +4091,23 @@
             }
           ],
           "resultTitle": "Nothing evicted, nothing written",
-          "resultBody": "Old carts stay, but once memory reaches 12 GB every write returns an OOM error. New shoppers cannot add items, and 900 requests per second fail during the promo."
+          "resultBody": "Old carts stay, but once memory reaches 12 GB every write returns an OOM error. New shoppers cannot add items, and 900 requests per second fail during the promo.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cache",
+                "sub": "OOM on writes"
+              },
+              {
+                "id": "app",
+                "tone": "bad",
+                "sub": "900 req/s failing"
+              }
+            ]
+          }
         },
         {
           "id": "aof",
@@ -3520,7 +4139,33 @@
             }
           ],
           "resultTitle": "Durable deletes are still deletes",
-          "resultBody": "AOF protects carts from a restart, but eviction is a deliberate delete and gets written to the log too. With memory still capped at 12 GB, 175,000 carts are evicted in the next promo."
+          "resultBody": "AOF protects carts from a restart, but eviction is a deliberate delete and gets written to the log too. With memory still capped at 12 GB, 175,000 carts are evicted in the next promo.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cache",
+                "sub": "still evicting carts"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "aof",
+                "kind": "db",
+                "label": "AOF log",
+                "tone": "warn",
+                "sub": "logs evictions too"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "cache",
+                "to": "aof"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3649,7 +4294,10 @@
             }
           ],
           "resultTitle": "One round-trip instead of 120",
-          "resultBody": "A single MGET returns all 120 cards in about 1 ms, so page assembly drops from ~50 ms of waiting to 1 ms. Redis handles 15,000 commands per second instead of 1.8 million and falls to 30% CPU. Cost: in a Redis Cluster the keys need a shared hash tag or one MGET per shard."
+          "resultBody": "A single MGET returns all 120 cards in about 1 ms, so page assembly drops from ~50 ms of waiting to 1 ms. Redis handles 15,000 commands per second instead of 1.8 million and falls to 30% CPU. Cost: in a Redis Cluster the keys need a shared hash tag or one MGET per shard.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "replicas",
@@ -3681,7 +4329,34 @@
             }
           ],
           "resultTitle": "Less load per node, same latency",
-          "resultBody": "Three nodes split the 1.8 million commands, so CPU per node drops to 45%. Each page still waits on 120 sequential round-trips, and p95 stays at 170 ms."
+          "resultBody": "Three nodes split the 1.8 million commands, so CPU per node drops to 45%. Each page still waits on 120 sequential round-trips, and p95 stays at 170 ms.",
+          "tradeoffs": {
+            "costMonthlyDelta": 200
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cache",
+                "cpu": 45
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "rr",
+                "kind": "cache",
+                "label": "2 Redis replicas",
+                "tone": "warn",
+                "cpu": 45,
+                "sub": "120 serial GETs still"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "rr"
+              }
+            ]
+          }
         },
         {
           "id": "more-threads",
@@ -3713,7 +4388,23 @@
             }
           ],
           "resultTitle": "More pages in flight, each still slow",
-          "resultBody": "More threads send GETs in parallel across requests, so Redis gets even more commands and reaches 97% CPU. Each page still makes 120 serial calls, and p95 rises to 260 ms as Redis queues up."
+          "resultBody": "More threads send GETs in parallel across requests, so Redis gets even more commands and reaches 97% CPU. Each page still makes 120 serial calls, and p95 rises to 260 ms as Redis queues up.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cache",
+                "cpu": 97,
+                "sub": "commands queueing"
+              },
+              {
+                "id": "app",
+                "sub": "256 threads"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3855,7 +4546,10 @@
             }
           ],
           "resultTitle": "Cache and data stop sharing memory",
-          "resultBody": "Counters now live on a separate Redis with noeviction and persistence, sized for them. The match cache gets its full 8 GB back, the hit rate returns to 95%, and Postgres drops to 26%. Cost: one more Redis instance, about $400 a month."
+          "resultBody": "Counters now live on a separate Redis with noeviction and persistence, sized for them. The match cache gets its full 8 GB back, the hit rate returns to 95%, and Postgres drops to 26%. Cost: one more Redis instance, about $400 a month.",
+          "tradeoffs": {
+            "costMonthlyDelta": 400
+          }
         },
         {
           "id": "allkeys-lru",
@@ -3894,7 +4588,19 @@
             }
           ],
           "resultTitle": "Cache recovers, analytics quietly lost",
-          "resultBody": "Rarely touched counters are now evicted to make room for match data, so the hit rate recovers. Those counters were the only copy, and the nightly report is missing about 30% of the day's events."
+          "resultBody": "Rarely touched counters are now evicted to make room for match data, so the hit rate recovers. Those counters were the only copy, and the nightly report is missing about 30% of the day's events.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cache",
+                "tone": "warn",
+                "sub": "evicting counters"
+              }
+            ]
+          }
         },
         {
           "id": "raise-maxmemory",
@@ -3933,7 +4639,22 @@
             }
           ],
           "resultTitle": "The snapshot fork kills Redis",
-          "resultBody": "The next RDB snapshot forks the process, and copy-on-write pages push memory past 16 GB. The kernel OOM killer stops Redis, every read goes to Postgres, and the site is down for 6 minutes."
+          "resultBody": "The next RDB snapshot forks the process, and copy-on-write pages push memory past 16 GB. The kernel OOM killer stops Redis, every read goes to Postgres, and the site is down for 6 minutes.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cache",
+                "sub": "OOM-killed at fork"
+              },
+              {
+                "id": "db",
+                "cpu": 100
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -4061,7 +4782,10 @@
             }
           ],
           "resultTitle": "Each member gets their own entry",
-          "resultBody": "Keys become account:{userId} and responses carry Cache-Control: private, so no shared layer can hand one member's page to another. Leaks stop immediately. Cost: hit ratio falls from 99% to ~70% because each entry is reused only by its owner, and DB CPU rises to about 30%."
+          "resultBody": "Keys become account:{userId} and responses carry Cache-Control: private, so no shared layer can hand one member's page to another. Leaks stop immediately. Cost: hit ratio falls from 99% to ~70% because each entry is reused only by its owner, and DB CPU rises to about 30%.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "short-ttl",
@@ -4093,7 +4817,18 @@
             }
           ],
           "resultTitle": "Smaller window, same leak",
-          "resultBody": "Leaked pages now live 5 s instead of 10 minutes, but at 40,000 req/s thousands of members still land on someone else's entry in each window, and reports keep arriving."
+          "resultBody": "Leaked pages now live 5 s instead of 10 minutes, but at 40,000 req/s thousands of members still land on someone else's entry in each window, and reports keep arriving.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cache",
+                "sub": "leaks in 5 s windows"
+              }
+            ]
+          }
         },
         {
           "id": "vary-ua",
@@ -4125,7 +4860,18 @@
             }
           ],
           "resultTitle": "Split by browser, still shared",
-          "resultBody": "Varying on User-Agent only splits entries by browser and OS; every Chrome-on-Windows member still shares one /account entry, so leaks continue at about 110 per minute."
+          "resultBody": "Varying on User-Agent only splits entries by browser and OS; every Chrome-on-Windows member still shares one /account entry, so leaks continue at about 110 per minute.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cache",
+                "sub": "one entry per browser"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -4242,7 +4988,10 @@
             }
           ],
           "resultTitle": "The report is computed once a day",
-          "resultBody": "The ETL job runs each aggregate once and stores it under report:{name}:{etl_date}. Dashboards read a cached result in milliseconds, and the key only changes when a new ETL run finishes, so figures always match it. Cost: a 10-minute batch step after the ETL."
+          "resultBody": "The ETL job runs each aggregate once and stores it under report:{name}:{etl_date}. Dashboards read a cached result in milliseconds, and the key only changes when a new ETL run finishes, so figures always match it. Cost: a 10-minute batch step after the ETL.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "ttl-30s",
@@ -4274,7 +5023,33 @@
             }
           ],
           "resultTitle": "Every expiry is another 12-second query",
-          "resultBody": "Most opens now hit, but every 30 seconds the entry expires and the next viewers wait 12 seconds while several of them rerun the same query at once. The warehouse stays at 70% for data that changed once overnight."
+          "resultBody": "Most opens now hit, but every 30 seconds the entry expires and the next viewers wait 12 seconds while several of them rerun the same query at once. The warehouse stays at 70% for data that changed once overnight.",
+          "tradeoffs": {
+            "costMonthlyDelta": 60
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "cpu": 70
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "rc",
+                "kind": "cache",
+                "label": "Report cache 30 s",
+                "tone": "warn",
+                "sub": "expires mid-rush"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "rc"
+              }
+            ]
+          }
         },
         {
           "id": "replicas",
@@ -4306,7 +5081,28 @@
             }
           ],
           "resultTitle": "Three machines running the same query",
-          "resultBody": "The load spreads, but each open still scans 900 million rows for 12 seconds. The replicas run at 90% and cost about $6,000 a month to recompute an answer that does not change."
+          "resultBody": "The load spreads, but each open still scans 900 million rows for 12 seconds. The replicas run at 90% and cost about $6,000 a month to recompute an answer that does not change.",
+          "tradeoffs": {
+            "costMonthlyDelta": 6000
+          },
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "wr",
+                "kind": "replica",
+                "label": "2 warehouse replicas",
+                "tone": "bad",
+                "cpu": 90,
+                "sub": "12 s scans"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "wr"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -4449,7 +5245,10 @@
             }
           ],
           "resultTitle": "Deploys reuse yesterday's cache",
-          "resultBody": "Keys become page:s3:{id}, and s3 changes only when the serialized format changes, about twice a month. New builds read the existing entries, so the hit rate stays at 97% through a deploy. Cost: engineers must remember to bump the schema version when the payload shape changes."
+          "resultBody": "Keys become page:s3:{id}, and s3 changes only when the serialized format changes, about twice a month. New builds read the existing entries, so the hit rate stays at 97% through a deploy. Cost: engineers must remember to bump the schema version when the payload shape changes.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "slow-rollout",
@@ -4488,7 +5287,23 @@
             }
           ],
           "resultTitle": "Smaller floods, much slower deploys",
-          "resultBody": "Only the pods on the new build miss, so Postgres peaks at 60% instead of 98%. Each release now takes 40 minutes, which breaks the deploy constraint, and the cache still refills from zero 8 times a day."
+          "resultBody": "Only the pods on the new build miss, so Postgres peaks at 60% instead of 98%. Each release now takes 40 minutes, which breaks the deploy constraint, and the cache still refills from zero 8 times a day.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "40-minute rollout"
+              },
+              {
+                "id": "db",
+                "tone": "warn",
+                "cpu": 60
+              }
+            ]
+          }
         },
         {
           "id": "bigger-db",
@@ -4527,7 +5342,21 @@
             }
           ],
           "resultTitle": "Paying to absorb a self-inflicted miss",
-          "resultBody": "The larger instance, about $4,000 more a month, takes the post-deploy flood at 72% CPU, but every deploy still starts at a 0% hit rate and p95 still reaches 900 ms."
+          "resultBody": "The larger instance, about $4,000 more a month, takes the post-deploy flood at 72% CPU, but every deploy still starts at a 0% hit rate and p95 still reaches 900 ms.",
+          "tradeoffs": {
+            "costMonthlyDelta": 4000
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "label": "Postgres (2x cores)",
+                "tone": "warn",
+                "cpu": 72,
+                "sub": "0% hit after deploy"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -4654,7 +5483,10 @@
             }
           ],
           "resultTitle": "Every pod hears about the change",
-          "resultBody": "The price update publishes event:{id} after commit, and each pod drops its local copy within ~50 ms. Mismatches fall from 2,300 to about 15 an hour. Pub/sub is fire-and-forget, so the 10-minute TTL stays as a backstop for pods that miss a message."
+          "resultBody": "The price update publishes event:{id} after commit, and each pod drops its local copy within ~50 ms. Mismatches fall from 2,300 to about 15 an hour. Pub/sub is fire-and-forget, so the 10-minute TTL stays as a backstop for pods that miss a message.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "sticky",
@@ -4686,7 +5518,18 @@
             }
           ],
           "resultTitle": "Consistent for the user, still stale",
-          "resultBody": "Each user now sees one pod's version, so prices stop flickering between refreshes. That pod can still be 10 minutes behind the database checkout reads, so 2,100 checkouts an hour still fail."
+          "resultBody": "Each user now sees one pod's version, so prices stop flickering between refreshes. That pod can still be 10 minutes behind the database checkout reads, so 2,100 checkouts an hour still fail.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "sticky, still 10 min stale"
+              }
+            ]
+          }
         },
         {
           "id": "ttl-1s",
@@ -4718,7 +5561,20 @@
             }
           ],
           "resultTitle": "Fresher copies, hot shard again",
-          "resultBody": "Staleness drops to 1 second and mismatches to about 120 an hour. Each pod now refetches every hot event every second, so the Redis shard climbs back to 86% CPU, close to the overload the local cache was built to prevent."
+          "resultBody": "Staleness drops to 1 second and mismatches to about 120 an hour. Each pod now refetches every hot event every second, so the Redis shard climbs back to 86% CPU, close to the overload the local cache was built to prevent.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cache",
+                "tone": "bad",
+                "cpu": 86,
+                "sub": "hot shard refetches"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -4740,7 +5596,7 @@
       "xp": 50,
       "title": "Database spikes every hour on the hour",
       "brief": "NewsPulse warms 400,000 article keys at 09:00 with a flat 1-hour TTL. At 10:00, 11:00 and 12:00 they expire together and Postgres hits 95% CPU for 90 seconds.",
-      "constraint": "Between spikes the hit ratio is 98% and Redis memory is fine; only the synchronized expiry hurts.",
+      "constraint": "Between spikes the hit ratio is 98%, and editors need every article refreshed within 70 minutes.",
       "question": "How do you stop the keys expiring in lockstep?",
       "metricsBefore": [
         {
@@ -4770,6 +5626,13 @@
           "value": 90,
           "unit": "errors",
           "tone": "bad"
+        },
+        {
+          "key": "maxage",
+          "label": "Max article age",
+          "value": 60,
+          "unit": "min",
+          "tone": "good"
         }
       ],
       "graphBefore": {
@@ -4889,10 +5752,20 @@
               "value": 0,
               "unit": "errors",
               "tone": "good"
+            },
+            {
+              "key": "maxage",
+              "label": "Max article age",
+              "value": 66,
+              "unit": "min",
+              "tone": "good"
             }
           ],
           "resultTitle": "Expiries spread across 12 minutes",
-          "resultBody": "TTLs now land between 54 and 66 minutes, so roughly 550 keys expire per second instead of 400,000 at once, and Postgres peaks at 35%. Cost: freshness is less predictable (some articles live 6 minutes longer), and the keys need one refill cycle to fall out of step."
+          "resultBody": "TTLs now land between 54 and 66 minutes, so roughly 550 keys expire per second instead of 400,000 at once, and Postgres peaks at 35%. Cost: freshness is less predictable (some articles live 6 minutes longer), and the keys need one refill cycle to fall out of step.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "cron-rewarm",
@@ -4924,7 +5797,34 @@
             }
           ],
           "resultTitle": "Stampede moved one minute earlier",
-          "resultBody": "The cron job issues 400,000 DB reads in under a minute and resets every TTL to the same instant, so the 95% spike simply happens at :59 instead of :00."
+          "resultBody": "The cron job issues 400,000 DB reads in under a minute and resets every TTL to the same instant, so the 95% spike simply happens at :59 instead of :00.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "cpu": 94,
+                "sub": "spike moved to :59"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "cron",
+                "kind": "server",
+                "label": "Rewarm cron",
+                "tone": "warn",
+                "sub": "400k reads at :59"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "cron",
+                "to": "db"
+              }
+            ]
+          }
         },
         {
           "id": "double-ttl",
@@ -4956,7 +5856,22 @@
             }
           ],
           "resultTitle": "Half as often, twice as stale",
-          "resultBody": "Spikes now arrive every two hours instead of every hour, but all 400,000 keys still expire together, and article corrections take up to 2 hours to appear."
+          "resultBody": "Spikes now arrive every two hours instead of every hour, but all 400,000 keys still expire together, and article corrections take up to 2 hours to appear.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cache",
+                "sub": "TTL 2 h, still lockstep"
+              },
+              {
+                "id": "db",
+                "sub": "spike every 2 h"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -4964,7 +5879,161 @@
         "Every key was written at the same moment with the same lifetime.",
         "If lifetimes weren't identical, the expiries wouldn't line up."
       ],
-      "nextId": null
+      "nextId": null,
+      "format": "knob",
+      "knob": {
+        "label": "TTL jitter",
+        "unit": "±%",
+        "min": 0,
+        "max": 50,
+        "step": 5,
+        "start": 0,
+        "target": [
+          10,
+          15
+        ],
+        "question": "Set the TTL jitter so expiries spread out without any article outliving 70 minutes.",
+        "curve": [
+          {
+            "at": 0,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 95
+              },
+              {
+                "key": "p95",
+                "value": 2100
+              },
+              {
+                "key": "errors",
+                "value": 90
+              },
+              {
+                "key": "maxage",
+                "value": 60
+              }
+            ]
+          },
+          {
+            "at": 5,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 72
+              },
+              {
+                "key": "p95",
+                "value": 700
+              },
+              {
+                "key": "errors",
+                "value": 30
+              },
+              {
+                "key": "maxage",
+                "value": 63
+              }
+            ]
+          },
+          {
+            "at": 10,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 35
+              },
+              {
+                "key": "p95",
+                "value": 60
+              },
+              {
+                "key": "errors",
+                "value": 0
+              },
+              {
+                "key": "maxage",
+                "value": 66
+              }
+            ]
+          },
+          {
+            "at": 15,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 28
+              },
+              {
+                "key": "p95",
+                "value": 55
+              },
+              {
+                "key": "errors",
+                "value": 0
+              },
+              {
+                "key": "maxage",
+                "value": 69
+              }
+            ]
+          },
+          {
+            "at": 20,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 26
+              },
+              {
+                "key": "p95",
+                "value": 55
+              },
+              {
+                "key": "errors",
+                "value": 0
+              },
+              {
+                "key": "maxage",
+                "value": 72
+              }
+            ]
+          },
+          {
+            "at": 50,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 22
+              },
+              {
+                "key": "p95",
+                "value": 50
+              },
+              {
+                "key": "errors",
+                "value": 0
+              },
+              {
+                "key": "maxage",
+                "value": 90
+              }
+            ]
+          }
+        ],
+        "low": {
+          "title": "Still expiring in a clump",
+          "body": "At ±5% the 400,000 keys expire across 6 minutes, about 1,100 misses per second, and Postgres still peaks at 72% CPU."
+        },
+        "high": {
+          "title": "Articles outlive the 70-minute rule",
+          "body": "At ±20% or more some TTLs reach 72 minutes or longer, so a correction can stay hidden past the editors' 70-minute limit even though Postgres is calm."
+        },
+        "good": {
+          "title": "Expiries spread, freshness kept",
+          "body": "At ±10–15% the keys expire over 12–18 minutes, roughly 370–550 misses per second, so Postgres peaks near 30% and no article lives past 69 minutes."
+        }
+      }
     },
     {
       "id": "cache-upsize-01",
@@ -5121,7 +6190,27 @@
             }
           ],
           "resultTitle": "Six shards, six weeks of migration",
-          "resultBody": "Redis Cluster spreads keys over hash slots, but every client, MULTI block and multi-key MGET must become slot-aware first. That is the client migration the team can't staff this quarter, so this week the hit rate stays at 81%."
+          "resultBody": "Redis Cluster spreads keys over hash slots, but every client, MULTI block and multi-key MGET must become slot-aware first. That is the client migration the team can't staff this quarter, so this week the hit rate stays at 81%.",
+          "tradeoffs": {
+            "costMonthlyDelta": 900
+          },
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "cl",
+                "kind": "cache",
+                "label": "6-node Redis Cluster",
+                "tone": "warn",
+                "sub": "clients not slot-aware"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "cl"
+              }
+            ]
+          }
         },
         {
           "id": "lfu",
@@ -5153,7 +6242,22 @@
             }
           ],
           "resultTitle": "Smarter eviction, same shortfall",
-          "resultBody": "LFU holds frequently read products a little better than LRU, so the hit rate edges up from 81% to 85%. An 8 GB working set still doesn't fit in 6.4 GB, so evictions continue and Postgres stays near 70%."
+          "resultBody": "LFU holds frequently read products a little better than LRU, so the hit rate edges up from 81% to 85%. An 8 GB working set still doesn't fit in 6.4 GB, so evictions continue and Postgres stays near 70%.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cache",
+                "sub": "LFU, 85% hit"
+              },
+              {
+                "id": "db",
+                "cpu": 70
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -5163,6 +6267,293 @@
       ],
       "nextId": null,
       "reviewed": true
+    },
+    {
+      "id": "cache-bill-01",
+      "incidentCode": "INC-004-02B",
+      "level": 4,
+      "patternId": "caching",
+      "canonical": false,
+      "reviewed": true,
+      "isCascade": true,
+      "parentIncidentCode": "INC-004-02",
+      "severity": "P1",
+      "xp": 80,
+      "title": "Checkout pods wedge behind the hot shard",
+      "brief": "The 500 ms timeout bought 25 minutes. Every app thread now waits on shard 7, still at 98% CPU; 38 of 60 pods fail health checks and checkout errors hit 1,400/s.",
+      "constraint": "Shard 7 itself is healthy: no errors in its log, just one key taking 180,000 reads/s.",
+      "question": "What stops the pods wedging again once they recover?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "value": 180000,
+          "label": "Traffic",
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "value": 98,
+          "label": "CPU",
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "value": 2400,
+          "label": "p95 latency",
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "value": 1400,
+          "label": "Errors",
+          "unit": "/s",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App x60",
+            "tone": "bad",
+            "cpu": 40,
+            "sub": "38/60 failing health"
+          },
+          {
+            "id": "hot",
+            "kind": "cache",
+            "label": "Redis shard 7",
+            "tone": "bad",
+            "cpu": 98,
+            "sub": "hot key"
+          },
+          {
+            "id": "rest",
+            "kind": "cache",
+            "label": "Shards 1-6, 8-12",
+            "tone": "good",
+            "cpu": 18
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres",
+            "tone": "warn",
+            "cpu": 60
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "hot"
+          },
+          {
+            "from": "app",
+            "to": "rest"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "bill-l1",
+          "label": "Per-pod memory copy of the SKU, refreshed each second",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App x60",
+                "tone": "good",
+                "cpu": 35,
+                "sub": "L1 copy, 1 s"
+              },
+              {
+                "id": "hot",
+                "kind": "cache",
+                "label": "Redis shard 7",
+                "tone": "good",
+                "cpu": 20,
+                "sub": "~60 reads/s"
+              },
+              {
+                "id": "rest",
+                "kind": "cache",
+                "label": "Shards 1-6, 8-12",
+                "tone": "good",
+                "cpu": 18
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres",
+                "tone": "good",
+                "cpu": 25
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "hot"
+              },
+              {
+                "from": "app",
+                "to": "rest"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 22,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 40,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "/s",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "The hot key never leaves the pod",
+          "resultBody": "Each of the 60 pods answers the SKU from RAM and asks Redis at most once a second, so shard 7 falls from 180,000 to about 60 reads/s and threads free up within a minute. Cost: a price can be up to 1 s stale on each pod."
+        },
+        {
+          "id": "bill-restart",
+          "label": "Restart the 38 wedged pods to free their stuck threads",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "restart loop"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 98,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2600,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1600,
+              "unit": "/s",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Fresh pods, same queue",
+          "resultBody": "New pods pass health checks for about 90 seconds, then fill their thread pools waiting on shard 7 again. The restarts also dropped 2,000 in-flight checkouts."
+        },
+        {
+          "id": "bill-failover",
+          "label": "Fail shard 7 over to its replica on a fresh node",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "hot",
+                "cpu": 97,
+                "sub": "replica promoted, still hot"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 97,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1500,
+              "unit": "/s",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "The replica inherits the hot key",
+          "resultBody": "The replica takes over cleanly, then receives the same 180,000 reads/s for one key and hits 97% CPU within a minute. The failover pause added 8 seconds of timeouts."
+        }
+      ],
+      "hints": [
+        "Shard 7 isn't broken; count the reads per key.",
+        "A timeout or a restart changes how long you wait, not how many requests land on one key.",
+        "Where could the SKU be answered before a request reaches Redis at all?"
+      ],
+      "nextId": null
     }
   ]
 }

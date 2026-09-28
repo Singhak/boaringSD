@@ -16,14 +16,14 @@
       "severity": "P0",
       "xp": 150,
       "title": "App servers open a connection per request",
-      "brief": "Each HTTP request opens a new Postgres connection and p99 login time on the database climbs.",
+      "brief": "40 app pods open a fresh Postgres connection for every request at 4,000 req/s. Postgres CPU is pinned forking backends, and p95 has reached 1.5 s.",
       "constraint": "The database max_connections is 200 and there are 40 app pods.",
       "question": "What is the first fix?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
-          "value": 200,
+          "value": 4000,
           "unit": "req/s",
           "tone": "neutral"
         },
@@ -134,7 +134,10 @@
             }
           ],
           "resultTitle": "Incident solved",
-          "resultBody": "Reuse a bounded connection pool per process instead of connecting per request."
+          "resultBody": "Reuse a bounded connection pool per process instead of connecting per request.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "raise-max-conn",
@@ -165,7 +168,19 @@
             }
           ],
           "resultTitle": "Handshakes still pile up",
-          "resultBody": "Raising max_connections lets more sessions in, but 40 pods still open a fresh TCP, TLS and auth handshake per request; Postgres forks a backend per login and CPU pins at 100%."
+          "resultBody": "Raising max_connections lets more sessions in, but 40 pods still open a fresh TCP, TLS and auth handshake per request; Postgres forks a backend per login and CPU pins at 100%.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "cpu": 100,
+                "sub": "2,000 backends forking"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "connect-per-request",
@@ -196,7 +211,23 @@
             }
           ],
           "resultTitle": "Login storm doubles",
-          "resultBody": "Opening a new connection on every retry doubles the logins Postgres must fork and authenticate, and sessions slam into the 200 max_connections limit within seconds."
+          "resultBody": "Opening a new connection on every retry doubles the logins Postgres must fork and authenticate, and sessions slam into the 200 max_connections limit within seconds.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "tone": "bad"
+              },
+              {
+                "id": "db",
+                "cpu": 100,
+                "sub": "login storm x2"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -204,7 +235,154 @@
         "Handshake cost is the tax.",
         "Reuse a bounded pool."
       ],
-      "nextId": "mr-01"
+      "nextId": "mr-01",
+      "format": "knob",
+      "knob": {
+        "label": "Max connections per pod pool",
+        "unit": "conns",
+        "min": 1,
+        "max": 50,
+        "step": 1,
+        "start": 50,
+        "target": [
+          3,
+          4
+        ],
+        "question": "Size each pod's pool for 4,000 req/s at 20 ms per query, within Postgres's 200 slots.",
+        "curve": [
+          {
+            "at": 1,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 30
+              },
+              {
+                "key": "p95",
+                "value": 900
+              },
+              {
+                "key": "errors",
+                "value": 25
+              }
+            ]
+          },
+          {
+            "at": 2,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 38
+              },
+              {
+                "key": "p95",
+                "value": 400
+              },
+              {
+                "key": "errors",
+                "value": 6
+              }
+            ]
+          },
+          {
+            "at": 3,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 42
+              },
+              {
+                "key": "p95",
+                "value": 45
+              },
+              {
+                "key": "errors",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "at": 4,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 45
+              },
+              {
+                "key": "p95",
+                "value": 40
+              },
+              {
+                "key": "errors",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "at": 5,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 70
+              },
+              {
+                "key": "p95",
+                "value": 300
+              },
+              {
+                "key": "errors",
+                "value": 8
+              }
+            ]
+          },
+          {
+            "at": 10,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 92
+              },
+              {
+                "key": "p95",
+                "value": 1100
+              },
+              {
+                "key": "errors",
+                "value": 40
+              }
+            ]
+          },
+          {
+            "at": 50,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 99
+              },
+              {
+                "key": "p95",
+                "value": 1500
+              },
+              {
+                "key": "errors",
+                "value": 60
+              }
+            ]
+          }
+        ],
+        "low": {
+          "title": "Requests queue for a connection",
+          "body": "At 1 or 2 per pod the fleet has 40 to 80 seats for about 80 busy connections (4,000 req/s x 20 ms), so requests wait in the pool and p95 climbs toward 900 ms."
+        },
+        "high": {
+          "title": "Pools outgrow max_connections",
+          "body": "From 5 per pod up, 40 pods ask for 200 or more sessions against Postgres's 200 limit; logins get refused, each attempt still forks a backend, and CPU climbs back toward 99%."
+        },
+        "good": {
+          "title": "Little's law, plus headroom",
+          "body": "4,000 req/s x 20 ms is about 80 busy connections, 2 per pod; 3 to 4 per pod leaves burst headroom at 120 to 160 sessions, well under Postgres's 200."
+        }
+      }
     },
     {
       "id": "pool-02",
@@ -429,7 +607,19 @@
             }
           ],
           "resultTitle": "Backends eat the primary",
-          "resultBody": "Postgres now accepts all 2,500 sessions, but each is a forked backend with its own memory and snapshot overhead; CPU pins at 99% on context switches and p95 gets worse, reaching 3.1 s."
+          "resultBody": "Postgres now accepts all 2,500 sessions, but each is a forked backend with its own memory and snapshot overhead; CPU pins at 99% on context switches and p95 gets worse, reaching 3.1 s.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "cpu": 99,
+                "sub": "2,500 forked backends"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "replica-for-half",
@@ -468,7 +658,34 @@
             }
           ],
           "resultTitle": "Writes still hit the primary",
-          "resultBody": "Payroll traffic is 80% writes, so the 25 pods sent to the read-only replica fail their INSERTs and retry against the primary, which still sees 1,250 connection attempts for 500 slots."
+          "resultBody": "Payroll traffic is 80% writes, so the 25 pods sent to the read-only replica fail their INSERTs and retry against the primary, which still sees 1,250 connection attempts for 500 slots.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "sub": "1,250 attempts for 500 slots"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "rep",
+                "kind": "replica",
+                "label": "New read replica",
+                "tone": "bad",
+                "cpu": 30,
+                "sub": "rejects INSERTs"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "rep"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 450
+          }
         }
       ],
       "hints": [
@@ -638,7 +855,18 @@
               "unit": "ms",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "sub": "1,200 sessions, 4.8k q/s"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "pgbouncer-session",
@@ -677,7 +905,31 @@
               "unit": "ms",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "bouncer",
+                "kind": "lb",
+                "label": "PgBouncer (session mode)",
+                "tone": "warn",
+                "sub": "720 clients pinned"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "bouncer"
+              },
+              {
+                "from": "bouncer",
+                "to": "db"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 40
+          }
         }
       ],
       "hints": [
@@ -880,7 +1132,20 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 25,
+                "sub": "stock-row lock queue"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "idle-txn-timeout",
@@ -926,7 +1191,23 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "58% of commits fail"
+              },
+              {
+                "id": "db",
+                "tone": "warn",
+                "sub": "killing idle txns"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -1170,7 +1451,22 @@
             }
           ],
           "resultTitle": "Pools multiplied by 900",
-          "resultBody": "A pool inside a Lambda serves one invocation at a time, so 900 environments now try to hold 4,500 connections against the 400 limit and login failures more than double."
+          "resultBody": "A pool inside a Lambda serves one invocation at a time, so 900 environments now try to hold 4,500 connections against the 400 limit and login failures more than double.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "fn",
+                "tone": "bad"
+              },
+              {
+                "id": "db",
+                "sub": "4,500 attempts for 400"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "reserved-concurrency",
@@ -1209,7 +1505,23 @@
             }
           ],
           "resultTitle": "Fans throttled at the door",
-          "resultBody": "Postgres recovers, but 600 of 900 concurrent checkouts get TooManyRequestsException during the drop, which the constraint forbids; fans refresh and roughly double inbound traffic."
+          "resultBody": "Postgres recovers, but 600 of 900 concurrent checkouts get TooManyRequestsException during the drop, which the constraint forbids; fans refresh and roughly double inbound traffic.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gw",
+                "tone": "bad",
+                "sub": "600 fans throttled"
+              },
+              {
+                "id": "fn",
+                "sub": "capped at 300"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -1415,7 +1727,19 @@
               "unit": "%",
               "tone": "warn"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "new",
+                "tone": "bad",
+                "sub": "requests wait up to 30 s"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "drop-tls",
@@ -1461,7 +1785,19 @@
               "unit": "%",
               "tone": "warn"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "cpu": 85,
+                "sub": "plaintext, SOC 2 fail"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -1631,7 +1967,23 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "36/40 held by reports"
+              },
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 97
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "statement-timeout",
@@ -1670,7 +2022,24 @@
               "unit": "%",
               "tone": "warn"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "cpu": 70,
+                "sub": "reports cancelled at 5 s"
+              },
+              {
+                "id": "users",
+                "tone": "warn",
+                "sub": "finance reports failing"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -1849,7 +2218,22 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "retries reuse stale sockets"
+              },
+              {
+                "id": "old",
+                "sub": "still receiving INSERTs"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "restart-pods",
@@ -1888,7 +2272,20 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "new",
+                "tone": "bad",
+                "cpu": 80,
+                "sub": "90 s login storm"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -2082,7 +2479,8 @@
             ]
           },
           "resultTitle": "Pool matches the arrival rate",
-          "resultBody": "Little's law: 600 req/s x 0.04 s = ~24 connections busy per pod, so a pool of 30 leaves headroom and 6 x 30 = 180 stays under 300. Pool waits vanish and p95 drops to 70 ms. Cost: DB CPU rises to ~60%, and the math must be redone when pods or query times change."
+          "resultBody": "Little's law: 600 req/s x 0.04 s = ~24 connections busy per pod, so a pool of 30 leaves headroom and 6 x 30 = 180 stays under 300. Pool waits vanish and p95 drops to 70 ms. Cost: DB CPU rises to ~60%, and the math must be redone when pods or query times change.",
+          "cascadeIncidentId": "pool-casc-01"
         },
         {
           "id": "pool-equals-threads",
@@ -2121,7 +2519,20 @@
             }
           ],
           "resultTitle": "1,200 sessions for 300 slots",
-          "resultBody": "Six pods x 200 connections asks Postgres for 1,200 sessions; only about 1.5 pods' worth get in, the rest hit 'too many clients', and errors more than triple."
+          "resultBody": "Six pods x 200 connections asks Postgres for 1,200 sessions; only about 1.5 pods' worth get in, the rest hit 'too many clients', and errors more than triple.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 90,
+                "sub": "'too many clients'"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "threads-equal-pool",
@@ -2160,7 +2571,23 @@
             }
           ],
           "resultTitle": "Queue moved to the load balancer",
-          "resultBody": "No thread blocks now, but 10 concurrent requests at 40 ms caps each pod at ~250 req/s against 600 arriving, so the LB queue grows and p95 hits 3 s."
+          "resultBody": "No thread blocks now, but 10 concurrent requests at 40 ms caps each pod at ~250 req/s against 600 arriving, so the LB queue grows and p95 hits 3 s.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "lb",
+                "tone": "bad",
+                "sub": "queue growing"
+              },
+              {
+                "id": "app",
+                "sub": "10 threads, 250 req/s cap"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -2375,7 +2802,18 @@
             }
           ],
           "resultTitle": "1,200 clients, 100 seats",
-          "resultBody": "Session mode stops the leak but pins one server connection per client for its whole life, so 1,100 clients wait in PgBouncer's queue and p95 jumps from 45 ms to 4 s."
+          "resultBody": "Session mode stops the leak but pins one server connection per client for its whole life, so 1,100 clients wait in PgBouncer's queue and p95 jumps from 45 ms to 4 s.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "bouncer",
+                "sub": "session mode, 1,100 queued"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "reset-always",
@@ -2407,7 +2845,19 @@
             }
           ],
           "resultTitle": "Setting wiped mid-request",
-          "resultBody": "With server_reset_query_always on, RESET ALL runs between the SET and the next statement, so queries stop leaking but now land in the public schema; 'relation does not exist' errors jump to 3,000/s."
+          "resultBody": "With server_reset_query_always on, RESET ALL runs between the SET and the next statement, so queries stop leaking but now land in the public schema; 'relation does not exist' errors jump to 3,000/s.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "sub": "'relation does not exist'"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -2577,7 +3027,18 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "sender",
+                "sub": "1,070 conns/s max, 18% fail"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "more-senders",
@@ -2616,7 +3077,39 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "partner",
+                "tone": "bad",
+                "sub": "429 on 70%"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "sender2",
+                "kind": "worker",
+                "label": "3 more sender pods",
+                "tone": "warn",
+                "cpu": 85,
+                "sub": "2,500 handshakes/s"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "q",
+                "to": "sender2"
+              },
+              {
+                "from": "sender2",
+                "to": "partner"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 180
+          }
         }
       ],
       "hints": [
@@ -2809,7 +3302,18 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "760 threads waiting, 4 s GC"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "pool-80",
@@ -2855,7 +3359,20 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 99,
+                "sub": "4x slow queries at once"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -2997,7 +3514,8 @@
               "unit": "%",
               "tone": "good"
             }
-          ]
+          ],
+          "cascadeIncidentId": "pool-casc-02"
         },
         {
           "id": "morning-warmup",
@@ -3036,7 +3554,34 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "tone": "bad",
+                "sub": "lunch lull: 15-min hangs"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "cron",
+                "kind": "worker",
+                "label": "07:55 warm-up cron",
+                "tone": "warn",
+                "sub": "hung on dead socket"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "cron",
+                "to": "app"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "validate-borrow",
@@ -3075,7 +3620,18 @@
               "unit": "%",
               "tone": "warn"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "5 s per stale borrow"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -3255,7 +3811,18 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "w",
+                "sub": "lock is per-process only"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "retry-ssl",
@@ -3294,7 +3861,19 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "warn",
+                "sub": "duplicate INSERTs"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -3464,7 +4043,30 @@
               "unit": "ms",
               "tone": "warn"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "warn",
+                "cpu": 90,
+                "sub": "old reader, pinned conns"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "newr",
+                "kind": "replica",
+                "label": "New reader",
+                "tone": "neutral",
+                "cpu": 5,
+                "sub": "idle, no connections"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "longer-lifetime",
@@ -3503,7 +4105,18 @@
               "unit": "ms",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "sub": "auth storm every 2 h"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -3525,7 +4138,7 @@
       "title": "Pool drains 40 minutes after every restart",
       "brief": "Since Tuesday's deploy, Bookly's 20-connection pool per pod empties about 40 minutes after start. The new card-decline path returns early without releasing its connection, so requests wait 30 s.",
       "constraint": "Postgres shows 20 idle sessions per pod, and restarts only buy another 40 minutes.",
-      "question": "What stops connections from disappearing?",
+      "question": "Bookings are back for now. What stops connections disappearing for good?",
       "metricsBefore": [
         {
           "key": "rps",
@@ -3715,15 +4328,15 @@
             },
             {
               "key": "conns",
-              "label": "Pool in use",
-              "value": 24,
-              "unit": "conns",
+              "label": "Pool connections",
+              "value": 40,
+              "unit": "",
               "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 400,
+              "value": 260,
               "unit": "ms",
               "tone": "warn"
             },
@@ -3731,12 +4344,25 @@
               "key": "errors",
               "label": "Errors",
               "value": 20,
-              "unit": "err/s",
+              "unit": "errors",
               "tone": "warn"
             }
           ],
-          "resultTitle": "Leak just takes longer",
-          "resultBody": "Latency recovers for now, but the same leak drains 40 connections in about 80 minutes instead of 40, and Postgres carries twice as many orphaned idle sessions per pod."
+          "resultTitle": "Pool refilled, holding for now",
+          "resultBody": "Bookings succeed again and p95 falls to 260 ms with 40 free connections per pod after the redeploy. Free connections are dropping by about one every two minutes.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "tone": "warn",
+                "sub": "40 free, losing 1 per 2 min"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "consequenceIncidentId": "pool-bill-01"
         },
         {
           "id": "short-checkout-timeout",
@@ -3775,7 +4401,18 @@
             }
           ],
           "resultTitle": "Fails faster, still empty",
-          "resultBody": "Requests now fail after 2 s instead of hanging for 30 s, which frees threads, but all 20 connections are still leaked, so nearly every booking still errors."
+          "resultBody": "Requests now fail after 2 s instead of hanging for 30 s, which frees threads, but all 20 connections are still leaked, so nearly every booking still errors.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "fails in 2 s, 0 free"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -3783,7 +4420,117 @@
         "Look at the code path that shipped in Tuesday's deploy.",
         "Every borrow needs a return on every exit, including error paths."
       ],
-      "nextId": null
+      "nextId": null,
+      "format": "two-step",
+      "mitigation": {
+        "question": "Bookings are failing right now. What gets connections back in the next five minutes?",
+        "choices": [
+          {
+            "id": "roll-pods",
+            "label": "Rolling-restart booking pods to reclaim the leaked connections",
+            "correct": true,
+            "approach": "optimal",
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "resultTitle": "Fresh pools, bleeding stopped",
+            "resultBody": "Each restarted pod comes up with 20 free connections, so errors fall to 0.5% within 4 minutes; the leak will drain them again in about 40 minutes.",
+            "metricsAfter": [
+              {
+                "key": "conns",
+                "label": "Free connections",
+                "value": 20,
+                "unit": "",
+                "tone": "good"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 220,
+                "unit": "ms",
+                "tone": "good"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 6,
+                "unit": "errors",
+                "tone": "good"
+              }
+            ]
+          },
+          {
+            "id": "kill-idle-sessions",
+            "label": "Kill the idle booking sessions on Postgres with pg_terminate_backend",
+            "correct": false,
+            "approach": "anti_pattern",
+            "retry": true,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "resultTitle": "Postgres freed them, the pool did not",
+            "resultBody": "Postgres closes 120 idle sessions, but each pool still counts them as borrowed by the leaked code path, so no pod gets a connection back and bookings keep failing.",
+            "metricsAfter": [
+              {
+                "key": "conns",
+                "label": "Free connections",
+                "value": 0,
+                "unit": "",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 30000,
+                "unit": "ms",
+                "tone": "bad"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 350,
+                "unit": "errors",
+                "tone": "bad"
+              }
+            ]
+          },
+          {
+            "id": "add-pods",
+            "label": "Add six more booking pods with fresh connection pools",
+            "correct": false,
+            "approach": "viable_with_tradeoffs",
+            "retry": true,
+            "tradeoffs": {
+              "costMonthlyDelta": 240
+            },
+            "resultTitle": "Half the traffic still hits dry pods",
+            "resultBody": "The new pods serve bookings for a while, but the load balancer still sends half the traffic to drained pods, so errors only halve, and the new pods leak dry within 40 minutes.",
+            "metricsAfter": [
+              {
+                "key": "conns",
+                "label": "Free connections",
+                "value": 10,
+                "unit": "",
+                "tone": "warn"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 15000,
+                "unit": "ms",
+                "tone": "bad"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 175,
+                "unit": "errors",
+                "tone": "bad"
+              }
+            ]
+          }
+        ]
+      }
     },
     {
       "id": "pool-upsize-01",
@@ -3987,7 +4734,18 @@
               "unit": "credits",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "bouncer",
+                "sub": "4 procs, still 0 credits"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "shrink-client-pools",
@@ -4019,7 +4777,19 @@
               "unit": "credits",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "tone": "bad",
+                "sub": "queueing in app pools"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -4028,6 +4798,862 @@
         "The workload is small; the box has simply lost its ability to burst."
       ],
       "nextId": null
+    },
+    {
+      "id": "pool-bill-01",
+      "incidentCode": "INC-011-16B",
+      "level": 11,
+      "patternId": "connection-pooling",
+      "canonical": false,
+      "isCascade": true,
+      "reviewed": true,
+      "parentIncidentCode": "INC-011-16",
+      "severity": "P1",
+      "xp": 90,
+      "title": "Every booking pod drained, Postgres full of orphans",
+      "brief": "Doubling the pool bought 80 minutes. The leak has drained all 40 connections on every pod, and 480 orphaned idle sessions hold Postgres at max_connections, so even on-call psql is refused.",
+      "constraint": "The card-decline bug is still in the code.",
+      "question": "What gets bookings back and keeps them back?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 1200,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 20,
+          "unit": "%",
+          "tone": "neutral"
+        },
+        {
+          "key": "conns",
+          "label": "DB sessions",
+          "value": 500,
+          "unit": "",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 30000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 1100,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Guests"
+          },
+          {
+            "id": "lb",
+            "kind": "lb",
+            "label": "Load balancer"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Booking pods x12",
+            "tone": "bad",
+            "cpu": 20,
+            "sub": "0/40 free"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres",
+            "tone": "warn",
+            "cpu": 20,
+            "sub": "500/500, 480 idle"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "lb"
+          },
+          {
+            "from": "lb",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "patch-and-roll",
+          "label": "Patch the decline path to release in finally, then roll the pods",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Leak closed, pools refilled",
+          "resultBody": "The finally block returns the connection on the early-return path; rolling the pods drops the 480 orphaned sessions, so each pod starts with 40 free and stays at 38 to 40 under load.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 22,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "conns",
+              "label": "DB sessions",
+              "value": 180,
+              "unit": "",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 60,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 2,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Guests"
+              },
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Booking pods x12",
+                "tone": "good",
+                "cpu": 22,
+                "sub": "38-40 free"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres",
+                "tone": "good",
+                "cpu": 22,
+                "sub": "180 sessions"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "lb"
+              },
+              {
+                "from": "lb",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              }
+            ]
+          }
+        },
+        {
+          "id": "double-again",
+          "label": "Double each pod's pool again, from 40 to 80 connections",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "No slots left to double into",
+          "resultBody": "Postgres is already at max_connections, so the new pool slots can't log in; 'too many clients' errors join the 30 s waits and errors rise to 1,400.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "conns",
+              "label": "DB sessions",
+              "value": 500,
+              "unit": "",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 30000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1400,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "sub": "'too many clients'"
+              },
+              {
+                "id": "app",
+                "sub": "0/80 free"
+              }
+            ]
+          }
+        },
+        {
+          "id": "idle-session-timeout",
+          "label": "Set a 60 s idle_session_timeout on Postgres to kill orphans",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Orphans die, the pool still thinks they're out",
+          "resultBody": "Postgres closes the 480 idle sessions, but each pool still counts them as borrowed by the leaked code path, so no pod gets one back, and healthy idle pooled sessions are killed too.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 25,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "conns",
+              "label": "DB sessions",
+              "value": 20,
+              "unit": "",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 30000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1150,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "neutral",
+                "sub": "20 sessions, orphans killed"
+              },
+              {
+                "id": "app",
+                "sub": "pool still 0/40 free"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "The pool size was never the problem.",
+        "A connection borrowed and never returned is lost until the pod restarts.",
+        "Fix the code path, then clear what it already leaked."
+      ],
+      "nextId": "mr-01"
+    },
+    {
+      "id": "pool-casc-01",
+      "incidentCode": "INC-011-09B",
+      "level": 11,
+      "patternId": "connection-pooling",
+      "canonical": false,
+      "isCascade": true,
+      "reviewed": true,
+      "parentIncidentCode": "INC-011-09",
+      "severity": "P1",
+      "xp": 80,
+      "title": "Autoscaled checkout runs out of Postgres slots",
+      "brief": "Pools of 30 fixed the waits, but a sale autoscaled Cartwheel from 6 to 12 pods. Twelve pools want 360 sessions; Postgres allows 300, so the newest pods can't log in.",
+      "constraint": "Only about 216 connections are busy at once (5,400 req/s x 40 ms).",
+      "question": "How do 12 pods share 300 database slots?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 5400,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 78,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "conns",
+          "label": "DB connections",
+          "value": 300,
+          "unit": "",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 900,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Shoppers"
+          },
+          {
+            "id": "lb",
+            "kind": "lb",
+            "label": "Load balancer"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Checkout pods x12",
+            "tone": "warn",
+            "cpu": 45,
+            "sub": "pool 30 each"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres",
+            "tone": "bad",
+            "cpu": 78,
+            "sub": "300/300, refusing logins"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "lb"
+          },
+          {
+            "from": "lb",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "pgbouncer-txn",
+          "label": "Add PgBouncer in transaction mode between pods and Postgres",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 60
+          },
+          "resultTitle": "360 clients, 250 server connections",
+          "resultBody": "PgBouncer hands a server connection out only for each 40 ms transaction, so 360 client connections share 250 server ones with about 216 busy at a time; refusals stop, at ~0.3 ms extra per query.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 60,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "conns",
+              "label": "DB connections",
+              "value": 250,
+              "unit": "",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 3,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Shoppers"
+              },
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Checkout pods x12",
+                "tone": "good",
+                "cpu": 45,
+                "sub": "pool 30 each"
+              },
+              {
+                "id": "bouncer",
+                "kind": "lb",
+                "label": "PgBouncer (transaction)",
+                "tone": "good",
+                "sub": "360 clients -> 250"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres",
+                "tone": "good",
+                "cpu": 60,
+                "sub": "250/300"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "lb"
+              },
+              {
+                "from": "lb",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "bouncer"
+              },
+              {
+                "from": "bouncer",
+                "to": "db"
+              }
+            ]
+          }
+        },
+        {
+          "id": "raise-max",
+          "label": "Raise Postgres max_connections from 300 to 600 for the sale",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Backends crowd the cores",
+          "resultBody": "Every pod connects, but 360 forked backends compete for cores and lock slots; context switching pins CPU at 97% and p95 climbs to 1.4 s during the sale.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 97,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "conns",
+              "label": "DB connections",
+              "value": 360,
+              "unit": "",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 400,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "cpu": 97,
+                "sub": "360 backends, CPU-bound"
+              }
+            ]
+          }
+        },
+        {
+          "id": "cap-autoscaler",
+          "label": "Cap the checkout autoscaler at 10 pods during the sale",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Pods run hot, still no headroom",
+          "resultBody": "Ten pods at 540 req/s each run at 93% CPU and p95 climbs to 900 ms, and 10 x 30 = 300 sessions still leaves no slot for migrations or on-call psql.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 93,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "conns",
+              "label": "DB connections",
+              "value": 300,
+              "unit": "",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 260,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "tone": "bad",
+                "cpu": 93,
+                "sub": "x10, 540 req/s each"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Twelve pools of 30 need 360 sessions; Postgres has 300.",
+        "Only about 216 connections are doing work at any moment.",
+        "Let many client connections share fewer server connections."
+      ],
+      "nextId": "mr-01"
+    },
+    {
+      "id": "pool-casc-02",
+      "incidentCode": "INC-011-13B",
+      "level": 11,
+      "patternId": "connection-pooling",
+      "canonical": false,
+      "isCascade": true,
+      "reviewed": true,
+      "parentIncidentCode": "INC-011-13",
+      "severity": "P2",
+      "xp": 70,
+      "title": "Morning login storm after idle connections retire",
+      "brief": "Retiring idle connections at 240 s ended the hangs, but after the overnight lull every pool is empty. At 08:00, 30 pods each open 20 connections at once; RDS CPU hits 94%.",
+      "constraint": "The NAT gateway still drops flows idle for 350 s.",
+      "question": "How do pools stay warm through a lull without dead sockets?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 3000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 94,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "logins",
+          "label": "New logins",
+          "value": 600,
+          "unit": "/s",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 2600,
+          "unit": "ms",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Early users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App pods x30",
+            "tone": "warn",
+            "cpu": 30,
+            "sub": "pools empty at dawn"
+          },
+          {
+            "id": "nat",
+            "kind": "lb",
+            "label": "NAT gateway",
+            "sub": "idle cut at 350 s"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "RDS Postgres",
+            "tone": "bad",
+            "cpu": 94,
+            "sub": "600 logins/s"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "nat"
+          },
+          {
+            "from": "nat",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "keepalive-min-idle",
+          "label": "Keep 3 idle connections per pod with a 60 s TCP keepalive",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Warm pools, live NAT flows",
+          "resultBody": "Keepalive probes every 60 s keep the NAT flows alive, so each pod carries 3 warm connections through the night; the 08:00 burst needs about 120 new logins over a minute and RDS CPU stays near 35%.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 35,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "logins",
+              "label": "New logins",
+              "value": 4,
+              "unit": "/s",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 70,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Early users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App pods x30",
+                "tone": "good",
+                "cpu": 30,
+                "sub": "3 warm conns each"
+              },
+              {
+                "id": "nat",
+                "kind": "lb",
+                "label": "NAT gateway",
+                "tone": "good",
+                "sub": "flows kept alive"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "RDS Postgres",
+                "tone": "good",
+                "cpu": 35
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "nat"
+              },
+              {
+                "from": "nat",
+                "to": "db"
+              }
+            ]
+          }
+        },
+        {
+          "id": "cron-prefill",
+          "label": "Pre-open all 20 connections per pod with a 07:55 cron",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Prefilled, then retired at 07:59",
+          "resultBody": "The 600 logins now land at 07:55 instead of 08:00, and the prefilled connections sit idle until the 240 s rule retires them at 07:59, so the 08:00 storm happens anyway.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "logins",
+              "label": "New logins",
+              "value": 600,
+              "unit": "/s",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2400,
+              "unit": "ms",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "sub": "two storms: 07:55 and 08:00"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "cron",
+                "kind": "worker",
+                "label": "07:55 prefill cron",
+                "tone": "warn",
+                "sub": "600 logins at once"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "cron",
+                "to": "app"
+              }
+            ]
+          }
+        },
+        {
+          "id": "longer-connect-timeout",
+          "label": "Raise the pool's connect timeout from 5 s to 30 seconds",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Fewer errors, slower mornings",
+          "resultBody": "Logins that used to time out now wait, so errors fall, but the same 600 logins a second still hit RDS at 08:00 and early requests wait up to 6 s for a connection.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "logins",
+              "label": "New logins",
+              "value": 600,
+              "unit": "/s",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 6000,
+              "unit": "ms",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "tone": "bad",
+                "sub": "requests wait up to 6 s"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "The NAT still kills any flow that stays silent for 350 s.",
+        "An empty pool at 08:00 means every pod logs in at once.",
+        "Keep a few connections alive with traffic the NAT can see."
+      ],
+      "nextId": "mr-01"
     }
   ]
 }

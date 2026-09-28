@@ -101,7 +101,11 @@
             }
           ],
           "resultTitle": "Sequential writes, calm disk",
-          "resultBody": "Writes land in a memtable and flush as sorted files, turning random page rewrites into sequential I/O; insert p95 falls to tens of milliseconds."
+          "resultBody": "Writes land in a memtable and flush as sorted files, turning random page rewrites into sequential I/O; insert p95 falls to tens of milliseconds.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "cascadeIncidentId": "se-casc-01"
         },
         {
           "id": "more-indexes",
@@ -132,7 +136,19 @@
           ],
           "resultTitle": "Each index is another write",
           "resultBody": "Every insert now updates three B-trees instead of one, so write amplification and disk load rise further.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "cpu": 99,
+                "sub": "3 B-trees per insert"
+              }
+            ]
+          }
         },
         {
           "id": "bigger-pages",
@@ -163,7 +179,19 @@
           ],
           "resultTitle": "Bigger random writes",
           "resultBody": "Each random update now rewrites a larger page, so the disk moves more bytes per insert and gets busier, not calmer.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "cpu": 99,
+                "sub": "64 KB random writes"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -267,7 +295,11 @@
             }
           ],
           "resultTitle": "Most files skipped",
-          "resultBody": "A Bloom filter answers 'definitely not here' from memory, so a missing key costs a few filter checks instead of dozens of disk reads."
+          "resultBody": "A Bloom filter answers 'definitely not here' from memory, so a missing key costs a few filter checks instead of dozens of disk reads.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "cascadeIncidentId": "se-casc-02"
         },
         {
           "id": "hash-index",
@@ -298,7 +330,19 @@
           ],
           "resultTitle": "Index no longer fits",
           "resultBody": "Billions of keys will not fit in RAM, and a hash index loses the sorted range scans the time-series reads rely on.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 800
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "cpu": 87,
+                "sub": "hash index > RAM, swapping"
+              }
+            ]
+          }
         },
         {
           "id": "more-memtable",
@@ -329,7 +373,19 @@
           ],
           "resultTitle": "Only recent keys helped",
           "resultBody": "A larger memtable holds a few more recent writes, but lookups for absent keys still scan every SSTable on disk.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "cpu": 88,
+                "sub": "absent keys: 40 SSTables"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -349,7 +405,7 @@
       "severity": "P1",
       "xp": 120,
       "title": "Compaction steals the disk",
-      "brief": "Every afternoon LSM compaction saturates disk bandwidth; foreground write latency spikes from 5 ms to 300 ms for 20 minutes.",
+      "brief": "Every afternoon LSM compaction saturates the 800 MB/s NVMe; foreground write latency spikes from 5 ms to 300 ms for 20 minutes.",
       "constraint": "Writes must stay fast even while compaction runs.",
       "question": "How should compaction be managed?",
       "metricsBefore": [
@@ -434,7 +490,10 @@
             }
           ],
           "resultTitle": "Compaction in the background",
-          "resultBody": "Capping compaction bandwidth leaves headroom for foreground writes, and running the heavy merges off peak keeps p95 near 5 ms."
+          "resultBody": "Capping compaction bandwidth leaves headroom for foreground writes, and running the heavy merges off peak keeps p95 near 5 ms.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "disable-compaction",
@@ -465,7 +524,19 @@
           ],
           "resultTitle": "Read cost exploded",
           "resultBody": "Uncompacted SSTables pile up all week, so reads check ever more files and disk usage grows with duplicate keys.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "cpu": 95,
+                "sub": "SSTables piling up"
+              }
+            ]
+          }
         },
         {
           "id": "sync-writes",
@@ -496,7 +567,23 @@
           ],
           "resultTitle": "Writes queued behind merges",
           "resultBody": "Foreground writes now block on multi-minute compaction passes, turning a 300 ms spike into timeouts.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "tone": "bad",
+                "sub": "writes blocked on merges"
+              },
+              {
+                "id": "db",
+                "cpu": 96
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -505,7 +592,137 @@
         "Budget the I/O compaction may use."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "format": "knob",
+      "knob": {
+        "label": "Compaction I/O cap",
+        "unit": "MB/s",
+        "min": 50,
+        "max": 800,
+        "step": 50,
+        "start": 800,
+        "target": [
+          250,
+          400
+        ],
+        "question": "Set the compaction I/O cap so merges keep up without starving foreground writes.",
+        "curve": [
+          {
+            "at": 50,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 72
+              },
+              {
+                "key": "p95",
+                "value": 900
+              },
+              {
+                "key": "errors",
+                "value": 500
+              }
+            ]
+          },
+          {
+            "at": 150,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 65
+              },
+              {
+                "key": "p95",
+                "value": 400
+              },
+              {
+                "key": "errors",
+                "value": 280
+              }
+            ]
+          },
+          {
+            "at": 250,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 55
+              },
+              {
+                "key": "p95",
+                "value": 8
+              },
+              {
+                "key": "errors",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "at": 400,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 60
+              },
+              {
+                "key": "p95",
+                "value": 12
+              },
+              {
+                "key": "errors",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "at": 600,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 80
+              },
+              {
+                "key": "p95",
+                "value": 150
+              },
+              {
+                "key": "errors",
+                "value": 120
+              }
+            ]
+          },
+          {
+            "at": 800,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 90
+              },
+              {
+                "key": "p95",
+                "value": 300
+              },
+              {
+                "key": "errors",
+                "value": 260
+              }
+            ]
+          }
+        ],
+        "low": {
+          "title": "Compaction falls behind",
+          "body": "At 200 MB/s or less merges can't keep up with 55,000 writes/s; level-0 files pile past the stall threshold and the engine throttles writes, so p95 climbs toward a second."
+        },
+        "high": {
+          "title": "Merges still hog the disk",
+          "body": "Above 400 MB/s compaction takes most of the 800 MB/s the NVMe can do during the afternoon merge, so foreground writes queue behind it and p95 climbs back toward 300 ms."
+        },
+        "good": {
+          "title": "Background merges, fast writes",
+          "body": "At 250–400 MB/s compaction clears several times the incoming write volume, enough to stay ahead, while leaving about 400 MB/s for WAL writes and flushes; p95 stays near 8–12 ms."
+        }
+      }
     },
     {
       "id": "se-04",
@@ -518,7 +735,7 @@
       "title": "Orders query scans the table",
       "brief": "SELECT * FROM orders WHERE customer_id = ? takes 2.4 s on a 400M-row table; the DB CPU is pinned by sequential scans.",
       "constraint": "The query runs 3,000 times per second from the order-history page.",
-      "question": "What is the right fix?",
+      "question": "Now what makes the order-history query itself cheap?",
       "metricsBefore": [
         {
           "key": "rps",
@@ -601,7 +818,10 @@
             }
           ],
           "resultTitle": "Seeks instead of scans",
-          "resultBody": "The index finds one customer's rows in a few page reads and returns them already sorted, so the query drops from seconds to milliseconds."
+          "resultBody": "The index finds one customer's rows in a few page reads and returns them already sorted, so the query drops from seconds to milliseconds.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "read-replicas",
@@ -632,7 +852,28 @@
           ],
           "resultTitle": "Three slow scans instead of one",
           "resultBody": "Each replica still scans 400M rows per query; you've bought three copies of the bottleneck.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 1200
+          },
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "reps",
+                "kind": "replica",
+                "label": "3 read replicas",
+                "tone": "bad",
+                "cpu": 98,
+                "sub": "seq scans x3"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "api",
+                "to": "reps"
+              }
+            ]
+          }
         },
         {
           "id": "cache-all",
@@ -663,7 +904,33 @@
           ],
           "resultTitle": "Cache misses still scan",
           "resultBody": "The first read for each customer still runs the 2.4 s scan, and invalidating whole histories on every new order is costly.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 400
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "cpu": 99
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "redis",
+                "kind": "cache",
+                "label": "Redis histories",
+                "tone": "warn",
+                "sub": "misses still scan"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "api",
+                "to": "redis"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -672,7 +939,112 @@
         "Index the column in the WHERE clause."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "format": "two-step",
+      "mitigation": {
+        "question": "The orders DB is pinned and checkout shares it. What buys you time right now?",
+        "choices": [
+          {
+            "id": "m-rate-limit",
+            "label": "Rate-limit order history to 300 req/s at the API gateway",
+            "correct": true,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 45,
+                "unit": "%",
+                "tone": "warn"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 2400,
+                "unit": "ms",
+                "tone": "warn"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 90,
+                "unit": "errors",
+                "tone": "warn"
+              }
+            ],
+            "resultTitle": "Scans cut by 90%, checkout breathes",
+            "resultBody": "The gateway lets 300 history requests/s through and returns a friendly retry to the rest, so scans fall 90% and DB CPU drops from 93% to 45%. Checkout recovers; the history page is still slow, so fix the query next."
+          },
+          {
+            "id": "m-restart",
+            "label": "Restart Postgres to kill the piled-up sequential scans",
+            "correct": false,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 99,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 3000,
+                "unit": "ms",
+                "tone": "bad"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 900,
+                "unit": "errors",
+                "tone": "bad"
+              }
+            ],
+            "resultTitle": "Scans return on a cold cache",
+            "resultBody": "Postgres was down for 40 seconds and checkout failed with it. The 3,000 req/s of scans came straight back against a cold buffer cache, and CPU is at 99% within a minute."
+          },
+          {
+            "id": "m-bigger",
+            "label": "Move the primary to a 2x larger instance mid-incident",
+            "correct": false,
+            "tradeoffs": {
+              "costMonthlyDelta": 900
+            },
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 88,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 2200,
+                "unit": "ms",
+                "tone": "bad"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 480,
+                "unit": "errors",
+                "tone": "bad"
+              }
+            ],
+            "resultTitle": "Twice the cores, same scans",
+            "resultBody": "The resize failed over twice for 90 seconds of errors, and a box twice the size still can't keep up: every call still scans 400M rows, so CPU settles at 88% and p95 barely moves."
+          }
+        ]
+      }
     },
     {
       "id": "se-05",
@@ -768,7 +1140,10 @@
             }
           ],
           "resultTitle": "Writes fast again",
-          "resultBody": "Every index is updated on every insert; removing seven unused ones cuts write amplification and inserts return to a few milliseconds."
+          "resultBody": "Every index is updated on every insert; removing seven unused ones cuts write amplification and inserts return to a few milliseconds.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "async-index",
@@ -799,7 +1174,19 @@
           ],
           "resultTitle": "Queries read stale indexes",
           "resultBody": "Most engines can't defer index maintenance; the ones that can serve queries that miss the day's rows until the rebuild.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "cpu": 91,
+                "sub": "stale indexes all day"
+              }
+            ]
+          }
         },
         {
           "id": "bigger-disk",
@@ -809,28 +1196,43 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 92,
+              "value": 84,
               "unit": "%",
               "tone": "bad"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 35,
+              "value": 14,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 600,
+              "value": 60,
               "unit": "errors",
-              "tone": "bad"
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Still nine writes per insert",
-          "resultBody": "Faster disks shave some latency, but each insert still updates nine B-trees and CPU stays pinned on index maintenance.",
-          "retry": true
+          "resultTitle": "Inserts back under 15 ms",
+          "resultBody": "NVMe cut insert p95 from 25 ms to 14 ms and ingest caught up within the hour. CPU is still at 84%, because every insert still updates nine B-trees.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 300
+          },
+          "consequenceIncidentId": "se-bill-01",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "label": "Events DB (NVMe, 9 indexes)",
+                "tone": "warn",
+                "cpu": 84,
+                "sub": "CPU 84%, 9 index writes"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -935,7 +1337,10 @@
             }
           ],
           "resultTitle": "One partition, one scan",
-          "resultBody": "A device's recent rows sit next to each other, so the dashboard reads one small sorted range instead of querying 64 partitions."
+          "resultBody": "A device's recent rows sit next to each other, so the dashboard reads one small sorted range instead of querying 64 partitions.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "more-partitions",
@@ -966,7 +1371,20 @@
           ],
           "resultTitle": "Wider fan-out",
           "resultBody": "Each range query now touches 256 partitions instead of 64, so tail latency gets worse.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "label": "Store (256 hash partitions)",
+                "cpu": 89,
+                "sub": "fan-out x256"
+              }
+            ]
+          }
         },
         {
           "id": "time-only",
@@ -997,7 +1415,19 @@
           ],
           "resultTitle": "One hot partition",
           "resultBody": "Every write for the current minute lands on the same partition, creating a write hotspot even as range reads improve.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "cpu": 90,
+                "sub": "one hot partition"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1166,7 +1596,19 @@
             }
           ],
           "resultTitle": "Smaller file, same throttled disk",
-          "resultBody": "Defragmentation reclaims some free pages but blocks writes on each member while it runs, adding its own latency spikes. Every commit still fsyncs the WAL on a volume with no burst credits, so p99 stays near 200 ms."
+          "resultBody": "Defragmentation reclaims some free pages but blocks writes on each member while it runs, adding its own latency spikes. Every commit still fsyncs the WAL on a volume with no burst credits, so p99 stays near 200 ms.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "leader",
+                "cpu": 90,
+                "sub": "defrag blocks writes"
+              }
+            ]
+          }
         },
         {
           "id": "lsm",
@@ -1198,7 +1640,22 @@
             }
           ],
           "resultTitle": "A fork for a hardware problem",
-          "resultBody": "etcd's storage backend isn't pluggable, so this means forking it or migrating Kubernetes to another store: weeks, not tonight. An LSM engine must also fsync its log on every commit, so a throttled gp2 volume would stall it the same way."
+          "resultBody": "etcd's storage backend isn't pluggable, so this means forking it or migrating Kubernetes to another store: weeks, not tonight. An LSM engine must also fsync its log on every commit, so a throttled gp2 volume would stall it the same way.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "sub": "etcd fork: weeks out"
+              },
+              {
+                "id": "leader",
+                "sub": "still gp2, 0 credits"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1208,6 +1665,836 @@
       ],
       "nextId": null,
       "reviewed": true
+    },
+    {
+      "id": "se-bill-01",
+      "incidentCode": "INC-018-08",
+      "level": 18,
+      "patternId": "storage-engines",
+      "canonical": false,
+      "reviewed": true,
+      "isCascade": true,
+      "parentIncidentCode": "INC-018",
+      "severity": "P1",
+      "xp": 80,
+      "title": "Event ingest falls 40 minutes behind",
+      "brief": "The NVMe move bought three weeks. Launch-day traffic tripled events to 60,000/s; with nine indexes per insert the DB is CPU-bound at 97% and ingest lag is 40 minutes.",
+      "constraint": "Budget is frozen after the NVMe upgrade; the two dashboards read by (tenant_id, ts) and by event_id.",
+      "question": "What brings insert cost back down for good?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "value": 60000,
+          "label": "Traffic",
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "value": 97,
+          "label": "CPU",
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "value": 60,
+          "label": "Insert p95",
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "value": 1800,
+          "label": "Errors",
+          "unit": "errors",
+          "tone": "bad"
+        },
+        {
+          "key": "lag",
+          "value": 40,
+          "label": "Ingest lag",
+          "unit": "min",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "q",
+            "kind": "queue",
+            "label": "Ingest queue",
+            "tone": "warn",
+            "sub": "140M events behind"
+          },
+          {
+            "id": "ingest",
+            "kind": "server",
+            "label": "Event ingest",
+            "tone": "warn",
+            "cpu": 45
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Events DB (9 indexes)",
+            "tone": "bad",
+            "cpu": 97,
+            "sub": "disk 30% busy"
+          }
+        ],
+        "edges": [
+          {
+            "from": "q",
+            "to": "ingest"
+          },
+          {
+            "from": "ingest",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "bill-drop",
+          "label": "Drop the seven indexes that no query plan has used",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "q",
+                "kind": "queue",
+                "label": "Ingest queue",
+                "tone": "good",
+                "sub": "draining"
+              },
+              {
+                "id": "ingest",
+                "kind": "server",
+                "label": "Event ingest",
+                "tone": "good",
+                "cpu": 40
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Events DB (2 indexes)",
+                "tone": "good",
+                "cpu": 45
+              }
+            ],
+            "edges": [
+              {
+                "from": "q",
+                "to": "ingest"
+              },
+              {
+                "from": "ingest",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 45,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "Insert p95",
+              "value": 6,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            },
+            {
+              "key": "lag",
+              "label": "Ingest lag",
+              "value": 2,
+              "unit": "min",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Two index writes per insert, not nine",
+          "resultBody": "pg_stat_user_indexes shows seven indexes with zero scans. Dropping them cuts each insert from nine B-tree updates to two, CPU falls to 45%, and the backlog drains in about an hour. Cost: an ad-hoc query on those columns will now scan."
+        },
+        {
+          "id": "bill-bigger",
+          "label": "Move the events DB to a 2x larger instance tonight",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "tradeoffs": {
+            "costMonthlyDelta": 1200
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "label": "Events DB (2x, 9 indexes)",
+                "tone": "warn",
+                "cpu": 62,
+                "sub": "over budget"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 62,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "Insert p95",
+              "value": 20,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 200,
+              "unit": "errors",
+              "tone": "warn"
+            },
+            {
+              "key": "lag",
+              "label": "Ingest lag",
+              "value": 10,
+              "unit": "min",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Headroom bought with a frozen budget",
+          "resultBody": "Doubling cores brings CPU to 62% and the lag drains, but it adds about $1,200 a month against a frozen budget, and nine index updates per insert will eat the headroom at the next traffic jump."
+        },
+        {
+          "id": "bill-batch",
+          "label": "Batch inserts into 500-row multi-value statements",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "cpu": 89,
+                "sub": "9 index writes per row"
+              },
+              {
+                "id": "q",
+                "sub": "backlog still growing"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 89,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "Insert p95",
+              "value": 45,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 900,
+              "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "lag",
+              "label": "Ingest lag",
+              "value": 48,
+              "unit": "min",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Fewer statements, same index work",
+          "resultBody": "Round trips and commits fall 500x, so CPU drops from 97% to 89%, but each row still updates nine B-trees. The backlog now grows more slowly instead of shrinking."
+        }
+      ],
+      "hints": [
+        "Disk is only 30% busy; this box is spending CPU, not IOPS.",
+        "Every index on a table is updated on every insert.",
+        "Which indexes do the two dashboards actually use?"
+      ],
+      "nextId": null
+    },
+    {
+      "id": "se-casc-01",
+      "incidentCode": "INC-018-09",
+      "level": 18,
+      "patternId": "storage-engines",
+      "canonical": false,
+      "reviewed": true,
+      "isCascade": true,
+      "parentIncidentCode": "INC-018",
+      "severity": "P1",
+      "xp": 90,
+      "title": "Disk fills though old telemetry is deleted",
+      "brief": "Since the LSM move, a nightly job deletes 7.7 billion 30-day-old rows one by one. Each delete writes a tombstone, compaction runs flat out, and disk use climbs 4% a day to 88%.",
+      "constraint": "Retention is 30 days, enforced daily, and ingest can't pause.",
+      "question": "How should old telemetry expire in an LSM store?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "value": 90000,
+          "label": "Traffic",
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "value": 85,
+          "label": "CPU",
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "value": 180,
+          "label": "Insert p95",
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "value": 120,
+          "label": "Errors",
+          "unit": "errors",
+          "tone": "bad"
+        },
+        {
+          "key": "disk",
+          "value": 88,
+          "label": "Disk used",
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "ingest",
+            "kind": "server",
+            "label": "Ingest API",
+            "tone": "good",
+            "cpu": 40
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "LSM store",
+            "tone": "bad",
+            "cpu": 85,
+            "sub": "compacting tombstones"
+          },
+          {
+            "id": "job",
+            "kind": "server",
+            "label": "Nightly delete job",
+            "tone": "warn",
+            "cpu": 30,
+            "sub": "7.7B DELETEs"
+          }
+        ],
+        "edges": [
+          {
+            "from": "ingest",
+            "to": "db"
+          },
+          {
+            "from": "job",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "casc-partition",
+          "label": "Store each day in its own partition and drop it whole",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "ingest",
+                "kind": "server",
+                "label": "Ingest API",
+                "tone": "good",
+                "cpu": 40
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "LSM store (daily partitions)",
+                "tone": "good",
+                "cpu": 48
+              },
+              {
+                "id": "job",
+                "kind": "server",
+                "label": "Retention job",
+                "tone": "good",
+                "cpu": 2,
+                "sub": "drops 1 partition/day"
+              }
+            ],
+            "edges": [
+              {
+                "from": "ingest",
+                "to": "db"
+              },
+              {
+                "from": "job",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 48,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "Insert p95",
+              "value": 60,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            },
+            {
+              "key": "disk",
+              "label": "Disk used",
+              "value": 55,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Expiry becomes a file delete",
+          "resultBody": "Rows land in a daily partition; on day 31 its files are deleted in one metadata operation, so no tombstones are written and no compaction is needed to reclaim space. Disk falls to 55% and compaction CPU with it. Cost: queries spanning days touch several partitions."
+        },
+        {
+          "id": "casc-manual-compact",
+          "label": "Run a full manual compaction right after each nightly delete",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "cpu": 97,
+                "sub": "compacting 6 TB nightly"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 97,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "Insert p95",
+              "value": 400,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 350,
+              "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "disk",
+              "label": "Disk used",
+              "value": 70,
+              "unit": "%",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Nine hours of rewriting every night",
+          "resultBody": "The compaction rewrites the whole 6 TB store every night at full disk bandwidth, taking about 9 hours. Space comes back by morning, but insert p95 sits at 400 ms all night."
+        },
+        {
+          "id": "casc-bigger-disk",
+          "label": "Double each node's disk volume so compaction can catch up",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "tradeoffs": {
+            "costMonthlyDelta": 400
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "label": "LSM store (2x disk)",
+                "sub": "tombstones still written"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 85,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "Insert p95",
+              "value": 180,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 120,
+              "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "disk",
+              "label": "Disk used",
+              "value": 44,
+              "unit": "%",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "More room for the same tombstones",
+          "resultBody": "Usage drops to 44% of the bigger volume, but 7.7 billion tombstones are still written and compacted every night. CPU stays at 85% and usage keeps climbing 2% a day."
+        }
+      ],
+      "hints": [
+        "In an LSM tree a delete is a write.",
+        "Space held by deleted rows only returns when compaction rewrites the files holding them.",
+        "What if expiring a day of data didn't touch individual rows at all?"
+      ],
+      "nextId": null
+    },
+    {
+      "id": "se-casc-02",
+      "incidentCode": "INC-018-10",
+      "level": 18,
+      "patternId": "storage-engines",
+      "canonical": false,
+      "reviewed": true,
+      "isCascade": true,
+      "parentIncidentCode": "INC-018",
+      "severity": "P2",
+      "xp": 70,
+      "title": "Present-key reads slow after the Bloom rollout",
+      "brief": "Bloom filters fixed absent-key lookups, but at 10 bits/key over 9 billion keys they fill 11 GB of the 16 GB block cache. Data blocks get evicted; present-key p95 went from 4 to 30 ms.",
+      "constraint": "Node RAM is fixed at 32 GB, and 70% of lookups are still for absent keys.",
+      "question": "How do you keep the filters without starving the data blocks?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "value": 40000,
+          "label": "Traffic",
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "value": 64,
+          "label": "CPU",
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "value": 30,
+          "label": "p95 latency",
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "value": 40,
+          "label": "Errors",
+          "unit": "errors",
+          "tone": "warn"
+        },
+        {
+          "key": "hit",
+          "value": 58,
+          "label": "Block cache hit",
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Lookup API",
+            "tone": "good",
+            "cpu": 40
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "LSM store",
+            "tone": "warn",
+            "cpu": 64,
+            "sub": "filters: 11 GB"
+          },
+          {
+            "id": "blk",
+            "kind": "cache",
+            "label": "Block cache 16 GB",
+            "tone": "bad",
+            "sub": "58% hit"
+          }
+        ],
+        "edges": [
+          {
+            "from": "api",
+            "to": "db"
+          },
+          {
+            "from": "db",
+            "to": "blk"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "casc-partitioned",
+          "label": "Partition filters so only hot filter blocks stay in cache",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Lookup API",
+                "tone": "good",
+                "cpu": 40
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "LSM store",
+                "tone": "good",
+                "cpu": 45,
+                "sub": "partitioned filters"
+              },
+              {
+                "id": "blk",
+                "kind": "cache",
+                "label": "Block cache 16 GB",
+                "tone": "good",
+                "sub": "90% hit"
+              }
+            ],
+            "edges": [
+              {
+                "from": "api",
+                "to": "db"
+              },
+              {
+                "from": "db",
+                "to": "blk"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 45,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 5,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            },
+            {
+              "key": "hit",
+              "label": "Block cache hit",
+              "value": 90,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Filters cached piece by piece",
+          "resultBody": "Each SSTable's filter is split into small blocks behind a top-level index, and only partitions for recently read key ranges stay cached, about 2 GB. Data blocks get their memory back, present-key p95 returns to 5 ms, and absent keys still skip files. Cost: a cold filter partition costs one extra read."
+        },
+        {
+          "id": "casc-2bits",
+          "label": "Shrink the filters from 10 bits per key down to 2",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 80,
+                "sub": "40% false positives"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 80,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 45,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 150,
+              "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "hit",
+              "label": "Block cache hit",
+              "value": 88,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Small filters, many false positives",
+          "resultBody": "Filters drop to about 2 GB, but the false-positive rate jumps from ~1% to ~40%, so absent-key lookups read SSTables from disk again and p95 climbs to 45 ms."
+        },
+        {
+          "id": "casc-no-bottom",
+          "label": "Skip Bloom filters on the bottom level to save memory",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 76,
+                "sub": "bottom-level read per miss"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 76,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 38,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 110,
+              "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "hit",
+              "label": "Block cache hit",
+              "value": 86,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Absent keys now read the last level",
+          "resultBody": "The bottom level holds ~90% of keys, so filter memory falls to 1.2 GB, but 70% of lookups are for absent keys and each now reads a bottom-level block from disk; p95 goes to 38 ms. That setting only pays off when most lookups find their key."
+        }
+      ],
+      "hints": [
+        "Filters and data blocks compete for the same cache.",
+        "Only filters for the key ranges being read need to be in memory.",
+        "Could a filter be split and cached piece by piece, like data?"
+      ],
+      "nextId": null
     }
   ]
 }

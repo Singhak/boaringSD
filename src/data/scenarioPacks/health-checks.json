@@ -54,19 +54,21 @@
           {
             "id": "lb",
             "kind": "lb",
-            "label": "Balancer"
+            "label": "Balancer",
+            "tone": "warn",
+            "sub": "1 of 2 targets"
           },
           {
             "id": "p1",
             "kind": "server",
-            "label": "Pod (dead)",
-            "tone": "bad"
+            "label": "pod-1 (restarting)",
+            "tone": "warn"
           },
           {
             "id": "p2",
             "kind": "server",
-            "label": "Pod (ready)",
-            "tone": "good"
+            "label": "pod-2 (2x load)",
+            "tone": "bad"
           }
         ],
         "edges": [
@@ -141,7 +143,10 @@
             }
           ],
           "resultTitle": "Incident solved",
-          "resultBody": "Liveness means the process should be restarted; readiness means it can receive traffic."
+          "resultBody": "Liveness means the process should be restarted; readiness means it can receive traffic.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "kill-on-warmup",
@@ -172,7 +177,23 @@
             }
           ],
           "resultTitle": "Restart loop during warmup",
-          "resultBody": "Every restart throws away the half-built cache, so the pod never finishes warming and errors stay at 120 while the pool shrinks."
+          "resultBody": "Every restart throws away the half-built cache, so the pod never finishes warming and errors stay at 120 while the pool shrinks.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "p1",
+                "tone": "bad",
+                "sub": "restart loop, cache lost"
+              },
+              {
+                "id": "p2",
+                "sub": "carries all traffic"
+              }
+            ]
+          }
         },
         {
           "id": "no-readiness",
@@ -203,7 +224,23 @@
             }
           ],
           "resultTitle": "Cold pod served live traffic",
-          "resultBody": "Without a readiness gate the balancer sends requests to the warming pod immediately; its cache misses push p95 past 200 ms and errors climb."
+          "resultBody": "Without a readiness gate the balancer sends requests to the warming pod immediately; its cache misses push p95 past 200 ms and errors climb.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "p1",
+                "tone": "bad",
+                "sub": "cold pod gets traffic"
+              },
+              {
+                "id": "lb",
+                "sub": "routes to warming pod"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -211,7 +248,33 @@
         "Alive is not the same as ready.",
         "Probe the serving path."
       ],
-      "nextId": null
+      "nextId": null,
+      "format": "culprit",
+      "culprit": {
+        "nodeId": "p1",
+        "explanation": "pod-1 was alive and 38% through warming its cache when /health returned 503, so liveness restarted it. One endpoint was answering both 'should I be restarted?' and 'can I take traffic?'.",
+        "wrongNodeFeedback": {
+          "p2": "pod-2 is overloaded because it carries pod-1's share. Its logs show the symptom, not the cause.",
+          "lb": "The balancer is right to skip a pod that is not ready. Why does that pod never become ready?"
+        }
+      },
+      "logs": {
+        "lb": [
+          "target pod-1 unhealthy (503), routing 100% to pod-2",
+          "pod-1 registered 09:14:02, removed 09:14:31",
+          "pod-1 registered 09:15:40, removed 09:16:09"
+        ],
+        "p1": [
+          "cache warm-up 38% (ETA 70 s)",
+          "GET /health -> 503 'cache not warm' (liveness probe)",
+          "SIGTERM from kubelet, restart #7"
+        ],
+        "p2": [
+          "cpu 94%, serving 1,000 req/s alone",
+          "p95 480 ms, 120 errors/min",
+          "GET /health -> 200"
+        ]
+      }
     },
     {
       "id": "hc-02",
@@ -397,7 +460,28 @@
             }
           ],
           "resultTitle": "The replica melts, and lies",
-          "resultBody": "The replica now burns 90% CPU on count(*) and its replication lag climbs, while readiness reports the replica's health instead of the primary's, so pods that lost the primary stay in rotation."
+          "resultBody": "The replica now burns 90% CPU on count(*) and its replication lag climbs, while readiness reports the replica's health instead of the primary's, so pods that lost the primary stay in rotation.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "rep",
+                "kind": "replica",
+                "label": "Read replica",
+                "tone": "bad",
+                "cpu": 90,
+                "sub": "count(*) x800/s, lagging"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "pods",
+                "to": "rep"
+              }
+            ]
+          }
         },
         {
           "id": "slower-probes",
@@ -429,7 +513,24 @@
             }
           ],
           "resultTitle": "Cheaper, but blind for 90 s",
-          "resultBody": "Scans drop 15x and CPU recovers, but with a failure threshold of 3 a dead pod now takes 90 s to leave rotation, which breaks the 30 s requirement, and every probe is still a full index scan."
+          "resultBody": "Scans drop 15x and CPU recovers, but with a failure threshold of 3 a dead pod now takes 90 s to leave rotation, which breaks the 30 s requirement, and every probe is still a full index scan.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "lb",
+                "sub": "probe every 30 s"
+              },
+              {
+                "id": "db",
+                "tone": "warn",
+                "cpu": 64,
+                "sub": "still full scans"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -621,7 +722,37 @@
             }
           ],
           "resultTitle": "Tests the wrong disk",
-          "resultBody": "The row lands on Postgres's disk, not pod-7's, so the probe stays green and failures continue, and a Postgres blip would now mark all 12 pods unready at once."
+          "resultBody": "The row lands on Postgres's disk, not pod-7's, so the probe stays green and failures continue, and a Postgres blip would now mark all 12 pods unready at once.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "bad",
+                "sub": "probe green, ENOSPC"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "pg",
+                "kind": "db",
+                "label": "Shared Postgres",
+                "tone": "warn",
+                "sub": "now in every probe"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "pods",
+                "to": "pg"
+              },
+              {
+                "from": "bad",
+                "to": "pg"
+              }
+            ]
+          }
         },
         {
           "id": "disk-alert",
@@ -653,7 +784,22 @@
             }
           ],
           "resultTitle": "Someone gets paged, uploads keep failing",
-          "resultBody": "Visibility improves, but a human takes about 25 minutes to acknowledge and cordon the pod, and during that time it keeps failing 8% of uploads at full rate."
+          "resultBody": "Visibility improves, but a human takes about 25 minutes to acknowledge and cordon the pod, and during that time it keeps failing 8% of uploads at full rate.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "bad",
+                "sub": "paged, still in rotation"
+              },
+              {
+                "id": "lb",
+                "sub": "still sends 8%"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -768,7 +914,10 @@
             }
           ],
           "resultTitle": "Catalog survives payment outages",
-          "resultBody": "Pods stay ready while the vendor is down; the breaker fails checkout fast with a \"try again shortly\" page. 503s drop from 30,000/s to ~450/s (checkout only). Cost: vendor health now needs its own alert."
+          "resultBody": "Pods stay ready while the vendor is down; the breaker fails checkout fast with a \"try again shortly\" page. 503s drop from 30,000/s to ~450/s (checkout only). Cost: vendor health now needs its own alert.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "threshold-10",
@@ -800,7 +949,18 @@
             }
           ],
           "resultTitle": "Cascade delayed, not prevented",
-          "resultBody": "The pool now drains 100 s into an outage instead of 30 s. This 40 s blip would pass, but the next 3-minute vendor outage still takes all 60 pods out and 28,500 catalog req/s fail."
+          "resultBody": "The pool now drains 100 s into an outage instead of 30 s. This 40 s blip would pass, but the next 3-minute vendor outage still takes all 60 pods out and 28,500 catalog req/s fail.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "pods",
+                "sub": "drain after 100 s instead"
+              }
+            ]
+          }
         },
         {
           "id": "cache-check",
@@ -832,7 +992,19 @@
             }
           ],
           "resultTitle": "Pods now fail in lockstep",
-          "resultBody": "All 60 pods cache the same vendor answer, so they expire and flip within the same minute. During a 3-minute outage ready pods still hit 4 of 60 and catalog 503s return."
+          "resultBody": "All 60 pods cache the same vendor answer, so they expire and flip within the same minute. During a 3-minute outage ready pods still hit 4 of 60 and catalog 503s return.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "pods",
+                "label": "60 pods (flip together)",
+                "sub": "same cached answer"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -962,7 +1134,10 @@
             }
           ],
           "resultTitle": "Boot finishes, hangs still caught",
-          "resultBody": "Liveness is suspended until the startup probe passes (every 10 s, up to 12 failures), so pods finish their 90 s boot and all 24 go ready; a hung pod is still killed in 30 s. Cost: a pod stuck during boot lingers up to 120 s."
+          "resultBody": "Liveness is suspended until the startup probe passes (every 10 s, up to 12 failures), so pods finish their 90 s boot and all 24 go ready; a hung pod is still killed in 30 s. Cost: a pod stuck during boot lingers up to 120 s.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "long-liveness",
@@ -1001,7 +1176,21 @@
             }
           ],
           "resultTitle": "Boot works, hangs now last 2 minutes",
-          "resultBody": "The crash loop ends, but the 120 s window applies forever. The next deadlocked pod served 500s for two minutes before anything restarted it, breaking the 30-second rule."
+          "resultBody": "The crash loop ends, but the 120 s window applies forever. The next deadlocked pod served 500s for two minutes before anything restarted it, breaking the 30-second rule.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "new",
+                "tone": "warn",
+                "cpu": 60,
+                "label": "24 new pods",
+                "sub": "hangs last 120 s"
+              }
+            ]
+          }
         },
         {
           "id": "no-liveness",
@@ -1040,7 +1229,21 @@
             }
           ],
           "resultTitle": "Hung pods are never restarted",
-          "resultBody": "Pods boot, but a pod that deadlocks now just goes unready and stays that way. By morning 6 of 24 pods were stuck, cutting capacity 25% with nothing restarting them."
+          "resultBody": "Pods boot, but a pod that deadlocks now just goes unready and stays that way. By morning 6 of 24 pods were stuck, cutting capacity 25% with nothing restarting them.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "new",
+                "tone": "warn",
+                "cpu": 74,
+                "label": "24 new pods",
+                "sub": "6 stuck, never restarted"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1257,7 +1460,23 @@
             }
           ],
           "resultTitle": "Spread-out bots slip through",
-          "resultBody": "The botnet spans 40k IPs sending a few requests each, far under the limit, so most of the flood still runs deep checks; meanwhile the load balancer's own probes come from a handful of IPs and start getting 429s."
+          "resultBody": "The botnet spans 40k IPs sending a few requests each, far under the limit, so most of the flood still runs deep checks; meanwhile the load balancer's own probes come from a handful of IPs and start getting 429s.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "edge",
+                "sub": "429s hit the LB probes"
+              },
+              {
+                "id": "pods",
+                "cpu": 76,
+                "sub": "flood spread over 40k IPs"
+              }
+            ]
+          }
         },
         {
           "id": "api-key-health",
@@ -1289,7 +1508,25 @@
             }
           ],
           "resultTitle": "The balancer can't send the key",
-          "resultBody": "Bots are rejected, but so is the load balancer, which cannot add custom headers to its checks; every target is marked unhealthy and the whole API goes dark."
+          "resultBody": "Bots are rejected, but so is the load balancer, which cannot add custom headers to its checks; every target is marked unhealthy and the whole API goes dark.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "edge",
+                "tone": "bad",
+                "sub": "LB probes rejected"
+              },
+              {
+                "id": "pods",
+                "tone": "bad",
+                "cpu": 30,
+                "sub": "all targets unhealthy"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1481,7 +1718,18 @@
             }
           ],
           "resultTitle": "Faster probes of the wrong thing",
-          "resultBody": "Envoy is perfectly healthy, so probing it ten times as often just returns 200 ten times as often; the crashed app containers stay in rotation and 503s don't move."
+          "resultBody": "Envoy is perfectly healthy, so probing it ten times as often just returns 200 ten times as often; the crashed app containers stay in rotation and 503s don't move.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "envoy",
+                "sub": "/ready = 200, every 1 s"
+              }
+            ]
+          }
         },
         {
           "id": "tcp-envoy",
@@ -1513,7 +1761,23 @@
             }
           ],
           "resultTitle": "The listener accepts, the app is gone",
-          "resultBody": "Envoy's listener accepts TCP connections whether or not the app behind it is alive, so the handshake succeeds, the probe passes, and requests still get 503 from the missing upstream."
+          "resultBody": "Envoy's listener accepts TCP connections whether or not the app behind it is alive, so the handshake succeeds, the probe passes, and requests still get 503 from the missing upstream.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "envoy",
+                "sub": "TCP accept, app gone"
+              },
+              {
+                "id": "lb",
+                "tone": "warn",
+                "sub": "dead pods still listed"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1642,7 +1906,10 @@
             }
           ],
           "resultTitle": "One slow probe no longer ejects",
-          "resultBody": "A single 1.2 s probe no longer ejects a pod; three misses in a row (30 s) do, and two passes re-admit it. Rotation changes fall from 190/min to 3 and 502s from 2,600/s to 40. Cost: a dead pod can linger 30 s, so LB retries must cover it."
+          "resultBody": "A single 1.2 s probe no longer ejects a pod; three misses in a row (30 s) do, and two passes re-admit it. Rotation changes fall from 190/min to 3 and 502s from 2,600/s to 40. Cost: a dead pod can linger 30 s, so LB retries must cover it.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "probe-1s",
@@ -1681,7 +1948,23 @@
             }
           ],
           "resultTitle": "Ten times the coin flips",
-          "resultBody": "Ten times more probes means ten times more chances to hit the 1.2 s tail. Rotation changes jump to 1,100/min, probe traffic adds 8 points of CPU, and 502s rise to 3,400/s."
+          "resultBody": "Ten times more probes means ten times more chances to hit the 1.2 s tail. Rotation changes jump to 1,100/min, probe traffic adds 8 points of CPU, and 502s rise to 3,400/s.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "pods",
+                "cpu": 80,
+                "sub": "1,100 flips/min"
+              },
+              {
+                "id": "dep",
+                "sub": "10x probe traffic"
+              }
+            ]
+          }
         },
         {
           "id": "no-readiness",
@@ -1720,7 +2003,20 @@
             }
           ],
           "resultTitle": "Blind balancer during deploys",
-          "resultBody": "Flapping stops, but new and crashed pods now get traffic until the balancer sees real errors. Each rollout sprays about 1,500 502s/s for 20 seconds."
+          "resultBody": "Flapping stops, but new and crashed pods now get traffic until the balancer sees real errors. Each rollout sprays about 1,500 502s/s for 20 seconds.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "lb",
+                "tone": "warn",
+                "label": "Balancer (blind)",
+                "sub": "sends to booting pods"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1911,7 +2207,36 @@
             }
           ],
           "resultTitle": "Throttling ends, the bill quadruples",
-          "resultBody": "Latency recovers, but requests plus limits now reserve 4x the CPU, the cluster needs 60 more nodes, and the probes still waste the same 180 ms each; the constraint says the limit can't move."
+          "resultBody": "Latency recovers, but requests plus limits now reserve 4x the CPU, the cluster needs 60 more nodes, and the probes still waste the same 180 ms each; the constraint says the limit can't move.",
+          "tradeoffs": {
+            "costMonthlyDelta": 6000
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "pods",
+                "label": "120 pods (2 cores)",
+                "tone": "warn",
+                "cpu": 45,
+                "sub": "probes still fork python"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "nodes",
+                "kind": "server",
+                "label": "+60 cluster nodes",
+                "tone": "warn",
+                "sub": "4x CPU reserved"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "pods",
+                "to": "nodes"
+              }
+            ]
+          }
         },
         {
           "id": "probe-timeout",
@@ -1943,7 +2268,18 @@
             }
           ],
           "resultTitle": "Fewer restarts, same CPU burn",
-          "resultBody": "Slow throttled probes stop timing out, so there are fewer spurious restarts, but every probe still forks a Python interpreter every 2 s, so CPU stays pegged and p99 latency doesn't improve."
+          "resultBody": "Slow throttled probes stop timing out, so there are fewer spurious restarts, but every probe still forks a Python interpreter every 2 s, so CPU stays pegged and p99 latency doesn't improve.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "pods",
+                "sub": "10 s timeout, still forking"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2136,7 +2472,18 @@
             }
           ],
           "resultTitle": "Grace unused, app still exits",
-          "resultBody": "The grace period is only the maximum time Kubernetes waits before SIGKILL; the app still exits the instant it gets SIGTERM, so the 5-10 s window of misrouted requests is unchanged."
+          "resultBody": "The grace period is only the maximum time Kubernetes waits before SIGKILL; the app still exits the instant it gets SIGTERM, so the 5-10 s window of misrouted requests is unchanged.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "old",
+                "sub": "300 s grace, exits at once"
+              }
+            ]
+          }
         },
         {
           "id": "client-retry-502",
@@ -2168,7 +2515,27 @@
             }
           ],
           "resultTitle": "GETs recover, POSTs double",
-          "resultBody": "Most reads succeed on retry, but a 502 doesn't tell you whether a POST reached the app, so some bookings are now created twice while others still fail when the retry lands on another terminating pod."
+          "resultBody": "Most reads succeed on retry, but a 502 doesn't tell you whether a POST reached the app, so some bookings are now created twice while others still fail when the retry lands on another terminating pod.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "gw",
+                "kind": "lb",
+                "label": "API gateway",
+                "tone": "warn",
+                "sub": "retries POSTs, double bookings"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "gw",
+                "to": "lb"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2176,7 +2543,139 @@
         "The pod and the balancer need to agree on who stops first.",
         "Keep serving briefly after you're told to stop, then drain what's in flight."
       ],
-      "nextId": null
+      "nextId": null,
+      "format": "knob",
+      "knob": {
+        "label": "preStop sleep before SIGTERM",
+        "unit": "s",
+        "min": 0,
+        "max": 30,
+        "step": 1,
+        "start": 0,
+        "target": [
+          12,
+          20
+        ],
+        "question": "Size the preStop sleep: the LB needs 5-10 s to let go; slow requests need 8 s.",
+        "curve": [
+          {
+            "at": 0,
+            "metrics": [
+              {
+                "key": "p95",
+                "value": 260
+              },
+              {
+                "key": "errors",
+                "value": 3
+              }
+            ]
+          },
+          {
+            "at": 5,
+            "metrics": [
+              {
+                "key": "p95",
+                "value": 258
+              },
+              {
+                "key": "errors",
+                "value": 1.2
+              }
+            ]
+          },
+          {
+            "at": 10,
+            "metrics": [
+              {
+                "key": "p95",
+                "value": 252
+              },
+              {
+                "key": "errors",
+                "value": 0.3
+              }
+            ]
+          },
+          {
+            "at": 12,
+            "metrics": [
+              {
+                "key": "p95",
+                "value": 250
+              },
+              {
+                "key": "errors",
+                "value": 0.01
+              }
+            ]
+          },
+          {
+            "at": 20,
+            "metrics": [
+              {
+                "key": "p95",
+                "value": 250
+              },
+              {
+                "key": "errors",
+                "value": 0.01
+              }
+            ]
+          },
+          {
+            "at": 22,
+            "metrics": [
+              {
+                "key": "p95",
+                "value": 252
+              },
+              {
+                "key": "errors",
+                "value": 0.2
+              }
+            ]
+          },
+          {
+            "at": 25,
+            "metrics": [
+              {
+                "key": "p95",
+                "value": 255
+              },
+              {
+                "key": "errors",
+                "value": 0.6
+              }
+            ]
+          },
+          {
+            "at": 30,
+            "metrics": [
+              {
+                "key": "p95",
+                "value": 260
+              },
+              {
+                "key": "errors",
+                "value": 1.4
+              }
+            ]
+          }
+        ],
+        "low": {
+          "title": "The balancer still sends traffic",
+          "body": "Deregistration takes 5-10 s, so with a sleep this short the balancer keeps routing to a pod whose server has already exited, and every deploy still drops around 1% of 50k req/s."
+        },
+        "high": {
+          "title": "SIGKILL cuts slow requests",
+          "body": "The sleep eats the 30 s grace period: at 25 s only 5 s remain for Shutdown, so bookings that take 8 s are SIGKILLed mid-request and 0.6% fail on every deploy."
+        },
+        "good": {
+          "title": "The pod leaves after the traffic does",
+          "body": "A 12-20 s sleep outlasts the 5-10 s deregistration, and Shutdown still has at least 10 s of the 30 s grace to finish 8 s requests, so deploy 502s fall to near zero."
+        }
+      }
     },
     {
       "id": "hc-11",
@@ -2283,7 +2782,11 @@
             }
           ],
           "resultTitle": "Real traffic ejects the bad pod",
-          "resultBody": "The mesh sees pod-7's run of 5xx on live requests and ejects it within about 2 s for a 30 s back-off; 5xx fall from 600/s to 5/s. Cost: cap ejection at 10% of the pool, or a fleet-wide bug would eject everyone."
+          "resultBody": "The mesh sees pod-7's run of 5xx on live requests and ejects it within about 2 s for a 30 s back-off; 5xx fall from 600/s to 5/s. Cost: cap ejection at 10% of the pool, or a fleet-wide bug would eject everyone.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "cascadeIncidentId": "hc-casc-01"
         },
         {
           "id": "deep-probe",
@@ -2315,7 +2818,24 @@
             }
           ],
           "resultTitle": "Probes now eat 18 points of CPU",
-          "resultBody": "Each probe runs a 150 ms dispatch on all 12 pods every 5 s. It catches pod-7 eventually, but under load the heavy probe times out and starts ejecting healthy pods too."
+          "resultBody": "Each probe runs a 150 ms dispatch on all 12 pods every 5 s. It catches pod-7 eventually, but under load the heavy probe times out and starts ejecting healthy pods too.",
+          "tradeoffs": {
+            "costMonthlyDelta": 300
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "pods",
+                "tone": "warn",
+                "cpu": 62,
+                "sub": "heavy probes time out"
+              },
+              {
+                "id": "p7",
+                "sub": "caught eventually"
+              }
+            ]
+          }
         },
         {
           "id": "retry",
@@ -2347,7 +2867,23 @@
             }
           ],
           "resultTitle": "Errors masked, pod-7 still serving",
-          "resultBody": "Most failures succeed on retry, but pod-7 stays in rotation, each failure costs a second request, and p95 climbs from 180 to 320 ms while the corrupted model is never removed."
+          "resultBody": "Most failures succeed on retry, but pod-7 stays in rotation, each failure costs a second request, and p95 climbs from 180 to 320 ms while the corrupted model is never removed.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "mesh",
+                "tone": "warn",
+                "sub": "2 requests per failure"
+              },
+              {
+                "id": "p7",
+                "sub": "still serving"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2559,7 +3095,18 @@
             }
           ],
           "resultTitle": "Port open, service broken",
-          "resultBody": "The gRPC server is listening, so the TCP handshake succeeds on all 8 pods; a socket probe knows nothing about which services inside are able to work, and 25% of Payments RPCs still fail."
+          "resultBody": "The gRPC server is listening, so the TCP handshake succeeds on all 8 pods; a socket probe knows nothing about which services inside are able to work, and 25% of Payments RPCs still fail.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "bad",
+                "sub": "TCP open, Payments dead"
+              }
+            ]
+          }
         },
         {
           "id": "metrics-probe",
@@ -2591,7 +3138,18 @@
             }
           ],
           "resultTitle": "Metrics are up, Payments isn't",
-          "resultBody": "The Prometheus handler runs on its own listener and happily returns 200 while Payments is NOT_SERVING, so the two broken pods stay in rotation."
+          "resultBody": "The Prometheus handler runs on its own listener and happily returns 200 while Payments is NOT_SERVING, so the two broken pods stay in rotation.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "bad",
+                "sub": "/metrics 200, Payments dead"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2786,7 +3344,18 @@
             }
           ],
           "resultTitle": "Same stampede, one minute later",
-          "resultBody": "The delay only affects container start, and here pods were already running; even where it applies, all 200 pods still become ready in the same second after 60 s, with caches just as cold."
+          "resultBody": "The delay only affects container start, and here pods were already running; even where it applies, all 200 pods still become ready in the same second after 60 s, with caches just as cold.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "lb",
+                "sub": "all 200 ready at once, 60 s later"
+              }
+            ]
+          }
         },
         {
           "id": "double-pods",
@@ -2818,7 +3387,24 @@
             }
           ],
           "resultTitle": "More cold caches, more misses",
-          "resultBody": "Each new pod starts with an empty cache too, so twice as many pods send cache-miss queries at once and database QPS climbs further; the database, not the pods, is the bottleneck."
+          "resultBody": "Each new pod starts with an empty cache too, so twice as many pods send cache-miss queries at once and database QPS climbs further; the database, not the pods, is the bottleneck.",
+          "tradeoffs": {
+            "costMonthlyDelta": 1500
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "pods",
+                "label": "400 pods (cold caches)",
+                "sub": "2x cache misses"
+              },
+              {
+                "id": "db",
+                "cpu": 99,
+                "sub": "misses from 400 pods"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3014,7 +3600,23 @@
             }
           ],
           "resultTitle": "Ejections slow, dead pods linger",
-          "resultBody": "Fewer probes time out, but at peak the queue delay exceeds 10 s too, so 15% of pods still get pulled, and a genuinely hung pod now takes 30 s to leave rotation, breaking the 15 s rule."
+          "resultBody": "Fewer probes time out, but at peak the queue delay exceeds 10 s too, so 15% of pods still get pulled, and a genuinely hung pod now takes 30 s to leave rotation, breaking the 15 s rule.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "out",
+                "label": "15% ejected",
+                "sub": "queue delay > 10 s"
+              },
+              {
+                "id": "lb",
+                "sub": "hung pods linger 30 s"
+              }
+            ]
+          }
         },
         {
           "id": "autoscale-more",
@@ -3046,7 +3648,27 @@
             }
           ],
           "resultTitle": "Help arrives after the cascade",
-          "resultBody": "New pods need 90 s to schedule and boot, while ejections cascade in seconds; by the time they arrive the remaining pods have also failed probes, and each new pod is ejected as soon as it fills up."
+          "resultBody": "New pods need 90 s to schedule and boot, while ejections cascade in seconds; by the time they arrive the remaining pods have also failed probes, and each new pod is ejected as soon as it fills up.",
+          "tradeoffs": {
+            "costMonthlyDelta": 400
+          },
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "new",
+                "kind": "server",
+                "label": "New pods (booting 90 s)",
+                "tone": "warn",
+                "sub": "ejected when they fill"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "lb",
+                "to": "new"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3204,7 +3826,8 @@
             ]
           },
           "resultTitle": "No progress means restart",
-          "resultBody": "Each worker bumps a completed-task counter; liveness fails when the queue is non-empty and the counter hasn't moved for 60 s. A deadlocked pod is restarted within about 90 s, while a busy pod that is still completing tasks passes. Also capture a thread dump before restart to fix the lock order. Cost: a small watchdog in the worker loop."
+          "resultBody": "Each worker bumps a completed-task counter; liveness fails when the queue is non-empty and the counter hasn't moved for 60 s. A deadlocked pod is restarted within about 90 s, while a busy pod that is still completing tasks passes. Also capture a thread dump before restart to fix the lock order. Cost: a small watchdog in the worker loop.",
+          "cascadeIncidentId": "hc-casc-02"
         },
         {
           "id": "liveness-in-pool",
@@ -3236,7 +3859,25 @@
             }
           ],
           "resultTitle": "Busy pods get restarted too",
-          "resultBody": "The deadlocked pod now fails liveness, but so does every pod whose pool is saturated at peak; the kubelet restarts busy pods, the survivors get more load, and a restart storm follows."
+          "resultBody": "The deadlocked pod now fails liveness, but so does every pod whose pool is saturated at peak; the kubelet restarts busy pods, the survivors get more load, and a restart storm follows.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "pods",
+                "tone": "bad",
+                "cpu": 70,
+                "sub": "busy pods restarted"
+              },
+              {
+                "id": "lb",
+                "tone": "warn",
+                "sub": "restart storm"
+              }
+            ]
+          }
         },
         {
           "id": "nightly-restart",
@@ -3268,7 +3909,18 @@
             }
           ],
           "resultTitle": "Deadlocks wait until midnight",
-          "resultBody": "A deadlock that starts at 9 a.m. still hangs 5% of requests for 15 hours until the scheduled restart, and the root cause is never captured."
+          "resultBody": "A deadlock that starts at 9 a.m. still hangs 5% of requests for 15 hours until the scheduled restart, and the root cause is never captured.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "stuck",
+                "sub": "hangs until midnight"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3408,7 +4060,10 @@
             }
           ],
           "resultTitle": "Pods ride out the Redis failover",
-          "resultBody": "Next Redis failover, pods stay alive and read through to Postgres; p95 rises to about 140 ms for 25 s instead of a 4-minute outage. Cost: Postgres takes ~3x reads in that window, so its connection pool must be capped."
+          "resultBody": "Next Redis failover, pods stay alive and read through to Postgres; p95 rises to about 140 ms for 25 s instead of a 4-minute outage. Cost: Postgres takes ~3x reads in that window, so its connection pool must be capped.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "long-timeout",
@@ -3420,34 +4075,53 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 95,
+              "value": 70,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 2200,
+              "value": 400,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "restarts",
               "label": "Restarts",
-              "value": 48,
+              "value": 0,
               "unit": "pods",
-              "tone": "bad"
+              "tone": "good"
             },
             {
               "key": "errors",
               "label": "5xx",
-              "value": 10500,
+              "value": 300,
               "unit": "errors/s",
-              "tone": "bad"
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Survives 25 s, not 60 s",
-          "resultBody": "This failover would pass, but next week's 60-second failover still restarted all 48 pods at once, and genuinely hung pods now take 40 s longer to be caught."
+          "resultTitle": "Pods ride out this failover",
+          "resultBody": "With a 30 s liveness timeout the next 25 s Redis failover passes without a restart, and p95 recovers within a minute. One thing to watch: the probe still pings Redis, so a longer failover would still kill every pod.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "consequenceIncidentId": "hc-bill-01",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "pods",
+                "tone": "warn",
+                "cpu": 70,
+                "label": "48 pods",
+                "sub": "liveness still pings Redis"
+              },
+              {
+                "id": "redis",
+                "sub": "failover passed at 25 s"
+              }
+            ]
+          }
         },
         {
           "id": "ready-redis",
@@ -3486,7 +4160,26 @@
             }
           ],
           "resultTitle": "No restarts, but zero targets",
-          "resultBody": "Nothing restarts now, but all 48 pods go unready together while Redis fails over. The balancer has no targets and returns 18,000 503s/s for 25 s even though Postgres could have served."
+          "resultBody": "Nothing restarts now, but all 48 pods go unready together while Redis fails over. The balancer has no targets and returns 18,000 503s/s for 25 s even though Postgres could have served.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "lb",
+                "tone": "bad",
+                "label": "Balancer (no targets)",
+                "sub": "18k 503s/s"
+              },
+              {
+                "id": "pods",
+                "tone": "warn",
+                "cpu": 8,
+                "sub": "all 48 unready"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3696,7 +4389,24 @@
             }
           ],
           "resultTitle": "The whole fleet restarts in lockstep",
-          "resultBody": "All 36 pods started together and leak at the same rate, so they cross 90% within minutes of each other. Liveness restarts ignore the rollout's maxUnavailable, 22 pods restart at once, and 502s reach 9% while the cold JVMs warm up."
+          "resultBody": "All 36 pods started together and leak at the same rate, so they cross 90% within minutes of each other. Liveness restarts ignore the rollout's maxUnavailable, 22 pods restart at once, and 502s reach 9% while the cold JVMs warm up.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "label": "API pods (22 restarting)",
+                "sub": "restart in lockstep"
+              },
+              {
+                "id": "lb",
+                "tone": "bad",
+                "sub": "14 ready targets"
+              }
+            ]
+          }
         },
         {
           "id": "relax-readiness",
@@ -3728,7 +4438,23 @@
             }
           ],
           "resultTitle": "Slow pods stay in, then crash",
-          "resultBody": "Flapping stops, but pods stuck in 2 s GC pauses keep receiving traffic and p99 climbs to 4 s. When heap reaches its limit they die with OutOfMemoryError mid-request, and 502s rise to 6% instead of falling."
+          "resultBody": "Flapping stops, but pods stuck in 2 s GC pauses keep receiving traffic and p99 climbs to 4 s. When heap reaches its limit they die with OutOfMemoryError mid-request, and 502s rise to 6% instead of falling.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "cpu": 93,
+                "sub": "GC pauses served traffic, OOM"
+              },
+              {
+                "id": "lb",
+                "sub": "sends to paused pods"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3737,6 +4463,823 @@
         "How much time does a fresh pod have before it reaches the danger zone again?"
       ],
       "nextId": null
+    },
+    {
+      "id": "hc-casc-01",
+      "incidentCode": "INC-015-11B",
+      "level": 15,
+      "patternId": "health-checks",
+      "canonical": false,
+      "isCascade": true,
+      "parentIncidentCode": "INC-015-11",
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 80,
+      "title": "Outlier ejection empties the dispatch pool",
+      "brief": "A 20-second blip in Ridely's geo service made every dispatch pod return 5xx. Outlier detection ejected 11 of 12 pods, and the last one took all 20k req/s and fell over.",
+      "constraint": "A single bad pod like pod-7 must still be ejected within seconds.",
+      "question": "How do you keep ejection from removing the whole fleet?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 20000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 100,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 9000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 14000,
+          "unit": "errors/s",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "mesh",
+            "kind": "lb",
+            "label": "Service mesh",
+            "tone": "warn",
+            "sub": "ejected 11 of 12"
+          },
+          {
+            "id": "pods",
+            "kind": "server",
+            "label": "11 pods (ejected)",
+            "tone": "warn",
+            "cpu": 4
+          },
+          {
+            "id": "last",
+            "kind": "server",
+            "label": "pod-3 (last in pool)",
+            "tone": "bad",
+            "cpu": 100,
+            "sub": "20k req/s alone"
+          },
+          {
+            "id": "geo",
+            "kind": "server",
+            "label": "Geo service",
+            "tone": "warn",
+            "sub": "20 s blip, recovered"
+          }
+        ],
+        "edges": [
+          {
+            "from": "mesh",
+            "to": "pods"
+          },
+          {
+            "from": "mesh",
+            "to": "last"
+          },
+          {
+            "from": "pods",
+            "to": "geo"
+          },
+          {
+            "from": "last",
+            "to": "geo"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "cap-ejection",
+          "label": "Cap ejection at 20% of the pool and fail open past it",
+          "correct": true,
+          "resultTitle": "Blips no longer drain the pool",
+          "resultBody": "With max ejection at 20%, the mesh removes at most 2 of 12 pods; past that it keeps balancing across all of them and lets the upstream blip show as errors. A lone bad pod like pod-7 is still ejected in about 2 s. Cost: fleet-wide blips surface as errors instead of being hidden.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 46,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 180,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 5,
+              "unit": "errors/s",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "mesh",
+                "kind": "lb",
+                "label": "Service mesh",
+                "tone": "good",
+                "sub": "max ejection 20%"
+              },
+              {
+                "id": "pods",
+                "kind": "server",
+                "label": "12 pods in rotation",
+                "tone": "good",
+                "cpu": 46
+              },
+              {
+                "id": "geo",
+                "kind": "server",
+                "label": "Geo service",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "mesh",
+                "to": "pods"
+              },
+              {
+                "from": "pods",
+                "to": "geo"
+              }
+            ]
+          },
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "complexityScore": 1,
+            "tradeoffSummary": "One config value; upstream blips are visible instead of amplified."
+          }
+        },
+        {
+          "id": "consecutive-50",
+          "label": "Raise consecutive 5xx from 5 to 50 before ejecting a pod",
+          "correct": false,
+          "resultTitle": "The next pod-7 is never ejected",
+          "resultBody": "A pod failing 38% of requests almost never returns 50 errors in a row, so a broken pod now stays in rotation for good, while a total blip still ejects every pod within a fraction of a second.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 95,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 7000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 12000,
+              "unit": "errors/s",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "mesh",
+                "sub": "ejects after 50 in a row"
+              },
+              {
+                "id": "pods",
+                "label": "11 pods (ejected again)"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "disable-on-alert",
+          "label": "Disable outlier ejection whenever the geo service alerts",
+          "correct": false,
+          "resultTitle": "The alert fires too late",
+          "resultBody": "The geo alert needs 90 s to fire, so the 20 s blip had already ejected the pool before the rule kicked in, and while ejection is off a genuinely broken pod serves errors unchecked.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 98,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 8500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 13000,
+              "unit": "errors/s",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "geo",
+                "sub": "alert fires at 90 s"
+              },
+              {
+                "id": "last",
+                "sub": "still alone at 100%"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        }
+      ],
+      "hints": [
+        "Ejection assumes the pod is the problem.",
+        "When most of the pool fails at once, the pods are rarely the cause.",
+        "Limit how much of the pool one signal is allowed to remove."
+      ]
+    },
+    {
+      "id": "hc-casc-02",
+      "incidentCode": "INC-015-15B",
+      "level": 15,
+      "patternId": "health-checks",
+      "canonical": false,
+      "isCascade": true,
+      "parentIncidentCode": "INC-015-15",
+      "reviewed": true,
+      "severity": "P2",
+      "xp": 70,
+      "title": "Watchdog restarts pods running long exports",
+      "brief": "Routely's new watchdog fails liveness after 60 s without a completed task. Monday's route exports take 3-4 minutes each, so 6 of 20 busy pods were restarted mid-export.",
+      "constraint": "A deadlocked pod must still be restarted within about 90 seconds.",
+      "question": "What should count as progress for long-running work?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 24000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 78,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 900,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "restarts",
+          "label": "Restarts",
+          "value": 6,
+          "unit": "pods",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Failed exports",
+          "value": 180,
+          "unit": "exports/h",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "lb",
+            "kind": "lb",
+            "label": "Load balancer"
+          },
+          {
+            "id": "pods",
+            "kind": "server",
+            "label": "14 busy pods",
+            "tone": "warn",
+            "cpu": 78,
+            "sub": "exports 3-4 min"
+          },
+          {
+            "id": "restarted",
+            "kind": "server",
+            "label": "6 restarted pods",
+            "tone": "bad",
+            "cpu": 20,
+            "sub": "exports lost at 70%"
+          }
+        ],
+        "edges": [
+          {
+            "from": "lb",
+            "to": "pods"
+          },
+          {
+            "from": "lb",
+            "to": "restarted"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "progress-ticks",
+          "label": "Count in-task progress ticks, not just completed tasks",
+          "correct": true,
+          "resultTitle": "Busy is no longer dead",
+          "resultBody": "Workers bump a heartbeat every 1,000 route rows as well as on completion, and the watchdog fails only when the queue is non-empty and neither counter moves for 60 s. Exports tick every second, while a deadlocked worker stops ticking and is still restarted within 90 s. Cost: one counter increment in the export loop.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 70,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 400,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "restarts",
+              "label": "Restarts",
+              "value": 0,
+              "unit": "pods",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Failed exports",
+              "value": 0,
+              "unit": "exports/h",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer"
+              },
+              {
+                "id": "pods",
+                "kind": "server",
+                "label": "20 pods",
+                "tone": "good",
+                "cpu": 70,
+                "sub": "progress ticks every 1 s"
+              }
+            ],
+            "edges": [
+              {
+                "from": "lb",
+                "to": "pods"
+              }
+            ]
+          },
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "complexityScore": 1,
+            "tradeoffSummary": "A counter per work loop; long tasks must report progress."
+          }
+        },
+        {
+          "id": "widen-10m",
+          "label": "Widen the no-progress window from 60 s to 10 minutes",
+          "correct": false,
+          "resultTitle": "Deadlocks now hang 10 minutes",
+          "resultBody": "Exports finish, but the next deadlocked pod hangs 5% of requests for ten minutes before a restart, far past the 90-second rule the watchdog was built for.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 74,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 30000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "restarts",
+              "label": "Restarts",
+              "value": 0,
+              "unit": "pods",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Failed exports",
+              "value": 0,
+              "unit": "exports/h",
+              "tone": "good"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "restarted",
+                "label": "pod-12 (deadlocked)",
+                "cpu": 2,
+                "sub": "hung for 10 min"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "exclude-exports",
+          "label": "Exclude the export workers from the watchdog's counter",
+          "correct": false,
+          "resultTitle": "Export deadlocks go unseen",
+          "resultBody": "Exports stop triggering restarts, but a lock-order bug in the export path is now invisible: last night two pods' export threads hung for 5 hours and 140 exports never finished.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 72,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 900,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "restarts",
+              "label": "Restarts",
+              "value": 0,
+              "unit": "pods",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Failed exports",
+              "value": 28,
+              "unit": "exports/h",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "restarted",
+                "label": "2 pods (exports hung)",
+                "cpu": 3,
+                "sub": "hung 5 h, never restarted"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        }
+      ],
+      "hints": [
+        "A task that takes 4 minutes completes nothing for 4 minutes.",
+        "Deadlocked threads stop doing everything, not just finishing.",
+        "Let workers prove they are moving while they work."
+      ]
+    },
+    {
+      "id": "hc-bill-01",
+      "incidentCode": "INC-015-16B",
+      "level": 15,
+      "patternId": "health-checks",
+      "canonical": false,
+      "isCascade": true,
+      "parentIncidentCode": "INC-015-16",
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 90,
+      "title": "A 60-second Redis failover restarts the fleet",
+      "brief": "The longer timeout held for a week. Then a 60-second Redis failover outlasted it: all 48 Bookly pods failed liveness together, restarted cold, and 18k req/s errored for 4 minutes.",
+      "constraint": "Redis is only a cache; Postgres can serve reads, more slowly, while Redis is away.",
+      "question": "What stops a cache failover from restarting the fleet?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 18000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 97,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 2400,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "restarts",
+          "label": "Restarts",
+          "value": 48,
+          "unit": "pods",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 11000,
+          "unit": "errors/s",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "lb",
+            "kind": "lb",
+            "label": "Balancer"
+          },
+          {
+            "id": "pods",
+            "kind": "server",
+            "label": "48 pods (cold restart)",
+            "tone": "bad",
+            "cpu": 97,
+            "sub": "liveness pings Redis"
+          },
+          {
+            "id": "redis",
+            "kind": "cache",
+            "label": "Redis (60 s failover)",
+            "tone": "warn"
+          },
+          {
+            "id": "pg",
+            "kind": "db",
+            "label": "Postgres",
+            "cpu": 30
+          }
+        ],
+        "edges": [
+          {
+            "from": "lb",
+            "to": "pods"
+          },
+          {
+            "from": "pods",
+            "to": "redis"
+          },
+          {
+            "from": "pods",
+            "to": "pg"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "drop-redis-liveness",
+          "label": "Take Redis out of liveness and read through to Postgres",
+          "correct": true,
+          "resultTitle": "Failovers no longer restart pods",
+          "resultBody": "Liveness now checks only that the process can serve its own handler; Redis errors trigger a read-through to Postgres with a capped pool. The next 60 s failover raises p95 to about 150 ms and restarts nothing. Cost: Postgres takes about 3x reads while Redis is away.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 66,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 150,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "restarts",
+              "label": "Restarts",
+              "value": 0,
+              "unit": "pods",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 20,
+              "unit": "errors/s",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Balancer"
+              },
+              {
+                "id": "pods",
+                "kind": "server",
+                "label": "48 pods",
+                "tone": "good",
+                "cpu": 66,
+                "sub": "process-only liveness"
+              },
+              {
+                "id": "redis",
+                "kind": "cache",
+                "label": "Redis (failing over)",
+                "tone": "warn"
+              },
+              {
+                "id": "pg",
+                "kind": "db",
+                "label": "Postgres",
+                "tone": "warn",
+                "cpu": 58,
+                "sub": "3x reads for 60 s"
+              }
+            ],
+            "edges": [
+              {
+                "from": "lb",
+                "to": "pods"
+              },
+              {
+                "from": "pods",
+                "to": "redis"
+              },
+              {
+                "from": "pods",
+                "to": "pg"
+              }
+            ]
+          },
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "complexityScore": 2,
+            "tradeoffSummary": "Slower reads during a cache failover instead of a fleet restart."
+          }
+        },
+        {
+          "id": "timeout-120",
+          "label": "Raise the liveness timeout again, this time to 120 seconds",
+          "correct": false,
+          "resultTitle": "The next hang lasts 2 minutes",
+          "resultBody": "Failovers up to two minutes now pass, but a truly hung pod serves timeouts for over two minutes before a restart, and a 3-minute Redis maintenance window still restarts all 48 pods.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 90,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1800,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "restarts",
+              "label": "Restarts",
+              "value": 48,
+              "unit": "pods",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 8000,
+              "unit": "errors/s",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "pods",
+                "sub": "120 s timeout, still pings Redis"
+              },
+              {
+                "id": "redis",
+                "label": "Redis (3 min maintenance)"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "stagger-probes",
+          "label": "Stagger liveness periods per pod so restarts don't align",
+          "correct": false,
+          "resultTitle": "Restarts spread out, still happen",
+          "resultBody": "Randomised periods spread the restarts over 40 s instead of one instant, but every pod still restarts during the failover, and the cold JVMs still need 4 minutes to warm.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 95,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2100,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "restarts",
+              "label": "Restarts",
+              "value": 48,
+              "unit": "pods",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 9000,
+              "unit": "errors/s",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "pods",
+                "label": "48 pods (staggered restarts)",
+                "sub": "all restart within 40 s"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        }
+      ],
+      "hints": [
+        "The timeout only chose which failover would be long enough.",
+        "A restart cannot fix a dependency that is down.",
+        "Liveness should fail only when restarting this process would help."
+      ]
     }
   ]
 }

@@ -16,7 +16,7 @@
       "severity": "P0",
       "xp": 150,
       "title": "Read-heavy feed",
-      "brief": "An app is serving a personalized feed with 95% reads and a single primary database becomes saturated.",
+      "brief": "The personalized feed is timing out: p95 is 3.2 s, errors are climbing, and the app servers are the ones throwing 504s.",
       "constraint": "Almost all traffic is read-only and writes are relatively small.",
       "question": "What is the most direct fix?",
       "metricsBefore": [
@@ -60,13 +60,15 @@
             "id": "app",
             "kind": "server",
             "label": "App",
-            "tone": "neutral"
+            "tone": "bad",
+            "cpu": 35,
+            "sub": "504s, threads waiting"
           },
           {
             "id": "db",
             "kind": "db",
             "label": "Primary",
-            "tone": "bad",
+            "tone": "warn",
             "cpu": 95
           }
         ],
@@ -152,7 +154,11 @@
             }
           ],
           "resultTitle": "Incident solved",
-          "resultBody": "Two replicas take the SELECT traffic, so primary CPU drops from 95% to 31%. Cost: replicas lag the primary slightly, so a user may briefly read data older than their own write."
+          "resultBody": "Two replicas take the SELECT traffic, so primary CPU drops from 95% to 31%. Cost: replicas lag the primary slightly, so a user may briefly read data older than their own write.",
+          "tradeoffs": {
+            "costMonthlyDelta": 700
+          },
+          "cascadeIncidentId": "rr-casc-01"
         },
         {
           "id": "more-app-servers",
@@ -183,7 +189,39 @@
             }
           ],
           "resultTitle": "More callers, same primary",
-          "resultBody": "The extra app servers open even more concurrent SELECTs against the single primary; its CPU hits 99% and p95 climbs from 3.2 s to 4 s."
+          "resultBody": "The extra app servers open even more concurrent SELECTs against the single primary; its CPU hits 99% and p95 climbs from 3.2 s to 4 s.",
+          "tradeoffs": {
+            "costMonthlyDelta": 200
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 99,
+                "sub": "more callers, same primary"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "app2",
+                "kind": "server",
+                "label": "App 2",
+                "tone": "warn",
+                "cpu": 30
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "users",
+                "to": "app2"
+              },
+              {
+                "from": "app2",
+                "to": "db"
+              }
+            ]
+          }
         },
         {
           "id": "stop-writes",
@@ -214,7 +252,20 @@
             }
           ],
           "resultTitle": "Writes batched, reads still crush it",
-          "resultBody": "Batching writes trims a little commit overhead, but reads are 95% of the load, so the primary stays at 97% CPU and p95 barely moves."
+          "resultBody": "Batching writes trims a little commit overhead, but reads are 95% of the load, so the primary stays at 97% CPU and p95 barely moves.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 97,
+                "sub": "writes batched; reads still 95%"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -222,7 +273,267 @@
         "Writes can stay on one primary.",
         "Send reads to replicas."
       ],
-      "nextId": "cache-01"
+      "nextId": "cache-01",
+      "format": "culprit",
+      "logs": {
+        "users": [
+          "GET /feed 504 Gateway Timeout",
+          "feed refresh p95 3.2 s"
+        ],
+        "app": [
+          "GET /feed 504 after 3,000 ms waiting on db",
+          "pool: 200/200 connections busy",
+          "app CPU 35%, GC normal"
+        ],
+        "db": [
+          "top SQL: SELECT feed_items ... 7,600/s, 95% of CPU",
+          "writes: 400/s, 3% of CPU",
+          "CPU 95%, all cores busy on reads"
+        ]
+      },
+      "culprit": {
+        "nodeId": "db",
+        "explanation": "The primary's own stats show feed SELECTs eating 95% of its CPU while writes are a sliver: one node is doing read work that copies of it could share.",
+        "wrongNodeFeedback": {
+          "app": "The app throws the 504s, but its CPU is 35%: it is waiting on the database.",
+          "users": "Users feel the timeouts; they are not causing them."
+        }
+      }
+    },
+    {
+      "id": "rr-casc-01",
+      "incidentCode": "INC-003B",
+      "level": 3,
+      "patternId": "read-replicas",
+      "canonical": false,
+      "isCascade": true,
+      "parentIncidentCode": "INC-003",
+      "reviewed": true,
+      "severity": "P2",
+      "xp": 70,
+      "title": "Posted comments vanish on refresh",
+      "brief": "Feed reads now hit two replicas that lag about 400 ms. Users who post and instantly refresh don't see their own comment; 3% of posts end in a repost or a ticket.",
+      "constraint": "The primary is back to 31% CPU and must stay under 60%; writes are 5% of traffic.",
+      "question": "How do users always see their own posts?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 8000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 40,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 213,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "errors",
+          "label": "Missing own posts",
+          "value": 3,
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App",
+            "cpu": 30
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Primary",
+            "tone": "good",
+            "cpu": 31
+          },
+          {
+            "id": "r",
+            "kind": "replica",
+            "label": "Replicas x2",
+            "tone": "warn",
+            "cpu": 40,
+            "sub": "lag ~400 ms"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          },
+          {
+            "from": "app",
+            "to": "r"
+          },
+          {
+            "from": "db",
+            "to": "r"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "own-primary",
+          "label": "Read a user's own posts from the primary only",
+          "correct": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 40,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 215,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Missing own posts",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Own writes always visible",
+          "resultBody": "Only the author's view of their own posts and comments reads the primary, about 5% of reads, so primary CPU rises to 36%; everyone else's feed stays on the replicas."
+        },
+        {
+          "id": "sync-replicas",
+          "label": "Switch both replicas to synchronous replication",
+          "correct": false,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 42,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 260,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Missing own posts",
+              "value": 2,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Slower writes, still stale",
+          "resultBody": "Synchronous replication at the default level waits for replicas to flush WAL, not to replay it, so a refresh can still miss the comment, and every post now waits an extra round trip.",
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "warn",
+                "cpu": 40,
+                "sub": "commits wait on replica flush"
+              },
+              {
+                "id": "r",
+                "tone": "warn",
+                "cpu": 42,
+                "sub": "flushed, not yet replayed"
+              }
+            ]
+          }
+        },
+        {
+          "id": "all-primary-again",
+          "label": "Route every feed read back to the primary again",
+          "correct": false,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 95,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3100,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Missing own posts",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Fresh, and back on fire",
+          "resultBody": "The primary takes all 7,600 reads/s again and climbs back to 95% CPU; own posts show up, and so does the original incident.",
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 95,
+                "sub": "all feed reads again"
+              },
+              {
+                "id": "r",
+                "tone": "neutral",
+                "cpu": 3,
+                "sub": "idle"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Who is the only person who notices the lag?",
+        "The primary always has the author's newest write.",
+        "Route by whose data it is, not by which page it is."
+      ],
+      "nextId": null
     },
     {
       "id": "rr-02",
@@ -434,7 +745,20 @@
             }
           ],
           "resultTitle": "Shorter report, same shared primary",
-          "resultBody": "The report drops from 25 to 12 minutes, but its snapshot still pins undo on the primary and the history list still reaches 4 million. The new index also slows every checkout insert, so p95 only improves to 500 ms."
+          "resultBody": "The report drops from 25 to 12 minutes, but its snapshot still pins undo on the primary and the history list still reaches 4 million. The new index also slows every checkout insert, so p95 only improves to 500 ms.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 82,
+                "sub": "history list 4M"
+              }
+            ]
+          }
         },
         {
           "id": "read-uncommitted",
@@ -466,7 +790,24 @@
             }
           ],
           "resultTitle": "Report totals no longer add up",
-          "resultBody": "Without a consistent snapshot the history list stops growing, but the report now counts orders that later rolled back and finance totals are off by 0.3%. Its full scans still burn primary CPU, and checkout p95 stays at 400 ms."
+          "resultBody": "Without a consistent snapshot the history list stops growing, but the report now counts orders that later rolled back and finance totals are off by 0.3%. Its full scans still burn primary CPU, and checkout p95 stays at 400 ms.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "report",
+                "tone": "bad",
+                "sub": "totals off by 0.3%"
+              },
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 80
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -598,7 +939,10 @@
             }
           ],
           "resultTitle": "Own edits always visible",
-          "resultBody": "After a write, the app stores the commit LSN in the session. Reads go to a replica whose replay LSN has passed it, and fall back to the primary only when none has (about 2% of reads). Cost: a lag check per read, cached for 100 ms, and session plumbing in every service."
+          "resultBody": "After a write, the app stores the commit LSN in the session. Reads go to a replica whose replay LSN has passed it, and fall back to the primary only when none has (about 2% of reads). Cost: a lag check per read, cached for 100 ms, and session plumbing in every service.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "pin-1s",
@@ -612,7 +956,7 @@
               "label": "CPU",
               "value": 50,
               "unit": "%",
-              "tone": "warn"
+              "tone": "good"
             },
             {
               "key": "p95",
@@ -624,13 +968,27 @@
             {
               "key": "errors",
               "label": "Stale own-reads",
-              "value": 150,
+              "value": 30,
               "unit": "/min",
               "tone": "warn"
             }
           ],
-          "resultTitle": "Lag outlives the 1-second window",
-          "resultBody": "Stale own-reads drop to about 150/min, but during batch jobs lag reaches 4 s, well past the 1-second pin, so edits still vanish exactly when load is highest."
+          "resultTitle": "Holding: stale edits down to 30/min",
+          "resultBody": "At today's 300 ms lag the 1-second pin covers almost every edit, so stale own-reads fall to about 30/min. The 16:00 batch import starts in two hours.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "replica",
+                "tone": "warn",
+                "cpu": 50,
+                "sub": "lag 300 ms now; batch at 16:00"
+              }
+            ]
+          },
+          "consequenceIncidentId": "rr-bill-01"
         },
         {
           "id": "fourth-replica",
@@ -662,7 +1020,39 @@
             }
           ],
           "resultTitle": "More replicas, same async lag",
-          "resultBody": "A fourth replica lowers read CPU from 58% to 44%, but lag comes from replaying batch writes, not from read load; stale own-reads stay around 460/min."
+          "resultBody": "A fourth replica lowers read CPU from 58% to 44%, but lag comes from replaying batch writes, not from read load; stale own-reads stay around 460/min.",
+          "tradeoffs": {
+            "costMonthlyDelta": 350
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "replica",
+                "tone": "warn",
+                "cpu": 44
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "r4",
+                "kind": "replica",
+                "label": "Replica 4",
+                "tone": "warn",
+                "cpu": 44,
+                "sub": "lag 0.3-4 s"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "r4"
+              },
+              {
+                "from": "db",
+                "to": "r4"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -672,6 +1062,236 @@
       ],
       "nextId": null,
       "reviewed": true
+    },
+    {
+      "id": "rr-bill-01",
+      "incidentCode": "INC-003-03B",
+      "level": 3,
+      "patternId": "read-replicas",
+      "canonical": false,
+      "isCascade": true,
+      "parentIncidentCode": "INC-003-03",
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 90,
+      "title": "Batch-hour edits vanish again",
+      "brief": "The 1-second pin held all morning. At 16:00 the batch import pushed replica lag to 4 s: the pin expires first, and 520 profile edits a minute look lost on refresh.",
+      "constraint": "The primary is at 45% CPU; sending all reads back would push it past 95%.",
+      "question": "What makes own-edit reads correct at any lag?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 8000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 58,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 60,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "errors",
+          "label": "Stale own-reads",
+          "value": 520,
+          "unit": "/min",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App",
+            "tone": "good",
+            "cpu": 40
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Primary",
+            "tone": "good",
+            "cpu": 45
+          },
+          {
+            "id": "replica",
+            "kind": "replica",
+            "label": "3 replicas",
+            "tone": "bad",
+            "cpu": 58,
+            "sub": "lag 4 s (batch import)"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          },
+          {
+            "from": "app",
+            "to": "replica"
+          },
+          {
+            "from": "db",
+            "to": "replica"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "lsn-route",
+          "label": "Route own-edit reads only to replicas past the write's LSN",
+          "correct": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 58,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 64,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Stale own-reads",
+              "value": 0,
+              "unit": "/min",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Correct at any lag",
+          "resultBody": "The session keeps the write's commit LSN; reads go only to a replica that has replayed past it, else to the primary. During the batch about 6% of reads fall back, lifting the primary to 52%."
+        },
+        {
+          "id": "pin-3s",
+          "label": "Stretch the primary pin from 1 second to 3 seconds",
+          "correct": false,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 60,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 62,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Stale own-reads",
+              "value": 300,
+              "unit": "/min",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still shorter than the lag",
+          "resultBody": "At 4 s of lag a 3 s pin still expires first, so stale own-reads only fall to about 300/min, and the primary now takes three times the pinned reads.",
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "warn",
+                "cpu": 55,
+                "sub": "3x pinned reads"
+              },
+              {
+                "id": "replica",
+                "tone": "bad",
+                "cpu": 58,
+                "sub": "lag 4 s > 3 s pin"
+              }
+            ]
+          }
+        },
+        {
+          "id": "pause-batch",
+          "label": "Pause the batch import whenever replica lag passes one second",
+          "correct": false,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 50,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 60,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Stale own-reads",
+              "value": 90,
+              "unit": "/min",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "The import never finishes",
+          "resultBody": "Lag hovers around the 1 s pin, so edits still slip through at its edges, and a 30-minute import now stretches past midnight while the reports that need it wait.",
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "replica",
+                "tone": "warn",
+                "cpu": 50,
+                "sub": "lag ~1 s, import paused 40 times"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "The pin is a guess about how long lag lasts.",
+        "During a batch, lag has no fixed upper bound.",
+        "Ask the replica how far it has replayed, not how long ago you wrote."
+      ],
+      "nextId": null
     },
     {
       "id": "rr-04",
@@ -882,7 +1502,21 @@
             }
           ],
           "resultTitle": "Three replicas still run out",
-          "resultBody": "Three replicas split 70,000 reads/s into about 23,300 each, above the 18,000 ceiling, so all three sit at 99% CPU. Timeouts fall only slightly, to 5%."
+          "resultBody": "Three replicas split 70,000 reads/s into about 23,300 each, above the 18,000 ceiling, so all three sit at 99% CPU. Timeouts fall only slightly, to 5%.",
+          "tradeoffs": {
+            "costMonthlyDelta": 600
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "r",
+                "tone": "bad",
+                "cpu": 99,
+                "sub": "23k reads/s each",
+                "label": "Replicas x3"
+              }
+            ]
+          }
         },
         {
           "id": "overflow-primary",
@@ -914,7 +1548,20 @@
             }
           ],
           "resultTitle": "Overflow drowns the write node",
-          "resultBody": "The primary picks up about 34,000 reads/s on top of its writes and CPU jumps from 35% to 97%. Price updates now queue behind reads, write latency passes 2 s, and replicas start lagging too."
+          "resultBody": "The primary picks up about 34,000 reads/s on top of its writes and CPU jumps from 35% to 97%. Price updates now queue behind reads, write latency passes 2 s, and replicas start lagging too.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 97,
+                "sub": "34k overflow reads/s"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1026,7 +1673,8 @@
           "tradeoffs": {
             "complexityScore": 2,
             "consistencyGuarantee": "eventual",
-            "tradeoffSummary": "Apply throughput matches the primary; more replica CPU."
+            "tradeoffSummary": "Apply throughput matches the primary; more replica CPU.",
+            "costMonthlyDelta": 0
           },
           "graphAfter": {
             "nodes": [
@@ -1133,7 +1781,21 @@
             }
           ],
           "resultTitle": "Six replicas, all 20 minutes behind",
-          "resultBody": "Every new replica replays the same 9,000 transactions/s on one thread and falls behind at the same rate. Reads are spread wider, but every balance page is still minutes stale."
+          "resultBody": "Every new replica replays the same 9,000 transactions/s on one thread and falls behind at the same rate. Reads are spread wider, but every balance page is still minutes stale.",
+          "tradeoffs": {
+            "costMonthlyDelta": 1500
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "r",
+                "tone": "bad",
+                "cpu": 9,
+                "sub": "all 20 min behind",
+                "label": "Replicas x6"
+              }
+            ]
+          }
         },
         {
           "id": "big-replicas",
@@ -1165,7 +1827,20 @@
             }
           ],
           "resultTitle": "Sixty-four cores, one thread busy",
-          "resultBody": "The apply thread still uses one core, and the other 63 idle, so throughput stays near 5,000 transactions/s. Lag keeps growing and the replica bill quadruples."
+          "resultBody": "The apply thread still uses one core, and the other 63 idle, so throughput stays near 5,000 transactions/s. Lag keeps growing and the replica bill quadruples.",
+          "tradeoffs": {
+            "costMonthlyDelta": 3000
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "r",
+                "tone": "bad",
+                "cpu": 2,
+                "sub": "63 of 64 cores idle"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1273,7 +1948,8 @@
           "tradeoffs": {
             "latencyP99DeltaMs": 1000,
             "complexityScore": 2,
-            "tradeoffSummary": "Far fewer commits for up to 1 s of added write latency."
+            "tradeoffSummary": "Far fewer commits for up to 1 s of added write latency.",
+            "costMonthlyDelta": 0
           },
           "graphAfter": {
             "nodes": [
@@ -1377,7 +2053,40 @@
             }
           ],
           "resultTitle": "Replicas replay every insert too",
-          "resultBody": "The replicas take the 300 dashboard queries/s, which were never the problem. The primary still performs 60,000 commits/s at 95% CPU, and each replica now replays all 60,000 rows/s on top."
+          "resultBody": "The replicas take the 300 dashboard queries/s, which were never the problem. The primary still performs 60,000 commits/s at 95% CPU, and each replica now replays all 60,000 rows/s on top.",
+          "tradeoffs": {
+            "costMonthlyDelta": 1200
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 94,
+                "sub": "still 60k commits/s"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "r",
+                "kind": "replica",
+                "label": "Replicas x3",
+                "tone": "warn",
+                "cpu": 60,
+                "sub": "replaying 60k rows/s"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "db",
+                "to": "r"
+              },
+              {
+                "from": "dash",
+                "to": "r"
+              }
+            ]
+          }
         },
         {
           "id": "second-primary",
@@ -1409,7 +2118,35 @@
             }
           ],
           "resultTitle": "Two primaries, two diverging histories",
-          "resultBody": "Promoting a replica breaks it off from the original primary. Each node now holds half the readings, dashboards see incomplete data, and the two timelines can't be merged back without a manual rebuild."
+          "resultBody": "Promoting a replica breaks it off from the original primary. Each node now holds half the readings, dashboards see incomplete data, and the two timelines can't be merged back without a manual rebuild.",
+          "tradeoffs": {
+            "costMonthlyDelta": 400
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "dash",
+                "tone": "bad",
+                "sub": "half the readings missing"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "p2",
+                "kind": "db",
+                "label": "Promoted replica",
+                "tone": "bad",
+                "cpu": 55,
+                "sub": "diverged history"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "ingest",
+                "to": "p2"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1517,7 +2254,8 @@
           "tradeoffs": {
             "complexityScore": 2,
             "consistencyGuarantee": "session",
-            "tradeoffSummary": "Uses existing replicas; needs routing discipline in code."
+            "tradeoffSummary": "Uses existing replicas; needs routing discipline in code.",
+            "costMonthlyDelta": 0
           },
           "graphAfter": {
             "nodes": [
@@ -1624,7 +2362,31 @@
             }
           ],
           "resultTitle": "Every save now fails",
-          "resultBody": "Page reads move off the primary, but replicas reject writes with \"cannot execute INSERT in a read-only transaction\". Every recipe save, rating, and login update fails, which is 12% of all requests."
+          "resultBody": "Page reads move off the primary, but replicas reject writes with \"cannot execute INSERT in a read-only transaction\". Every recipe save, rating, and login update fails, which is 12% of all requests.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "tone": "bad",
+                "sub": "every save fails"
+              },
+              {
+                "id": "r",
+                "tone": "warn",
+                "cpu": 50,
+                "sub": "rejecting writes"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "r"
+              }
+            ]
+          }
         },
         {
           "id": "two-more",
@@ -1656,7 +2418,26 @@
             }
           ],
           "resultTitle": "Five idle replicas instead of three",
-          "resultBody": "The router still sees every query inside a transaction and sends it to the primary. The two new replicas join the others at 4% CPU while the primary stays at 93%."
+          "resultBody": "The router still sees every query inside a transaction and sends it to the primary. The two new replicas join the others at 4% CPU while the primary stays at 93%.",
+          "tradeoffs": {
+            "costMonthlyDelta": 400
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "r",
+                "tone": "neutral",
+                "cpu": 4,
+                "sub": "still idle",
+                "label": "Replicas x5"
+              },
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 93
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1773,7 +2554,8 @@
           "approach": "optimal",
           "tradeoffs": {
             "complexityScore": 2,
-            "tradeoffSummary": "Contains cache damage to one node at the cost of pool headroom."
+            "tradeoffSummary": "Contains cache damage to one node at the cost of pool headroom.",
+            "costMonthlyDelta": 0
           },
           "graphAfter": {
             "nodes": [
@@ -1898,7 +2680,20 @@
             }
           ],
           "resultTitle": "Archive still bigger than memory",
-          "resultBody": "The archive is 6 TB and the replicas now have 512 GB each, so the scan still pushes hot articles out of cache on all 4 nodes. The hit rate only recovers to 62% and the RAM bill doubles."
+          "resultBody": "The archive is 6 TB and the replicas now have 512 GB each, so the scan still pushes hot articles out of cache on all 4 nodes. The hit rate only recovers to 62% and the RAM bill doubles.",
+          "tradeoffs": {
+            "costMonthlyDelta": 1600
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "r",
+                "tone": "bad",
+                "cpu": 54,
+                "sub": "cache hit 62%, RAM x2"
+              }
+            ]
+          }
         },
         {
           "id": "export-primary",
@@ -1930,7 +2725,26 @@
             }
           ],
           "resultTitle": "Primary's cache takes the hit instead",
-          "resultBody": "Readers recover, but the scan now evicts the primary's working set. Morning publishing writes hit a cold cache, commit latency passes 400 ms, and the scan load makes all 4 replicas lag by 90 s."
+          "resultBody": "Readers recover, but the scan now evicts the primary's working set. Morning publishing writes hit a cold cache, commit latency passes 400 ms, and the scan load makes all 4 replicas lag by 90 s.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 80,
+                "sub": "cold cache, commits 400 ms"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "export",
+                "to": "db"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2150,7 +2964,10 @@
             }
           ],
           "resultTitle": "Lagging replica drained",
-          "resultBody": "ProxySQL polls each replica's replication delay every second and stops routing to replica 3 at 40 s; the other three absorb its 15,000 reads/s and rise to about 80% CPU. Cost: a quarter less read headroom until the disk is replaced, so ejections need an alert and a minimum-pool floor."
+          "resultBody": "ProxySQL polls each replica's replication delay every second and stops routing to replica 3 at 40 s; the other three absorb its 15,000 reads/s and rise to about 80% CPU. Cost: a quarter less read headroom until the disk is replaced, so ejections need an alert and a minimum-pool floor.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "least-conn",
@@ -2182,7 +2999,20 @@
             }
           ],
           "resultTitle": "Balanced by load, not freshness",
-          "resultBody": "Least-connections weighs open connections, not how current a replica is; replica 3 still answers quickly from memory, keeps its share, and 24% of feeds stay 40 s stale."
+          "resultBody": "Least-connections weighs open connections, not how current a replica is; replica 3 still answers quickly from memory, keeps its share, and 24% of feeds stay 40 s stale.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "r3",
+                "tone": "bad",
+                "cpu": 60,
+                "sub": "still 25% of reads, 40 s stale"
+              }
+            ]
+          }
         },
         {
           "id": "all-primary",
@@ -2214,7 +3044,26 @@
             }
           ],
           "resultTitle": "Primary buried under feed reads",
-          "resultBody": "Feeds are fresh, but 60,000 reads/s land on a primary sized for writes; its CPU jumps from 50% to 97% and feed p95 climbs from 90 ms to 1.4 s."
+          "resultBody": "Feeds are fresh, but 60,000 reads/s land on a primary sized for writes; its CPU jumps from 50% to 97% and feed p95 climbs from 90 ms to 1.4 s.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 97,
+                "sub": "60k feed reads/s"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "db"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2336,7 +3185,8 @@
           "tradeoffs": {
             "latencyP99DeltaMs": 1,
             "complexityScore": 3,
-            "tradeoffSummary": "Even replica load regardless of client pooling; another tier to run."
+            "tradeoffSummary": "Even replica load regardless of client pooling; another tier to run.",
+            "costMonthlyDelta": 150
           },
           "graphAfter": {
             "nodes": [
@@ -2464,7 +3314,35 @@
             }
           ],
           "resultTitle": "New replica gets no connections",
-          "resultBody": "Existing pools never re-resolve the DNS name, so the new replica receives nothing until next week's restarts. Replica 1 stays at 95% and the new node idles at 2%."
+          "resultBody": "Existing pools never re-resolve the DNS name, so the new replica receives nothing until next week's restarts. Replica 1 stays at 95% and the new node idles at 2%.",
+          "tradeoffs": {
+            "costMonthlyDelta": 450
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "r1",
+                "tone": "bad",
+                "cpu": 95
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "r4",
+                "kind": "replica",
+                "label": "Replica 4",
+                "tone": "neutral",
+                "cpu": 2,
+                "sub": "no connections"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "db",
+                "to": "r4"
+              }
+            ]
+          }
         },
         {
           "id": "conn-cap",
@@ -2496,7 +3374,25 @@
             }
           ],
           "resultTitle": "Refused connections, failing pools",
-          "resultBody": "Replica 1 starts refusing new connections with \"too many connections\", and pools that lose a connection fail to replace it. 15% of tile reads error until pools happen to resolve another replica."
+          "resultBody": "Replica 1 starts refusing new connections with \"too many connections\", and pools that lose a connection fail to replace it. 15% of tile reads error until pools happen to resolve another replica.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "r1",
+                "tone": "warn",
+                "cpu": 80,
+                "sub": "refusing connections"
+              },
+              {
+                "id": "app",
+                "tone": "bad",
+                "sub": "15% of pools failing"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2607,7 +3503,8 @@
           "approach": "optimal",
           "tradeoffs": {
             "complexityScore": 1,
-            "tradeoffSummary": "Cuts per-query cost 100x; extra index storage and write cost."
+            "tradeoffSummary": "Cuts per-query cost 100x; extra index storage and write cost.",
+            "costMonthlyDelta": 0
           },
           "graphAfter": {
             "nodes": [
@@ -2710,7 +3607,21 @@
             }
           ],
           "resultTitle": "Two replicas against 3,600 cores of work",
-          "resultBody": "12,000 queries/s at 300 ms of CPU each needs about 3,600 cores. Two more 32-core replicas add 64, so all four replicas sit at 99% and timeouts barely move."
+          "resultBody": "12,000 queries/s at 300 ms of CPU each needs about 3,600 cores. Two more 32-core replicas add 64, so all four replicas sit at 99% and timeouts barely move.",
+          "tradeoffs": {
+            "costMonthlyDelta": 1400
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "r",
+                "tone": "bad",
+                "cpu": 99,
+                "sub": "3,600 cores of work",
+                "label": "Replicas x4"
+              }
+            ]
+          }
         },
         {
           "id": "btree",
@@ -2742,7 +3653,20 @@
             }
           ],
           "resultTitle": "Index built, planner ignores it",
-          "resultBody": "A B-tree only helps prefix matches like 'term%'. With a leading wildcard the planner still chooses a sequential scan, so CPU stays at 99% and the new index just adds write cost."
+          "resultBody": "A B-tree only helps prefix matches like 'term%'. With a leading wildcard the planner still chooses a sequential scan, so CPU stays at 99% and the new index just adds write cost.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 99,
+                "sub": "B-tree unused for '%term%'"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2971,7 +3895,39 @@
             }
           ],
           "resultTitle": "Read-only standby rejects analyst tables",
-          "resultBody": "Dispatch recovers, but a physical standby is read-only, so CREATE TABLE fails. Long dashboard queries are also cancelled with \"conflict with recovery\" whenever vacuum on the primary removes rows they still need, and 35% of BI queries fail."
+          "resultBody": "Dispatch recovers, but a physical standby is read-only, so CREATE TABLE fails. Long dashboard queries are also cancelled with \"conflict with recovery\" whenever vacuum on the primary removes rows they still need, and 35% of BI queries fail.",
+          "tradeoffs": {
+            "costMonthlyDelta": 500
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "bi",
+                "tone": "bad",
+                "sub": "35% of queries canceled"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "phys",
+                "kind": "replica",
+                "label": "Physical replica",
+                "tone": "bad",
+                "cpu": 50,
+                "sub": "CREATE TABLE fails"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "db",
+                "to": "phys"
+              },
+              {
+                "from": "bi",
+                "to": "phys"
+              }
+            ]
+          }
         },
         {
           "id": "pg-dump",
@@ -3003,7 +3959,35 @@
             }
           ],
           "resultTitle": "Yesterday's numbers at 9 a.m.",
-          "resultBody": "The dump takes 3 hours of primary I/O each night, and dashboards show data up to 24 hours old, far past the 15-minute limit. Morning fleet planning runs on stale trips."
+          "resultBody": "The dump takes 3 hours of primary I/O each night, and dashboards show data up to 24 hours old, far past the 15-minute limit. Morning fleet planning runs on stale trips.",
+          "tradeoffs": {
+            "costMonthlyDelta": 500
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 90,
+                "sub": "3 h dump I/O nightly"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "copy",
+                "kind": "db",
+                "label": "Nightly copy",
+                "tone": "warn",
+                "sub": "24 h old"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "bi",
+                "to": "copy"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3115,7 +4099,8 @@
           "tradeoffs": {
             "complexityScore": 1,
             "consistencyGuarantee": "strong",
-            "tradeoffSummary": "Self-healing writer discovery; brief errors at each failover."
+            "tradeoffSummary": "Self-healing writer discovery; brief errors at each failover.",
+            "costMonthlyDelta": 0
           },
           "graphAfter": {
             "nodes": [
@@ -3219,7 +4204,20 @@
             }
           ],
           "resultTitle": "Same connection, same rejection",
-          "resultBody": "Each retry borrows another stale connection to the old primary and gets the same read-only error. Failed bookings stay near 29%, and the retries triple the load on the replica."
+          "resultBody": "Each retry borrows another stale connection to the old primary and gets the same read-only error. Failed bookings stay near 29%, and the retries triple the load on the replica.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "old",
+                "tone": "bad",
+                "cpu": 40,
+                "sub": "3x retries, still read-only"
+              }
+            ]
+          }
         },
         {
           "id": "promote-back",
@@ -3251,7 +4249,25 @@
             }
           ],
           "resultTitle": "Two writers, double-booked slots",
-          "resultBody": "Both nodes now accept writes and neither replicates to the other. Within minutes the same 9:00 slot is booked twice on different nodes, and the two histories can't be merged cleanly."
+          "resultBody": "Both nodes now accept writes and neither replicates to the other. Within minutes the same 9:00 slot is booked twice on different nodes, and the two histories can't be merged cleanly.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "old",
+                "tone": "bad",
+                "cpu": 38,
+                "sub": "second writer: double bookings"
+              },
+              {
+                "id": "db",
+                "tone": "warn",
+                "sub": "diverging"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3457,7 +4473,24 @@
             }
           ],
           "resultTitle": "Load gone, messages late",
-          "resultBody": "Queries drop tenfold and the primary recovers, but a new message now takes up to 5 minutes to appear. That breaks the 30-second promise for nearly every message sent."
+          "resultBody": "Queries drop tenfold and the primary recovers, but a new message now takes up to 5 minutes to appear. That breaks the 30-second promise for nearly every message sent.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "users",
+                "tone": "bad",
+                "sub": "messages up to 5 min late"
+              },
+              {
+                "id": "db",
+                "tone": "good",
+                "cpu": 35
+              }
+            ]
+          }
         },
         {
           "id": "app-cache",
@@ -3489,7 +4522,25 @@
             }
           ],
           "resultTitle": "Forty caches, almost no hits",
-          "resultBody": "Polls are spread round-robin over 40 app servers, so each server sees a given device about once every 20 minutes. Entries expire before reuse, the hit rate is about 3%, and the primary stays at 94%."
+          "resultBody": "Polls are spread round-robin over 40 app servers, so each server sees a given device about once every 20 minutes. Entries expire before reuse, the hit rate is about 3%, and the primary stays at 94%.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "tone": "warn",
+                "cpu": 45,
+                "sub": "40 caches, 3% hits"
+              },
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 94
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3715,7 +4766,21 @@
             }
           ],
           "resultTitle": "Reads fixed, failover gone",
-          "resultBody": "Lookups move and the primary recovers, but there is no synchronous standby any more. If the primary's zone fails, promoting the async replica takes minutes and can lose the last few seconds of submitted returns."
+          "resultBody": "Lookups move and the primary recovers, but there is no synchronous standby any more. If the primary's zone fails, promoting the async replica takes minutes and can lose the last few seconds of submitted returns.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "sb",
+                "tone": "warn",
+                "cpu": 55,
+                "sub": "no sync standby left",
+                "label": "Async read replica"
+              }
+            ]
+          }
         },
         {
           "id": "shard-state",
@@ -3747,7 +4812,20 @@
             }
           ],
           "resultTitle": "Months of work for a read problem",
-          "resultBody": "Splitting the schema, rewriting cross-state queries, and migrating data takes a quarter. Filing season ends first, and the primary stays at 92% CPU for the rest of it."
+          "resultBody": "Splitting the schema, rewriting cross-state queries, and migrating data takes a quarter. Filing season ends first, and the primary stays at 92% CPU for the rest of it.",
+          "tradeoffs": {
+            "costMonthlyDelta": 3000
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 92,
+                "sub": "migration months away"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3858,7 +4936,8 @@
           "tradeoffs": {
             "complexityScore": 2,
             "consistencyGuarantee": "strong",
-            "tradeoffSummary": "Strong reads only where money is at stake."
+            "tradeoffSummary": "Strong reads only where money is at stake.",
+            "costMonthlyDelta": 0
           },
           "graphAfter": {
             "nodes": [
@@ -3966,7 +5045,20 @@
             }
           ],
           "resultTitle": "Primary drowns in browse traffic",
-          "resultBody": "Stock is always fresh, but 50,000 reads/s land on a primary sized for writes plus a small margin. CPU hits 99%, stock updates queue behind page views, and p95 climbs to 2.4 s mid-sale."
+          "resultBody": "Stock is always fresh, but 50,000 reads/s land on a primary sized for writes plus a small margin. CPU hits 99%, stock updates queue behind page views, and p95 climbs to 2.4 s mid-sale.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 99,
+                "sub": "50k browse reads/s"
+              }
+            ]
+          }
         },
         {
           "id": "sync-rep",
@@ -3998,7 +5090,26 @@
             }
           ],
           "resultTitle": "Commits slower, reads still stale",
-          "resultBody": "With synchronous_commit on, commits wait for replicas to flush WAL, not to apply it, so a replica can still return a stock count from before the last sale. Oversells only fall to 4%, and every write gains about 3 ms."
+          "resultBody": "With synchronous_commit on, commits wait for replicas to flush WAL, not to apply it, so a replica can still return a stock count from before the last sale. Oversells only fall to 4%, and every write gains about 3 ms.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "r",
+                "tone": "warn",
+                "cpu": 70,
+                "sub": "flushed, not applied: still stale"
+              },
+              {
+                "id": "db",
+                "tone": "warn",
+                "cpu": 55,
+                "sub": "commits wait on replicas"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -4165,7 +5276,10 @@
             }
           ],
           "resultTitle": "Browse reads stay in Sydney",
-          "resultBody": "Browse SELECTs now hit a replica about 1 ms away, so six queries cost ~15 ms instead of 1.1 s and pages load in about 180 ms. Cost: replication lag of a few hundred ms (more under write bursts), cross-region transfer fees, and bookings still pay a 190 ms round-trip to the US."
+          "resultBody": "Browse SELECTs now hit a replica about 1 ms away, so six queries cost ~15 ms instead of 1.1 s and pages load in about 180 ms. Cost: replication lag of a few hundred ms (more under write bursts), cross-region transfer fees, and bookings still pay a 190 ms round-trip to the US.",
+          "tradeoffs": {
+            "costMonthlyDelta": 450
+          }
         },
         {
           "id": "bigger-primary",
@@ -4197,7 +5311,20 @@
             }
           ],
           "resultTitle": "Faster CPU, same Pacific Ocean",
-          "resultBody": "Each query now executes in 1 ms instead of 2 ms, but the 190 ms round-trip dominates; six sequential trips still cost about 1.14 s and bounce rate stays near 37%."
+          "resultBody": "Each query now executes in 1 ms instead of 2 ms, but the 190 ms round-trip dominates; six sequential trips still cost about 1.14 s and bounce rate stays near 37%.",
+          "tradeoffs": {
+            "costMonthlyDelta": 800
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "warn",
+                "cpu": 22,
+                "sub": "2x vCPU, still 190 ms away"
+              }
+            ]
+          }
         },
         {
           "id": "move-app",
@@ -4229,7 +5356,25 @@
             }
           ],
           "resultTitle": "One ocean crossing instead of six",
-          "resultBody": "Queries are now local, but every Sydney request and its TLS handshake crosses the Pacific; pages settle around 450 ms, better than 1.2 s but still over the 300 ms target."
+          "resultBody": "Queries are now local, but every Sydney request and its TLS handshake crosses the Pacific; pages settle around 450 ms, better than 1.2 s but still over the 300 ms target.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "users",
+                "tone": "bad",
+                "sub": "every request crosses the Pacific"
+              },
+              {
+                "id": "app",
+                "tone": "good",
+                "cpu": 30,
+                "label": "App (us-east-1)"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -4280,6 +5425,13 @@
           "value": 180,
           "unit": "min",
           "tone": "bad"
+        },
+        {
+          "key": "cancels",
+          "label": "Canceled BI queries",
+          "value": 0,
+          "unit": "%",
+          "tone": "good"
         }
       ],
       "graphBefore": {
@@ -4361,7 +5513,10 @@
             }
           ],
           "resultTitle": "Replay catches up in minutes",
-          "resultBody": "idle_in_transaction_session_timeout ends the abandoned dashboard session, and max_standby_streaming_delay = 30s lets replay cancel any query blocking it longer than that. Lag falls from 3 hours to under 30 s. Cost: long analyst queries that conflict with replay get canceled and must retry, or move to a separate reporting copy."
+          "resultBody": "idle_in_transaction_session_timeout ends the abandoned dashboard session, and max_standby_streaming_delay = 30s lets replay cancel any query blocking it longer than that. Lag falls from 3 hours to under 30 s. Cost: long analyst queries that conflict with replay get canceled and must retry, or move to a separate reporting copy.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "feedback",
@@ -4393,7 +5548,20 @@
             }
           ],
           "resultTitle": "Lag gone, bloat on the primary",
-          "resultBody": "Replay no longer hits vacuum conflicts, but the 3-hour-old snapshot now stops autovacuum on the primary; dead rows pile up, the ledger table bloats by 40 GB, and primary CPU climbs from 38% to 58%."
+          "resultBody": "Replay no longer hits vacuum conflicts, but the 3-hour-old snapshot now stops autovacuum on the primary; dead rows pile up, the ledger table bloats by 40 GB, and primary CPU climbs from 38% to 58%.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "warn",
+                "cpu": 58,
+                "sub": "vacuum blocked: 40 GB bloat"
+              }
+            ]
+          }
         },
         {
           "id": "second-replica",
@@ -4425,7 +5593,39 @@
             }
           ],
           "resultTitle": "Two replicas, two stalls",
-          "resultBody": "The dashboard's idle transaction simply opens on the new replica too; by 15:00 both replicas are hours behind and statement pages are still about 3 hours stale."
+          "resultBody": "The dashboard's idle transaction simply opens on the new replica too; by 15:00 both replicas are hours behind and statement pages are still about 3 hours stale.",
+          "tradeoffs": {
+            "costMonthlyDelta": 350
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "replica",
+                "tone": "bad",
+                "cpu": 28
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "r2",
+                "kind": "replica",
+                "label": "Replica 2",
+                "tone": "bad",
+                "cpu": 28,
+                "sub": "replay paused too"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "db",
+                "to": "r2"
+              },
+              {
+                "from": "app",
+                "to": "r2"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -4434,7 +5634,140 @@
         "Replay needs a limit on how long any single query may hold it back."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "format": "knob",
+      "knob": {
+        "label": "max_standby_streaming_delay",
+        "unit": "s",
+        "min": 0,
+        "max": 600,
+        "step": 5,
+        "start": 600,
+        "target": [
+          20,
+          50
+        ],
+        "question": "How long may a query hold up replay before the replica cancels it?",
+        "curve": [
+          {
+            "at": 0,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 36
+              },
+              {
+                "key": "p95",
+                "value": 90
+              },
+              {
+                "key": "errors",
+                "value": 0.05
+              },
+              {
+                "key": "cancels",
+                "value": 40
+              }
+            ]
+          },
+          {
+            "at": 20,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 36
+              },
+              {
+                "key": "p95",
+                "value": 90
+              },
+              {
+                "key": "errors",
+                "value": 0.4
+              },
+              {
+                "key": "cancels",
+                "value": 5
+              }
+            ]
+          },
+          {
+            "at": 50,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 36
+              },
+              {
+                "key": "p95",
+                "value": 95
+              },
+              {
+                "key": "errors",
+                "value": 0.9
+              },
+              {
+                "key": "cancels",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "at": 60,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 36
+              },
+              {
+                "key": "p95",
+                "value": 100
+              },
+              {
+                "key": "errors",
+                "value": 1.1
+              },
+              {
+                "key": "cancels",
+                "value": 1.5
+              }
+            ]
+          },
+          {
+            "at": 600,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 37
+              },
+              {
+                "key": "p95",
+                "value": 250
+              },
+              {
+                "key": "errors",
+                "value": 10
+              },
+              {
+                "key": "cancels",
+                "value": 0.2
+              }
+            ]
+          }
+        ],
+        "low": {
+          "title": "Replay cancels too eagerly",
+          "body": "Under 20 s, any analyst query that conflicts with replay for longer is canceled with \"conflict with recovery\"; at 0 s about 40% of BI queries die."
+        },
+        "high": {
+          "title": "Statements drift past a minute",
+          "body": "Above 50 s, replay may wait that long behind one conflicting query, so statement pages can pass the 1-minute limit; at 600 s lag reaches 10 minutes."
+        },
+        "good": {
+          "title": "Replay keeps moving",
+          "body": "A 20-50 s cap lets short analyst queries finish, cancels or ends anything that blocks replay longer, including the idle dashboard session, and keeps statements under a minute stale."
+        }
+      }
     },
     {
       "id": "rr-19",
@@ -4654,7 +5987,24 @@
             }
           ],
           "resultTitle": "Login loops, same write load",
-          "resultBody": "The last_seen updates are still 45,000 writes/s on the primary. New sessions also haven't replicated when the next request arrives, so 8% of logins bounce straight back to the login page."
+          "resultBody": "The last_seen updates are still 45,000 writes/s on the primary. New sessions also haven't replicated when the next request arrives, so 8% of logins bounce straight back to the login page.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "users",
+                "tone": "bad",
+                "sub": "8% of logins bounce"
+              },
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 90
+              }
+            ]
+          }
         },
         {
           "id": "token-index",
@@ -4686,7 +6036,20 @@
             }
           ],
           "resultTitle": "Index adds cost to every hit",
-          "resultBody": "Lookups already use the primary key, so reads gain nothing. Every last_seen update now maintains one more index, and primary CPU rises to 96%."
+          "resultBody": "Lookups already use the primary key, so reads gain nothing. Every last_seen update now maintains one more index, and primary CPU rises to 96%.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 96,
+                "sub": "one more index per update"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -4797,7 +6160,8 @@
           "tradeoffs": {
             "complexityScore": 3,
             "consistencyGuarantee": "eventual",
-            "tradeoffSummary": "Slow, throttled migration; replicas stay fresh."
+            "tradeoffSummary": "Slow, throttled migration; replicas stay fresh.",
+            "costMonthlyDelta": 0
           },
           "graphAfter": {
             "nodes": [
@@ -4873,7 +6237,8 @@
             }
           ],
           "resultTitle": "Schema changed, replicas never fell behind",
-          "resultBody": "gh-ost copies rows into a shadow table in small chunks, tails the binlog for new writes, and pauses whenever replica lag passes 1 s. The copy takes 6 hours, but lag stays under 1 s and the cut-over is an atomic rename. Cost: double the table's disk space during the copy."
+          "resultBody": "gh-ost copies rows into a shadow table in small chunks, tails the binlog for new writes, and pauses whenever replica lag passes 1 s. The copy takes 6 hours, but lag stays under 1 s and the cut-over is an atomic rename. Cost: double the table's disk space during the copy.",
+          "cascadeIncidentId": "rr-casc-02"
         },
         {
           "id": "night-alter",
@@ -4905,7 +6270,20 @@
             }
           ],
           "resultTitle": "Same 40-minute lag, just at night",
-          "resultBody": "The replicas still replay the ALTER as one statement and fall 40 minutes behind. Night-shift shoppers see stale prices and stock, and the next three changes each need a 3 a.m. window."
+          "resultBody": "The replicas still replay the ALTER as one statement and fall 40 minutes behind. Night-shift shoppers see stale prices and stock, and the next three changes each need a 3 a.m. window.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "r",
+                "tone": "bad",
+                "cpu": 80,
+                "sub": "replaying ALTER at 3 a.m."
+              }
+            ]
+          }
         },
         {
           "id": "reads-primary",
@@ -4937,7 +6315,20 @@
             }
           ],
           "resultTitle": "Primary buckles under the reads",
-          "resultBody": "Pages are fresh, but 30,000 reads/s join the ALTER's I/O on the primary. CPU hits 99%, checkout writes wait behind page reads, and p95 climbs past 2 s for the whole 80 minutes."
+          "resultBody": "Pages are fresh, but 30,000 reads/s join the ALTER's I/O on the primary. CPU hits 99%, checkout writes wait behind page reads, and p95 climbs past 2 s for the whole 80 minutes.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 99,
+                "sub": "ALTER + 30k reads/s"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -4947,6 +6338,228 @@
       ],
       "nextId": null,
       "reviewed": true
+    },
+    {
+      "id": "rr-casc-02",
+      "incidentCode": "INC-003-20B",
+      "level": 3,
+      "patternId": "read-replicas",
+      "canonical": false,
+      "isCascade": true,
+      "parentIncidentCode": "INC-003-20",
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 80,
+      "title": "Cut-over froze order writes for 60 s",
+      "brief": "gh-ost finished copying, but a 40-minute report query held a metadata lock on orders. The cut-over's RENAME waited behind it with a 60 s lock timeout, and every order write queued behind the RENAME.",
+      "constraint": "Two more column changes ship this month; reports can be retried.",
+      "question": "How should the next cut-over handle a lock it can't get?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 30000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 55,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 60000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Failed orders",
+          "value": 18,
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Store API",
+            "tone": "bad",
+            "cpu": 40,
+            "sub": "order writes queued"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Primary",
+            "tone": "warn",
+            "cpu": 55,
+            "sub": "RENAME waiting on lock"
+          },
+          {
+            "id": "report",
+            "kind": "server",
+            "label": "Report query",
+            "tone": "warn",
+            "sub": "40-min SELECT holds lock"
+          },
+          {
+            "id": "r",
+            "kind": "replica",
+            "label": "Replicas x3",
+            "cpu": 40
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "db"
+          },
+          {
+            "from": "report",
+            "to": "db"
+          },
+          {
+            "from": "db",
+            "to": "r"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "cutover-timeout",
+          "label": "Cap the cut-over lock wait at 3 s and let gh-ost retry",
+          "correct": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 50,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 120,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Failed orders",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Blocked cut-overs back off",
+          "resultBody": "When the RENAME can't get its lock within 3 s it gives up, releases the queue and retries shortly after, so writes stall at most 3 s. Give long reports a max execution time too."
+        },
+        {
+          "id": "app-timeout",
+          "label": "Raise the app's write timeout so orders wait out the rename",
+          "correct": false,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 50,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 60000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Failed orders",
+              "value": 9,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Checkout hangs for a minute",
+          "resultBody": "Orders no longer error, but shoppers stare at a spinner for up to 60 s and the app's connection pool fills while they wait.",
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "tone": "bad",
+                "cpu": 40,
+                "sub": "pool full of waiting writes"
+              }
+            ]
+          }
+        },
+        {
+          "id": "kill-all",
+          "label": "Kill every session touching orders, then force the rename",
+          "correct": false,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 45,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 400,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Failed orders",
+              "value": 25,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Every in-flight order killed",
+          "resultBody": "The RENAME goes through, but so does the kill: about 300 in-flight checkout transactions roll back at once, and those shoppers see a failed payment.",
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "tone": "bad",
+                "cpu": 40,
+                "sub": "300 checkouts rolled back"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "The RENAME itself is instant; what was it waiting for?",
+        "While the RENAME waits for its lock, every later write queues behind it.",
+        "Waiting briefly and retrying beats waiting a long time."
+      ],
+      "nextId": null
     },
     {
       "id": "rr-new-01",
@@ -5148,7 +6761,10 @@
             }
           ],
           "resultTitle": "Writes back on replica A",
-          "resultBody": "Replica A is promoted in about 20 s, replica B is repointed to follow it, and the old primary is fenced (power cut via STONITH) so it cannot rejoin as a writer. Cost: up to 80 ms of unreplicated commits, about 190 orders, must be reconciled from the payment log, and read capacity drops by one node until the host is rebuilt."
+          "resultBody": "Replica A is promoted in about 20 s, replica B is repointed to follow it, and the old primary is fenced (power cut via STONITH) so it cannot rejoin as a writer. Cost: up to 80 ms of unreplicated commits, about 190 orders, must be reconciled from the payment log, and read capacity drops by one node until the host is rebuilt.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "first-healthy",
@@ -5187,7 +6803,25 @@
             }
           ],
           "resultTitle": "Nine seconds of orders lost",
-          "resultBody": "Replica B answered first but was 9 s behind; promoting it discarded about 21,600 committed orders, and replica A now holds rows the new primary never saw, so it cannot follow it without a rebuild."
+          "resultBody": "Replica B answered first but was 9 s behind; promoting it discarded about 21,600 committed orders, and replica A now holds rows the new primary never saw, so it cannot follow it without a rebuild.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "rb",
+                "tone": "bad",
+                "cpu": 40,
+                "sub": "promoted 9 s behind"
+              },
+              {
+                "id": "ra",
+                "tone": "bad",
+                "sub": "diverged, needs rebuild"
+              }
+            ]
+          }
         },
         {
           "id": "wait-reboot",
@@ -5226,7 +6860,19 @@
             }
           ],
           "resultTitle": "Down for 11 more minutes",
-          "resultBody": "The host takes 11 minutes to boot and run crash recovery; about 1.6 million write attempts fail in the meantime, and the disk that failed may fail again tonight."
+          "resultBody": "The host takes 11 minutes to boot and run crash recovery; about 1.6 million write attempts fail in the meantime, and the disk that failed may fail again tonight.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "sub": "rebooting: 11 min"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -5426,7 +7072,39 @@
             }
           ],
           "resultTitle": "Three replicas out of credits",
-          "resultBody": "Reads spread three ways, but every replica replays every write, and replay alone needs more than the 20% baseline. The new replicas burn through their launch credits by the next day and all three drift behind together."
+          "resultBody": "Reads spread three ways, but every replica replays every write, and replay alone needs more than the 20% baseline. The new replicas burn through their launch credits by the next day and all three drift behind together.",
+          "tradeoffs": {
+            "costMonthlyDelta": 120
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "replica",
+                "tone": "bad",
+                "cpu": 20
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "r2",
+                "kind": "replica",
+                "label": "Burstable replicas x2",
+                "tone": "bad",
+                "cpu": 20,
+                "sub": "credits gone by tomorrow"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "primary",
+                "to": "r2"
+              },
+              {
+                "from": "app",
+                "to": "r2"
+              }
+            ]
+          }
         },
         {
           "id": "logical-subset",
@@ -5458,7 +7136,20 @@
             }
           ],
           "resultTitle": "Weeks of work on the same starved box",
-          "resultBody": "Setting up publications and an initial sync of the hot tables takes weeks. Logical apply still runs on a t3.medium with no credits, so even the smaller stream falls behind whenever reports run."
+          "resultBody": "Setting up publications and an initial sync of the hot tables takes weeks. Logical apply still runs on a t3.medium with no credits, so even the smaller stream falls behind whenever reports run.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "replica",
+                "tone": "bad",
+                "cpu": 20,
+                "sub": "logical apply, 0 credits"
+              }
+            ]
+          }
         }
       ],
       "hints": [

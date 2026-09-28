@@ -150,7 +150,10 @@
             }
           ],
           "resultTitle": "Incident solved",
-          "resultBody": "An idempotency key so the second POST returns the original order instead of a new charge."
+          "resultBody": "An idempotency key so the second POST returns the original order instead of a new charge.",
+          "tradeoffs": {
+            "costMonthlyDelta": 40
+          }
         },
         {
           "id": "disable-button",
@@ -181,7 +184,23 @@
             }
           ],
           "resultTitle": "Retries slip past the UI",
-          "resultBody": "Disabling the button stops double-clicks in the browser, but mobile clients and proxies still retry a timed-out POST, so 42 shoppers were charged twice anyway."
+          "resultBody": "Disabling the button stops double-clicks in the browser, but mobile clients and proxies still retry a timed-out POST, so 42 shoppers were charged twice anyway.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "user",
+                "sub": "mobile retries POST"
+              },
+              {
+                "id": "pay",
+                "tone": "bad",
+                "sub": "42 charged twice"
+              }
+            ]
+          }
         },
         {
           "id": "accept-both",
@@ -212,7 +231,24 @@
             }
           ],
           "resultTitle": "Two orders, two charges",
-          "resultBody": "Accepting both POSTs as separate orders turns every double-click into a second charge on the card and a refund ticket for support."
+          "resultBody": "Accepting both POSTs as separate orders turns every double-click into a second charge on the card and a refund ticket for support.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "tone": "bad",
+                "sub": "2 orders per click"
+              },
+              {
+                "id": "pay",
+                "tone": "bad",
+                "sub": "refund tickets piling"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -405,7 +441,33 @@
             }
           ],
           "resultTitle": "Crashed credits never retry",
-          "resultBody": "Fast duplicates are blocked, but when a handler dies after SETNX and before the ledger commit, every redelivery sees the key and skips, so 0.2% of top-ups are never credited. Redeliveries after 10 minutes slip past the TTL and still double-credit."
+          "resultBody": "Fast duplicates are blocked, but when a handler dies after SETNX and before the ledger commit, every redelivery sees the key and skips, so 0.2% of top-ups are never credited. Redeliveries after 10 minutes slip past the TTL and still double-credit.",
+          "tradeoffs": {
+            "costMonthlyDelta": 45
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "sub": "0.2% never credited"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "setnx",
+                "kind": "cache",
+                "label": "Redis SETNX",
+                "tone": "warn",
+                "sub": "10 min TTL"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "api",
+                "to": "setnx"
+              }
+            ]
+          }
         },
         {
           "id": "ack-then-process",
@@ -431,13 +493,50 @@
             {
               "key": "errors",
               "label": "Double credits",
-              "value": 60,
+              "value": 12,
               "unit": "/hour",
-              "tone": "bad"
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Fast acks, same duplicates",
-          "resultBody": "Timeouts drop, but the provider still redelivers after network blips and its own failovers, and the background job has no dedupe, so about 60 double credits an hour remain. Worse, jobs lost in a worker crash were already acknowledged and will never be resent."
+          "resultTitle": "Acks in 90 ms, redeliveries stop",
+          "resultBody": "The handler now returns 200 in 90 ms, so provider timeouts end and double credits fall to a trickle of 12 an hour. One thing to watch: the credit jobs wait in worker memory, 4,000 deep at peak.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "consequenceIncidentId": "idemp-bill-01",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "tone": "good",
+                "sub": "acks in 90 ms"
+              },
+              {
+                "id": "db",
+                "tone": "warn",
+                "sub": "credits from job queue"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "jobq",
+                "kind": "queue",
+                "label": "In-memory job queue",
+                "tone": "warn",
+                "sub": "4k deep at peak"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "api",
+                "to": "jobq"
+              },
+              {
+                "from": "jobq",
+                "to": "db"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -628,7 +727,23 @@
             }
           ],
           "resultTitle": "Taps now vanish instead",
-          "resultBody": "Overshoot stops, but 7% of taps whose request was lost now do nothing, users tap again by hand, and those manual repeats still stack deltas, so complaints only fall by a third."
+          "resultBody": "Overshoot stops, but 7% of taps whose request was lost now do nothing, users tap again by hand, and those manual repeats still stack deltas, so complaints only fall by a third.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "tone": "bad",
+                "sub": "lost taps, users re-tap"
+              },
+              {
+                "id": "dev",
+                "sub": "manual repeats stack"
+              }
+            ]
+          }
         },
         {
           "id": "device-debounce",
@@ -660,7 +775,23 @@
             }
           ],
           "resultTitle": "Retries arrive after the window",
-          "resultBody": "App retries fire 3-8 s after the original, well outside the 2 s window, so most still apply. Meanwhile a user deliberately tapping +1 twice gets only one degree."
+          "resultBody": "App retries fire 3-8 s after the original, well outside the 2 s window, so most still apply. Meanwhile a user deliberately tapping +1 twice gets only one degree.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "retries at 3-8 s"
+              },
+              {
+                "id": "dev",
+                "tone": "bad",
+                "sub": "2 s window missed"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -869,7 +1000,23 @@
             }
           ],
           "resultTitle": "Charged $42 and then $97",
-          "resultBody": "Treating the newer body as authoritative runs a fresh $97 charge under the old key, so shoppers pay $139 in total and the replay record of the first order is gone."
+          "resultBody": "Treating the newer body as authoritative runs a fresh $97 charge under the old key, so shoppers pay $139 in total and the replay record of the first order is gone.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "store",
+                "sub": "first record overwritten"
+              },
+              {
+                "id": "pay",
+                "tone": "bad",
+                "sub": "$42 + $97 charged"
+              }
+            ]
+          }
         },
         {
           "id": "derive-key-from-cart",
@@ -901,7 +1048,23 @@
             }
           ],
           "resultTitle": "Every edit looks like a retry",
-          "resultBody": "A key built from user and cart IDs is identical before and after the edit, so the $97 checkout still matches the $42 record and replays the old order."
+          "resultBody": "A key built from user and cart IDs is identical before and after the edit, so the $97 checkout still matches the $42 record and replays the old order.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "store",
+                "sub": "edit matches old key"
+              },
+              {
+                "id": "pay",
+                "tone": "bad",
+                "sub": "replays $42 order"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1080,7 +1243,8 @@
             ]
           },
           "resultTitle": "One worker owns the key",
-          "resultBody": "INSERT ... ON CONFLICT DO NOTHING claims the key as in_progress before the card call; the retry loses the race and gets 409 with Retry-After until the first attempt stores its result, then gets the replay. Cost: clients must handle 409, and a crashed worker needs a lease timeout so its row doesn't block forever."
+          "resultBody": "INSERT ... ON CONFLICT DO NOTHING claims the key as in_progress before the card call; the retry loses the race and gets 409 with Retry-After until the first attempt stores its result, then gets the replay. Cost: clients must handle 409, and a crashed worker needs a lease timeout so its row doesn't block forever.",
+          "cascadeIncidentId": "idemp-casc-01"
         },
         {
           "id": "longer-client-timeout",
@@ -1112,7 +1276,23 @@
             }
           ],
           "resultTitle": "Fewer retries, same race",
-          "resultBody": "Most timeout retries stop, but mobile connections that drop mid-request still reconnect and retry, so double charges fall from 0.6% to about 0.1% instead of zero."
+          "resultBody": "Most timeout retries stop, but mobile connections that drop mid-request still reconnect and retry, so double charges fall from 0.6% to about 0.1% instead of zero.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "users",
+                "tone": "warn",
+                "sub": "dropped calls still retry"
+              },
+              {
+                "id": "card",
+                "sub": "0.1% charged twice"
+              }
+            ]
+          }
         },
         {
           "id": "check-then-charge",
@@ -1144,7 +1324,23 @@
             }
           ],
           "resultTitle": "Both workers read 'no record'",
-          "resultBody": "Check-then-act leaves a 4-9 s gap: both requests read an empty store before either writes a result, so both still call the card network."
+          "resultBody": "Check-then-act leaves a 4-9 s gap: both requests read an empty store before either writes a result, so both still call the card network.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "store",
+                "sub": "both read empty"
+              },
+              {
+                "id": "card",
+                "tone": "bad",
+                "sub": "two auths per donor"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1346,7 +1542,23 @@
             }
           ],
           "resultTitle": "Receipts now go missing",
-          "resultBody": "Committing first turns delivery into at-most-once: every crash between commit and send silently drops a receipt, about 90 customers a minute get none, and nothing retries them."
+          "resultBody": "Committing first turns delivery into at-most-once: every crash between commit and send silently drops a receipt, about 90 customers a minute get none, and nothing retries them.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "w",
+                "sub": "commits before send"
+              },
+              {
+                "id": "mail",
+                "tone": "bad",
+                "sub": "90/min never sent"
+              }
+            ]
+          }
         },
         {
           "id": "kafka-eos",
@@ -1378,7 +1590,23 @@
             }
           ],
           "resultTitle": "EOS stops at the broker",
-          "resultBody": "Kafka transactions make consume-and-produce atomic only for writes back into Kafka; the email send is an external side effect, so a crash after sending still redelivers the event and sends again."
+          "resultBody": "Kafka transactions make consume-and-produce atomic only for writes back into Kafka; the email send is an external side effect, so a crash after sending still redelivers the event and sends again.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "w",
+                "cpu": 30,
+                "sub": "EOS on, email outside"
+              },
+              {
+                "id": "mail",
+                "sub": "still sends twice"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1571,7 +1799,23 @@
             }
           ],
           "resultTitle": "Real reports merged away",
-          "resultBody": "Inspectors file many legitimately identical 'No defects found' reports for the same site on different days; 1.5% of genuine reports are now silently dropped as duplicates, and any edit between resends defeats the hash."
+          "resultBody": "Inspectors file many legitimately identical 'No defects found' reports for the same site on different days; 1.5% of genuine reports are now silently dropped as duplicates, and any edit between resends defeats the hash.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "cpu": 36,
+                "sub": "hashing report text"
+              },
+              {
+                "id": "db",
+                "sub": "1.5% real reports dropped"
+              }
+            ]
+          }
         },
         {
           "id": "serial-sync",
@@ -1603,7 +1847,23 @@
             }
           ],
           "resultTitle": "Slower sync, same duplicates",
-          "resultBody": "A backlog of 400 reports now takes 12 minutes to drain, and a lost 201 still leaves the app not knowing whether the insert happened, so it still resends and duplicates barely move."
+          "resultBody": "A backlog of 400 reports now takes 12 minutes to drain, and a lost 201 still leaves the app not knowing whether the insert happened, so it still resends and duplicates barely move.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "tone": "bad",
+                "sub": "400 queued, 12 min drain"
+              },
+              {
+                "id": "db",
+                "sub": "lost 201s still duplicate"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1625,7 +1885,7 @@
       "title": "Payout retried after a DB failover pays sellers twice",
       "brief": "CraftMart's payout job calls the bank transfer API, then records the payout in Postgres. A 20 s primary failover made 1,400 commits fail after the transfers went out; the retry sent $2.1M twice.",
       "constraint": "A bank transfer cannot be rolled back once accepted.",
-      "question": "How does the retry avoid sending money the bank already sent?",
+      "question": "Now how does the retry avoid paying what the bank already sent?",
       "metricsBefore": [
         {
           "key": "rps",
@@ -1795,7 +2055,22 @@
             }
           ],
           "resultTitle": "Rollback can't reach the bank",
-          "resultBody": "A database transaction only rolls back rows. When the commit fails after the HTTP call succeeded, the transfer is already gone, and the retry sends it again, while holding row locks for the full 1.4 s bank call."
+          "resultBody": "A database transaction only rolls back rows. When the commit fails after the HTTP call succeeded, the transfer is already gone, and the retry sends it again, while holding row locks for the full 1.4 s bank call.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "sub": "row locks held 1.4 s"
+              },
+              {
+                "id": "bank",
+                "sub": "paid again on retry"
+              }
+            ]
+          }
         },
         {
           "id": "query-bank",
@@ -1827,7 +2102,23 @@
             }
           ],
           "resultTitle": "The transfer list lags a minute",
-          "resultBody": "The bank's listing endpoint is eventually consistent and trails by 30-90 s, so retries shortly after the failover still find nothing and pay again; matching on amount and account also confuses sellers who get two equal payouts."
+          "resultBody": "The bank's listing endpoint is eventually consistent and trails by 30-90 s, so retries shortly after the failover still find nothing and pay again; matching on amount and account also confuses sellers who get two equal payouts.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "bank",
+                "sub": "list lags 30-90 s"
+              },
+              {
+                "id": "job",
+                "cpu": 42,
+                "sub": "380 paid twice"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1835,7 +2126,112 @@
         "The bank can only recognise a repeat if you tell it which payout this is.",
         "Pass a stable identifier for the payout downstream on every attempt."
       ],
-      "nextId": null
+      "nextId": null,
+      "format": "two-step",
+      "mitigation": {
+        "question": "The retry job is still paying sellers twice. What do you do first?",
+        "choices": [
+          {
+            "id": "pause-payouts",
+            "label": "Pause the payout job and hold its retry queue",
+            "correct": true,
+            "resultTitle": "Money stops leaving twice",
+            "resultBody": "No transfers go out while the 1,400 failed commits sit in the held retry queue. Sellers wait an hour for payouts, which is cheap next to sending another $2.1M twice.",
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 6,
+                "unit": "%",
+                "tone": "good"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 0,
+                "unit": "ms",
+                "tone": "good"
+              },
+              {
+                "key": "errors",
+                "label": "Duplicate transfers",
+                "value": 0,
+                "unit": "transfers",
+                "tone": "good"
+              }
+            ],
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            }
+          },
+          {
+            "id": "scale-job",
+            "label": "Scale the payout job out so retries drain faster",
+            "correct": false,
+            "resultTitle": "Double payouts, only faster",
+            "resultBody": "Ten workers drain the retry queue in four minutes instead of forty, so every failed commit is paid a second time sooner and the double-paid total climbs past $2M.",
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 71,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 1400,
+                "unit": "ms",
+                "tone": "warn"
+              },
+              {
+                "key": "errors",
+                "label": "Duplicate transfers",
+                "value": 1400,
+                "unit": "transfers",
+                "tone": "bad"
+              }
+            ],
+            "tradeoffs": {
+              "costMonthlyDelta": 120
+            }
+          },
+          {
+            "id": "fail-back",
+            "label": "Fail back to the old primary to replay the lost commits",
+            "correct": false,
+            "resultTitle": "A second failover mid-incident",
+            "resultBody": "Failing back costs another 20 s of write downtime, during which more commits fail after their transfers went out, and the retry job keeps paying the whole time.",
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 40,
+                "unit": "%",
+                "tone": "warn"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 2100,
+                "unit": "ms",
+                "tone": "bad"
+              },
+              {
+                "key": "errors",
+                "label": "Duplicate transfers",
+                "value": 1650,
+                "unit": "transfers",
+                "tone": "bad"
+              }
+            ],
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            }
+          }
+        ]
+      }
     },
     {
       "id": "idemp-09",
@@ -1899,14 +2295,15 @@
             "id": "keys",
             "kind": "cache",
             "label": "Redis keys",
-            "tone": "bad",
+            "tone": "warn",
             "sub": "60 s TTL"
           },
           {
             "id": "db",
             "kind": "db",
             "label": "Rides DB",
-            "tone": "warn"
+            "tone": "bad",
+            "sub": "380 duplicate rides"
           }
         ],
         "edges": [
@@ -2027,7 +2424,23 @@
             }
           ],
           "resultTitle": "Tunnels don't retry on schedule",
-          "resultBody": "A phone with no signal can't retry at all, so a faster backoff only adds load on healthy connections, while replays after a 3-minute reconnect still miss the 60 s key."
+          "resultBody": "A phone with no signal can't retry at all, so a faster backoff only adds load on healthy connections, while replays after a 3-minute reconnect still miss the 60 s key.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "cpu": 48,
+                "sub": "retry load +20%"
+              },
+              {
+                "id": "keys",
+                "sub": "still expires at 60 s"
+              }
+            ]
+          }
         },
         {
           "id": "local-lru",
@@ -2059,7 +2472,24 @@
             }
           ],
           "resultTitle": "The retry hits another pod",
-          "resultBody": "Local caches aren't shared: behind round-robin across 6 pods, 5 of 6 retries reach a pod that never saw the key, and duplicate rides nearly double to 30 an hour."
+          "resultBody": "Local caches aren't shared: behind round-robin across 6 pods, 5 of 6 retries reach a pod that never saw the key, and duplicate rides nearly double to 30 an hour.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "label": "Booking API x6 (local LRU)",
+                "sub": "retry hits another pod"
+              },
+              {
+                "id": "db",
+                "tone": "bad",
+                "sub": "30 dup rides/h"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2067,7 +2497,39 @@
         "A key that expires before the last retry protects nothing.",
         "Where you store keys decides how long you can afford to keep them."
       ],
-      "nextId": null
+      "nextId": null,
+      "format": "culprit",
+      "culprit": {
+        "nodeId": "keys",
+        "explanation": "Redis dropped the key 60 s after the first booking, but the retry arrived 212 s later, so the API saw a miss and dispatched again. The key store forgets long before the app stops retrying.",
+        "wrongNodeFeedback": {
+          "db": "The rides table is where the duplicates land, but it inserted exactly what the API told it to.",
+          "api": "The API did look the key up before dispatching; the lookup came back empty. Why?",
+          "users": "Retrying with the same key after a reconnect is exactly what a good client should do."
+        }
+      },
+      "logs": {
+        "users": [
+          "reconnected after 212 s offline",
+          "retry POST /rides Idempotency-Key=7f3a91 (same key)",
+          "201 Created ride_id=88213"
+        ],
+        "api": [
+          "POST /rides key=7f3a91 lookup: MISS",
+          "no stored response, dispatching new ride",
+          "p95 180 ms, cpu 40%"
+        ],
+        "keys": [
+          "t=0 s    SET idem:7f3a91 <resp> EX 60 -> OK",
+          "t=212 s  GET idem:7f3a91 -> (nil)",
+          "expired_keys +1.9M/h, evicted_keys 0"
+        ],
+        "db": [
+          "INSERT rides rider=4410 pickup=Canal St ok",
+          "INSERT rides rider=4410 pickup=Canal St ok (212 s later)",
+          "dispatch audit: 380 duplicate rides yesterday"
+        ]
+      }
     },
     {
       "id": "idemp-10",
@@ -2250,7 +2712,23 @@
             }
           ],
           "resultTitle": "Stale IDs report fake success",
-          "resultBody": "Tickets drop, but when a cached screen sends a stale subscription ID after a plan change, the 404 now reads as 'Cancelled', and those users keep being billed; 120 chargebacks a day replace the tickets."
+          "resultBody": "Tickets drop, but when a cached screen sends a stale subscription ID after a plan change, the 404 now reads as 'Cancelled', and those users keep being billed; 120 chargebacks a day replace the tickets.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "stale IDs show 'Cancelled'"
+              },
+              {
+                "id": "api",
+                "tone": "bad",
+                "sub": "120 chargebacks/day"
+              }
+            ]
+          }
         },
         {
           "id": "retry-until-204",
@@ -2282,7 +2760,25 @@
             }
           ],
           "resultTitle": "Retries loop on a missing row",
-          "resultBody": "The row is already gone, so every retry gets 404 forever; affected phones hammer the API until backoff caps out, doubling CPU, and the app still eventually shows 'Cancellation failed'."
+          "resultBody": "The row is already gone, so every retry gets 404 forever; affected phones hammer the API until backoff caps out, doubling CPU, and the app still eventually shows 'Cancellation failed'.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "tone": "bad",
+                "sub": "retry loop on 404"
+              },
+              {
+                "id": "api",
+                "tone": "bad",
+                "cpu": 58,
+                "sub": "CPU doubled"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2494,7 +2990,23 @@
             }
           ],
           "resultTitle": "Blocks real repeats, misses retries",
-          "resultBody": "Deliberate second $20 transfers now get rejected as duplicates, while a retried batch that picked up an extra queued mutation has a different hash and runs sendMoney again anyway."
+          "resultBody": "Deliberate second $20 transfers now get rejected as duplicates, while a retried batch that picked up an extra queued mutation has a different hash and runs sendMoney again anyway.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gw",
+                "cpu": 49,
+                "sub": "hashing whole batches"
+              },
+              {
+                "id": "pay",
+                "sub": "real repeats rejected"
+              }
+            ]
+          }
         },
         {
           "id": "no-retry-mutations",
@@ -2526,7 +3038,22 @@
             }
           ],
           "resultTitle": "Users retry by hand instead",
-          "resultBody": "Automatic duplicates stop, but users who see a spinner fail tap Send again, and without a key that manual resend still creates a second transfer, so duplicates only fall by 40%."
+          "resultBody": "Automatic duplicates stop, but users who see a spinner fail tap Send again, and without a key that manual resend still creates a second transfer, so duplicates only fall by 40%.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "users re-tap Send"
+              },
+              {
+                "id": "pay",
+                "sub": "120 dup transfers/day"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2719,7 +3246,22 @@
             }
           ],
           "resultTitle": "Fixes the wrong side of Kafka",
-          "resultBody": "The idempotent producer only stops duplicate appends caused by producer retries into the log. The duplicates here come from the consumer re-reading already-applied messages, so overbilling stays at 0.8%."
+          "resultBody": "The idempotent producer only stops duplicate appends caused by producer retries into the log. The duplicates here come from the consumer re-reading already-applied messages, so overbilling stays at 0.8%.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "kafka",
+                "sub": "producer dedupe only"
+              },
+              {
+                "id": "db",
+                "sub": "still +0.8% spend"
+              }
+            ]
+          }
         },
         {
           "id": "sync-commit",
@@ -2751,7 +3293,24 @@
             }
           ],
           "resultTitle": "Smaller window, throughput halves",
-          "resultBody": "The replay window shrinks to one message, but a crash between the Postgres commit and the offset commit still double-applies, and a broker round-trip per message drops throughput so far that apply lag grows to 9 s."
+          "resultBody": "The replay window shrinks to one message, but a crash between the Postgres commit and the offset commit still double-applies, and a broker round-trip per message drops throughput so far that apply lag grows to 9 s.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cons",
+                "tone": "bad",
+                "cpu": 91,
+                "sub": "commit per message"
+              },
+              {
+                "id": "db",
+                "sub": "apply lag 9 s"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2962,7 +3521,22 @@
             }
           ],
           "resultTitle": "Actors can't agree on a key",
-          "resultBody": "The fraud rule and the agent console generate keys independently and never see each other's, so they still send different keys and both refunds go through; only retries of a single actor are caught."
+          "resultBody": "The fraud rule and the agent console generate keys independently and never see each other's, so they still send different keys and both refunds go through; only retries of a single actor are caught.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "sub": "actors still mint own keys"
+              },
+              {
+                "id": "psp",
+                "sub": "refunded twice"
+              }
+            ]
+          }
         },
         {
           "id": "nightly-reverse",
@@ -2994,7 +3568,27 @@
             }
           ],
           "resultTitle": "Clawbacks mostly bounce",
-          "resultBody": "By night the money is already on the customer's card, and 70% of reversal attempts fail or turn into disputes, so most double refunds stay lost and support now handles angry clawback emails."
+          "resultBody": "By night the money is already on the customer's card, and 70% of reversal attempts fail or turn into disputes, so most double refunds stay lost and support now handles angry clawback emails.",
+          "tradeoffs": {
+            "costMonthlyDelta": 30
+          },
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "recon",
+                "kind": "worker",
+                "label": "Nightly clawback job",
+                "tone": "bad",
+                "sub": "70% reversals fail"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "recon",
+                "to": "psp"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3185,7 +3779,23 @@
             }
           ],
           "resultTitle": "Anyone can take over an account",
-          "resultBody": "Abandonment disappears, but anyone who signs up with an existing email now overwrites the password or receives a session for someone else's account: a critical account-takeover bug."
+          "resultBody": "Abandonment disappears, but anyone who signs up with an existing email now overwrites the password or receives a session for someone else's account: a critical account-takeover bug.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "tone": "bad",
+                "sub": "200 to any caller"
+              },
+              {
+                "id": "db",
+                "sub": "passwords overwritten"
+              }
+            ]
+          }
         },
         {
           "id": "drop-unique",
@@ -3217,7 +3827,22 @@
             }
           ],
           "resultTitle": "Two half-accounts per user",
-          "resultBody": "Retries now create a second account, so users log in the next day to an empty profile, password resets go to two accounts, and the nightly merge must guess which one holds the real data."
+          "resultBody": "Retries now create a second account, so users log in the next day to an empty profile, password resets go to two accounts, and the nightly merge must guess which one holds the real data.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "sub": "2 accounts per user"
+              },
+              {
+                "id": "app",
+                "sub": "empty profile next day"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3408,7 +4033,24 @@
             }
           ],
           "resultTitle": "Retries are safe, co-edits vanish",
-          "resultBody": "A PUT is idempotent, so duplicates stop, but with four editors each PUT overwrites paragraphs the others saved moments earlier: 1.2% of saves now silently erase someone's work, and 400 KB bodies raise latency."
+          "resultBody": "A PUT is idempotent, so duplicates stop, but with four editors each PUT overwrites paragraphs the others saved moments earlier: 1.2% of saves now silently erase someone's work, and 400 KB bodies raise latency.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "cpu": 55,
+                "tone": "warn",
+                "sub": "400 KB PUTs"
+              },
+              {
+                "id": "db",
+                "sub": "co-edits overwritten"
+              }
+            ]
+          }
         },
         {
           "id": "drop-identical",
@@ -3440,7 +4082,22 @@
             }
           ],
           "resultTitle": "Real repeats are eaten",
-          "resultBody": "Deliberate repeated blocks such as dividers and 'TBD' placeholders disappear, and a retry that lands after a co-editor's append is not 'last', so it still duplicates."
+          "resultBody": "Deliberate repeated blocks such as dividers and 'TBD' placeholders disappear, and a retry that lands after a co-editor's append is not 'last', so it still duplicates.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "sub": "drops real repeats"
+              },
+              {
+                "id": "db",
+                "sub": "co-edit retries duplicate"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3649,7 +4306,8 @@
             ]
           },
           "resultTitle": "Event commits with the order",
-          "resultBody": "The order row and an outbox row commit atomically; a relay (Debezium CDC or a poller) publishes outbox rows to Kafka and retries until acknowledged. Delivery is at-least-once, which the warehouse's order-ID dedupe absorbs. Cost: an extra write per order, a relay to operate, and ~100-500 ms of publish delay."
+          "resultBody": "The order row and an outbox row commit atomically; a relay (Debezium CDC or a poller) publishes outbox rows to Kafka and retries until acknowledged. Delivery is at-least-once, which the warehouse's order-ID dedupe absorbs. Cost: an extra write per order, a relay to operate, and ~100-500 ms of publish delay.",
+          "cascadeIncidentId": "idemp-casc-02"
         },
         {
           "id": "publish-first",
@@ -3681,7 +4339,23 @@
             }
           ],
           "resultTitle": "Phantom orders ship",
-          "resultBody": "The failure just flips: when the commit fails after the publish, the warehouse picks and ships orders that don't exist in Postgres, about 150 phantom shipments a day."
+          "resultBody": "The failure just flips: when the commit fails after the publish, the warehouse picks and ships orders that don't exist in Postgres, about 150 phantom shipments a day.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "sub": "commit fails after publish"
+              },
+              {
+                "id": "wh",
+                "tone": "bad",
+                "sub": "150 phantom shipments"
+              }
+            ]
+          }
         },
         {
           "id": "in-process-retry",
@@ -3713,7 +4387,22 @@
             }
           ],
           "resultTitle": "Crashes still lose events",
-          "resultBody": "Retries cover brief broker blips, but a pod killed right after the commit loses its in-memory retry, so deploys and OOM kills still drop ~60 orders a day."
+          "resultBody": "Retries cover brief broker blips, but a pod killed right after the commit loses its in-memory retry, so deploys and OOM kills still drop ~60 orders a day.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "svc",
+                "sub": "retries die with the pod"
+              },
+              {
+                "id": "k",
+                "sub": "~60 events lost/day"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3923,7 +4612,22 @@
             }
           ],
           "resultTitle": "Cluster mode needs a client change",
-          "resultBody": "The checkout service uses a non-cluster Redis client, so moving to Cluster needs a library swap and hash-tag routing that the freeze blocks. The migration slips past the presale while evictions keep double-charging 90 fans an hour."
+          "resultBody": "The checkout service uses a non-cluster Redis client, so moving to Cluster needs a library swap and hash-tag routing that the freeze blocks. The migration slips past the presale while evictions keep double-charging 90 fans an hour.",
+          "tradeoffs": {
+            "costMonthlyDelta": 420
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "sub": "client lacks cluster mode"
+              },
+              {
+                "id": "keys",
+                "sub": "still evicting"
+              }
+            ]
+          }
         },
         {
           "id": "keys-postgres",
@@ -3955,7 +4659,23 @@
             }
           ],
           "resultTitle": "The right design, in the wrong week",
-          "resultBody": "Durable keys are the long-term answer, but a new table, a dual-read path for keys still in Redis and a backfill are schema and code changes the freeze forbids. The presale ends before it ships, and Redis keeps evicting live keys meanwhile."
+          "resultBody": "Durable keys are the long-term answer, but a new table, a dual-read path for keys still in Redis and a backfill are schema and code changes the freeze forbids. The presale ends before it ships, and Redis keeps evicting live keys meanwhile.",
+          "tradeoffs": {
+            "costMonthlyDelta": 40
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "warn",
+                "sub": "table blocked by freeze"
+              },
+              {
+                "id": "keys",
+                "sub": "still evicting"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3964,6 +4684,827 @@
         "Compare the size of the live key set with the memory of the node holding it."
       ],
       "nextId": null
+    },
+    {
+      "id": "idemp-casc-01",
+      "incidentCode": "INC-014-05B",
+      "level": 14,
+      "patternId": "idempotency",
+      "canonical": false,
+      "isCascade": true,
+      "parentIncidentCode": "INC-014-05",
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 80,
+      "title": "Donors stuck on 409 after a deploy",
+      "brief": "The in-progress claim ended double charges. Then a deploy killed 30 Fundly workers mid-charge: their rows stay in_progress forever, and 1,200 donors retry into an endless 409.",
+      "constraint": "Card authorization takes 4-9 s, and a started charge cannot be cancelled.",
+      "question": "How is a stuck claim released without risking a second charge?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 500,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 30,
+          "unit": "%",
+          "tone": "neutral"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 140,
+          "unit": "ms",
+          "tone": "neutral"
+        },
+        {
+          "key": "errors",
+          "label": "Stuck donations",
+          "value": 1200,
+          "unit": "donors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Donors",
+            "tone": "warn",
+            "sub": "retry gets 409"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Donation API x2",
+            "cpu": 30
+          },
+          {
+            "id": "store",
+            "kind": "cache",
+            "label": "Idempotency store",
+            "tone": "bad",
+            "sub": "30 rows stuck in_progress"
+          },
+          {
+            "id": "card",
+            "kind": "server",
+            "label": "Card network",
+            "sub": "4-9 s auth"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "store"
+          },
+          {
+            "from": "api",
+            "to": "card"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "lease-plus-key",
+          "label": "Give claims a 30 s lease; takeovers resend the same card key",
+          "correct": true,
+          "resultTitle": "Stuck claims expire safely",
+          "resultBody": "Each claim now carries expires_at = now() + 30 s, well past the 9 s worst-case auth. A retry after that takes over the row and calls the card network with the same idempotency key, so a charge the dead worker completed is replayed, not repeated. Cost: a stranded donor waits up to 30 s.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 31,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 150,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Stuck donations",
+              "value": 0,
+              "unit": "donors",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Donors",
+                "tone": "good",
+                "sub": "retry succeeds"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Donation API x2",
+                "cpu": 31,
+                "tone": "good"
+              },
+              {
+                "id": "store",
+                "kind": "cache",
+                "label": "Idempotency store",
+                "tone": "good",
+                "sub": "30 s lease per claim"
+              },
+              {
+                "id": "card",
+                "kind": "server",
+                "label": "Card network",
+                "tone": "good",
+                "sub": "same key replays"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "api"
+              },
+              {
+                "from": "api",
+                "to": "store"
+              },
+              {
+                "from": "api",
+                "to": "card"
+              }
+            ]
+          },
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "complexityScore": 2,
+            "tradeoffSummary": "Stranded donors wait up to one lease; the card key closes the takeover race."
+          }
+        },
+        {
+          "id": "expire-5s",
+          "label": "Expire in-progress claims after 5 s so retries can take over",
+          "correct": false,
+          "resultTitle": "Live charges get taken over",
+          "resultBody": "Authorizations that take 6-9 s are still running when their 5 s claim expires, so the retry takes over and starts a second charge: 0.4% of donors pay twice again.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 34,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 160,
+              "unit": "ms",
+              "tone": "neutral"
+            },
+            {
+              "key": "errors",
+              "label": "Stuck donations",
+              "value": 2,
+              "unit": "donors",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "store",
+                "tone": "warn",
+                "sub": "claims expire mid-auth"
+              },
+              {
+                "id": "card",
+                "tone": "bad",
+                "sub": "second auth started"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "wipe-after-deploy",
+          "label": "Delete every in_progress row with a script after each deploy",
+          "correct": false,
+          "resultTitle": "The script races live charges",
+          "resultBody": "The post-deploy script also wipes claims held by healthy new workers mid-auth, so their retries charge again, and OOM kills between deploys still leave rows stuck for hours.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "neutral"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 150,
+              "unit": "ms",
+              "tone": "neutral"
+            },
+            {
+              "key": "errors",
+              "label": "Stuck donations",
+              "value": 340,
+              "unit": "donors",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "store",
+                "sub": "live claims wiped"
+              },
+              {
+                "id": "card",
+                "tone": "bad",
+                "sub": "charged twice"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        }
+      ],
+      "hints": [
+        "A claim with no expiry is a lock nobody can ever release.",
+        "The lease must outlast the slowest charge, not the average one.",
+        "When a retry takes over, the card network can tell it what the dead worker already did."
+      ]
+    },
+    {
+      "id": "idemp-casc-02",
+      "incidentCode": "INC-014-16B",
+      "level": 14,
+      "patternId": "idempotency",
+      "canonical": false,
+      "isCascade": true,
+      "parentIncidentCode": "INC-014-16",
+      "reviewed": true,
+      "severity": "P2",
+      "xp": 70,
+      "title": "Address changes never reach the warehouse",
+      "brief": "Stockr's outbox now publishes every order event. The warehouse still dedupes on order ID, so order.updated is dropped as a repeat: 90 parcels a day ship to old addresses.",
+      "constraint": "The relay delivers at-least-once, so true duplicates of the same event still arrive.",
+      "question": "What should the warehouse dedupe on?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Orders",
+          "value": 40,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 35,
+          "unit": "%",
+          "tone": "neutral"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 120,
+          "unit": "ms",
+          "tone": "neutral"
+        },
+        {
+          "key": "errors",
+          "label": "Wrong-address parcels",
+          "value": 90,
+          "unit": "parcels/day",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "svc",
+            "kind": "server",
+            "label": "Order service",
+            "cpu": 30
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres + outbox",
+            "tone": "good"
+          },
+          {
+            "id": "relay",
+            "kind": "worker",
+            "label": "Outbox relay",
+            "sub": "at-least-once"
+          },
+          {
+            "id": "k",
+            "kind": "queue",
+            "label": "Kafka orders topic"
+          },
+          {
+            "id": "wh",
+            "kind": "worker",
+            "label": "Warehouse consumer",
+            "tone": "bad",
+            "cpu": 35,
+            "sub": "dedupe on order_id"
+          }
+        ],
+        "edges": [
+          {
+            "from": "svc",
+            "to": "db"
+          },
+          {
+            "from": "db",
+            "to": "relay"
+          },
+          {
+            "from": "relay",
+            "to": "k"
+          },
+          {
+            "from": "k",
+            "to": "wh"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "event-id",
+          "label": "Dedupe on each outbox row's own event ID",
+          "correct": true,
+          "resultTitle": "Every event counted exactly once",
+          "resultBody": "Each outbox row gets a UUID event_id that the relay copies into a Kafka header. The warehouse keeps processed event IDs in a unique table, so a redelivered order.created is skipped while a new order.updated applies. Cost: a processed-events table pruned after 7 days.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 36,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 125,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Wrong-address parcels",
+              "value": 0,
+              "unit": "parcels/day",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "svc",
+                "kind": "server",
+                "label": "Order service",
+                "cpu": 30
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres + outbox",
+                "tone": "good",
+                "sub": "event_id per row"
+              },
+              {
+                "id": "relay",
+                "kind": "worker",
+                "label": "Outbox relay",
+                "sub": "at-least-once"
+              },
+              {
+                "id": "k",
+                "kind": "queue",
+                "label": "Kafka orders topic"
+              },
+              {
+                "id": "wh",
+                "kind": "worker",
+                "label": "Warehouse consumer",
+                "tone": "good",
+                "cpu": 36,
+                "sub": "dedupe on event_id"
+              }
+            ],
+            "edges": [
+              {
+                "from": "svc",
+                "to": "db"
+              },
+              {
+                "from": "db",
+                "to": "relay"
+              },
+              {
+                "from": "relay",
+                "to": "k"
+              },
+              {
+                "from": "k",
+                "to": "wh"
+              }
+            ]
+          },
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "complexityScore": 2,
+            "tradeoffSummary": "One small row per event on the consumer side."
+          }
+        },
+        {
+          "id": "order-plus-type",
+          "label": "Dedupe on the order ID plus the event type",
+          "correct": false,
+          "resultTitle": "The second edit is dropped",
+          "resultBody": "order.created and the first order.updated now both apply, but a customer who fixes the address twice sends a second order.updated with the same key, and 30 parcels a day still go to the older address.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 35,
+              "unit": "%",
+              "tone": "neutral"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 120,
+              "unit": "ms",
+              "tone": "neutral"
+            },
+            {
+              "key": "errors",
+              "label": "Wrong-address parcels",
+              "value": 30,
+              "unit": "parcels/day",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "wh",
+                "sub": "drops repeat updates"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "no-dedupe",
+          "label": "Drop the dedupe and trust the relay to send once",
+          "correct": false,
+          "resultTitle": "Relay retries get packed twice",
+          "resultBody": "The relay republishes a batch whenever Kafka's ack times out, so without dedupe the warehouse picks and packs 0.5% of orders twice, about 250 extra parcels a day.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 38,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 120,
+              "unit": "ms",
+              "tone": "neutral"
+            },
+            {
+              "key": "errors",
+              "label": "Wrong-address parcels",
+              "value": 250,
+              "unit": "parcels/day",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "relay",
+                "tone": "warn",
+                "sub": "republishes on ack timeout"
+              },
+              {
+                "id": "wh",
+                "sub": "250 double picks/day"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        }
+      ],
+      "hints": [
+        "A duplicate is one event delivered twice, not two events about one order.",
+        "You need an ID that is new for every event and identical on every redelivery.",
+        "The outbox row itself can carry that ID all the way to the consumer."
+      ]
+    },
+    {
+      "id": "idemp-bill-01",
+      "incidentCode": "INC-014-02B",
+      "level": 14,
+      "patternId": "idempotency",
+      "canonical": false,
+      "isCascade": true,
+      "parentIncidentCode": "INC-014-02",
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 90,
+      "title": "Acknowledged top-ups vanish after a deploy",
+      "brief": "The fast ack held for two days. Then a deploy killed workers holding 3,100 queued PocketPay top-ups; the provider already got its 200, so it will never resend them.",
+      "constraint": "The provider only redelivers events you have not acknowledged.",
+      "question": "Where must the event live before the handler returns 200?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 200,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 32,
+          "unit": "%",
+          "tone": "neutral"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 90,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "errors",
+          "label": "Lost credits",
+          "value": 3100,
+          "unit": "top-ups",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "prov",
+            "kind": "users",
+            "label": "Payment provider",
+            "sub": "got 200, no resend"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Webhook handler x3",
+            "cpu": 32,
+            "sub": "acks at once"
+          },
+          {
+            "id": "jobq",
+            "kind": "queue",
+            "label": "In-memory job queue",
+            "tone": "bad",
+            "sub": "emptied by deploy"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Wallet ledger (Postgres)",
+            "tone": "warn",
+            "sub": "3,100 credits missing"
+          }
+        ],
+        "edges": [
+          {
+            "from": "prov",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "jobq"
+          },
+          {
+            "from": "jobq",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "inbox-table",
+          "label": "Insert the event into a unique-keyed inbox table, then ack",
+          "correct": true,
+          "resultTitle": "Durable inbox before the ack",
+          "resultBody": "The handler commits the raw event into inbox(event_id primary key) and only then returns 200. Workers credit from the inbox and mark each row done in the same transaction as the credit, so a crash loses nothing and a redelivery is a no-op. Cost: one insert per webhook, about 2 ms.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 34,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 95,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Lost credits",
+              "value": 0,
+              "unit": "top-ups",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "prov",
+                "kind": "users",
+                "label": "Payment provider"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Webhook handler x3",
+                "cpu": 34,
+                "tone": "good",
+                "sub": "insert, then 200"
+              },
+              {
+                "id": "inbox",
+                "kind": "db",
+                "label": "Inbox table",
+                "tone": "good",
+                "sub": "event_id primary key"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Wallet ledger (Postgres)",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "prov",
+                "to": "api"
+              },
+              {
+                "from": "api",
+                "to": "inbox"
+              },
+              {
+                "from": "inbox",
+                "to": "db"
+              }
+            ]
+          },
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "complexityScore": 2,
+            "tradeoffSummary": "About 2 ms more per webhook for zero lost or doubled credits."
+          }
+        },
+        {
+          "id": "graceful-drain",
+          "label": "Drain the job queue gracefully on SIGTERM before each deploy",
+          "correct": false,
+          "resultTitle": "Crashes still empty the queue",
+          "resultBody": "Planned deploys now finish their jobs first, but an OOM kill or a node failure still takes the in-memory queue with it; last night a node reboot lost 240 acknowledged top-ups for good.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 32,
+              "unit": "%",
+              "tone": "neutral"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 90,
+              "unit": "ms",
+              "tone": "neutral"
+            },
+            {
+              "key": "errors",
+              "label": "Lost credits",
+              "value": 240,
+              "unit": "top-ups",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "jobq",
+                "tone": "warn",
+                "sub": "lost on OOM kill"
+              },
+              {
+                "id": "db",
+                "sub": "240 credits missing"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "redis-queue",
+          "label": "Move the job queue into Redis with hourly RDB snapshots",
+          "correct": false,
+          "resultTitle": "Up to an hour of top-ups at risk",
+          "resultBody": "Jobs survive worker restarts now, but when the Redis pod was rescheduled, 52 minutes of acknowledged top-ups since the last snapshot vanished, and redeliveries still enqueue twice because nothing checks the event ID.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 33,
+              "unit": "%",
+              "tone": "neutral"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 92,
+              "unit": "ms",
+              "tone": "neutral"
+            },
+            {
+              "key": "errors",
+              "label": "Lost credits",
+              "value": 900,
+              "unit": "top-ups",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "jobq",
+                "label": "Redis queue (hourly RDB)",
+                "sub": "lost 52 min on restart"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 60
+          }
+        }
+      ],
+      "hints": [
+        "The provider stops resending the moment it sees a 200.",
+        "Anything held only in memory is gone after the next restart.",
+        "Make the promise durable before you make it, and let the event ID absorb redeliveries."
+      ]
     }
   ]
 }

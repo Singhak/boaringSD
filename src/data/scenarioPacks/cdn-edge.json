@@ -59,14 +59,28 @@
           {
             "id": "origin",
             "kind": "server",
-            "label": "Origin",
-            "tone": "bad"
+            "label": "Origin (us-east)",
+            "tone": "bad",
+            "cpu": 35,
+            "sub": "serves HTML + static"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Database",
+            "tone": "warn",
+            "cpu": 45,
+            "sub": "slow-query alerts"
           }
         ],
         "edges": [
           {
             "from": "users",
             "to": "origin"
+          },
+          {
+            "from": "origin",
+            "to": "db"
           }
         ]
       },
@@ -93,6 +107,14 @@
                 "kind": "server",
                 "label": "Origin",
                 "tone": "good"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Database",
+                "tone": "good",
+                "cpu": 45,
+                "sub": "slow-query alerts clear"
               }
             ],
             "edges": [
@@ -103,6 +125,10 @@
               {
                 "from": "cdn",
                 "to": "origin"
+              },
+              {
+                "from": "origin",
+                "to": "db"
               }
             ]
           },
@@ -130,7 +156,10 @@
             }
           ],
           "resultTitle": "Incident solved",
-          "resultBody": "Static assets and media are now served from PoPs a few ms from users, and origin CPU drops from 35% to 16%. Cost: a CDN bill and a cache-invalidation strategy for every deploy."
+          "resultBody": "Static assets and media are now served from PoPs a few ms from users, and origin CPU drops from 35% to 16%. Cost: a CDN bill and a cache-invalidation strategy for every deploy.",
+          "tradeoffs": {
+            "costMonthlyDelta": 400
+          }
         },
         {
           "id": "bigger-database",
@@ -161,7 +190,19 @@
             }
           ],
           "resultTitle": "The database wasn't the bottleneck",
-          "resultBody": "A larger database adds cost, but the 500 ms comes from static bytes crossing an ocean on every request; p95 even rises to 625 ms during the migration."
+          "resultBody": "A larger database adds cost, but the 500 ms comes from static bytes crossing an ocean on every request; p95 even rises to 625 ms during the migration.",
+          "tradeoffs": {
+            "costMonthlyDelta": 900
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "label": "Database (2x size)",
+                "sub": "migrating, 625 ms p95"
+              }
+            ]
+          }
         },
         {
           "id": "move-users",
@@ -192,7 +233,31 @@
             }
           ],
           "resultTitle": "Customers can't be relocated",
-          "resultBody": "Pointing users at a single US endpoint doesn't move them; their packets still travel over 100 ms each way and p95 stays at 550 ms."
+          "resultBody": "Pointing users at a single US endpoint doesn't move them; their packets still travel over 100 ms each way and p95 stays at 550 ms.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "US-East LB",
+                "tone": "warn",
+                "sub": "100+ ms each way"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "users",
+                "to": "lb"
+              },
+              {
+                "from": "lb",
+                "to": "origin"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -200,7 +265,34 @@
         "Heavy files are static.",
         "Move assets to the edge."
       ],
-      "nextId": "queue-01"
+      "nextId": "queue-01",
+      "format": "culprit",
+      "culprit": {
+        "nodeId": "origin",
+        "explanation": "The origin's access log shows 82% of its bytes are /static files taking ~1.8 s each to reach Tokyo, while the database answers in 6 ms. The latency is distance to a single origin, not load.",
+        "wrongNodeFeedback": {
+          "users": "Users are where the delay is felt, but you can't move them. Check what they download, and from where.",
+          "db": "The slow-query alerts are a nightly report. Live queries finish in about 6 ms, far from the 500 ms p95."
+        }
+      },
+      "logs": {
+        "users": [
+          "RUM tokyo: page load p95 3.8 s, 2.4 MB of images per page",
+          "RUM new-york: page load p95 0.9 s, same page",
+          "RUM tokyo: TTFB 190 ms, image download 1.6 s"
+        ],
+        "origin": [
+          "GET /static/hero-4k.jpg 200 2.1 MB client=jp-tokyo 1,840 ms",
+          "GET /api/feed 200 38 KB client=jp-tokyo 210 ms",
+          "bytes by path (1 h): /static/* 82%, /api/* 18%",
+          "cpu 35%, worker pool 120/400 busy"
+        ],
+        "db": [
+          "slow query: nightly_report 2,310 ms (cron, 03:00)",
+          "query p99 6 ms over last 5 min",
+          "connections 140/400 in use"
+        ]
+      }
     },
     {
       "id": "cdn-02",
@@ -339,7 +431,11 @@
             }
           ],
           "resultTitle": "Each phone gets a 60 KB image",
-          "resultBody": "The edge resizes each master to the requested width and negotiates AVIF or WebP from the Accept header, so a page drops from 9 MB to about 900 KB and LCP p95 falls to 1.9 s. Cost: per-variant transform fees and a slightly lower hit ratio because each image now has several cached variants."
+          "resultBody": "The edge resizes each master to the requested width and negotiates AVIF or WebP from the Accept header, so a page drops from 9 MB to about 900 KB and LCP p95 falls to 1.9 s. Cost: per-variant transform fees and a slightly lower hit ratio because each image now has several cached variants.",
+          "tradeoffs": {
+            "costMonthlyDelta": 600
+          },
+          "cascadeIncidentId": "cdn-casc-01"
         },
         {
           "id": "lazy",
@@ -364,7 +460,18 @@
             }
           ],
           "resultTitle": "Fewer images, same fat ones",
-          "resultBody": "Only four images load up front now, but the hero image that defines LCP is still a 750 KB PNG decoded on a small phone, so LCP p95 only improves to 4.8 s."
+          "resultBody": "Only four images load up front now, but the hero image that defines LCP is still a 750 KB PNG decoded on a small phone, so LCP p95 only improves to 4.8 s.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cdn",
+                "sub": "hero still a 750 KB PNG"
+              }
+            ]
+          }
         },
         {
           "id": "ttl",
@@ -396,7 +503,18 @@
             }
           ],
           "resultTitle": "Cached faster, still 9 MB",
-          "resultBody": "Hit ratio creeps from 96% to 97%, but the images were already served from the edge. The slowness is the 9 MB payload over 4G, which a longer TTL does not shrink."
+          "resultBody": "Hit ratio creeps from 96% to 97%, but the images were already served from the edge. The slowness is the 9 MB payload over 4G, which a longer TTL does not shrink.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cdn",
+                "sub": "max-age 1 year, still 9 MB"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -546,7 +664,10 @@
             }
           ],
           "resultTitle": "Three copies instead of 9,000",
-          "resultBody": "An edge rule maps each User-Agent to mobile, tablet or desktop, sets a device-class header and varies on that instead, so every PoP holds three copies and hit ratio returns to 94%. Cost: the edge's UA-parsing rules must be maintained as new devices appear."
+          "resultBody": "An edge rule maps each User-Agent to mobile, tablet or desktop, sets a device-class header and varies on that instead, so every PoP holds three copies and hit ratio returns to 94%. Cost: the edge's UA-parsing rules must be maintained as new devices appear.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "strip-vary",
@@ -578,7 +699,24 @@
             }
           ],
           "resultTitle": "Phones get the desktop page",
-          "resultBody": "Hit ratio jumps to 97%, but whichever layout was cached first is served to everyone. Within minutes phones in half the PoPs render the desktop homepage and mobile bounce rate doubles."
+          "resultBody": "Hit ratio jumps to 97%, but whichever layout was cached first is served to everyone. Within minutes phones in half the PoPs render the desktop homepage and mobile bounce rate doubles.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cdn",
+                "tone": "warn",
+                "sub": "desktop page to phones"
+              },
+              {
+                "id": "users",
+                "tone": "bad",
+                "sub": "bounce rate x2"
+              }
+            ]
+          }
         },
         {
           "id": "bigger-cache",
@@ -610,7 +748,19 @@
             }
           ],
           "resultTitle": "More room for useless copies",
-          "resultBody": "Storage was never the limit: each of the 9,000 variants is requested only a few times per TTL, so they miss regardless of disk size. Hit ratio moves from 11% to 14%."
+          "resultBody": "Storage was never the limit: each of the 9,000 variants is requested only a few times per TTL, so they miss regardless of disk size. Hit ratio moves from 11% to 14%.",
+          "tradeoffs": {
+            "costMonthlyDelta": 800
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cdn",
+                "label": "CDN edge (4x storage)",
+                "sub": "9,000 variants still miss"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -761,7 +911,10 @@
             }
           ],
           "resultTitle": "Chunks cache, origin breathes",
-          "resultBody": "The launcher downloads a manifest and then about 94 chunks of 256 MB, each well under the size limit, so PoPs cache them after the first request and origin egress drops to ~2 Gbps. Bonus: failed downloads resume per chunk. Cost: a launcher update and a manifest step in the build pipeline."
+          "resultBody": "The launcher downloads a manifest and then about 94 chunks of 256 MB, each well under the size limit, so PoPs cache them after the first request and origin egress drops to ~2 Gbps. Bonus: failed downloads resume per chunk. Cost: a launcher update and a manifest step in the build pipeline.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "ttl",
@@ -793,7 +946,22 @@
             }
           ],
           "resultTitle": "TTL on an uncacheable file",
-          "resultBody": "The header is honored only for objects the CDN is willing to store. A 24 GB file is still over the 20 GB limit, so every download keeps passing through to origin at about 61 Gbps."
+          "resultBody": "The header is honored only for objects the CDN is willing to store. A 24 GB file is still over the 20 GB limit, so every download keeps passing through to origin at about 61 Gbps.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cdn",
+                "sub": "TTL ignored over 20 GB"
+              },
+              {
+                "id": "origin",
+                "sub": "61 Gbps out"
+              }
+            ]
+          }
         },
         {
           "id": "shield",
@@ -825,7 +993,31 @@
             }
           ],
           "resultTitle": "The shield passes it through too",
-          "resultBody": "The shield is the same CDN with the same object-size limit, so it proxies the 24 GB file uncached. Every download now takes an extra hop and origin egress stays near 60 Gbps."
+          "resultBody": "The shield is the same CDN with the same object-size limit, so it proxies the 24 GB file uncached. Every download now takes an extra hop and origin egress stays near 60 Gbps.",
+          "tradeoffs": {
+            "costMonthlyDelta": 150
+          },
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "shield",
+                "kind": "cdn",
+                "label": "Origin shield",
+                "tone": "bad",
+                "sub": "passes 24 GB through"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "cdn",
+                "to": "shield"
+              },
+              {
+                "from": "shield",
+                "to": "origin"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -975,7 +1167,10 @@
             }
           ],
           "resultTitle": "2.4 million clicks, a dozen copies",
-          "resultBody": "The edge builds the key from the path and ?lang= alone, so every recipient in the same language shares one cached page and hit ratio climbs to 97%. The browser still sees the full URL, so analytics reads utm values client-side. Cost: any new meaningful parameter must be added to the allowlist."
+          "resultBody": "The edge builds the key from the path and ?lang= alone, so every recipient in the same language shares one cached page and hit ratio climbs to 97%. The browser still sees the full URL, so analytics reads utm values client-side. Cost: any new meaningful parameter must be added to the allowlist.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "ignore-all",
@@ -1007,7 +1202,24 @@
             }
           ],
           "resultTitle": "German visitors get Japanese pricing",
-          "resultBody": "Hit ratio is excellent, but ?lang= is ignored too, so each PoP serves whichever translation it cached first. Support tickets about wrong-language pricing pages arrive within ten minutes."
+          "resultBody": "Hit ratio is excellent, but ?lang= is ignored too, so each PoP serves whichever translation it cached first. Support tickets about wrong-language pricing pages arrive within ten minutes.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cdn",
+                "tone": "warn",
+                "sub": "one language per PoP"
+              },
+              {
+                "id": "users",
+                "tone": "bad",
+                "sub": "wrong-language pricing"
+              }
+            ]
+          }
         },
         {
           "id": "scale-origin",
@@ -1039,7 +1251,21 @@
             }
           ],
           "resultTitle": "Every click still crosses to origin",
-          "resultBody": "Twelve pods keep up at 45% CPU, but hit ratio is still 3%, visitors abroad pay a 250 ms round trip to origin, and you are paying for nine extra pods to render the same page 2.4 million times."
+          "resultBody": "Twelve pods keep up at 45% CPU, but hit ratio is still 3%, visitors abroad pay a 250 ms round trip to origin, and you are paying for nine extra pods to render the same page 2.4 million times.",
+          "tradeoffs": {
+            "costMonthlyDelta": 700
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "origin",
+                "label": "Marketing origin (12 pods)",
+                "tone": "warn",
+                "cpu": 45,
+                "sub": "same page 2.4M times"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1199,7 +1425,10 @@
             }
           ],
           "resultTitle": "One fetch per trailer reaches origin",
-          "resultBody": "PoPs now miss to a shield tier that coalesces concurrent requests, so origin serves each trailer once or twice instead of ~2,200 times, and its CPU drops to 25%. Cost: an extra hop of roughly 20-80 ms on cold misses from distant PoPs, plus a shield fee on the CDN bill."
+          "resultBody": "PoPs now miss to a shield tier that coalesces concurrent requests, so origin serves each trailer once or twice instead of ~2,200 times, and its CPU drops to 25%. Cost: an extra hop of roughly 20-80 ms on cold misses from distant PoPs, plus a shield fee on the CDN bill.",
+          "tradeoffs": {
+            "costMonthlyDelta": 150
+          }
         },
         {
           "id": "prewarm",
@@ -1231,7 +1460,33 @@
             }
           ],
           "resultTitle": "The warm-up became the stampede",
-          "resultBody": "The script requests the trailer from all 280 PoPs at once, generating the same ~2,200 origin downloads five minutes earlier; origin CPU still peaks at 92%."
+          "resultBody": "The script requests the trailer from all 280 PoPs at once, generating the same ~2,200 origin downloads five minutes earlier; origin CPU still peaks at 92%.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "origin",
+                "cpu": 92
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "script",
+                "kind": "server",
+                "label": "Pre-warm script",
+                "tone": "bad",
+                "sub": "hits 280 PoPs at once"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "script",
+                "to": "cdn"
+              }
+            ]
+          }
         },
         {
           "id": "autoscale",
@@ -1262,8 +1517,23 @@
               "tone": "warn"
             }
           ],
-          "resultTitle": "Bigger origin, bigger bill",
-          "resultBody": "Sixteen instances survive the burst at 60% CPU, but you pay for 12 extra servers that idle most of the day, and ~12 Gbps of origin egress still leaves on every drop."
+          "resultTitle": "Burst survived at 60% CPU",
+          "resultBody": "Sixteen instances absorb the ~2,200 PoP fetches and p95 falls from 6 s to 1.4 s. Origin egress still peaks near 12 Gbps on a 20 Gbps uplink, and every new video pulls the full fan-out again.",
+          "tradeoffs": {
+            "costMonthlyDelta": 600
+          },
+          "consequenceIncidentId": "cdn-bill-01",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "origin",
+                "label": "16 origin instances",
+                "tone": "warn",
+                "cpu": 60,
+                "sub": "12 of 20 Gbps uplink"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1409,7 +1679,10 @@
             }
           ],
           "resultTitle": "Images now ride a local hop",
-          "resultBody": "Geo-DNS sends Nigerian resolvers to a provider with PoPs in Lagos, so cache hits travel a few kilometres and image p95 falls from 480 to 60 ms. Cost: a second CDN contract, two configs to keep in sync, and a lower hit ratio while the new PoPs warm."
+          "resultBody": "Geo-DNS sends Nigerian resolvers to a provider with PoPs in Lagos, so cache hits travel a few kilometres and image p95 falls from 480 to 60 ms. Cost: a second CDN contract, two configs to keep in sync, and a lower hit ratio while the new PoPs warm.",
+          "tradeoffs": {
+            "costMonthlyDelta": 1200
+          }
         },
         {
           "id": "compress",
@@ -1434,7 +1707,18 @@
             }
           ],
           "resultTitle": "Smaller files, same long trip",
-          "resultBody": "Images shrink by 40%, but they were only 80 KB; most of the 480 ms is round trips to Paris for DNS, TLS and the request itself. Latency drops to 430 ms and product photos now look blotchy."
+          "resultBody": "Images shrink by 40%, but they were only 80 KB; most of the 480 ms is round trips to Paris for DNS, TLS and the request itself. Latency drops to 430 ms and product photos now look blotchy.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cdn",
+                "sub": "blotchy images, still Paris"
+              }
+            ]
+          }
         },
         {
           "id": "origin-jnb",
@@ -1459,7 +1743,27 @@
             }
           ],
           "resultTitle": "Origin moved, edge did not",
-          "resultBody": "Images were already served from the Paris edge, so a closer origin only speeds up the 5% of misses. Lagos users still reach the Paris PoP for every hit, and you now replicate the catalog to a second region."
+          "resultBody": "Images were already served from the Paris edge, so a closer origin only speeds up the 5% of misses. Lagos users still reach the Paris PoP for every hit, and you now replicate the catalog to a second region.",
+          "tradeoffs": {
+            "costMonthlyDelta": 1500
+          },
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "jnb",
+                "kind": "server",
+                "label": "Johannesburg origin",
+                "tone": "warn",
+                "sub": "serves the 5% misses"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "cdn",
+                "to": "jnb"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1605,7 +1909,10 @@
             }
           ],
           "resultTitle": "3.1 MB becomes 620 KB",
-          "resultBody": "The edge compresses the bundle once with Brotli and caches the encoded variant per Accept-Encoding, so browsers download about 620 KB instead of 3.1 MB and 3G time-to-interactive drops to 3.4 s. Cost: two cached variants per file (br and gzip for old clients) and a little edge CPU on the first miss."
+          "resultBody": "The edge compresses the bundle once with Brotli and caches the encoded variant per Accept-Encoding, so browsers download about 620 KB instead of 3.1 MB and 3G time-to-interactive drops to 3.4 s. Cost: two cached variants per file (br and gzip for old clients) and a little edge CPU on the first miss.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "split",
@@ -1630,7 +1937,18 @@
             }
           ],
           "resultTitle": "Same megabytes, more requests",
-          "resultBody": "HTTP/2 multiplexes the 40 requests, but they still add up to 3.1 MB of uncompressed JavaScript because the app needs almost all of it at start. Time-to-interactive improves only to 7.6 s."
+          "resultBody": "HTTP/2 multiplexes the 40 requests, but they still add up to 3.1 MB of uncompressed JavaScript because the app needs almost all of it at start. Time-to-interactive improves only to 7.6 s.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cdn",
+                "sub": "40 chunks, still 3.1 MB"
+              }
+            ]
+          }
         },
         {
           "id": "immutable",
@@ -1655,7 +1973,18 @@
             }
           ],
           "resultTitle": "Faster repeat visits only",
-          "resultBody": "Returning visitors skip revalidation, but the slow metric is first visits, which still download 3.1 MB of plain text. The edge was already serving it at a 99% hit ratio."
+          "resultBody": "Returning visitors skip revalidation, but the slow metric is first visits, which still download 3.1 MB of plain text. The edge was already serving it at a 99% hit ratio.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cdn",
+                "sub": "immutable, still uncompressed"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1804,7 +2133,11 @@
             }
           ],
           "resultTitle": "One purge, 3,000 pages, in seconds",
-          "resultBody": "Origin sends a Surrogate-Key header listing every product on the page. A price change purges the tag product-8812, which drops just those ~3,000 pages worldwide in seconds while the other 2 million objects stay cached. Cost: origin must track which products each page renders."
+          "resultBody": "Origin sends a Surrogate-Key header listing every product on the page. A price change purges the tag product-8812, which drops just those ~3,000 pages worldwide in seconds while the other 2 million objects stay cached. Cost: origin must track which products each page renders.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "cascadeIncidentId": "cdn-casc-02"
         },
         {
           "id": "purge-all",
@@ -1836,7 +2169,25 @@
             }
           ],
           "resultTitle": "Fresh prices, flattened origin",
-          "resultBody": "Prices are right, but with 1,200 changes a day the cache is wiped roughly every 70 seconds. Hit ratio falls to 41% and origin sits at 97% CPU serving refills."
+          "resultBody": "Prices are right, but with 1,200 changes a day the cache is wiped roughly every 70 seconds. Hit ratio falls to 41% and origin sits at 97% CPU serving refills.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cdn",
+                "tone": "bad",
+                "sub": "cache wiped every 70 s"
+              },
+              {
+                "id": "origin",
+                "tone": "bad",
+                "cpu": 97,
+                "sub": "refilling"
+              }
+            ]
+          }
         },
         {
           "id": "short-ttl",
@@ -1868,7 +2219,20 @@
             }
           ],
           "resultTitle": "Staleness shrinks, origin load grows",
-          "resultBody": "Old prices now last at most a minute, so mismatches fall to 30 an hour, but every one of the 2 million pages is refetched each minute it is viewed. Origin CPU climbs to 78%, breaking the one-hour constraint."
+          "resultBody": "Old prices now last at most a minute, so mismatches fall to 30 an hour, but every one of the 2 million pages is refetched each minute it is viewed. Origin CPU climbs to 78%, breaking the one-hour constraint.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "origin",
+                "tone": "warn",
+                "cpu": 78,
+                "sub": "pages refetched each minute"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2047,7 +2411,10 @@
             }
           ],
           "resultTitle": "Misses bypass the app tier",
-          "resultBody": "A /thumbs/* behavior points at the storage bucket, so the 15,000 misses/s are served by a service built for byte serving and app CPU drops to 35%. Hit ratio is still 70% because the tail is long, but a miss now costs ~80 ms from storage. Cost: bucket GET and egress fees."
+          "resultBody": "A /thumbs/* behavior points at the storage bucket, so the 15,000 misses/s are served by a service built for byte serving and app CPU drops to 35%. Hit ratio is still 70% because the tail is long, but a miss now costs ~80 ms from storage. Cost: bucket GET and egress fees.",
+          "tradeoffs": {
+            "costMonthlyDelta": 250
+          }
         },
         {
           "id": "ttl-year",
@@ -2079,7 +2446,22 @@
             }
           ],
           "resultTitle": "Evicted long before expiry",
-          "resultBody": "TTL is an upper bound, not a guarantee: the PoP's 2 TB cache still evicts cold thumbnails by LRU within hours. Hit ratio moves by one point and the app servers stay at 89% CPU."
+          "resultBody": "TTL is an upper bound, not a guarantee: the PoP's 2 TB cache still evicts cold thumbnails by LRU within hours. Hit ratio moves by one point and the app servers stay at 89% CPU.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cdn",
+                "sub": "TTL 1 yr, LRU still evicts"
+              },
+              {
+                "id": "app",
+                "cpu": 89
+              }
+            ]
+          }
         },
         {
           "id": "prewarm",
@@ -2111,7 +2493,24 @@
             }
           ],
           "resultTitle": "40 TB into a 2 TB cache",
-          "resultBody": "The warm-up job pulls 40 TB through the app servers into caches that hold 2 TB, so each PoP evicts what it just fetched. App CPU pins at 99% for the whole run and p95 hits 2.6 s."
+          "resultBody": "The warm-up job pulls 40 TB through the app servers into caches that hold 2 TB, so each PoP evicts what it just fetched. App CPU pins at 99% for the whole run and p95 hits 2.6 s.",
+          "tradeoffs": {
+            "costMonthlyDelta": 300
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cdn",
+                "tone": "bad",
+                "sub": "evicts what it fetched"
+              },
+              {
+                "id": "app",
+                "cpu": 99,
+                "sub": "pulling 40 TB"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2262,7 +2661,10 @@
             }
           ],
           "resultTitle": "Assets local, HTML still personal",
-          "resultBody": "A path rule caches /static/* at the edge with long TTLs and content-hashed names, while HTML stays private and uncached. Sydney loads the 2 MB locally and only the 40 KB HTML crosses the Pacific, so page load falls to 0.9 s. Cost: two cache behaviors to maintain and a build step for hashed names."
+          "resultBody": "A path rule caches /static/* at the edge with long TTLs and content-hashed names, while HTML stays private and uncached. Sydney loads the 2 MB locally and only the 40 KB HTML crosses the Pacific, so page load falls to 0.9 s. Cost: two cache behaviors to maintain and a build step for hashed names.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "cache-html",
@@ -2294,7 +2696,19 @@
             }
           ],
           "resultTitle": "Users see someone else's feed",
-          "resultBody": "Origin load collapses, but the edge now serves the first visitor's personalized HTML to everyone in that PoP for a minute. Screenshots of strangers' feeds hit social media within the hour."
+          "resultBody": "Origin load collapses, but the edge now serves the first visitor's personalized HTML to everyone in that PoP for a minute. Screenshots of strangers' feeds hit social media within the hour.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cdn",
+                "tone": "bad",
+                "sub": "serving strangers' HTML"
+              }
+            ]
+          }
         },
         {
           "id": "inline",
@@ -2326,7 +2740,19 @@
             }
           ],
           "resultTitle": "The heavy bytes became uncacheable",
-          "resultBody": "Inlining moves the 2 MB into the personalized HTML, so it can now never be cached, even by the browser. Every view re-downloads it from Virginia and origin CPU rises to 92% from rendering bigger pages."
+          "resultBody": "Inlining moves the 2 MB into the personalized HTML, so it can now never be cached, even by the browser. Every view re-downloads it from Virginia and origin CPU rises to 92% from rendering bigger pages.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "origin",
+                "cpu": 92,
+                "sub": "2 MB inlined per page"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2476,7 +2902,10 @@
             }
           ],
           "resultTitle": "Seeks served from cached slices",
-          "resultBody": "The edge maps each byte range to aligned 8 MB slices, fetches only missing slices from origin and caches them, so popular scenes are served locally and seek p95 drops to 180 ms. Cost: more cache objects per title and a small over-fetch when a range crosses a slice boundary."
+          "resultBody": "The edge maps each byte range to aligned 8 MB slices, fetches only missing slices from origin and caches them, so popular scenes are served locally and seek p95 drops to 180 ms. Cost: more cache objects per title and a small over-fetch when a range crosses a slice boundary.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "full-fetch",
@@ -2508,7 +2937,19 @@
             }
           ],
           "resultTitle": "First seek downloads 6 GB",
-          "resultBody": "Each first range request makes the PoP pull the entire 6 GB movie before replying, so seeks on cold titles take nearly 10 s and origin egress spikes as hundreds of PoPs grab whole files for a few seconds of viewing."
+          "resultBody": "Each first range request makes the PoP pull the entire 6 GB movie before replying, so seeks on cold titles take nearly 10 s and origin egress spikes as hundreds of PoPs grab whole files for a few seconds of viewing.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "origin",
+                "cpu": 97,
+                "sub": "whole 6 GB files pulled"
+              }
+            ]
+          }
         },
         {
           "id": "no-ranges",
@@ -2540,7 +2981,23 @@
             }
           ],
           "resultTitle": "Scrubbing stops working",
-          "resultBody": "Without range support a player that jumps to minute 90 must download everything before it. Seeking effectively breaks, viewers abandon titles, and the few cached full files still do not help mid-movie starts."
+          "resultBody": "Without range support a player that jumps to minute 90 must download everything before it. Seeking effectively breaks, viewers abandon titles, and the few cached full files still do not help mid-movie starts.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "users",
+                "tone": "bad",
+                "sub": "seeking broken"
+              },
+              {
+                "id": "origin",
+                "cpu": 70
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2691,7 +3148,10 @@
             }
           ],
           "resultTitle": "The edge stops asking permission",
-          "resultBody": "With an explicit day-long max-age the edge serves assets from cache and revalidates each one about once a day, so origin requests fall from 22,000 to roughly 600/s and p95 drops to 35 ms. Cost: an asset changed without renaming can be stale for up to a day, so hashed filenames matter."
+          "resultBody": "With an explicit day-long max-age the edge serves assets from cache and revalidates each one about once a day, so origin requests fall from 22,000 to roughly 600/s and p95 drops to 35 ms. Cost: an asset changed without renaming can be stale for up to a day, so hashed filenames matter.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "etag",
@@ -2723,7 +3183,19 @@
             }
           ],
           "resultTitle": "Faster 304s, still 22,000 of them",
-          "resultBody": "Each 304 costs less CPU, so origin drops to 64%, but every request still waits for a round trip to origin before the edge answers. The count of conditional GETs is unchanged."
+          "resultBody": "Each 304 costs less CPU, so origin drops to 64%, but every request still waits for a round trip to origin before the edge answers. The count of conditional GETs is unchanged.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "origin",
+                "cpu": 64,
+                "sub": "22k cheaper 304s/s"
+              }
+            ]
+          }
         },
         {
           "id": "override",
@@ -2755,7 +3227,19 @@
             }
           ],
           "resultTitle": "Account data served to strangers",
-          "resultBody": "Assets cache nicely, but the rule also caches /api/* responses, so users in the same PoP receive each other's account JSON for up to ten minutes. Security opens an incident."
+          "resultBody": "Assets cache nicely, but the rule also caches /api/* responses, so users in the same PoP receive each other's account JSON for up to ten minutes. Security opens an incident.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cdn",
+                "tone": "bad",
+                "sub": "caching /api/* JSON"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2885,7 +3369,10 @@
             }
           ],
           "resultTitle": "Images shared across visitors again",
-          "resultBody": "The edge now ignores and removes Cookie for /img/*, so one cached copy serves every visitor; hit ratio returns to 95% and origin drops to about 900 req/s. Cost: nothing under /img/* can use cookies for per-user logic, and the edge rule must track origin route changes."
+          "resultBody": "The edge now ignores and removes Cookie for /img/*, so one cached copy serves every visitor; hit ratio returns to 95% and origin drops to about 900 req/s. Cost: nothing under /img/* can use cookies for per-user logic, and the edge rule must track origin route changes.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "long-ttl",
@@ -2924,7 +3411,18 @@
             }
           ],
           "resultTitle": "Longer TTL, still one copy per visitor",
-          "resultBody": "Each visitor's cookie still creates a unique cache entry, so entries live longer but are never reused; hit ratio stays near 5% while edge storage churns."
+          "resultBody": "Each visitor's cookie still creates a unique cache entry, so entries live longer but are never reused; hit ratio stays near 5% while edge storage churns.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cdn",
+                "sub": "one entry per cookie, 30 d"
+              }
+            ]
+          }
         },
         {
           "id": "scale-origin",
@@ -2963,7 +3461,20 @@
             }
           ],
           "resultTitle": "Origin propped up, edge still bypassed",
-          "resultBody": "Origin copes at 50% CPU, but every image still travels from origin with ~150 ms extra latency, egress costs climb, and the edge hit ratio stays at 4%."
+          "resultBody": "Origin copes at 50% CPU, but every image still travels from origin with ~150 ms extra latency, egress costs climb, and the edge hit ratio stays at 4%.",
+          "tradeoffs": {
+            "costMonthlyDelta": 900
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "origin",
+                "label": "Image origin (x2) + Redis",
+                "tone": "warn",
+                "cpu": 50
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3093,7 +3604,10 @@
             }
           ],
           "resultTitle": "Fix shipped, cache untouched",
-          "resultBody": "Builds now emit site.3f9a1c.css and the HTML, cached for 60 s, points at the new name, so visitors get the fix within a minute while the other 2.1 million objects stay cached. Cost: a build step that rewrites references, and old hashed files must stay at origin until cached HTML expires."
+          "resultBody": "Builds now emit site.3f9a1c.css and the HTML, cached for 60 s, points at the new name, so visitors get the fix within a minute while the other 2.1 million objects stay cached. Cost: a build step that rewrites references, and old hashed files must stay at origin until cached HTML expires.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "url-purge",
@@ -3132,7 +3646,19 @@
             }
           ],
           "resultTitle": "Edge fixed, browsers still stale",
-          "resultBody": "The single-URL purge spares origin, but browsers already hold site.css under a 1-day max-age, which no CDN purge can reach; most returning visitors keep the typo until tomorrow."
+          "resultBody": "The single-URL purge spares origin, but browsers already hold site.css under a 1-day max-age, which no CDN purge can reach; most returning visitors keep the typo until tomorrow.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "users",
+                "tone": "warn",
+                "sub": "browsers keep old CSS"
+              }
+            ]
+          }
         },
         {
           "id": "short-ttl",
@@ -3171,7 +3697,19 @@
             }
           ],
           "resultTitle": "Hit ratio collapses permanently",
-          "resultBody": "Fixes now appear within a minute, but 2.1 million objects revalidate every 60 s; origin settles at 14,000 req/s and 80% CPU all day, not just after a purge."
+          "resultBody": "Fixes now appear within a minute, but 2.1 million objects revalidate every 60 s; origin settles at 14,000 req/s and 80% CPU all day, not just after a purge.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "origin",
+                "cpu": 80,
+                "sub": "14k revalidations/s"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3338,7 +3876,10 @@
             }
           ],
           "resultTitle": "One refresh per PoP every 4 minutes",
-          "resultBody": "Each PoP keeps the JSON for 240 s and refreshes it in the background with stale-while-revalidate, so origin sees a few hundred req/s instead of 35,000 and launches abroad take 70 ms. Worst-case age stays under 5 minutes. Cost: authenticated variants must stay uncached."
+          "resultBody": "Each PoP keeps the JSON for 240 s and refreshes it in the background with stale-while-revalidate, so origin sees a few hundred req/s instead of 35,000 and launches abroad take 70 ms. Worst-case age stays under 5 minutes. Cost: authenticated variants must stay uncached.",
+          "tradeoffs": {
+            "costMonthlyDelta": 100
+          }
         },
         {
           "id": "redis",
@@ -3370,7 +3911,35 @@
             }
           ],
           "resultTitle": "The database relaxes, the API does not",
-          "resultBody": "The catalog DB is spared, but all 35,000 requests/s still cross oceans to Oregon and pass through the API tier for TLS, routing and serialization. CPU falls to 55% and far-away launches still take a second."
+          "resultBody": "The catalog DB is spared, but all 35,000 requests/s still cross oceans to Oregon and pass through the API tier for TLS, routing and serialization. CPU falls to 55% and far-away launches still take a second.",
+          "tradeoffs": {
+            "costMonthlyDelta": 120
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "tone": "warn",
+                "cpu": 55,
+                "sub": "35k req/s still to Oregon"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "r",
+                "kind": "cache",
+                "label": "Catalog Redis",
+                "tone": "good",
+                "cpu": 20
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "api",
+                "to": "r"
+              }
+            ]
+          }
         },
         {
           "id": "app-cache",
@@ -3402,7 +3971,22 @@
             }
           ],
           "resultTitle": "Cold launches still hit Oregon",
-          "resultBody": "Most launches come from users who have not opened the app in over 5 minutes, so the on-device cache is usually empty. Origin load drops only about 10% and first-launch latency is unchanged."
+          "resultBody": "Most launches come from users who have not opened the app in over 5 minutes, so the on-device cache is usually empty. Origin load drops only about 10% and first-launch latency is unchanged.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "users",
+                "sub": "cold launches: empty cache"
+              },
+              {
+                "id": "api",
+                "cpu": 80
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3542,7 +4126,10 @@
             }
           ],
           "resultTitle": "Handshakes happen next door",
-          "resultBody": "The TCP and TLS handshakes now complete with a PoP 10 ms away, and the PoP forwards the request over already-open, pooled connections to Virginia, so only one 130 ms round trip remains and TTFB p95 falls to 320 ms. Nothing is cached. Cost: CDN request fees on dynamic traffic."
+          "resultBody": "The TCP and TLS handshakes now complete with a PoP 10 ms away, and the PoP forwards the request over already-open, pooled connections to Virginia, so only one 130 ms round trip remains and TTFB p95 falls to 320 ms. Nothing is cached. Cost: CDN request fees on dynamic traffic.",
+          "tradeoffs": {
+            "costMonthlyDelta": 250
+          }
         },
         {
           "id": "cache-60",
@@ -3567,7 +4154,31 @@
             }
           ],
           "resultTitle": "Shoppers see strangers' carts",
-          "resultBody": "Latency looks great, but the edge replays one user's checkout page to others in the same PoP, including names and addresses. The rule is rolled back after the first privacy complaint."
+          "resultBody": "Latency looks great, but the edge replays one user's checkout page to others in the same PoP, including names and addresses. The rule is rolled back after the first privacy complaint.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "pop",
+                "kind": "cdn",
+                "label": "São Paulo PoP (60 s cache)",
+                "tone": "bad",
+                "sub": "replays carts"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "users",
+                "to": "pop"
+              },
+              {
+                "from": "pop",
+                "to": "api"
+              }
+            ]
+          }
         },
         {
           "id": "ecdsa",
@@ -3599,7 +4210,19 @@
             }
           ],
           "resultTitle": "Saved microseconds, not round trips",
-          "resultBody": "ECDSA trims server CPU per handshake, but the delay is the 130 ms trips across the equator, not signing time. TTFB drops by about 20 ms."
+          "resultBody": "ECDSA trims server CPU per handshake, but the delay is the 130 ms trips across the equator, not signing time. TTFB drops by about 20 ms.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "cpu": 40,
+                "sub": "ECDSA, same 3 round trips"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3621,7 +4244,7 @@
       "title": "An 'Oops' page outlives the outage by an hour",
       "brief": "TicketNow's origin failed for 4 minutes. Its error handler returned 'Something went wrong' with HTTP 200 and the default Cache-Control max-age=3600, so the CDN cached it on 1,800 event pages. Origin is healthy; users still see errors.",
       "constraint": "Event pages must keep their one-hour TTL; the on-sale traffic of 60,000 req/s depends on it.",
-      "question": "How do you stop failures from being cached as good pages?",
+      "question": "Now what stops the next failure from being cached as a good page?",
       "metricsBefore": [
         {
           "key": "rps",
@@ -3750,7 +4373,10 @@
             }
           ],
           "resultTitle": "Failures are never mistaken for pages",
-          "resultBody": "After a one-time purge of the poisoned pages, the handler now returns 503 with Cache-Control: no-store, so the CDN never stores failures and can fall back to stale content or retry. Future outages clear the moment origin recovers. Cost: the error path needs its own tests and monitoring."
+          "resultBody": "After a one-time purge of the poisoned pages, the handler now returns 503 with Cache-Control: no-store, so the CDN never stores failures and can fall back to stale content or retry. Future outages clear the moment origin recovers. Cost: the error path needs its own tests and monitoring.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "purge-runbook",
@@ -3782,7 +4408,20 @@
             }
           ],
           "resultTitle": "Human-speed recovery, full-cache refill",
-          "resultBody": "Someone has to notice and run it, so errors linger for 10-20 minutes each time, and purging everything during an on-sale sends all 60,000 req/s to origin at once, pushing it to 96% CPU."
+          "resultBody": "Someone has to notice and run it, so errors linger for 10-20 minutes each time, and purging everything during an on-sale sends all 60,000 req/s to origin at once, pushing it to 96% CPU.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "origin",
+                "tone": "bad",
+                "cpu": 96,
+                "sub": "full refill mid on-sale"
+              }
+            ]
+          }
         },
         {
           "id": "short-ttl",
@@ -3814,7 +4453,20 @@
             }
           ],
           "resultTitle": "Short-lived errors, overloaded origin",
-          "resultBody": "Cached errors now expire within 30 seconds, but every event page is refetched twice a minute per PoP, violating the TTL constraint and driving origin to 91% CPU during on-sales."
+          "resultBody": "Cached errors now expire within 30 seconds, but every event page is refetched twice a minute per PoP, violating the TTL constraint and driving origin to 91% CPU during on-sales.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "origin",
+                "tone": "bad",
+                "cpu": 91,
+                "sub": "pages refetched 2x/min"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3823,7 +4475,112 @@
         "A cache decides what to store from the response's status and Cache-Control."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "format": "two-step",
+      "mitigation": {
+        "question": "Fans are seeing a cached 'Oops' page on 1,800 events. What do you do first?",
+        "choices": [
+          {
+            "id": "m-tag-purge",
+            "label": "Purge only the 1,800 event pages that cached the error",
+            "correct": true,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "errors",
+                "label": "Cached error views",
+                "value": 20,
+                "unit": "per min",
+                "tone": "good"
+              },
+              {
+                "key": "hit",
+                "label": "Edge hit ratio",
+                "value": 95,
+                "unit": "%",
+                "tone": "good"
+              },
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 38,
+                "unit": "%",
+                "tone": "good"
+              }
+            ],
+            "resultTitle": "Poisoned pages cleared",
+            "resultBody": "The 1,800 poisoned pages drop from every PoP in seconds and refill from the healthy origin, which peaks at 38% CPU. Errors fall to near zero, but the handler will still cache its next failure."
+          },
+          {
+            "id": "m-purge-all",
+            "label": "Purge the whole CDN so every page refetches from origin",
+            "correct": false,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "errors",
+                "label": "Cached error views",
+                "value": 5200,
+                "unit": "per min",
+                "tone": "bad"
+              },
+              {
+                "key": "hit",
+                "label": "Edge hit ratio",
+                "value": 20,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 97,
+                "unit": "%",
+                "tone": "bad"
+              }
+            ],
+            "resultTitle": "On-sale traffic hits origin at once",
+            "resultBody": "All 60,000 req/s miss together in the middle of the on-sale. Origin hits 97% CPU and starts timing out, and some refills cache the error page all over again."
+          },
+          {
+            "id": "m-restart-origin",
+            "label": "Restart the ticket origin pods to clear the error state",
+            "correct": false,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "errors",
+                "label": "Cached error views",
+                "value": 9000,
+                "unit": "per min",
+                "tone": "bad"
+              },
+              {
+                "key": "hit",
+                "label": "Edge hit ratio",
+                "value": 97,
+                "unit": "%",
+                "tone": "good"
+              },
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 20,
+                "unit": "%",
+                "tone": "good"
+              }
+            ],
+            "resultTitle": "Origin was already fine",
+            "resultBody": "Origin had recovered minutes ago, so the restart changes nothing at the edge: 1,800 pages keep serving the cached error until their hour runs out."
+          }
+        ]
+      }
     },
     {
       "id": "cdn-19",
@@ -3930,7 +4687,10 @@
             }
           ],
           "resultTitle": "Tokens checked, bytes still cached",
-          "resultBody": "Each PoP verifies the signature and 1-hour expiry before serving, so the leaked link returns 403 once it expires, while the cache key ignores the token and all students share one copy; hit ratio stays at 96%. Cost: signing-key rotation and clock skew to manage, and a leaked link still works until its hour runs out."
+          "resultBody": "Each PoP verifies the signature and 1-hour expiry before serving, so the leaked link returns 403 once it expires, while the cache key ignores the token and all students share one copy; hit ratio stays at 96%. Cost: signing-key rotation and clock skew to manage, and a leaked link still works until its hour runs out.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "sig-in-key",
@@ -3962,7 +4722,23 @@
             }
           ],
           "resultTitle": "Leaked link cached per signature",
-          "resultBody": "The leaked URL's signature is now its own cache entry with a 7-day TTL, so it keeps playing from the edge; meanwhile every student's unique URL misses, hit ratio falls to 9%, and origin CPU hits 85%."
+          "resultBody": "The leaked URL's signature is now its own cache entry with a 7-day TTL, so it keeps playing from the edge; meanwhile every student's unique URL misses, hit ratio falls to 9%, and origin CPU hits 85%.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cdn",
+                "sub": "one entry per signature"
+              },
+              {
+                "id": "origin",
+                "tone": "bad",
+                "cpu": 85
+              }
+            ]
+          }
         },
         {
           "id": "no-store",
@@ -3994,7 +4770,25 @@
             }
           ],
           "resultTitle": "Authorized, but origin takes every byte",
-          "resultBody": "The CDN stops caching lectures; unauthorized plays end because origin checks tokens, but 9,000 req/s of 4K video now stream from origin at 96% CPU with a 2.4 s p95."
+          "resultBody": "The CDN stops caching lectures; unauthorized plays end because origin checks tokens, but 9,000 req/s of 4K video now stream from origin at 96% CPU with a 2.4 s p95.",
+          "tradeoffs": {
+            "costMonthlyDelta": 1500
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cdn",
+                "tone": "neutral",
+                "sub": "no-store"
+              },
+              {
+                "id": "origin",
+                "tone": "bad",
+                "cpu": 96,
+                "sub": "streaming every 4K byte"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -4141,7 +4935,10 @@
             }
           ],
           "resultTitle": "The shell checks in on every load",
-          "resultBody": "Browsers and the edge may store index.html but must revalidate it each time, getting a tiny 304 until a deploy changes the ETag, then the new 2 KB shell. Hashed chunks keep their one-year TTL. Cost: one small conditional request per page load."
+          "resultBody": "Browsers and the edge may store index.html but must revalidate it each time, getting a tiny 304 until a deploy changes the ETag, then the new 2 KB shell. Hashed chunks keep their one-year TTL. Cost: one small conditional request per page load.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "purge-index",
@@ -4166,7 +4963,19 @@
             }
           ],
           "resultTitle": "The edge is fresh, browsers are not",
-          "resultBody": "The purge clears the CDN, but returning users never ask the CDN: their browsers hold index.html for up to 7 days under max-age. Crashes fall only slightly, from new visitors getting the fresh shell."
+          "resultBody": "The purge clears the CDN, but returning users never ask the CDN: their browsers hold index.html for up to 7 days under max-age. Crashes fall only slightly, from new visitors getting the fresh shell.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "users",
+                "tone": "bad",
+                "sub": "still on the old shell"
+              }
+            ]
+          }
         },
         {
           "id": "hash-html",
@@ -4191,7 +5000,18 @@
             }
           ],
           "resultTitle": "Nobody can find the new name",
-          "resultBody": "The entry point is whatever users type or bookmark, which is /. A hashed HTML name would need something else, cached briefly, to point at it, so the stale / copy keeps serving the old shell."
+          "resultBody": "The entry point is whatever users type or bookmark, which is /. A hashed HTML name would need something else, cached briefly, to point at it, so the stale / copy keeps serving the old shell.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cdn",
+                "sub": "/ still serves old shell"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -4320,7 +5140,10 @@
             }
           ],
           "resultTitle": "Readers get slightly older pages",
-          "resultBody": "With max-age=60, stale-while-revalidate=30, stale-if-error=86400, the edge keeps serving the last good copy whenever origin returns 5xx, so errors fall to about 1% (pages never cached). Cost: during an outage readers may see articles up to 12 minutes old, so pages should show an 'updated at' time."
+          "resultBody": "With max-age=60, stale-while-revalidate=30, stale-if-error=86400, the edge keeps serving the last good copy whenever origin returns 5xx, so errors fall to about 1% (pages never cached). Cost: during an outage readers may see articles up to 12 minutes old, so pages should show an 'updated at' time.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "long-ttl",
@@ -4352,7 +5175,19 @@
             }
           ],
           "resultTitle": "Outages hidden, news goes stale",
-          "resultBody": "The next outage is masked, but breaking-news corrections now take up to an hour to reach readers, breaking the 60-second freshness rule every normal day."
+          "resultBody": "The next outage is masked, but breaking-news corrections now take up to an hour to reach readers, breaking the 60-second freshness rule every normal day.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cdn",
+                "tone": "warn",
+                "sub": "1 h TTL, stale news"
+              }
+            ]
+          }
         },
         {
           "id": "retry",
@@ -4384,7 +5219,22 @@
             }
           ],
           "resultTitle": "Retries tripled load on a dead origin",
-          "resultBody": "Each miss now hits the failing origin three times, so it sees about 150,000 req/s instead of 50,000; recovery takes 4 minutes longer and readers still get 502s, after an 8 s wait."
+          "resultBody": "Each miss now hits the failing origin three times, so it sees about 150,000 req/s instead of 50,000; recovery takes 4 minutes longer and readers still get 502s, after an 8 s wait.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cdn",
+                "sub": "3 retries per miss"
+              },
+              {
+                "id": "origin",
+                "sub": "150k req/s of retries"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -4555,7 +5405,37 @@
             }
           ],
           "resultTitle": "Fewer misses, same leak",
-          "resultBody": "The shield coalesces duplicate misses from different PoPs and cuts resizer traffic by about 30%. The leak grows with every resize, so VMs now start swapping around hour 28 instead of hour 20, and p95 still reaches seconds before Thursday."
+          "resultBody": "The shield coalesces duplicate misses from different PoPs and cuts resizer traffic by about 30%. The leak grows with every resize, so VMs now start swapping around hour 28 instead of hour 20, and p95 still reaches seconds before Thursday.",
+          "tradeoffs": {
+            "costMonthlyDelta": 150
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "resizer",
+                "sub": "still leaking, swaps at 28 h"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "shield",
+                "kind": "cdn",
+                "label": "Origin shield",
+                "tone": "good",
+                "sub": "-30% resizes"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "cdn",
+                "to": "shield"
+              },
+              {
+                "from": "shield",
+                "to": "resizer"
+              }
+            ]
+          }
         },
         {
           "id": "prerender",
@@ -4587,7 +5467,19 @@
             }
           ],
           "resultTitle": "A two-week backfill for a three-day bug",
-          "resultBody": "Rendering every master into every width and format runs on the same leaking resizers, pushing them to 95% CPU and swapping sooner. The backfill needs about two weeks, so it finishes long after Thursday's patch removes the leak anyway."
+          "resultBody": "Rendering every master into every width and format runs on the same leaking resizers, pushing them to 95% CPU and swapping sooner. The backfill needs about two weeks, so it finishes long after Thursday's patch removes the leak anyway.",
+          "tradeoffs": {
+            "costMonthlyDelta": 400
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "resizer",
+                "cpu": 95,
+                "sub": "backfill + leak"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -4597,6 +5489,804 @@
       ],
       "nextId": null,
       "reviewed": true
+    },
+    {
+      "id": "cdn-bill-01",
+      "incidentCode": "INC-005-06B",
+      "level": 5,
+      "patternId": "cdn-edge",
+      "canonical": false,
+      "reviewed": true,
+      "isCascade": true,
+      "parentIncidentCode": "INC-005-06",
+      "severity": "P1",
+      "xp": 80,
+      "title": "4K premiere saturates the origin uplink",
+      "brief": "Autoscaling carried Tuesday's trailer. Friday's 4K premiere is 160 MB; about 2,200 PoP fetches push origin egress to the 20 Gbps uplink cap, and misses time out across 280 PoPs.",
+      "constraint": "The uplink can't be upgraded before next quarter, and instance CPU is only 55%.",
+      "question": "What keeps the next premiere under the uplink cap?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "value": 30000,
+          "label": "Traffic",
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "value": 55,
+          "label": "CPU",
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "value": 9000,
+          "label": "p95 latency",
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "value": 1200,
+          "label": "Errors",
+          "unit": "errors",
+          "tone": "bad"
+        },
+        {
+          "key": "egress",
+          "value": 20,
+          "label": "Origin egress",
+          "unit": "Gbps",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Viewers"
+          },
+          {
+            "id": "cdn",
+            "kind": "cdn",
+            "label": "280 PoPs",
+            "tone": "warn",
+            "sub": "misses timing out"
+          },
+          {
+            "id": "origin",
+            "kind": "server",
+            "label": "16 origin instances",
+            "tone": "bad",
+            "cpu": 55,
+            "sub": "uplink 20/20 Gbps"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "cdn"
+          },
+          {
+            "from": "cdn",
+            "to": "origin"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "bill-shield",
+          "label": "Send PoP misses through a shield tier that coalesces",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 150
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Viewers"
+              },
+              {
+                "id": "cdn",
+                "kind": "cdn",
+                "label": "280 PoPs",
+                "tone": "good",
+                "sub": "miss to shield"
+              },
+              {
+                "id": "shield",
+                "kind": "cdn",
+                "label": "Origin shield",
+                "tone": "good",
+                "sub": "coalesces fetches"
+              },
+              {
+                "id": "origin",
+                "kind": "server",
+                "label": "16 origin instances",
+                "tone": "good",
+                "cpu": 20,
+                "sub": "~1 Gbps out"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "cdn"
+              },
+              {
+                "from": "cdn",
+                "to": "shield"
+              },
+              {
+                "from": "shield",
+                "to": "origin"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 20,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 180,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            },
+            {
+              "key": "egress",
+              "label": "Origin egress",
+              "value": 1,
+              "unit": "Gbps",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "One fetch per premiere reaches origin",
+          "resultBody": "Misses from all 280 PoPs now funnel through one shield that fetches each video once or twice, so origin egress drops from 20 Gbps to under 1 Gbps. Cost: a shield fee and 20–80 ms extra on cold misses from distant PoPs."
+        },
+        {
+          "id": "bill-more-instances",
+          "label": "Autoscale origin to 32 instances before each premiere",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 1200
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "origin",
+                "label": "32 origin instances",
+                "cpu": 28,
+                "sub": "uplink still 20/20 Gbps"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 28,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 8800,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1150,
+              "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "egress",
+              "label": "Origin egress",
+              "value": 20,
+              "unit": "Gbps",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "More servers, same pipe",
+          "resultBody": "Thirty-two instances idle at 28% CPU, but they share the same 20 Gbps uplink, so the 2,200 fetches still queue on the wire and misses keep timing out."
+        },
+        {
+          "id": "bill-timeout",
+          "label": "Raise the CDN origin timeout from 10 s to 60 s",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cdn",
+                "sub": "60 s fetches queueing"
+              },
+              {
+                "id": "origin",
+                "cpu": 62,
+                "sub": "connections x3"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 62,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 24000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 700,
+              "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "egress",
+              "label": "Origin egress",
+              "value": 20,
+              "unit": "Gbps",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Slow fetches, now held open",
+          "resultBody": "Fewer fetches abort, but each one now holds a connection for up to 60 s on a full uplink. Open connections triple and p95 climbs from 9 s to 24 s."
+        }
+      ],
+      "hints": [
+        "CPU is at 55%; look at the wire, not the cores.",
+        "Count origin fetches per new video: roughly one per PoP cache server.",
+        "What could make 280 PoPs ask origin once instead of 2,200 times?"
+      ],
+      "nextId": null
+    },
+    {
+      "id": "cdn-casc-01",
+      "incidentCode": "INC-005-02B",
+      "level": 5,
+      "patternId": "cdn-edge",
+      "canonical": false,
+      "reviewed": true,
+      "isCascade": true,
+      "parentIncidentCode": "INC-005-02",
+      "severity": "P2",
+      "xp": 70,
+      "title": "Image transform bill triples in a week",
+      "brief": "Edge resizing accepts any ?w= value. Clients now request 1,400 distinct widths per image, so the edge hit ratio fell from 93% to 58% and transform fees tripled to $1,800 a month.",
+      "constraint": "Phones need sharp images near their real width; the site's layout uses five breakpoints.",
+      "question": "How do you stop every width becoming its own cached variant?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "value": 42000,
+          "label": "Traffic",
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "hit",
+          "value": 58,
+          "label": "Edge hit ratio",
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "value": 2600,
+          "label": "LCP p95",
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "egress",
+          "value": 12,
+          "label": "Origin egress",
+          "unit": "Gbps",
+          "tone": "warn"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Phone shoppers"
+          },
+          {
+            "id": "cdn",
+            "kind": "cdn",
+            "label": "Edge image optimizer",
+            "tone": "bad",
+            "sub": "1,400 widths per image"
+          },
+          {
+            "id": "origin",
+            "kind": "server",
+            "label": "Image origin",
+            "tone": "warn",
+            "sub": "masters refetched"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "cdn"
+          },
+          {
+            "from": "cdn",
+            "to": "origin"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "casc-snap",
+          "label": "Round requested widths up to eight fixed sizes at the edge",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Phone shoppers",
+                "tone": "good"
+              },
+              {
+                "id": "cdn",
+                "kind": "cdn",
+                "label": "Edge image optimizer",
+                "tone": "good",
+                "sub": "8 widths per image"
+              },
+              {
+                "id": "origin",
+                "kind": "server",
+                "label": "Image origin",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "cdn"
+              },
+              {
+                "from": "cdn",
+                "to": "origin"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "hit",
+              "label": "Edge hit ratio",
+              "value": 92,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "LCP p95",
+              "value": 1900,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "egress",
+              "label": "Origin egress",
+              "value": 7,
+              "unit": "Gbps",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Eight variants instead of 1,400",
+          "resultBody": "The edge snaps ?w= to 8 widths from 320 to 1920 px and serves the next size up, so each image has 8 variants per format. Hit ratio returns to 92% and transform fees fall to about $700. Cost: phones download up to ~20% more pixels than they display."
+        },
+        {
+          "id": "casc-bigger-cache",
+          "label": "Buy more edge storage so every width variant stays cached",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 800
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cdn",
+                "label": "Edge image optimizer (4x storage)",
+                "sub": "one-off widths still miss"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "hit",
+              "label": "Edge hit ratio",
+              "value": 61,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "LCP p95",
+              "value": 2500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "egress",
+              "label": "Origin egress",
+              "value": 12,
+              "unit": "Gbps",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Room for variants nobody reuses",
+          "resultBody": "Storage wasn't the limit: most of the 1,400 widths are requested once or twice per TTL, so they miss regardless of disk size. Hit ratio edges up to 61% and you pay for the storage too."
+        },
+        {
+          "id": "casc-origin-resize",
+          "label": "Move resizing back to origin and cache the results there",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 400
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "origin",
+                "tone": "bad",
+                "cpu": 90,
+                "sub": "resizing 1,400 widths"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "hit",
+              "label": "Edge hit ratio",
+              "value": 58,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "LCP p95",
+              "value": 3400,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "egress",
+              "label": "Origin egress",
+              "value": 13,
+              "unit": "Gbps",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Fees gone, misses stay",
+          "resultBody": "Transform fees leave the CDN bill, but each of the 1,400 widths is still a distinct URL, so edge misses stay at 42% and each now waits on origin CPU. p95 rises to 3.4 s."
+        }
+      ],
+      "hints": [
+        "Count the distinct URLs per image, not the images.",
+        "A cache can only reuse a variant when two phones ask for exactly the same one.",
+        "How many sizes does a five-breakpoint layout actually need?"
+      ],
+      "nextId": null
+    },
+    {
+      "id": "cdn-casc-02",
+      "incidentCode": "INC-005-09B",
+      "level": 5,
+      "patternId": "cdn-edge",
+      "canonical": false,
+      "reviewed": true,
+      "isCascade": true,
+      "parentIncidentCode": "INC-005-09",
+      "severity": "P1",
+      "xp": 90,
+      "title": "Bulk price import empties the edge",
+      "brief": "A supplier import changed 40,000 prices in 3 minutes, firing 40,000 tag purges. Pages drop faster than they refill: hit ratio fell from 95% to 30% and origin is at 94% CPU.",
+      "constraint": "Changed prices must still reach shoppers within a minute.",
+      "question": "How do you keep bulk updates from flattening the cache?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "value": 40000,
+          "label": "Traffic",
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "hit",
+          "value": 30,
+          "label": "Edge hit ratio",
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "cpu",
+          "value": 94,
+          "label": "CPU",
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "value": 2200,
+          "label": "p95 latency",
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "value": 40,
+          "label": "Price mismatches",
+          "unit": "orders/h",
+          "tone": "warn"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Shoppers"
+          },
+          {
+            "id": "cdn",
+            "kind": "cdn",
+            "label": "CDN edge",
+            "tone": "warn",
+            "sub": "40k tag purges"
+          },
+          {
+            "id": "origin",
+            "kind": "server",
+            "label": "Catalog origin",
+            "tone": "bad",
+            "cpu": 94,
+            "sub": "refilling pages"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "cdn"
+          },
+          {
+            "from": "cdn",
+            "to": "origin"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "casc-soft-purge",
+          "label": "Soft-purge by tag and refresh stale pages in the background",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Shoppers",
+                "tone": "good"
+              },
+              {
+                "id": "cdn",
+                "kind": "cdn",
+                "label": "CDN edge",
+                "tone": "good",
+                "sub": "soft purge + SWR"
+              },
+              {
+                "id": "origin",
+                "kind": "server",
+                "label": "Catalog origin",
+                "tone": "good",
+                "cpu": 40
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "cdn"
+              },
+              {
+                "from": "cdn",
+                "to": "origin"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "hit",
+              "label": "Edge hit ratio",
+              "value": 93,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 40,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 90,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Price mismatches",
+              "value": 3,
+              "unit": "orders/h",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Pages go stale, not missing",
+          "resultBody": "Purged pages are marked stale instead of dropped: the next request gets the old copy while one background fetch per PoP refreshes it, so origin sees a steady trickle instead of a wall. Hit ratio stays at 93% and prices update within ~30 s. Cost: one request per page may still see the old price."
+        },
+        {
+          "id": "casc-queue-purges",
+          "label": "Queue tag purges and release at most 50 per second",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cdn",
+                "sub": "purge queue 40k, 13 min"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "hit",
+              "label": "Edge hit ratio",
+              "value": 90,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 35,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 100,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Price mismatches",
+              "value": 900,
+              "unit": "orders/h",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Calm origin, 13-minute-old prices",
+          "resultBody": "Origin stays calm, but 40,000 purges at 50 per second take over 13 minutes to drain, so most changed prices stay wrong far past the one-minute rule and checkout mismatches jump."
+        },
+        {
+          "id": "casc-scale-origin",
+          "label": "Autoscale the catalog origin to absorb each import's refill",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 700
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "origin",
+                "label": "Catalog origin (x3)",
+                "tone": "warn",
+                "cpu": 60,
+                "sub": "hit ratio still 30%"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "hit",
+              "label": "Edge hit ratio",
+              "value": 30,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 60,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 900,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Price mismatches",
+              "value": 40,
+              "unit": "orders/h",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Origin survives, edge stays empty",
+          "resultBody": "Origin copes at 60% CPU, but the edge is still emptied by every import: hit ratio sits at 30% for 20 minutes and shoppers far from Virginia wait 900 ms per page."
+        }
+      ],
+      "hints": [
+        "The purges aren't wrong; losing the cached copy is.",
+        "A dropped object costs a full miss; a stale object can still be served once.",
+        "What if purged pages were marked old instead of deleted?"
+      ],
+      "nextId": null
     }
   ]
 }

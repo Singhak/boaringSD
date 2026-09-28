@@ -16,9 +16,9 @@
       "severity": "P0",
       "xp": 150,
       "title": "One tenant dominates a shard",
-      "brief": "A single tenant creates 70% of all writes, but the data is stored in one shard.",
-      "constraint": "The hottest user still produces a hotspot.",
-      "question": "What is the correct fix?",
+      "brief": "HelpDeskly shards tickets by tenant_id over 8 Postgres shards. One tenant, MegaMart, now writes 70% of 9,000 tickets/s, and every one of those rows lands on the same shard.",
+      "constraint": "MegaMart grows 10% a month, and the other shards idle near 20% CPU.",
+      "question": "How do you split the whale tenant's writes?",
       "metricsBefore": [
         {
           "key": "rps",
@@ -30,9 +30,9 @@
         {
           "key": "cpu",
           "label": "CPU",
-          "value": 70,
+          "value": 95,
           "unit": "%",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "p95",
@@ -54,7 +54,10 @@
           {
             "id": "app",
             "kind": "server",
-            "label": "App"
+            "label": "App",
+            "tone": "bad",
+            "cpu": 45,
+            "sub": "504s for every tenant"
           },
           {
             "id": "sh1",
@@ -67,13 +70,29 @@
             "id": "sh2",
             "kind": "db",
             "label": "Shard 2",
-            "tone": "neutral"
+            "tone": "neutral",
+            "cpu": 22
+          },
+          {
+            "id": "sh3",
+            "kind": "db",
+            "label": "Shards 3-8",
+            "tone": "neutral",
+            "cpu": 20
           }
         ],
         "edges": [
           {
             "from": "app",
             "to": "sh1"
+          },
+          {
+            "from": "app",
+            "to": "sh2"
+          },
+          {
+            "from": "app",
+            "to": "sh3"
           }
         ]
       },
@@ -151,7 +170,12 @@
             }
           ],
           "resultTitle": "Whale Tenant Load Balanced",
-          "resultBody": "Compound partition keys distribute the whale tenant's high write volume across multiple physical database instances, eliminating the single-shard hotspot."
+          "resultBody": "Compound partition keys distribute the whale tenant's high write volume across multiple physical database instances, eliminating the single-shard hotspot.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "cascadeIncidentId": "shard-casc-01",
+          "cascadeDelayMs": 4000
         },
         {
           "id": "add-cache",
@@ -182,7 +206,35 @@
             }
           ],
           "resultTitle": "Cache Ineffective for Write Load",
-          "resultBody": "Caches absorb read traffic, but 80% of this tenant's traffic consists of write operations that must hit persistent disk, leaving the database shard at 98% CPU."
+          "resultBody": "Caches absorb read traffic, but 80% of this tenant's traffic consists of write operations that must hit persistent disk, leaving the database shard at 98% CPU.",
+          "tradeoffs": {
+            "costMonthlyDelta": 80
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "sh1",
+                "cpu": 98,
+                "sub": "writes bypass the cache"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "cache",
+                "kind": "cache",
+                "label": "Tenant cache",
+                "tone": "warn",
+                "cpu": 10,
+                "sub": "20% of traffic is reads"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "cache"
+              }
+            ]
+          }
         },
         {
           "id": "bigger-primary",
@@ -213,15 +265,59 @@
             }
           ],
           "resultTitle": "Temporary Expensive Band-Aid",
-          "resultBody": "The $4,500/mo instance drops CPU for a few weeks, but the whale tenant still sends 70% of writes to one node, and its growth saturates the new box within 6 weeks."
+          "resultBody": "The $4,500/mo instance drops CPU for a few weeks, but the whale tenant still sends 70% of writes to one node, and its growth saturates the new box within 6 weeks.",
+          "tradeoffs": {
+            "costMonthlyDelta": 3000
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "sh1",
+                "label": "Shard 1 (largest box)",
+                "tone": "warn",
+                "cpu": 72,
+                "sub": "full again in ~6 weeks"
+              }
+            ]
+          }
         }
       ],
       "hints": [
-        "One partition is a hotspot.",
-        "Key choice drives skew.",
-        "Spread the hot key."
+        "Whose rows are on the hot shard?",
+        "tenant_id alone keeps every row of a tenant together.",
+        "Give the key a second, high-cardinality part inside the tenant."
       ],
-      "nextId": "cons-01"
+      "nextId": "cons-01",
+      "format": "culprit",
+      "logs": {
+        "app": [
+          "WARN p95 2,140 ms on POST /tickets, all tenants",
+          "ERROR 504: shard-1 query timeout after 2,000 ms",
+          "pool shard-1 200/200 busy; shard-2..8 under 20/200"
+        ],
+        "sh1": [
+          "top writer: tenant_id=4411 (MegaMart) 70.2% of INSERTs",
+          "lock wait on tickets index pages, avg 1,840 ms",
+          "tenants on this shard: 312"
+        ],
+        "sh2": [
+          "CPU 22%, 1,100 writes/s, no lock waits",
+          "autovacuum on tickets finished in 9 s"
+        ],
+        "sh3": [
+          "shards 3-8: CPU 18-21%, replication lag < 1 s",
+          "checkpoint complete on all six"
+        ]
+      },
+      "culprit": {
+        "nodeId": "sh1",
+        "explanation": "Shard 1's stats show one tenant, MegaMart, writing 70% of all rows, and a tenant_id key keeps every one of them on that shard. The API's 504s are only waiting on shard 1.",
+        "wrongNodeFeedback": {
+          "app": "The API's pool to shard 1 is full because shard 1 is slow; its pools to the other shards are nearly idle.",
+          "sh2": "Shard 2 is at 22% with no lock waits. Look for the shard with a single dominant writer.",
+          "sh3": "Shards 3-8 are idle. That idleness is the clue: the load is not spread."
+        }
+      }
     },
     {
       "id": "shard-02",
@@ -385,7 +481,10 @@
             }
           ],
           "resultTitle": "Writes spread across shards",
-          "resultBody": "Each increment picks counter:sku-991:{0..31} at random, so the 32 sub-rows hash to different shards and no single row lock serialises 40,000 writes. The page's once-a-second read sums 32 rows, which is cheap."
+          "resultBody": "Each increment picks counter:sku-991:{0..31} at random, so the 32 sub-rows hash to different shards and no single row lock serialises 40,000 writes. The page's once-a-second read sums 32 rows, which is cheap.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "replica-counter",
@@ -417,7 +516,34 @@
             }
           ],
           "resultTitle": "Replicas can't take increments",
-          "resultBody": "Every increment is a write, and writes still go to shard 5's primary; the replicas just replay the same 40,000 updates/s and lag behind."
+          "resultBody": "Every increment is a write, and writes still go to shard 5's primary; the replicas just replay the same 40,000 updates/s and lag behind.",
+          "tradeoffs": {
+            "costMonthlyDelta": 300
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "sh5",
+                "cpu": 97
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "r1",
+                "kind": "replica",
+                "label": "Shard 5 replicas x2",
+                "tone": "warn",
+                "cpu": 60,
+                "sub": "replaying 40k updates/s"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "sh5",
+                "to": "r1"
+              }
+            ]
+          }
         },
         {
           "id": "bigger-shard",
@@ -449,7 +575,20 @@
             }
           ],
           "resultTitle": "One row lock, more idle cores",
-          "resultBody": "All increments contend for the same row lock, so they run one at a time no matter how many cores the box has; latency barely moves."
+          "resultBody": "All increments contend for the same row lock, so they run one at a time no matter how many cores the box has; latency barely moves.",
+          "tradeoffs": {
+            "costMonthlyDelta": 700
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "sh5",
+                "label": "Shard 5 (2x cores)",
+                "cpu": 88,
+                "sub": "one row lock, idle cores"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -579,7 +718,10 @@
             }
           ],
           "resultTitle": "Not a sharding problem",
-          "resultBody": "The lookup becomes an index seek, CPU falls from 94% to about 22%, and one node handles 3,000 writes/s with years of headroom. Sharding would have spread the same bad query across 8 nodes."
+          "resultBody": "The lookup becomes an index seek, CPU falls from 94% to about 22%, and one node handles 3,000 writes/s with years of headroom. Sharding would have spread the same bad query across 8 nodes.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "shard-now",
@@ -611,7 +753,35 @@
             }
           ],
           "resultTitle": "Eight nodes scanning instead of one",
-          "resultBody": "The lookup filters by org_id and email, not user_id, so every call now fans out to all 8 shards and each still runs the sequential scan."
+          "resultBody": "The lookup filters by org_id and email, not user_id, so every call now fans out to all 8 shards and each still runs the sequential scan.",
+          "tradeoffs": {
+            "costMonthlyDelta": 1400
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "label": "Shard 1 of 8",
+                "cpu": 90
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "db2",
+                "kind": "db",
+                "label": "Shards 2-8",
+                "tone": "bad",
+                "cpu": 90,
+                "sub": "same seq scan x8"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "db2"
+              }
+            ]
+          }
         },
         {
           "id": "read-replica",
@@ -643,7 +813,32 @@
             }
           ],
           "resultTitle": "Replica pinned by the same scan",
-          "resultBody": "The replica runs the same unindexed scan and hits 95% CPU within minutes, while the primary still pays for the scans inside write transactions."
+          "resultBody": "The replica runs the same unindexed scan and hits 95% CPU within minutes, while the primary still pays for the scans inside write transactions.",
+          "tradeoffs": {
+            "costMonthlyDelta": 250
+          },
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "rep",
+                "kind": "replica",
+                "label": "Read replica",
+                "tone": "bad",
+                "cpu": 95,
+                "sub": "same seq scan"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "db",
+                "to": "rep"
+              },
+              {
+                "from": "app",
+                "to": "rep"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -815,7 +1010,10 @@
             }
           ],
           "resultTitle": "One user, one shard",
-          "resultBody": "All of a user's orders now live together, so history is one indexed query on one shard and p95 drops to 45 ms. Encoding the shard number in each new order_id keeps lookups by order_id single-shard too. Cost: a backfill migration, and very heavy buyers can make their shard a bit hotter."
+          "resultBody": "All of a user's orders now live together, so history is one indexed query on one shard and p95 drops to 45 ms. Encoding the shard number in each new order_id keeps lookups by order_id single-shard too. Cost: a backfill migration, and very heavy buyers can make their shard a bit hotter.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "parallel",
@@ -847,7 +1045,23 @@
             }
           ],
           "resultTitle": "Faster, but with missing orders",
-          "resultBody": "Latency is capped at 420 ms, but every view still costs 16 queries, CPU stays at 85%, and whenever one shard is slow the page silently drops that shard's orders."
+          "resultBody": "Latency is capped at 420 ms, but every view still costs 16 queries, CPU stays at 85%, and whenever one shard is slow the page silently drops that shard's orders.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "tone": "warn",
+                "sub": "drops slow shards' orders"
+              },
+              {
+                "id": "s1",
+                "cpu": 85
+              }
+            ]
+          }
         },
         {
           "id": "redis-history",
@@ -879,7 +1093,35 @@
             }
           ],
           "resultTitle": "New orders vanish from history",
-          "resultBody": "Repeat views are fast, but a user who just ordered sees the old list for up to an hour, and every cache miss still fans out to 16 shards, so CPU only falls to 70%."
+          "resultBody": "Repeat views are fast, but a user who just ordered sees the old list for up to an hour, and every cache miss still fans out to 16 shards, so CPU only falls to 70%.",
+          "tradeoffs": {
+            "costMonthlyDelta": 100
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "s1",
+                "tone": "warn",
+                "cpu": 70
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "redis",
+                "kind": "cache",
+                "label": "Redis order history",
+                "tone": "warn",
+                "cpu": 20,
+                "sub": "stale for up to 1 h"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "redis"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1049,7 +1291,10 @@
             }
           ],
           "resultTitle": "Blast radius back to 4%",
-          "resultBody": "Flags come from a local copy refreshed every 30 s, so requests no longer touch shard 9 unless the tenant lives there. 96% of tenants recover at once; shard 9's tenants get a clear error until promotion finishes."
+          "resultBody": "Flags come from a local copy refreshed every 30 s, so requests no longer touch shard 9 unless the tenant lives there. 96% of tenants recover at once; shard 9's tenants get a clear error until promotion finishes.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "restart-fleet",
@@ -1081,7 +1326,19 @@
             }
           ],
           "resultTitle": "Fresh pods hit the same dead shard",
-          "resultBody": "New pods start, try to load flags from shard 9, and block on the same timeout; the restart adds a cold-start wave on top of the outage."
+          "resultBody": "New pods start, try to load flags from shard 9, and block on the same timeout; the restart adds a cold-start wave on top of the outage.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "cpu": 16,
+                "sub": "cold pods blocked on shard 9"
+              }
+            ]
+          }
         },
         {
           "id": "raise-timeout",
@@ -1113,7 +1370,19 @@
             }
           ],
           "resultTitle": "Requests wait longer, then fail",
-          "resultBody": "Promotion takes 10 minutes, so a 30 s wait still ends in failure, and every request now ties up a worker six times longer."
+          "resultBody": "Promotion takes 10 minutes, so a 30 s wait still ends in failure, and every request now ties up a worker six times longer.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "cpu": 14,
+                "sub": "workers stuck 30 s each"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1306,7 +1575,10 @@
             }
           ],
           "resultTitle": "Millions of keys, even spread",
-          "resultBody": "customer_id has millions of values, so hashing it gives every shard about 1/16 of the writes at ~42% CPU and keeps each customer's orders together. Cost: 'all card orders' reports now scatter across shards, and the migration needs a backfill."
+          "resultBody": "customer_id has millions of values, so hashing it gives every shard about 1/16 of the writes at ~42% CPU and keeps each customer's orders together. Cost: 'all card orders' reports now scatter across shards, and the migration needs a backfill.",
+          "tradeoffs": {
+            "costMonthlyDelta": 900
+          }
         },
         {
           "id": "split-card",
@@ -1338,7 +1610,36 @@
             }
           ],
           "resultTitle": "The Visa shard is the new hotspot",
-          "resultBody": "Visa is 70% of card volume, so the new Visa shard runs at 78% CPU. The key still has only a handful of values, so the next growth spurt or card network promo overloads it again."
+          "resultBody": "Visa is 70% of card volume, so the new Visa shard runs at 78% CPU. The key still has only a handful of values, so the next growth spurt or card network promo overloads it again.",
+          "tradeoffs": {
+            "costMonthlyDelta": 400
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "s1",
+                "label": "visa",
+                "cpu": 78,
+                "tone": "warn",
+                "sub": "70% of card volume"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "mc",
+                "kind": "db",
+                "label": "mastercard",
+                "tone": "good",
+                "cpu": 30
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "mc"
+              }
+            ]
+          }
         },
         {
           "id": "replicas",
@@ -1370,7 +1671,34 @@
             }
           ],
           "resultTitle": "Replicas cannot take writes",
-          "resultBody": "The load is 9,000 writes/s, and every replica must replay them all. The primary stays at 96% CPU and replicas start lagging behind it."
+          "resultBody": "The load is 9,000 writes/s, and every replica must replay them all. The primary stays at 96% CPU and replicas start lagging behind it.",
+          "tradeoffs": {
+            "costMonthlyDelta": 450
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "s1",
+                "cpu": 96
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "r1",
+                "kind": "replica",
+                "label": "card replicas x3",
+                "tone": "warn",
+                "cpu": 70,
+                "sub": "lagging on 9k writes/s"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "s1",
+                "to": "r1"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1554,7 +1882,10 @@
             }
           ],
           "resultTitle": "The row is read once per 5 seconds",
-          "resultBody": "Each API node holds the profile in memory for 5 s, backed by Redis, so shard 14 sees a handful of reads per second for that row and returns to 32% CPU. Edits appear within 5 s, inside the 10 s budget. Cost: another layer to invalidate and a brief window of stale profiles."
+          "resultBody": "Each API node holds the profile in memory for 5 s, backed by Redis, so shard 14 sees a handful of reads per second for that row and returns to 32% CPU. Edits appear within 5 s, inside the 10 s budget. Cost: another layer to invalidate and a brief window of stale profiles.",
+          "tradeoffs": {
+            "costMonthlyDelta": 80
+          }
         },
         {
           "id": "reshard-64",
@@ -1586,7 +1917,24 @@
             }
           ],
           "resultTitle": "One row still lives on one shard",
-          "resultBody": "The week-long reshard halves everyone else's load, but a single user_id always hashes to exactly one shard. That shard still receives all 180k reads/s and stays at 94% CPU."
+          "resultBody": "The week-long reshard halves everyone else's load, but a single user_id always hashes to exactly one shard. That shard still receives all 180k reads/s and stays at 94% CPU.",
+          "tradeoffs": {
+            "costMonthlyDelta": 1500
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "s1",
+                "cpu": 94,
+                "sub": "hot row still here"
+              },
+              {
+                "id": "s3",
+                "label": "Shards 1-64",
+                "cpu": 15
+              }
+            ]
+          }
         },
         {
           "id": "dedicated",
@@ -1618,7 +1966,36 @@
             }
           ],
           "resultTitle": "Isolated, still saturated",
-          "resultBody": "Other users on shard 14 recover, but one database node still has to serve 180k reads/s of the same row and runs at 88% CPU. The next viral account needs its own machine too."
+          "resultBody": "Other users on shard 14 recover, but one database node still has to serve 180k reads/s of the same row and runs at 88% CPU. The next viral account needs its own machine too.",
+          "tradeoffs": {
+            "costMonthlyDelta": 900
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "s1",
+                "tone": "good",
+                "cpu": 30,
+                "sub": "neighbours recovered"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "celeb",
+                "kind": "db",
+                "label": "Celebrity's own box",
+                "tone": "bad",
+                "cpu": 88,
+                "sub": "180k reads/s, 1 row"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "celeb"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1780,7 +2157,10 @@
             }
           ],
           "resultTitle": "The flash sale spreads over 24 partitions",
-          "resultBody": "Each order's events still land on one partition in order, but the merchant's thousands of orders hash across all 24, so every consumer takes a share at ~45% CPU and lag drains in minutes. Cost: per-merchant aggregations must now combine data from all partitions."
+          "resultBody": "Each order's events still land on one partition in order, but the merchant's thousands of orders hash across all 24, so every consumer takes a share at ~45% CPU and lag drains in minutes. Cost: per-merchant aggregations must now combine data from all partitions.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "more-partitions",
@@ -1805,7 +2185,22 @@
             }
           ],
           "resultTitle": "Same key, same partition",
-          "resultBody": "The merchant_id still hashes to exactly one partition, now one of 96. That partition and its single consumer keep 60% of the traffic, and adding partitions also reshuffles key placement for everyone else."
+          "resultBody": "The merchant_id still hashes to exactly one partition, now one of 96. That partition and its single consumer keep 60% of the traffic, and adding partitions also reshuffles key placement for everyone else.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "pothers",
+                "label": "Partitions 1-96"
+              },
+              {
+                "id": "p7",
+                "sub": "still 60% of events"
+              }
+            ]
+          }
         },
         {
           "id": "more-consumers",
@@ -1830,7 +2225,28 @@
             }
           ],
           "resultTitle": "48 consumers with nothing to do",
-          "resultBody": "A partition is read by at most one consumer in a group, so the 48 new instances get no partitions assigned. Partition 7's consumer is still the bottleneck."
+          "resultBody": "A partition is read by at most one consumer in a group, so the 48 new instances get no partitions assigned. Partition 7's consumer is still the bottleneck.",
+          "tradeoffs": {
+            "costMonthlyDelta": 600
+          },
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "idle",
+                "kind": "worker",
+                "label": "48 new consumers",
+                "tone": "neutral",
+                "cpu": 0,
+                "sub": "no partitions assigned"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "pothers",
+                "to": "idle"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2019,7 +2435,10 @@
             }
           ],
           "resultTitle": "Acme gets a home of its own",
-          "resultBody": "Acme's rows are copied to a new shard with live replication, and one directory update switches its routing, so shard 3 drops to 18% disk and its 70 neighbours stop suffering. Cost: one more shard to run, and Acme's shard must be sized and scaled on its own."
+          "resultBody": "Acme's rows are copied to a new shard with live replication, and one directory update switches its routing, so shard 3 drops to 18% disk and its 70 neighbours stop suffering. Cost: one more shard to run, and Acme's shard must be sized and scaled on its own.",
+          "tradeoffs": {
+            "costMonthlyDelta": 700
+          }
         },
         {
           "id": "hash-split",
@@ -2051,7 +2470,36 @@
             }
           ],
           "resultTitle": "Acme lands on one half, intact",
-          "resultBody": "Hashing tenant_id moves whole tenants, so all 3.1 TB of Acme ends up on one of the halves. That half is at 80% disk and fills again in about ten weeks."
+          "resultBody": "Hashing tenant_id moves whole tenants, so all 3.1 TB of Acme ends up on one of the halves. That half is at 80% disk and fills again in about ten weeks.",
+          "tradeoffs": {
+            "costMonthlyDelta": 700
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "s1",
+                "label": "Shard 3a (Acme)",
+                "tone": "warn",
+                "cpu": 68,
+                "sub": "80% disk, full in ~10 wk"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "s3b",
+                "kind": "db",
+                "label": "Shard 3b",
+                "tone": "good",
+                "cpu": 25
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "s3b"
+              }
+            ]
+          }
         },
         {
           "id": "archive",
@@ -2076,7 +2524,38 @@
             }
           ],
           "resultTitle": "Space freed, contract broken",
-          "resultBody": "Disk drops to 40%, but auditors and Acme's finance team can no longer query history older than 90 days, which the contract requires to stay online for 7 years."
+          "resultBody": "Disk drops to 40%, but auditors and Acme's finance team can no longer query history older than 90 days, which the contract requires to stay online for 7 years.",
+          "tradeoffs": {
+            "costMonthlyDelta": 20
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "s1",
+                "tone": "warn",
+                "sub": "90 days of Acme online"
+              },
+              {
+                "id": "app",
+                "tone": "bad",
+                "sub": "audit queries fail"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "cold",
+                "kind": "db",
+                "label": "Cold storage",
+                "tone": "neutral"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "s1",
+                "to": "cold"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2281,7 +2760,10 @@
             }
           ],
           "resultTitle": "NA load split inside NA",
-          "resultBody": "NA bookings spread over four NA sub-shards at ~45% CPU each and p95 falls from 2,100 to 140 ms, with every row still in-region. Cost: \"all NA bookings\" reports scatter-gather across 4 shards, and the move needs a dual-write migration."
+          "resultBody": "NA bookings spread over four NA sub-shards at ~45% CPU each and p95 falls from 2,100 to 140 ms, with every row still in-region. Cost: \"all NA bookings\" reports scatter-gather across 4 shards, and the move needs a dual-write migration.",
+          "tradeoffs": {
+            "costMonthlyDelta": 450
+          }
         },
         {
           "id": "spill-apac",
@@ -2313,7 +2795,24 @@
             }
           ],
           "resultTitle": "US data lands in Singapore",
-          "resultBody": "NA CPU drops to 80%, but spilled bookings cross a 150 ms Pacific round trip, US customer data now sits in APAC (legal flags it within the hour), and NA reports miss 20% of rows."
+          "resultBody": "NA CPU drops to 80%, but spilled bookings cross a 150 ms Pacific round trip, US customer data now sits in APAC (legal flags it within the hour), and NA reports miss 20% of rows.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "na",
+                "cpu": 80
+              },
+              {
+                "id": "apac",
+                "tone": "bad",
+                "cpu": 60,
+                "sub": "US data in Singapore"
+              }
+            ]
+          }
         },
         {
           "id": "bigger-na",
@@ -2345,7 +2844,21 @@
             }
           ],
           "resultTitle": "Four months bought at 3x cost",
-          "resultBody": "CPU falls to 62% and p95 to 480 ms, but NA still carries 62% of writes on one node at triple the price, and the summer booking peak will saturate it again."
+          "resultBody": "CPU falls to 62% and p95 to 480 ms, but NA still carries 62% of writes on one node at triple the price, and the summer booking peak will saturate it again.",
+          "tradeoffs": {
+            "costMonthlyDelta": 1200
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "na",
+                "label": "NA shard (3x box)",
+                "tone": "warn",
+                "cpu": 62,
+                "sub": "full again by summer"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2520,7 +3033,10 @@
             }
           ],
           "resultTitle": "Unique by construction, no coordinator",
-          "resultBody": "Each id packs 41 bits of milliseconds, 10 bits of shard or worker number and a 12-bit sequence, so no two shards can ever mint the same value, ids stay 64-bit and time-sortable, and no network call is needed. Cost: clocks must be monitored, since a clock stepping backwards can repeat ids unless the generator waits."
+          "resultBody": "Each id packs 41 bits of milliseconds, 10 bits of shard or worker number and a 12-bit sequence, so no two shards can ever mint the same value, ids stay 64-bit and time-sortable, and no network call is needed. Cost: clocks must be monitored, since a clock stepping backwards can repeat ids unless the generator waits.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "central",
@@ -2552,7 +3068,28 @@
             }
           ],
           "resultTitle": "A new single point of failure",
-          "resultBody": "Duplicates stop, but all 30,000 inserts/s now wait on one database for an id. It runs at 96% CPU, adds a network hop to every insert, and when it fails every shard stops taking orders."
+          "resultBody": "Duplicates stop, but all 30,000 inserts/s now wait on one database for an id. It runs at 96% CPU, adds a network hop to every insert, and when it fails every shard stops taking orders.",
+          "tradeoffs": {
+            "costMonthlyDelta": 250
+          },
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "idgen",
+                "kind": "db",
+                "label": "Central ID table",
+                "tone": "bad",
+                "cpu": 96,
+                "sub": "every insert waits here"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "idgen"
+              }
+            ]
+          }
         },
         {
           "id": "uuid4",
@@ -2584,7 +3121,25 @@
             }
           ],
           "resultTitle": "Unique, but breaks pagination",
-          "resultBody": "Random 128-bit ids are unique, but they are not 64-bit and not time-ordered, so the app's pagination by id breaks, and random inserts scatter across the B-tree, raising insert latency to 95 ms."
+          "resultBody": "Random 128-bit ids are unique, but they are not 64-bit and not time-ordered, so the app's pagination by id breaks, and random inserts scatter across the B-tree, raising insert latency to 95 ms.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "s1",
+                "tone": "warn",
+                "cpu": 68,
+                "sub": "random B-tree inserts"
+              },
+              {
+                "id": "app",
+                "tone": "bad",
+                "sub": "pagination by id broken"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2736,7 +3291,10 @@
             }
           ],
           "resultTitle": "Joins become local again",
-          "resultBody": "Each shard holds a read-only copy of the 40 MB tables, kept current by logical replication within seconds, so invoice queries join locally and the central DB only takes the rare writes. p95 drops to 35 ms. Cost: 24 copies to monitor, and a rate change applies shard by shard over a few seconds."
+          "resultBody": "Each shard holds a read-only copy of the 40 MB tables, kept current by logical replication within seconds, so invoice queries join locally and the central DB only takes the rare writes. p95 drops to 35 ms. Cost: 24 copies to monitor, and a rate change applies shard by shard over a few seconds.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "shard-ref",
@@ -2768,7 +3326,26 @@
             }
           ],
           "resultTitle": "Every join is now cross-shard",
-          "resultBody": "A tiny table does not need sharding. Each invoice's customer shard rarely holds its currency or tax row, so a single render now touches two or three shards and p95 climbs to 520 ms."
+          "resultBody": "A tiny table does not need sharding. Each invoice's customer shard rarely holds its currency or tax row, so a single render now touches two or three shards and p95 climbs to 520 ms.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "s1",
+                "tone": "warn",
+                "cpu": 60,
+                "sub": "2-3 shards per render"
+              },
+              {
+                "id": "ref",
+                "label": "Ref tables (sharded)",
+                "tone": "warn",
+                "cpu": 30
+              }
+            ]
+          }
         },
         {
           "id": "central-replicas",
@@ -2800,7 +3377,39 @@
             }
           ],
           "resultTitle": "Load spread, round trips remain",
-          "resultBody": "CPU per node falls to 45%, but every invoice still makes an extra network round trip per lookup, often several per invoice, so p95 only improves to 260 ms and you run five databases for 40 MB of data."
+          "resultBody": "CPU per node falls to 45%, but every invoice still makes an extra network round trip per lookup, often several per invoice, so p95 only improves to 260 ms and you run five databases for 40 MB of data.",
+          "tradeoffs": {
+            "costMonthlyDelta": 600
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "ref",
+                "cpu": 45,
+                "tone": "warn"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "rr",
+                "kind": "replica",
+                "label": "Ref replicas x4",
+                "tone": "warn",
+                "cpu": 45,
+                "sub": "extra hop per lookup"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "ref",
+                "to": "rr"
+              },
+              {
+                "from": "app",
+                "to": "rr"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2948,7 +3557,10 @@
             }
           ],
           "resultTitle": "Moved live, paused for seconds",
-          "resultBody": "A snapshot backfills the 16 new shards while change-data-capture replays every write since the snapshot. When lag is near zero, each range pauses writes for a few seconds, flips its routing entry and resumes. Cost: weeks of tooling, verification checksums, and double storage during the move."
+          "resultBody": "A snapshot backfills the 16 new shards while change-data-capture replays every write since the snapshot. When lag is near zero, each range pauses writes for a few seconds, flips its routing entry and resumes. Cost: weeks of tooling, verification checksums, and double storage during the move.",
+          "tradeoffs": {
+            "costMonthlyDelta": 1200
+          }
         },
         {
           "id": "snapshot",
@@ -2973,7 +3585,25 @@
             }
           ],
           "resultTitle": "Eleven hours of orders vanish",
-          "resultBody": "The copy takes 11 hours, and nothing carries over the writes made during those hours. After the switch, about 3,200 orders placed mid-copy exist only on the old shards."
+          "resultBody": "The copy takes 11 hours, and nothing carries over the writes made during those hours. After the switch, about 3,200 orders placed mid-copy exist only on the old shards.",
+          "tradeoffs": {
+            "costMonthlyDelta": 1200
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "s2",
+                "tone": "bad",
+                "sub": "missing 3,200 orders"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "s2"
+              }
+            ]
+          }
         },
         {
           "id": "dual-write",
@@ -2998,7 +3628,29 @@
             }
           ],
           "resultTitle": "New rows present, old rows missing",
-          "resultBody": "Writes from now on reach both sides, but the 8 TB of existing rows were never backfilled, so reads switched to the new shards miss every order older than the dual-write start. Partial failures between the two writes also let the copies diverge."
+          "resultBody": "Writes from now on reach both sides, but the 8 TB of existing rows were never backfilled, so reads switched to the new shards miss every order older than the dual-write start. Partial failures between the two writes also let the copies diverge.",
+          "tradeoffs": {
+            "costMonthlyDelta": 1200
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "s2",
+                "tone": "bad",
+                "sub": "old rows never copied"
+              },
+              {
+                "id": "app",
+                "sub": "dual-writing"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "s2"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3114,7 +3766,10 @@
             }
           ],
           "resultTitle": "Inserts spread across all shards",
-          "resultBody": "Hashing spreads 40k inserts/s at ~5k per shard; the hottest shard falls from 97% to 38% CPU and p95 from 1,800 to 35 ms. Cost: id-ordered range scans now hit all 8 shards, and existing rows need a backfill."
+          "resultBody": "Hashing spreads 40k inserts/s at ~5k per shard; the hottest shard falls from 97% to 38% CPU and p95 from 1,800 to 35 ms. Cost: id-ordered range scans now hit all 8 shards, and existing rows need a backfill.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "auto-split",
@@ -3146,7 +3801,19 @@
             }
           ],
           "resultTitle": "The hot spot follows the tail",
-          "resultBody": "The splitter keeps carving the tail range, but new ids are always the largest, so every insert goes to whichever split is newest. Shard CPU stays at 96%."
+          "resultBody": "The splitter keeps carving the tail range, but new ids are always the largest, so every insert goes to whichever split is newest. Shard CPU stays at 96%.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "sh8",
+                "label": "Shard 8b (newest split)",
+                "cpu": 96
+              }
+            ]
+          }
         },
         {
           "id": "autoinc",
@@ -3178,7 +3845,35 @@
             }
           ],
           "resultTitle": "Still monotonic, plus an allocator",
-          "resultBody": "Auto-increment keys are just as monotonic as time-ordered UUIDs: inserts still target the top of the key space, and the id allocator adds a coordination hop, so p95 reaches 2,000 ms."
+          "resultBody": "Auto-increment keys are just as monotonic as time-ordered UUIDs: inserts still target the top of the key space, and the id allocator adds a coordination hop, so p95 reaches 2,000 ms.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "sh8",
+                "cpu": 98,
+                "sub": "top of the key space"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "alloc",
+                "kind": "server",
+                "label": "ID allocator",
+                "tone": "warn",
+                "cpu": 50,
+                "sub": "extra hop per insert"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "alloc"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3348,7 +4043,10 @@
             }
           ],
           "resultTitle": "Analytics leave the OLTP shards",
-          "resultBody": "Change-data-capture tails each shard's log into a columnar warehouse, so the report scans compressed columns in minutes and never touches the shards, which return to 38% CPU. Cost: warehouse spend, a pipeline to operate, and data that is a few minutes behind."
+          "resultBody": "Change-data-capture tails each shard's log into a columnar warehouse, so the report scans compressed columns in minutes and never touches the shards, which return to 38% CPU. Cost: warehouse spend, a pipeline to operate, and data that is a few minutes behind.",
+          "tradeoffs": {
+            "costMonthlyDelta": 900
+          }
         },
         {
           "id": "nightly",
@@ -3380,7 +4078,23 @@
             }
           ],
           "resultTitle": "2 a.m. is lunchtime in Sydney",
-          "resultBody": "With tenants in every time zone there is no quiet hour. The 3-hour scan now slows APAC dashboards every single day instead of once a month."
+          "resultBody": "With tenants in every time zone there is no quiet hour. The 3-hour scan now slows APAC dashboards every single day instead of once a month.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "s1",
+                "cpu": 90,
+                "sub": "3 h scan daily, APAC lunch"
+              },
+              {
+                "id": "report",
+                "sub": "daily at 2 a.m. UTC"
+              }
+            ]
+          }
         },
         {
           "id": "replica-per-shard",
@@ -3412,7 +4126,39 @@
             }
           ],
           "resultTitle": "40 new replicas for one report",
-          "resultBody": "Dashboards recover, but you now run 40 extra databases, each still scanning row-oriented tables for 3 hours, and replicas lag during the scan, so failover safety suffers."
+          "resultBody": "Dashboards recover, but you now run 40 extra databases, each still scanning row-oriented tables for 3 hours, and replicas lag during the scan, so failover safety suffers.",
+          "tradeoffs": {
+            "costMonthlyDelta": 4000
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "s1",
+                "tone": "good",
+                "cpu": 45
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "rr",
+                "kind": "replica",
+                "label": "40 report replicas",
+                "tone": "warn",
+                "cpu": 95,
+                "sub": "lagging during scans"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "s1",
+                "to": "rr"
+              },
+              {
+                "from": "report",
+                "to": "rr"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3584,7 +4330,10 @@
             }
           ],
           "resultTitle": "Hot shards split across hosts",
-          "resultBody": "A replica of shard 41 is built on H7, promoted, and the routing map updated, so H3 drops to 55% and H7 rises to 60%. The balancer now weighs CPU and QPS, not just disk. Cost: one shard's data copied across the network, throttled to protect live traffic."
+          "resultBody": "A replica of shard 41 is built on H7, promoted, and the routing map updated, so H3 drops to 55% and H7 rises to 60%. The balancer now weighs CPU and QPS, not just disk. Cost: one shard's data copied across the network, throttled to protect live traffic.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "reshard",
@@ -3616,7 +4365,18 @@
             }
           ],
           "resultTitle": "Weeks of work for a placement bug",
-          "resultBody": "The key was never the problem: the load is simply stacked on one host. The reshard project starts, and H3 stays at 96% for the weeks it takes."
+          "resultBody": "The key was never the problem: the load is simply stacked on one host. The reshard project starts, and H3 stays at 96% for the weeks it takes.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "h3",
+                "sub": "96% for the weeks-long reshard"
+              }
+            ]
+          }
         },
         {
           "id": "bigger-h3",
@@ -3647,8 +4407,23 @@
               "tone": "warn"
             }
           ],
-          "resultTitle": "One oversized host to babysit",
-          "resultBody": "H3 recovers to 62%, but it now costs twice as much while H7 idles at 22%, and the disk-only balancer can stack hot shards together again at the next rebalance."
+          "resultTitle": "H3 back down to 62% CPU",
+          "resultBody": "The larger host brings H3 to 62% and p95 to 300 ms for twice the price. The disk-only balancer still runs every Sunday, and it has just queued shard 22 to move to host H11.",
+          "tradeoffs": {
+            "costMonthlyDelta": 600
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "h3",
+                "label": "Host H3 (2x cores)",
+                "tone": "warn",
+                "cpu": 62,
+                "sub": "rebalance due Sunday"
+              }
+            ]
+          },
+          "consequenceIncidentId": "shard-bill-01"
         }
       ],
       "hints": [
@@ -3812,7 +4587,12 @@
             }
           ],
           "resultTitle": "Every debit carries its own receipt",
-          "resultBody": "The debit and a 'credit pending' outbox row commit in one local transaction on the sender's shard. A relay delivers it to the receiver's shard, which applies the credit keyed by transfer_id, so crashes cause a retry, never a loss or a double credit. Cost: transfers are eventually consistent for a second or two."
+          "resultBody": "The debit and a 'credit pending' outbox row commit in one local transaction on the sender's shard. A relay delivers it to the receiver's shard, which applies the credit keyed by transfer_id, so crashes cause a retry, never a loss or a double credit. Cost: transfers are eventually consistent for a second or two.",
+          "tradeoffs": {
+            "costMonthlyDelta": 40
+          },
+          "cascadeIncidentId": "shard-casc-02",
+          "cascadeDelayMs": 4000
         },
         {
           "id": "2pc",
@@ -3844,7 +4624,26 @@
             }
           ],
           "resultTitle": "Atomic, but locks wait on the network",
-          "resultBody": "Losses stop, but both shards now hold row locks through the prepare and commit round trips. Hot wallets queue behind each other, p95 rises to 420 ms, and a coordinator crash leaves transactions in doubt, holding locks until someone resolves them."
+          "resultBody": "Losses stop, but both shards now hold row locks through the prepare and commit round trips. Hot wallets queue behind each other, p95 rises to 420 ms, and a coordinator crash leaves transactions in doubt, holding locks until someone resolves them.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "a",
+                "tone": "warn",
+                "cpu": 78,
+                "sub": "locks held across RTTs"
+              },
+              {
+                "id": "b",
+                "tone": "warn",
+                "cpu": 70,
+                "sub": "in-doubt locks"
+              }
+            ]
+          }
         },
         {
           "id": "retry",
@@ -3869,7 +4668,19 @@
             }
           ],
           "resultTitle": "The retry dies with the process",
-          "resultBody": "Retries help with network blips, but the pending credit lives only in memory. When the pod crashes or is redeployed between the two writes, nothing remembers the transfer, and money still disappears."
+          "resultBody": "Retries help with network blips, but the pending credit lives only in memory. When the pod crashes or is redeployed between the two writes, nothing remembers the transfer, and money still disappears.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "tone": "bad",
+                "sub": "credit lost on pod crash"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -4019,7 +4830,10 @@
             }
           ],
           "resultTitle": "Only the new shard's share moves",
-          "resultBody": "Keys hash to 1,024 slots and a small table maps slots to shards. Adding shard 4 reassigns about 205 slots, moving only the 20% of data it should own, slot by slot and throttled, with no other key changing place. Cost: every router must fetch and cache the slot table."
+          "resultBody": "Keys hash to 1,024 slots and a small table maps slots to shards. Adding shard 4 reassigns about 205 slots, moving only the 20% of data it should own, slot by slot and throttled, with no other key changing place. Cost: every router must fetch and cache the slot table.",
+          "tradeoffs": {
+            "costMonthlyDelta": 400
+          }
         },
         {
           "id": "mod5",
@@ -4051,7 +4865,31 @@
             }
           ],
           "resultTitle": "4.8 TB on the move at once",
-          "resultBody": "Four of every five users change shard, so the weekend is spent copying 4.8 TB while the old shards run at 99% CPU. Reads for rows not yet copied miss, and the next shard will require the same ordeal."
+          "resultBody": "Four of every five users change shard, so the weekend is spent copying 4.8 TB while the old shards run at 99% CPU. Reads for rows not yet copied miss, and the next shard will require the same ordeal.",
+          "tradeoffs": {
+            "costMonthlyDelta": 400
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "s1",
+                "cpu": 99,
+                "sub": "copying 4.8 TB"
+              },
+              {
+                "id": "s5",
+                "tone": "warn",
+                "cpu": 60,
+                "sub": "half-copied"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "s5"
+              }
+            ]
+          }
         },
         {
           "id": "new-only",
@@ -4083,7 +4921,29 @@
             }
           ],
           "resultTitle": "Old shards keep all the load",
-          "resultBody": "No data moves, but the existing users generating 95% of traffic stay on shards 0-3 at 84% CPU, and shard 4 fills only with new signups, which are the most active cohort for a few weeks and then idle."
+          "resultBody": "No data moves, but the existing users generating 95% of traffic stay on shards 0-3 at 84% CPU, and shard 4 fills only with new signups, which are the most active cohort for a few weeks and then idle.",
+          "tradeoffs": {
+            "costMonthlyDelta": 400
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "s1",
+                "cpu": 84
+              },
+              {
+                "id": "s5",
+                "cpu": 5,
+                "sub": "new signups only"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "s5"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -4234,7 +5094,10 @@
             }
           ],
           "resultTitle": "Any page in one O(log n) call",
-          "resultBody": "Each score change publishes an event that does ZADD on a single sorted set of 20M members, about 2 GB of RAM. Any page is one ZREVRANGE call returning 50 rows in milliseconds, and shards stop doing ranking work. Cost: a derived store to rebuild from the shards if Redis is lost."
+          "resultBody": "Each score change publishes an event that does ZADD on a single sorted set of 20M members, about 2 GB of RAM. Any page is one ZREVRANGE call returning 50 rows in milliseconds, and shards stop doing ranking work. Cost: a derived store to rebuild from the shards if Redis is lost.",
+          "tradeoffs": {
+            "costMonthlyDelta": 150
+          }
         },
         {
           "id": "top50",
@@ -4266,7 +5129,24 @@
             }
           ],
           "resultTitle": "Fast pages with wrong ranks",
-          "resultBody": "The merge now reads 800 rows and returns quickly, but page 2 onward can only be correct if every shard contributes enough rows. Players on one shard vanish from pages where they belong, and rank numbers disagree with profiles."
+          "resultBody": "The merge now reads 800 rows and returns quickly, but page 2 onward can only be correct if every shard contributes enough rows. Players on one shard vanish from pages where they belong, and rank numbers disagree with profiles.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "tone": "bad",
+                "sub": "ranks wrong past page 1"
+              },
+              {
+                "id": "s1",
+                "tone": "good",
+                "cpu": 30
+              }
+            ]
+          }
         },
         {
           "id": "one-table",
@@ -4298,7 +5178,28 @@
             }
           ],
           "resultTitle": "25k updates/s on one node",
-          "resultBody": "Ranking queries use a single index now, but all 25,000 score updates per second land on one database, which saturates at 97% CPU. The reason for sharding comes straight back."
+          "resultBody": "Ranking queries use a single index now, but all 25,000 score updates per second land on one database, which saturates at 97% CPU. The reason for sharding comes straight back.",
+          "tradeoffs": {
+            "costMonthlyDelta": 800
+          },
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "scores",
+                "kind": "db",
+                "label": "Unsharded scores table",
+                "tone": "bad",
+                "cpu": 97,
+                "sub": "25k updates/s"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "scores"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -4358,7 +5259,7 @@
             "kind": "server",
             "label": "400 API nodes",
             "tone": "warn",
-            "sub": "map cached 10 min"
+            "sub": "400 nodes"
           },
           {
             "id": "dir",
@@ -4471,7 +5372,10 @@
             }
           ],
           "resultTitle": "Wrong shard says 'moved', router fixes itself",
-          "resultBody": "Every request carries the router's map version. Shard 3 knows it no longer owns the range and replies MOVED with the new owner, so the router refreshes its map and retries on shard 7. Misroutes are rejected instead of written, and directory load stays near 50 req/s. Cost: one extra round trip per router after each move."
+          "resultBody": "Every request carries the router's map version. Shard 3 knows it no longer owns the range and replies MOVED with the new owner, so the router refreshes its map and retries on shard 7. Misroutes are rejected instead of written, and directory load stays near 50 req/s. Cost: one extra round trip per router after each move.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "short-ttl",
@@ -4496,7 +5400,20 @@
             }
           ],
           "resultTitle": "The directory gets hammered",
-          "resultBody": "400 nodes refreshing every 5 seconds turn 50 req/s into thousands, pushing the directory to 95% CPU. There is still a 5-second window where writes land on shard 3 after each move."
+          "resultBody": "400 nodes refreshing every 5 seconds turn 50 req/s into thousands, pushing the directory to 95% CPU. There is still a 5-second window where writes land on shard 3 after each move.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "dir",
+                "tone": "bad",
+                "cpu": 95,
+                "sub": "thousands of refreshes/s"
+              }
+            ]
+          }
         },
         {
           "id": "forward",
@@ -4528,7 +5445,26 @@
             }
           ],
           "resultTitle": "The old shard becomes a relay",
-          "resultBody": "Bookings reach shard 7, but shard 3 now proxies every write for rows it gave away, so its CPU rises to 70% and p95 doubles. After a second move, requests chain through multiple forwarding hops."
+          "resultBody": "Bookings reach shard 7, but shard 3 now proxies every write for rows it gave away, so its CPU rises to 70% and p95 doubles. After a second move, requests chain through multiple forwarding hops.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "s3",
+                "tone": "warn",
+                "cpu": 70,
+                "sub": "relaying moved rows"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "s3",
+                "to": "s7"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -4537,7 +5473,37 @@
         "Let the wrong destination refuse the request and point to the right one."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "format": "culprit",
+      "logs": {
+        "app": [
+          "route listing 88121 -> shard 3 (map v41, fetched 7m12s ago)",
+          "next directory refresh in 2m48s",
+          "400/400 nodes healthy"
+        ],
+        "dir": [
+          "map v42 published 23:02: 3% of listings moved 3 -> 7",
+          "serving 50 req/s, p99 4 ms"
+        ],
+        "s3": [
+          "INSERT booking for listing 88121 accepted",
+          "1,900 bookings written for listings moved at v42",
+          "CPU 45%, replication healthy"
+        ],
+        "s7": [
+          "listing 88121: 0 new bookings since move",
+          "CPU 40%, plenty of headroom"
+        ]
+      },
+      "culprit": {
+        "nodeId": "app",
+        "explanation": "The API nodes still route with map v41, fetched 7 minutes ago, while the directory published v42 at 23:02. Their stale copies send moved listings' writes to shard 3, which has no way to refuse them.",
+        "wrongNodeFeedback": {
+          "s3": "Shard 3 only accepted what it was sent. Who chose shard 3 as the destination, and with which map?",
+          "dir": "The directory already serves the right map, v42. Who is still using v41?",
+          "s7": "Shard 7 is the right home and is idle; the writes never reach it."
+        }
+      }
     },
     {
       "id": "shard-new-01",
@@ -4700,7 +5666,10 @@
             }
           ],
           "resultTitle": "Two point reads instead of 32",
-          "resultBody": "Login reads the email's lookup shard, then the one user shard: 2 point reads instead of 32. Shard CPU falls from 88% to 24% and p95 to 18 ms. Cost: signup and email changes must write both records, via an outbox so they never drift."
+          "resultBody": "Login reads the email's lookup shard, then the one user shard: 2 point reads instead of 32. Shard CPU falls from 88% to 24% and p95 to 18 ms. Cost: signup and email changes must write both records, via an outbox so they never drift.",
+          "tradeoffs": {
+            "costMonthlyDelta": 200
+          }
         },
         {
           "id": "local-index",
@@ -4739,7 +5708,20 @@
             }
           ],
           "resultTitle": "Faster shards, same fan-out",
-          "resultBody": "Each shard answers in 2 ms instead of scanning, so CPU drops to 70%, but every login still sends 32 queries and waits for the slowest shard; p95 only improves to 410 ms."
+          "resultBody": "Each shard answers in 2 ms instead of scanning, so CPU drops to 70%, but every login still sends 32 queries and waits for the slowest shard; p95 only improves to 410 ms.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "shards",
+                "tone": "warn",
+                "cpu": 70,
+                "sub": "still 32-way fan-out"
+              }
+            ]
+          }
         },
         {
           "id": "redis-cache",
@@ -4778,7 +5760,33 @@
             }
           ],
           "resultTitle": "Logins are too rare to cache",
-          "resultBody": "Users log in about once a day, so the cache hits only 12% of logins. The other 88% still fan out to all 32 shards and shard CPU barely moves."
+          "resultBody": "Users log in about once a day, so the cache hits only 12% of logins. The other 88% still fan out to all 32 shards and shard CPU barely moves.",
+          "tradeoffs": {
+            "costMonthlyDelta": 80
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "shards",
+                "cpu": 82
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "redis",
+                "kind": "cache",
+                "label": "Email cache (12% hits)",
+                "tone": "warn",
+                "cpu": 10
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "auth",
+                "to": "redis"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -4932,7 +5940,33 @@
             }
           ],
           "resultTitle": "The promo ends before the migration",
-          "resultBody": "Two engineers spend the week adding shard routing and backfilling 60 GB while the throttled primary stays at 99% CPU. The promo is over before cutover, and the app now carries cross-shard queries for a load that fits one node."
+          "resultBody": "Two engineers spend the week adding shard routing and backfilling 60 GB while the throttled primary stays at 99% CPU. The promo is over before cutover, and the app now carries cross-shard queries for a load that fits one node.",
+          "tradeoffs": {
+            "costMonthlyDelta": 450
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "sub": "migration eats the promo"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "shards",
+                "kind": "db",
+                "label": "4 new shards (empty)",
+                "tone": "neutral",
+                "cpu": 0
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "shards"
+              }
+            ]
+          }
         },
         {
           "id": "split-orders",
@@ -4964,7 +5998,28 @@
             }
           ],
           "resultTitle": "Two small boxes, both out of credits",
-          "resultBody": "Orders move to a second burstable node, which runs out of credits within a day. Joins between orders and customers now cross the network, checkout p95 stays above 1.5 s, and the migration eats the promo week."
+          "resultBody": "Orders move to a second burstable node, which runs out of credits within a day. Joins between orders and customers now cross the network, checkout p95 stays above 1.5 s, and the migration eats the promo week.",
+          "tradeoffs": {
+            "costMonthlyDelta": 60
+          },
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "orders",
+                "kind": "db",
+                "label": "Orders shard (burstable)",
+                "tone": "bad",
+                "cpu": 88,
+                "sub": "credits gone in a day"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "orders"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -4974,6 +6029,690 @@
       ],
       "nextId": null,
       "reviewed": true
+    },
+    {
+      "canonical": false,
+      "isCascade": true,
+      "reviewed": true,
+      "id": "shard-casc-01",
+      "incidentCode": "INC-007-23",
+      "level": 7,
+      "patternId": "sharding",
+      "parentIncidentCode": "INC-007",
+      "severity": "P1",
+      "xp": 80,
+      "title": "The integration bot heats shard 3",
+      "brief": "MegaMart now spreads over 8 shards by (tenant_id, hash(user_id)). But its email-ingest bot is a single user_id writing 3,800 tickets/s, so shard 3 sits at 91% CPU with lock waits.",
+      "constraint": "Agents open tickets by ticket_id, which embeds its shard; nobody lists the bot's tickets by user.",
+      "question": "How do you spread the bot's writes?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 9000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 91,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 1300,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 90,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Ticket API",
+            "tone": "warn",
+            "cpu": 40
+          },
+          {
+            "id": "sh3",
+            "kind": "db",
+            "label": "Shard 3",
+            "tone": "bad",
+            "cpu": 91,
+            "sub": "3,800 writes/s from 1 user"
+          },
+          {
+            "id": "rest",
+            "kind": "db",
+            "label": "Shards 1-8",
+            "tone": "neutral",
+            "cpu": 35
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "sh3"
+          },
+          {
+            "from": "app",
+            "to": "rest"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "hash-ticket",
+          "label": "Key the bot's tickets by hash(ticket_id) instead of user_id",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "The bot's load splits 8 ways",
+          "resultBody": "Each bot ticket now hashes on its own ticket_id, so its 3,800 writes/s spread at about 475 per shard and shard 3 falls to 42% CPU; lookups by ticket_id stay single-shard. Cost: a routing rule for flagged heavy-hitter users.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 42,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 60,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ]
+        },
+        {
+          "id": "limit-bot",
+          "label": "Rate-limit the ingest bot to 1,000 tickets per second",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Customer emails pile up",
+          "resultBody": "Shard 3 cools to 60%, but 2,800 inbound customer emails a second queue behind the limit, and MegaMart's 5-minute first-response SLA is breached within the hour.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 60,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 400,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 2800,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "sh3",
+                "tone": "warn",
+                "cpu": 60
+              },
+              {
+                "id": "app",
+                "tone": "bad",
+                "sub": "2,800 emails/s queued"
+              }
+            ]
+          }
+        },
+        {
+          "id": "buffer-redis",
+          "label": "Buffer the bot's writes in Redis and flush them every minute",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 60
+          },
+          "resultTitle": "A failover loses a minute of tickets",
+          "resultBody": "Shard 3 sees batched writes and drops to 55%, but a Redis failover now loses up to a minute of customer tickets, about 228,000, and agents can't see new tickets for 60 s.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 55,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 300,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 40,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "sh3",
+                "tone": "warn",
+                "cpu": 55
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "redis",
+                "kind": "cache",
+                "label": "Write buffer (Redis)",
+                "tone": "warn",
+                "cpu": 30,
+                "sub": "228k unflushed tickets"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "redis"
+              },
+              {
+                "from": "redis",
+                "to": "sh3"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "The key splits a tenant by user; what if one user is huge?",
+        "The same skew can reappear one level down the key.",
+        "For a heavy hitter, use a key that has many values per user."
+      ]
+    },
+    {
+      "canonical": false,
+      "isCascade": true,
+      "reviewed": true,
+      "id": "shard-casc-02",
+      "incidentCode": "INC-007-24",
+      "level": 7,
+      "patternId": "sharding",
+      "parentIncidentCode": "INC-007-17",
+      "severity": "P1",
+      "xp": 80,
+      "title": "One stuck credit blocks every transfer",
+      "brief": "The outbox relay delivers credits in order. A $2,400 transfer targets a wallet closed yesterday, the credit fails on every retry, and 12,000 transfers have queued behind it for 20 minutes.",
+      "constraint": "Money must never be lost or double-credited; receivers may see credits a few seconds late.",
+      "question": "What unblocks the relay without losing the $2,400?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Transfers",
+          "value": 6000,
+          "unit": "per s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 34,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "pending",
+          "label": "Pending transfers",
+          "value": 12000,
+          "unit": "transfers",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Failed credits",
+          "value": 1180,
+          "unit": "retries",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Transfer service",
+            "cpu": 30
+          },
+          {
+            "id": "a",
+            "kind": "db",
+            "label": "Sender shard",
+            "tone": "warn",
+            "cpu": 28,
+            "sub": "12,000 outbox rows waiting"
+          },
+          {
+            "id": "relay",
+            "kind": "worker",
+            "label": "Outbox relay",
+            "tone": "bad",
+            "cpu": 34,
+            "sub": "retry #1,180 on transfer 77f2"
+          },
+          {
+            "id": "b",
+            "kind": "db",
+            "label": "Receiver shards",
+            "tone": "neutral",
+            "cpu": 20
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "a"
+          },
+          {
+            "from": "a",
+            "to": "relay"
+          },
+          {
+            "from": "relay",
+            "to": "b"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "dead-letter",
+          "label": "Dead-letter the failing credit and auto-refund the sender",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Queue drains, money returns",
+          "resultBody": "After 5 failed tries the relay parks transfer 77f2 in a dead-letter table and issues an idempotent refund to the sender, so the 12,000 queued credits drain within a minute. Cost: a dead-letter table someone must review.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 36,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "pending",
+              "label": "Pending transfers",
+              "value": 40,
+              "unit": "transfers",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Failed credits",
+              "value": 0,
+              "unit": "retries",
+              "tone": "good"
+            }
+          ]
+        },
+        {
+          "id": "delete-row",
+          "label": "Delete the stuck outbox row so the relay can continue",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "The $2,400 vanishes",
+          "resultBody": "The queue drains at once, but the sender's debit is now committed with no credit and no refund: exactly the lost-money bug the outbox was built to prevent.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 36,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "pending",
+              "label": "Pending transfers",
+              "value": 40,
+              "unit": "transfers",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Failed credits",
+              "value": 1,
+              "unit": "retries",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "a",
+                "tone": "bad",
+                "sub": "$2,400 debited, never credited"
+              },
+              {
+                "id": "relay",
+                "tone": "good",
+                "sub": "draining"
+              }
+            ]
+          }
+        },
+        {
+          "id": "parallel-relay",
+          "label": "Add 8 parallel relay workers to route around the stuck row",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 60
+          },
+          "resultTitle": "Traffic flows, $2,400 in limbo",
+          "resultBody": "Other credits flow again, but 8 workers now retry the closed-wallet credit forever, the sender's $2,400 stays debited with no refund, and credits to one wallet can apply out of order.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 55,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "pending",
+              "label": "Pending transfers",
+              "value": 300,
+              "unit": "transfers",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Failed credits",
+              "value": 9400,
+              "unit": "retries",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "relay",
+                "label": "Outbox relay x8",
+                "tone": "warn",
+                "cpu": 55,
+                "sub": "77f2 retried by 8 workers"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Some failures never succeed, however often you retry.",
+        "A strict in-order queue lets one bad item block everything behind it.",
+        "Set the poison item aside, and undo its first half safely."
+      ]
+    },
+    {
+      "canonical": false,
+      "isCascade": true,
+      "reviewed": true,
+      "id": "shard-bill-01",
+      "incidentCode": "INC-007-25",
+      "level": 7,
+      "patternId": "sharding",
+      "parentIncidentCode": "INC-007-16",
+      "severity": "P1",
+      "xp": 80,
+      "title": "Sunday's rebalance stacks hot shards again",
+      "brief": "The upsized H3 held for five days. Then Sunday's disk-only rebalance moved shards 22 and 57, the next two busiest, onto host H11: 97% CPU and p95 1.7 s.",
+      "constraint": "The shard key and shard count are fine; hosts across the fleet average 40% CPU.",
+      "question": "What stops the balancer stacking hot shards together?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 60000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 97,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 1700,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 40,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Game API"
+          },
+          {
+            "id": "h11",
+            "kind": "db",
+            "label": "Host H11: shards 22, 57",
+            "tone": "bad",
+            "cpu": 97
+          },
+          {
+            "id": "h3",
+            "kind": "db",
+            "label": "Host H3 (2x cores)",
+            "tone": "good",
+            "cpu": 55
+          },
+          {
+            "id": "hothers",
+            "kind": "db",
+            "label": "Hosts 1-16",
+            "tone": "neutral",
+            "cpu": 40
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "h11"
+          },
+          {
+            "from": "app",
+            "to": "h3"
+          },
+          {
+            "from": "app",
+            "to": "hothers"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "load-balancer",
+          "label": "Balance on CPU and QPS too, then move shard 57 off",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Placement follows load now",
+          "resultBody": "The balancer now scores hosts by CPU and queries per second as well as disk, so it moves shard 57 to a quiet host, H11 falls to 58%, and the next rebalance won't pair the busiest shards.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 58,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 90,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ]
+        },
+        {
+          "id": "upsize-h11",
+          "label": "Upgrade host H11 to twice the cores, as was done for H3",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 600
+          },
+          "resultTitle": "A second oversized host",
+          "resultBody": "H11 cools to 63% for another $600 a month, but the balancer still ignores load, so next Sunday it can stack the hot shards on a third host.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 63,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 320,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 5,
+              "unit": "errors",
+              "tone": "warn"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "h11",
+                "label": "Host H11 (2x cores)",
+                "tone": "warn",
+                "cpu": 63,
+                "sub": "balancer still disk-only"
+              }
+            ]
+          }
+        },
+        {
+          "id": "pin-shards",
+          "label": "Disable the balancer and pin every shard to its current host",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Disks fill up instead",
+          "resultBody": "No more surprise moves, but H11 stays at 97% today, and shards keep growing where they sit: host H5's disk reaches 90% within a month with nothing allowed to move.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 97,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1700,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 40,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "h11",
+                "sub": "pinned at 97%"
+              },
+              {
+                "id": "hothers",
+                "tone": "warn",
+                "sub": "H5 disk 90% in a month"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "The balancer did exactly what it was told.",
+        "Disk size says nothing about how busy a shard is.",
+        "Give the balancer the metric that is actually saturated."
+      ]
     }
   ]
 }

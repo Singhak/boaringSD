@@ -18,7 +18,7 @@
       "title": "One city melts one partition",
       "brief": "Ride events are keyed by city_id across 64 partitions. New Year's Eve in NYC sends 40% of 90k events/s to partition 17. Its consumer is at 98% CPU and 4.2M messages behind; 63 others idle.",
       "constraint": "Each driver's location updates must stay in order; cross-driver order does not matter.",
-      "question": "How should the topic be keyed?",
+      "question": "Now, how should the topic be keyed so one city can't do this again?",
       "metricsBefore": [
         {
           "key": "rps",
@@ -149,7 +149,12 @@
             }
           ],
           "resultTitle": "Load spreads, order holds",
-          "resultBody": "Millions of driver_ids hash evenly over 64 partitions, so NYC's 36k events/s lands on every consumer while each driver's updates still share one partition."
+          "resultBody": "Millions of driver_ids hash evenly over 64 partitions, so NYC's 36k events/s lands on every consumer while each driver's updates still share one partition.",
+          "cascadeIncidentId": "strm-casc-01",
+          "cascadeDelayMs": 4000,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "more-consumers",
@@ -187,7 +192,34 @@
           ],
           "resultTitle": "Sixty-four new idle consumers",
           "resultBody": "A partition is read by one consumer per group, so the new consumers sit idle and partition 17 still has a single reader at 98% CPU.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "c17",
+                "sub": "still sole reader, lag 4.6M"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "cX",
+                "kind": "worker",
+                "label": "64 new consumers",
+                "cpu": 0,
+                "tone": "warn",
+                "sub": "no partitions assigned"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "log",
+                "to": "cX"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 900
+          }
         },
         {
           "id": "round-robin",
@@ -225,7 +257,25 @@
           ],
           "resultTitle": "Drivers jump backwards on the map",
           "resultBody": "Lag clears, but one driver's updates now land on different partitions and are consumed out of order; 2,900 stale positions overwrite fresh ones each second.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "c17",
+                "tone": "good",
+                "cpu": 40
+              },
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 70,
+                "sub": "2,900 stale overwrites/s"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -233,7 +283,137 @@
         "A consumer group gives each partition to exactly one consumer.",
         "Pick a key with many values that still groups what must stay ordered."
       ],
-      "nextId": null
+      "nextId": null,
+      "format": "two-step",
+      "mitigation": {
+        "question": "The live map is freezing across NYC right now. What stops the bleeding tonight?",
+        "choices": [
+          {
+            "id": "skip-stale-pings",
+            "label": "Drop p17's location pings older than 30 s, keep trip events",
+            "correct": true,
+            "approach": "optimal",
+            "tradeoffs": {
+              "costMonthlyDelta": 0,
+              "tradeoffSummary": "Sheds data that is already superseded; buys time, not a fix."
+            },
+            "resultTitle": "Map unfreezes, p17 still hot",
+            "resultBody": "A driver's position is replaced every 4 s, so the 4M stale pings are worthless to a live map. Skipping them while still processing trip events cuts p17's backlog from 4.2M to 400k in minutes. The partition is still hot; the key is still wrong.",
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 80,
+                "unit": "%",
+                "tone": "warn"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 4000,
+                "unit": "ms",
+                "tone": "warn"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 150,
+                "unit": "errors",
+                "tone": "warn"
+              },
+              {
+                "key": "lag",
+                "label": "Consumer lag",
+                "value": 400000,
+                "unit": "msgs",
+                "tone": "warn"
+              }
+            ]
+          },
+          {
+            "id": "bigger-p17",
+            "label": "Move consumer p17 onto a pod with four times the cores",
+            "correct": false,
+            "approach": "anti_pattern",
+            "tradeoffs": {
+              "costMonthlyDelta": 150
+            },
+            "resultTitle": "Three new cores sit idle",
+            "resultBody": "The consumer loop handles partition 17 on one thread, so the extra cores do nothing. CPU on the busy core stays pinned and the backlog keeps growing past 4.5M.",
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 98,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 40000,
+                "unit": "ms",
+                "tone": "bad"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 1250,
+                "unit": "errors",
+                "tone": "bad"
+              },
+              {
+                "key": "lag",
+                "label": "Consumer lag",
+                "value": 4500000,
+                "unit": "msgs",
+                "tone": "bad"
+              }
+            ]
+          },
+          {
+            "id": "restart-p17",
+            "label": "Restart the p17 consumer pod to clear its stuck state",
+            "correct": false,
+            "approach": "anti_pattern",
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "resultTitle": "A rebalance pause on top of the backlog",
+            "resultBody": "Nothing was stuck: the restart triggers a rebalance that stops all 64 consumers for 40 s, and p17 resumes from its last commit with 4.8M messages waiting.",
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 98,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 45000,
+                "unit": "ms",
+                "tone": "bad"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 1400,
+                "unit": "errors",
+                "tone": "bad"
+              },
+              {
+                "key": "lag",
+                "label": "Consumer lag",
+                "value": 4800000,
+                "unit": "msgs",
+                "tone": "bad"
+              }
+            ]
+          }
+        ]
+      }
     },
     {
       "id": "strm-02",
@@ -374,7 +554,10 @@
             }
           ],
           "resultTitle": "Forty pods finally share work",
-          "resultBody": "With 48 partitions each of the 40 consumers owns one or two, so 9M messages drain in about 20 minutes; add them in a quiet window, since keys remap."
+          "resultBody": "With 48 partitions each of the 40 consumers owns one or two, so 9M messages drain in about 20 minutes; add them in a quiet window, since keys remap.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "own-group",
@@ -412,7 +595,32 @@
           ],
           "resultTitle": "Every order processed forty times",
           "resultBody": "Separate groups each read the whole topic, so all 40 pods process every order; the DB sees 40x writes and 4,100 duplicate errors a second.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "idle",
+                "tone": "bad",
+                "cpu": 95,
+                "sub": "re-reading every order"
+              },
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 97,
+                "sub": "40x duplicate writes"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "idle",
+                "to": "db"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "bigger-pods",
@@ -450,7 +658,19 @@
           ],
           "resultTitle": "Sixty-eight pods now idle",
           "resultBody": "Maximum group parallelism equals the partition count, so still only 12 pods get partitions and lag keeps growing at 3k/s.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "idle",
+                "sub": "no partitions assigned",
+                "label": "68 idle consumers"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 600
+          }
         }
       ],
       "hints": [
@@ -590,45 +810,63 @@
             }
           ],
           "resultTitle": "Pods stop getting evicted",
-          "resultBody": "A 50-record batch finishes in about 35 s, well inside the 5-minute poll limit, and cooperative-sticky assignment moves only the partitions that change owner."
+          "resultBody": "A 50-record batch finishes in about 35 s, well inside the 5-minute poll limit, and cooperative-sticky assignment moves only the partitions that change owner.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "session-timeout",
-          "label": "Raise session.timeout.ms from 10 s to 60 s for slow pods",
+          "label": "Raise max.poll.interval.ms from 5 to 15 minutes",
           "correct": false,
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 35,
+              "value": 38,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 9400,
+              "value": 6000,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 900,
+              "value": 200,
               "unit": "errors",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "lag",
               "label": "Consumer lag",
-              "value": 12500000,
+              "value": 9000000,
               "unit": "msgs",
-              "tone": "bad"
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Heartbeats were never the problem",
-          "resultBody": "The heartbeat thread was fine; pods are evicted because they miss the 5-minute poll interval, so the storm continues every 90 s.",
-          "retry": true
+          "resultTitle": "Evictions stop; batches still take 6 minutes",
+          "resultBody": "With a 15-minute poll limit no pod is evicted, rebalances stop and lag starts draining, from 12M to 9M. Each poll still holds 500 records for 6 minutes, though, and batch time is creeping up as the enrichment API slows at peak.",
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "grp",
+                "tone": "warn",
+                "cpu": 38,
+                "sub": "batch 6 min, limit 15 min"
+              }
+            ]
+          },
+          "consequenceIncidentId": "strm-bill-01",
+          "approach": "viable_with_tradeoffs",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "add-pods",
@@ -666,7 +904,20 @@
           ],
           "resultTitle": "More members, longer rebalances",
           "resultBody": "Only 30 partitions exist, and each extra member joining or leaving triggers another stop-the-world rebalance, so lag grows to 14M.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "grp",
+                "cpu": 30,
+                "sub": "rebalance every 60 s",
+                "label": "Consumer group (60 pods)"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 450
+          }
         }
       ],
       "hints": [
@@ -675,7 +926,36 @@
         "Make each poll finish quickly and reshuffle less on rebalance."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "format": "culprit",
+      "culprit": {
+        "nodeId": "grp",
+        "explanation": "The consumer logs show a 500-record batch taking 362 s against a 300 s max.poll.interval.ms, so each pod is kicked out mid-batch and the group rebalances. The enrichment API is slow but healthy.",
+        "wrongNodeFeedback": {
+          "api": "The API answers in about 700 ms with zero errors; it is slow by design this week. Look at what 500 of those calls in a row do to one poll.",
+          "log": "Brokers are healthy and producing steadily. The lag is a symptom of consumers that keep leaving the group.",
+          "db": "The warehouse is mostly idle, waiting for data. It is downstream of the problem."
+        }
+      },
+      "logs": {
+        "log": [
+          "clicks: 30 partitions, ISR 3/3, 0 under-replicated",
+          "produce rate steady at 15k msg/s, broker disk 41%"
+        ],
+        "grp": [
+          "consumer-12: processed batch of 500 records in 362 s",
+          "consumer-12 leaving group: max.poll.interval.ms=300000 exceeded",
+          "group analytics: rebalance #412, 30 members revoking partitions"
+        ],
+        "api": [
+          "enrich p50=690 ms p99=1.1 s, 0 errors",
+          "inbound 700 req/s, all 200 OK"
+        ],
+        "db": [
+          "COPY clicks_enriched: 3k rows/s, no lock waits",
+          "loader idle 80% of the time waiting for batches"
+        ]
+      }
     },
     {
       "id": "strm-04",
@@ -791,7 +1071,10 @@
             }
           ],
           "resultTitle": "Clicks land in the right minute",
-          "resultBody": "Each click counts in the minute it happened; the window closes once the watermark passes 2 minutes late, and the rare later clicks go to a correction feed."
+          "resultBody": "Each click counts in the minute it happened; the window closes once the watermark passes 2 minutes late, and the rare later clicks go to a correction feed.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "hourly-proc",
@@ -822,7 +1105,22 @@
           ],
           "resultTitle": "Still billed on arrival time",
           "resultBody": "Hourly buckets hide the 09:00 spike, but a click made at 08:58 and uploaded at 09:03 still bills the wrong hour; per-minute billing is gone entirely.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "agg",
+                "sub": "1 h arrival windows"
+              },
+              {
+                "id": "db",
+                "sub": "per-minute billing gone"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "drop-late",
@@ -853,7 +1151,22 @@
           ],
           "resultTitle": "Real clicks thrown away",
           "resultBody": "Subway uploads arrive minutes late, so about 9% of genuine clicks are dropped and advertisers are now underbilled instead of misbilled.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "agg",
+                "sub": "9% of clicks dropped"
+              },
+              {
+                "id": "db",
+                "sub": "advertisers underbilled"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -969,7 +1282,10 @@
             }
           ],
           "resultTitle": "Replays become no-ops",
-          "resultBody": "A replayed event hits the unique event_id and does nothing, and storing the offset in the same Postgres transaction means credit and progress commit together."
+          "resultBody": "A replayed event hits the unique event_id and does nothing, and storing the offset in the same Postgres transaction means credit and progress commit together.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "commit-first",
@@ -1000,7 +1316,20 @@
           ],
           "resultTitle": "Credits vanish instead",
           "resultBody": "Committing first is at-most-once: a crash after the commit but before the write skips the event, so about 1,800 credits a day are never paid.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 60,
+                "sub": "1,800 credits never applied"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "kafka-eos",
@@ -1031,7 +1360,20 @@
           ],
           "resultTitle": "Exactly-once stops at Kafka",
           "resultBody": "Kafka transactions cover read-process-write between topics; the Postgres write sits outside them, so the crash still replays 2,000 credits.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 72,
+                "sub": "2,000 credits replayed again"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -1161,7 +1503,12 @@
             }
           ],
           "resultTitle": "History fixed, alerts stay live",
-          "resultBody": "A separate group seeks to the offset at deploy time, rescores 72 hours into a fresh table in about 3 hours, and the live group's 2 s freshness never slips."
+          "resultBody": "A separate group seeks to the offset at deploy time, rescores 72 hours into a fresh table in about 3 hours, and the live group's 2 s freshness never slips.",
+          "cascadeIncidentId": "strm-casc-02",
+          "cascadeDelayMs": 4000,
+          "tradeoffs": {
+            "costMonthlyDelta": 150
+          }
         },
         {
           "id": "reset-live",
@@ -1199,7 +1546,20 @@
           ],
           "resultTitle": "Live alerts are now three days late",
           "resultBody": "The live scorer must chew through 780M old events before it sees new transactions, so fraud alerts run hours behind during the repair.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "live",
+                "tone": "bad",
+                "cpu": 90,
+                "sub": "780M events behind"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "resend",
@@ -1237,7 +1597,34 @@
           ],
           "resultTitle": "Upstream never kept a copy",
           "resultBody": "The log is the retained source of truth; producers discarded those events after the ack, so only a fraction comes back and much of it is duplicated.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "sub": "partial, duplicated history"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "up",
+                "kind": "server",
+                "label": "Upstream services",
+                "cpu": 70,
+                "tone": "warn",
+                "sub": "resending what they kept"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "up",
+                "to": "log"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -1363,7 +1750,10 @@
               "unit": "msgs",
               "tone": "good"
             }
-          ]
+          ],
+          "tradeoffs": {
+            "costMonthlyDelta": 40
+          }
         },
         {
           "id": "repartition",
@@ -1394,7 +1784,25 @@
               "unit": "errors",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "log",
+                "tone": "warn",
+                "label": "results (96 parts)"
+              },
+              {
+                "id": "cons",
+                "tone": "warn",
+                "cpu": 60,
+                "sub": "rebalancing, totals going backwards"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 300
+          }
         },
         {
           "id": "parse-stage",
@@ -1425,7 +1833,34 @@
               "unit": "msgs",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cons",
+                "sub": "lag 5.2M and growing"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "parse",
+                "kind": "worker",
+                "label": "Parse stage (not built)",
+                "cpu": 0,
+                "tone": "warn",
+                "sub": "ships next week"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "log",
+                "to": "parse"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 200
+          }
         }
       ],
       "hints": [
@@ -1435,6 +1870,899 @@
       ],
       "nextId": null,
       "reviewed": true
+    },
+    {
+      "id": "strm-casc-01",
+      "incidentCode": "INC-021-C1",
+      "level": 21,
+      "patternId": "stream-processing",
+      "canonical": false,
+      "reviewed": true,
+      "isCascade": true,
+      "parentIncidentCode": "INC-021",
+      "severity": "P1",
+      "xp": 80,
+      "title": "Surge pricing stuck at 1.0x in a packed city",
+      "brief": "Rides are now keyed by driver_id. The surge job counts ride requests per city inside each consumer, so each sees 1/64 of NYC. Surge shows 1.0x while riders wait 14 minutes.",
+      "constraint": "Per-driver ordering must hold, and no partition may turn hot again.",
+      "question": "How does surge get a whole-city count without a hot partition?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 90000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 41,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "surge",
+          "label": "Surge multiplier",
+          "value": 1.0,
+          "unit": "x",
+          "tone": "bad"
+        },
+        {
+          "key": "wait",
+          "label": "Rider wait",
+          "value": 14,
+          "unit": "min",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "drivers",
+            "kind": "users",
+            "label": "Rider and driver apps"
+          },
+          {
+            "id": "log",
+            "kind": "queue",
+            "label": "rides topic (by driver)",
+            "cpu": 45
+          },
+          {
+            "id": "cons",
+            "kind": "worker",
+            "label": "64 consumers",
+            "cpu": 41
+          },
+          {
+            "id": "surge",
+            "kind": "worker",
+            "label": "Surge counters",
+            "cpu": 38,
+            "tone": "bad",
+            "sub": "each sees 1/64 of NYC"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Pricing store",
+            "cpu": 30,
+            "tone": "warn"
+          }
+        ],
+        "edges": [
+          {
+            "from": "drivers",
+            "to": "log"
+          },
+          {
+            "from": "log",
+            "to": "cons"
+          },
+          {
+            "from": "cons",
+            "to": "surge"
+          },
+          {
+            "from": "surge",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "pre-aggregate",
+          "label": "Emit per-city partial counts each second to a city-keyed topic",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 60,
+            "latencyP99DeltaMs": 2000,
+            "complexityScore": 3,
+            "tradeoffSummary": "Combine locally, then shuffle tiny partial sums; the hot key never touches a partition."
+          },
+          "resultTitle": "Surge sees the whole city again",
+          "resultBody": "Each consumer sends one partial count per city per second to a small topic keyed by city_id, and one aggregator sums NYC's 64 partials: 64 messages a second instead of 36k. Surge reads 2.3x and rider wait falls to 4 minutes. Cost: surge trails demand by about 2 s.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 43,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "surge",
+              "label": "Surge multiplier",
+              "value": 2.3,
+              "unit": "x",
+              "tone": "good"
+            },
+            {
+              "key": "wait",
+              "label": "Rider wait",
+              "value": 4,
+              "unit": "min",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "drivers",
+                "kind": "users",
+                "label": "Rider and driver apps"
+              },
+              {
+                "id": "log",
+                "kind": "queue",
+                "label": "rides topic (by driver)",
+                "cpu": 45
+              },
+              {
+                "id": "cons",
+                "kind": "worker",
+                "label": "64 consumers",
+                "cpu": 43,
+                "tone": "good",
+                "sub": "partial counts per city"
+              },
+              {
+                "id": "agg",
+                "kind": "worker",
+                "label": "City aggregator",
+                "cpu": 12,
+                "tone": "good",
+                "sub": "64 msgs/s for NYC"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Pricing store",
+                "cpu": 30,
+                "tone": "good",
+                "sub": "surge 2.3x"
+              }
+            ],
+            "edges": [
+              {
+                "from": "drivers",
+                "to": "log"
+              },
+              {
+                "from": "log",
+                "to": "cons"
+              },
+              {
+                "from": "cons",
+                "to": "agg"
+              },
+              {
+                "from": "agg",
+                "to": "db"
+              }
+            ]
+          }
+        },
+        {
+          "id": "rekey-city",
+          "label": "Key every ride event back by city_id so surge counts locally again",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Partition 17 melts again",
+          "resultBody": "Surge is right for about 20 minutes, then NYC's 36k events/s pile onto one partition again; its consumer pins at 98% CPU and lag climbs past 3M, freezing the driver map.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 98,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "surge",
+              "label": "Surge multiplier",
+              "value": 2.1,
+              "unit": "x",
+              "tone": "warn"
+            },
+            {
+              "key": "wait",
+              "label": "Rider wait",
+              "value": 9,
+              "unit": "min",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cons",
+                "tone": "bad",
+                "cpu": 98,
+                "sub": "p17 3M behind"
+              },
+              {
+                "id": "log",
+                "tone": "warn",
+                "cpu": 60
+              }
+            ]
+          }
+        },
+        {
+          "id": "db-count",
+          "label": "Insert every request in the DB and COUNT per city each second",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 400
+          },
+          "resultTitle": "The pricing store becomes the hot spot",
+          "resultBody": "36k inserts/s plus a COUNT over NYC's last five minutes every second push the pricing store to 97% CPU, and surge values arrive 40 s late, too slow to steer drivers.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 97,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "surge",
+              "label": "Surge multiplier",
+              "value": 1.6,
+              "unit": "x",
+              "tone": "warn"
+            },
+            {
+              "key": "wait",
+              "label": "Rider wait",
+              "value": 10,
+              "unit": "min",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 97,
+                "sub": "COUNT(*) every second"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "cons",
+                "to": "db"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Surge is a whole-city number, but each consumer only sees a slice of the city.",
+        "Counts are additive: partial sums from many places can be combined later.",
+        "Aggregate locally first, then send small results to one place per city."
+      ]
+    },
+    {
+      "id": "strm-bill-01",
+      "incidentCode": "INC-021-B1",
+      "level": 21,
+      "patternId": "stream-processing",
+      "canonical": false,
+      "reviewed": true,
+      "isCascade": true,
+      "parentIncidentCode": "INC-021",
+      "severity": "P1",
+      "xp": 90,
+      "title": "The rebalance storm is back, and worse",
+      "brief": "The 15-minute poll limit bought two days. At peak the enrichment API slowed to 2 s a call; 500-record batches take 17 minutes, pods get evicted again and lag hits 20M.",
+      "constraint": "Every click must be enriched; the enrichment API scales out fine, each call just takes 2 s at peak.",
+      "question": "What keeps every batch far inside the poll limit, however slow calls get?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 15000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 34,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 16000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 1400,
+          "unit": "errors",
+          "tone": "bad"
+        },
+        {
+          "key": "lag",
+          "label": "Consumer lag",
+          "value": 20000000,
+          "unit": "msgs",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "log",
+            "kind": "queue",
+            "label": "clicks topic (30 parts)",
+            "cpu": 45
+          },
+          {
+            "id": "grp",
+            "kind": "worker",
+            "label": "Consumer group",
+            "cpu": 34,
+            "tone": "bad",
+            "sub": "batch 17 min"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Enrichment API",
+            "cpu": 40,
+            "tone": "warn",
+            "sub": "2 s per call"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Warehouse",
+            "cpu": 18
+          }
+        ],
+        "edges": [
+          {
+            "from": "log",
+            "to": "grp"
+          },
+          {
+            "from": "grp",
+            "to": "api"
+          },
+          {
+            "from": "grp",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "concurrent-enrich",
+          "label": "Enrich each batch with 50 calls in flight, not one by one",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 2,
+            "tradeoffSummary": "Batch time becomes records x latency / concurrency, so slow calls no longer stretch the poll."
+          },
+          "resultTitle": "Batches finish in 20 seconds",
+          "resultBody": "With 50 concurrent calls, 500 records take about 20 s even at 2 s per call, far inside the poll limit, so pods stay in the group and the 20M backlog drains in about 40 minutes. Cost: each pod holds 50 open connections to the enrichment API.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 55,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 500,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            },
+            {
+              "key": "lag",
+              "label": "Consumer lag",
+              "value": 150000,
+              "unit": "msgs",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "log",
+                "kind": "queue",
+                "label": "clicks topic (30 parts)",
+                "cpu": 45
+              },
+              {
+                "id": "grp",
+                "kind": "worker",
+                "label": "Consumer group",
+                "cpu": 55,
+                "tone": "good",
+                "sub": "50 calls in flight"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Enrichment API",
+                "cpu": 52,
+                "tone": "good",
+                "sub": "2 s per call"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Warehouse",
+                "cpu": 30,
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "log",
+                "to": "grp"
+              },
+              {
+                "from": "grp",
+                "to": "api"
+              },
+              {
+                "from": "grp",
+                "to": "db"
+              }
+            ]
+          }
+        },
+        {
+          "id": "interval-45",
+          "label": "Raise max.poll.interval.ms once more, from 15 up to 45 minutes",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "A hung pod now hides for 45 minutes",
+          "resultBody": "Evictions stop until the API slows further, but a pod that truly hangs now keeps its partitions for 45 minutes before the group notices, and 17-minute batches keep lag near 19M.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 34,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 15000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 300,
+              "unit": "errors",
+              "tone": "warn"
+            },
+            {
+              "key": "lag",
+              "label": "Consumer lag",
+              "value": 19000000,
+              "unit": "msgs",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "grp",
+                "sub": "hung pod holding p9 for 45 min"
+              }
+            ]
+          }
+        },
+        {
+          "id": "skip-slow",
+          "label": "Skip enrichment for any record whose call takes over 1 second",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Most clicks land without campaign data",
+          "resultBody": "Batches finish quickly, but at peak 70% of calls take over 1 s, so most clicks reach the warehouse unenriched and every campaign dashboard is wrong for the evening.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 50,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 400,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 3500,
+              "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "lag",
+              "label": "Consumer lag",
+              "value": 100000,
+              "unit": "msgs",
+              "tone": "good"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "grp",
+                "tone": "good",
+                "cpu": 50
+              },
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 30,
+                "sub": "70% of rows unenriched"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Compare the batch time with the poll limit: 500 records at 2 s each.",
+        "The API is slow per call, but it happily serves many calls at once.",
+        "Batch time is records times latency divided by calls in flight."
+      ]
+    },
+    {
+      "id": "strm-casc-02",
+      "incidentCode": "INC-021-C2",
+      "level": 21,
+      "patternId": "stream-processing",
+      "canonical": false,
+      "reviewed": true,
+      "isCascade": true,
+      "parentIncidentCode": "INC-021",
+      "severity": "P2",
+      "xp": 70,
+      "title": "The repair job starves live fraud alerts",
+      "brief": "The replay group reads 72 hours of transactions at full speed, writing 120k rows/s into the scores database the live scorer shares. DB CPU hits 96%, and live alerts slip from 2 s to 40 s.",
+      "constraint": "Live alerts need 2 s freshness, and the repair must finish within 24 hours.",
+      "question": "How do you run the repair without hurting live scoring?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 3000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 96,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "Live alert delay",
+          "value": 40000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 300,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "log",
+            "kind": "queue",
+            "label": "txns topic (7 d)",
+            "cpu": 50
+          },
+          {
+            "id": "live",
+            "kind": "worker",
+            "label": "Live scorer",
+            "cpu": 45,
+            "tone": "warn",
+            "sub": "alerts 40 s late"
+          },
+          {
+            "id": "rep",
+            "kind": "worker",
+            "label": "Replay group",
+            "cpu": 70,
+            "sub": "120k events/s"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Scores DB",
+            "cpu": 96,
+            "tone": "bad"
+          }
+        ],
+        "edges": [
+          {
+            "from": "log",
+            "to": "live"
+          },
+          {
+            "from": "log",
+            "to": "rep"
+          },
+          {
+            "from": "live",
+            "to": "db"
+          },
+          {
+            "from": "rep",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "throttle-replay",
+          "label": "Cap the replay consumer at 15k events/s with a fetch quota",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 1,
+            "tradeoffSummary": "Background work gets a fixed share of the shared database and simply runs longer."
+          },
+          "resultTitle": "Live alerts back to 2 s, repair overnight",
+          "resultBody": "A consumer quota holds the backfill to 15k events/s, so scores DB CPU falls to 62% and live alerts are fresh within 2 s again. The 780M events now take about 14 hours, finishing overnight and inside the 24-hour deadline.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 62,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "Live alert delay",
+              "value": 1900,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "log",
+                "kind": "queue",
+                "label": "txns topic (7 d)",
+                "cpu": 50
+              },
+              {
+                "id": "live",
+                "kind": "worker",
+                "label": "Live scorer",
+                "cpu": 48,
+                "tone": "good",
+                "sub": "alerts in 2 s"
+              },
+              {
+                "id": "rep",
+                "kind": "worker",
+                "label": "Replay group",
+                "cpu": 25,
+                "tone": "good",
+                "sub": "capped at 15k/s"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Scores DB",
+                "cpu": 62,
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "log",
+                "to": "live"
+              },
+              {
+                "from": "log",
+                "to": "rep"
+              },
+              {
+                "from": "live",
+                "to": "db"
+              },
+              {
+                "from": "rep",
+                "to": "db"
+              }
+            ]
+          }
+        },
+        {
+          "id": "pause-live",
+          "label": "Pause the live scorer entirely until the replay has caught up",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Fraud alerts go dark for two hours",
+          "resultBody": "The replay finishes in about 2 hours with the database to itself, but no live transaction is scored while it runs, so fraud alerts stop during the afternoon peak.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 90,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "Live alert delay",
+              "value": 7200000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "neutral"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "live",
+                "tone": "bad",
+                "cpu": 0,
+                "sub": "paused, 0 alerts"
+              }
+            ]
+          }
+        },
+        {
+          "id": "more-replay",
+          "label": "Add 30 more replay consumers so the backfill finishes sooner",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 450
+          },
+          "resultTitle": "Writes triple on the same database",
+          "resultBody": "More replay consumers push writes from 120k to 300k rows/s against the same database. CPU pins at 100%, write timeouts hit the live scorer and its alerts fall 3 minutes behind.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "Live alert delay",
+              "value": 180000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 2200,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "rep",
+                "tone": "bad",
+                "cpu": 85,
+                "sub": "300k events/s"
+              },
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 100,
+                "sub": "write timeouts"
+              },
+              {
+                "id": "live",
+                "tone": "bad",
+                "cpu": 45,
+                "sub": "alerts 3 min late"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Both consumer groups write to the same database.",
+        "The replay's deadline is measured in hours; the live path's in seconds.",
+        "Give the backfill a fixed slice of the database and let it take longer."
+      ]
     }
   ]
 }

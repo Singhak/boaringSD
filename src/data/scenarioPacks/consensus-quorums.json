@@ -16,7 +16,7 @@
       "severity": "P0",
       "xp": 150,
       "title": "Two leaders accept writes",
-      "brief": "A network blip isolates node A. Nodes B and C elect B, but A keeps accepting writes as leader. Orders now conflict.",
+      "brief": "After a network blip in the orders cluster, the same order IDs are being written twice with different contents: 640 conflicts a minute and climbing.",
       "constraint": "Only one node may accept writes at a time.",
       "question": "What stops the isolated node from acting as leader?",
       "metricsBefore": [
@@ -54,15 +54,17 @@
           {
             "id": "c1",
             "kind": "server",
-            "label": "Node A (leader)",
+            "label": "Node A (leader, term 7)",
             "cpu": 88,
-            "tone": "bad"
+            "tone": "warn"
           },
           {
             "id": "c2",
             "kind": "server",
-            "label": "Node B",
-            "cpu": 30
+            "label": "Node B (leader, term 8)",
+            "cpu": 60,
+            "tone": "bad",
+            "sub": "640 conflicts/min"
           },
           {
             "id": "c3",
@@ -115,7 +117,11 @@
             }
           ],
           "resultTitle": "Only one side can commit",
-          "resultBody": "Node A cannot reach a majority, so its writes never commit and clients retry against B; the higher term makes A step down when it rejoins."
+          "resultBody": "Node A cannot reach a majority, so its writes never commit and clients retry against B; the higher term makes A step down when it rejoins.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "cascadeIncidentId": "cq-casc-02"
         },
         {
           "id": "faster-heartbeat",
@@ -146,7 +152,26 @@
           ],
           "resultTitle": "Faster detection, same split brain",
           "resultBody": "Quicker heartbeats shorten the election, but the isolated old leader still believes it leads and keeps accepting writes.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "c1",
+                "tone": "bad",
+                "cpu": 93,
+                "sub": "still leader, term 7"
+              },
+              {
+                "id": "c2",
+                "tone": "warn",
+                "cpu": 45,
+                "sub": "leader, term 8"
+              }
+            ]
+          }
         },
         {
           "id": "clock-leader",
@@ -177,13 +202,271 @@
           ],
           "resultTitle": "Clocks don't settle elections",
           "resultBody": "Clock accuracy says nothing about which nodes can talk to each other; A can still keep accepting writes nobody else sees.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 60
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "c1",
+                "tone": "bad",
+                "cpu": 94,
+                "sub": "best clock, still isolated"
+              }
+            ]
+          }
         }
       ],
       "hints": [
         "Which side of the split has more nodes?",
         "A write is safe only when most nodes have it.",
         "Terms tell a stale leader to step down."
+      ],
+      "nextId": null,
+      "format": "culprit",
+      "logs": {
+        "c1": [
+          "09:14:02 lost contact with B and C",
+          "09:14:05 still leader for term 7, accepting writes",
+          "09:14:06 committed order#88121 with 0/2 follower acks"
+        ],
+        "c2": [
+          "09:14:04 won election for term 8 (votes: B, C)",
+          "09:14:30 order#88121 already exists with other contents",
+          "conflict rate 640/min on order ids"
+        ],
+        "c3": [
+          "09:14:03 voted for B in term 8",
+          "replicating from leader B, lag 2 ms",
+          "no messages from A since 09:14:02"
+        ]
+      },
+      "culprit": {
+        "nodeId": "c1",
+        "explanation": "Node A's log shows it committing orders with 0 of 2 follower acks while cut off: a leader in the minority kept acting alone instead of needing a majority.",
+        "wrongNodeFeedback": {
+          "c2": "B won a fair majority election in term 8; its conflicts come from orders A accepted on its own.",
+          "c3": "C is a healthy follower of B and has heard nothing from A since the blip."
+        }
+      }
+    },
+    {
+      "id": "cq-casc-02",
+      "incidentCode": "INC-017C",
+      "level": 17,
+      "patternId": "consensus-quorums",
+      "canonical": false,
+      "isCascade": true,
+      "parentIncidentCode": "INC-017",
+      "reviewed": true,
+      "severity": "P2",
+      "xp": 80,
+      "title": "Writes via node A time out",
+      "brief": "Node A can no longer commit alone. But a third of the order clients are pinned to A and retry it for 30 s before timing out; B, the real leader, sits half idle.",
+      "constraint": "Only the majority leader may commit; the partition may last minutes.",
+      "question": "How do the pinned clients reach the real leader?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 18000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 45,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 30000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 210,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "clients",
+            "kind": "users",
+            "label": "Order clients",
+            "tone": "bad",
+            "sub": "1/3 pinned to A"
+          },
+          {
+            "id": "c1",
+            "kind": "server",
+            "label": "Node A (minority)",
+            "tone": "warn",
+            "cpu": 20,
+            "sub": "writes wait for acks"
+          },
+          {
+            "id": "c2",
+            "kind": "server",
+            "label": "Node B (leader, term 8)",
+            "cpu": 45
+          },
+          {
+            "id": "c3",
+            "kind": "server",
+            "label": "Node C",
+            "cpu": 30
+          }
+        ],
+        "edges": [
+          {
+            "from": "clients",
+            "to": "c1"
+          },
+          {
+            "from": "clients",
+            "to": "c2"
+          },
+          {
+            "from": "c2",
+            "to": "c3"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "check-quorum",
+          "label": "Step A down when it loses majority so clients fail over",
+          "correct": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 52,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 120,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Fail fast, then fail over",
+          "resultBody": "With check-quorum, A steps down within one election timeout and answers NOT_LEADER at once; client libraries try B and C and commit in milliseconds."
+        },
+        {
+          "id": "client-timeout",
+          "label": "Raise the client write timeout from 30 s to 90 s",
+          "correct": false,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 44,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 90000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 210,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Longer waits, same dead end",
+          "resultBody": "A can't reach a majority however long the client waits; pinned clients now hang 90 s before the same error.",
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "clients",
+                "tone": "bad",
+                "sub": "hung 90 s on A"
+              }
+            ]
+          }
+        },
+        {
+          "id": "buffer-replay",
+          "label": "Let A buffer writes locally and replay them to B on heal",
+          "correct": false,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 70,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 80,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 640,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Split brain by another name",
+          "resultBody": "A acknowledges orders nobody else has; on heal, replaying them collides with orders B committed in the meantime, which is the original conflict.",
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "c1",
+                "tone": "bad",
+                "cpu": 70,
+                "sub": "12k unreplicated orders"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Can A ever find out, on its own, that it lost?",
+        "A leader that can't hear a majority should stop acting like one.",
+        "Fail fast so clients try another node."
       ],
       "nextId": null
     },
@@ -282,7 +565,10 @@
             }
           ],
           "resultTitle": "Majority survives a rack",
-          "resultBody": "Five nodes need three for a majority; losing any one rack of at most two nodes still leaves three, so writes continue."
+          "resultBody": "Five nodes need three for a majority; losing any one rack of at most two nodes still leaves three, so writes continue.",
+          "tradeoffs": {
+            "costMonthlyDelta": 120
+          }
         },
         {
           "id": "four-tiebreak",
@@ -313,7 +599,26 @@
           ],
           "resultTitle": "Ties break into split brain",
           "resultBody": "If each half believes it holds the lowest ID, or the tie rule reads stale membership, both sides can lead; majorities exist to avoid tie rules.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "r1",
+                "tone": "bad",
+                "cpu": 40,
+                "sub": "leader: lowest ID"
+              },
+              {
+                "id": "r2",
+                "tone": "bad",
+                "cpu": 41,
+                "sub": "leader: stale view"
+              }
+            ]
+          }
         },
         {
           "id": "two-nodes",
@@ -344,7 +649,20 @@
           ],
           "resultTitle": "Any failure stops writes",
           "resultBody": "A two-node cluster needs both nodes for a majority, so losing either one halts every write.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "r2",
+                "tone": "bad",
+                "sub": "1 node down: writes halted",
+                "label": "Node 2 of 2"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -468,7 +786,10 @@
             }
           ],
           "resultTitle": "Read and write sets overlap",
-          "resultBody": "With R + W > N, any two replicas you read share at least one with the two that acked the write, so the newest value is always seen."
+          "resultBody": "With R + W > N, any two replicas you read share at least one with the two that acked the write, so the newest value is always seen.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "w1r3",
@@ -499,7 +820,25 @@
           ],
           "resultTitle": "Overlap isn't guaranteed",
           "resultBody": "R=2 with W=1 gives R + W = 3, not more than N, so both replicas read can still miss the single replica that took the write.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "r2",
+                "tone": "bad",
+                "cpu": 63,
+                "sub": "read missed the write"
+              },
+              {
+                "id": "r3",
+                "tone": "warn",
+                "sub": "old value"
+              }
+            ]
+          }
         },
         {
           "id": "w3r0",
@@ -530,7 +869,20 @@
           ],
           "resultTitle": "The ack came before the copies",
           "resultBody": "Async fan-out still acks after one replica, so a read that lands on another replica before the copy arrives sees the old value.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "r3",
+                "tone": "bad",
+                "cpu": 64,
+                "sub": "old value, copy in flight"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -552,7 +904,7 @@
       "title": "Stale leader writes after pause",
       "brief": "A 20-second GC pause freezes the lock holder. It wakes up, still believes it holds the lease, and overwrites a file another worker now owns.",
       "constraint": "Only the current lock holder may write to storage.",
-      "question": "What prevents the paused process from corrupting data?",
+      "question": "Now what stops a paused lock holder from ever corrupting data again?",
       "metricsBefore": [
         {
           "key": "rps",
@@ -645,7 +997,11 @@
             }
           ],
           "resultTitle": "Old holder fenced off",
-          "resultBody": "Worker 2 got token 34 and Worker 1 still holds 33, so storage refuses the stale write even though Worker 1 thinks its lease is valid."
+          "resultBody": "Worker 2 got token 34 and Worker 1 still holds 33, so storage refuses the stale write even though Worker 1 thinks its lease is valid.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "cascadeIncidentId": "cq-casc-01"
         },
         {
           "id": "shorter-lease",
@@ -676,7 +1032,25 @@
           ],
           "resultTitle": "Pauses outlast any lease",
           "resultBody": "A 20 s pause outlives a 5 s lease just as easily; the paused process never gets to check that its lease expired.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "w1",
+                "tone": "bad",
+                "cpu": 96,
+                "sub": "paused 20 s past a 5 s lease"
+              },
+              {
+                "id": "store",
+                "tone": "bad",
+                "sub": "file overwritten"
+              }
+            ]
+          }
         },
         {
           "id": "check-lease",
@@ -707,7 +1081,24 @@
           ],
           "resultTitle": "The pause can hit after the check",
           "resultBody": "The process can check, pass, then pause for 20 s before the write lands; only the storage side can reject it reliably.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "store",
+                "tone": "bad",
+                "sub": "check passed, then paused"
+              },
+              {
+                "id": "w1",
+                "tone": "bad",
+                "cpu": 97
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -716,7 +1107,368 @@
         "A monotonically increasing number orders lock holders."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "format": "two-step",
+      "mitigation": {
+        "question": "Worker 1 is still writing with its dead lease. What stops the damage right now?",
+        "choices": [
+          {
+            "id": "kill-w1",
+            "label": "Kill Worker 1's process and revoke its storage credentials",
+            "correct": true,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 45,
+                "unit": "%",
+                "tone": "good"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 300,
+                "unit": "ms",
+                "tone": "good"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 20,
+                "unit": "errors",
+                "tone": "warn"
+              }
+            ],
+            "resultTitle": "Stale writer gone",
+            "resultBody": "With Worker 1 dead and its credentials revoked, only Worker 2 writes, and the overwritten file comes back from version history. The next long GC pause on any worker can do this again."
+          },
+          {
+            "id": "restore-backup",
+            "label": "Restore the overwritten file from last night's backup",
+            "correct": false,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 91,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 820,
+                "unit": "ms",
+                "tone": "bad"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 150,
+                "unit": "errors",
+                "tone": "bad"
+              }
+            ],
+            "resultTitle": "Restored, then overwritten again",
+            "resultBody": "Worker 1 is still running and still believes it holds the lease; its next flush overwrites the restored file within seconds.",
+            "retry": true,
+            "graphPatch": {
+              "nodes": [
+                {
+                  "id": "store",
+                  "tone": "bad",
+                  "sub": "restored file overwritten again"
+                }
+              ]
+            }
+          },
+          {
+            "id": "more-workers",
+            "label": "Scale out to three workers so Worker 2 finishes faster",
+            "correct": false,
+            "tradeoffs": {
+              "costMonthlyDelta": 80
+            },
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 91,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 840,
+                "unit": "ms",
+                "tone": "bad"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 170,
+                "unit": "errors",
+                "tone": "bad"
+              }
+            ],
+            "resultTitle": "More writers, same stale one",
+            "resultBody": "The new worker takes turns on the lock correctly, but Worker 1 is still alive and still overwriting, so there is only more work for it to corrupt.",
+            "retry": true,
+            "graphPatch": {
+              "nodes": [
+                {
+                  "id": "store",
+                  "tone": "bad",
+                  "sub": "still taking stale writes"
+                }
+              ],
+              "addNodes": [
+                {
+                  "id": "w3",
+                  "kind": "worker",
+                  "label": "Worker 3 (new)",
+                  "cpu": 35
+                }
+              ],
+              "addEdges": [
+                {
+                  "from": "w3",
+                  "to": "store"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "cq-casc-01",
+      "incidentCode": "INC-017B",
+      "level": 17,
+      "patternId": "consensus-quorums",
+      "canonical": false,
+      "isCascade": true,
+      "parentIncidentCode": "INC-017",
+      "reviewed": true,
+      "severity": "P2",
+      "xp": 70,
+      "title": "Fenced worker hammers storage",
+      "brief": "Storage now rejects stale fencing tokens. But Worker 1 treats the rejection as a transient error and retries its write 2,000 times a second, throttling Worker 2's writes.",
+      "constraint": "Fencing must stay strict; Worker 2's job must finish tonight.",
+      "question": "How should a worker react to a fencing rejection?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 4000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 78,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 900,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Rejected writes",
+          "value": 2000,
+          "unit": "/s",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "w1",
+            "kind": "worker",
+            "label": "Worker 1 (fenced)",
+            "tone": "warn",
+            "cpu": 78,
+            "sub": "retrying token 33"
+          },
+          {
+            "id": "w2",
+            "kind": "worker",
+            "label": "Worker 2 (holder)",
+            "tone": "bad",
+            "cpu": 40,
+            "sub": "writes throttled"
+          },
+          {
+            "id": "store",
+            "kind": "db",
+            "label": "Object storage",
+            "tone": "bad",
+            "cpu": 70,
+            "sub": "2,000 rejects/s"
+          }
+        ],
+        "edges": [
+          {
+            "from": "w1",
+            "to": "store"
+          },
+          {
+            "from": "w2",
+            "to": "store"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "abort-reacquire",
+          "label": "Treat a fencing rejection as lost lock: abort and re-acquire",
+          "correct": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 40,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 260,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Rejected writes",
+              "value": 0,
+              "unit": "/s",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Fenced means stop",
+          "resultBody": "Worker 1 aborts its job on the first rejection, drops its cached lease and queues for the lock again; rejects fall to zero and Worker 2's writes flow."
+        },
+        {
+          "id": "raise-limit",
+          "label": "Raise storage's request limit so retries don't throttle others",
+          "correct": false,
+          "tradeoffs": {
+            "costMonthlyDelta": 200
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1100,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Rejected writes",
+              "value": 6000,
+              "unit": "/s",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "The loop just runs faster",
+          "resultBody": "A higher limit lets Worker 1 retry 6,000 times a second instead; storage CPU climbs and every one of those retries is still rejected.",
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "store",
+                "tone": "bad",
+                "cpu": 92,
+                "sub": "6,000 rejects/s"
+              },
+              {
+                "id": "w1",
+                "tone": "bad",
+                "cpu": 90
+              }
+            ]
+          }
+        },
+        {
+          "id": "token-slack",
+          "label": "Accept writes whose token is within one of the current token",
+          "correct": false,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 60,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 700,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Rejected writes",
+              "value": 150,
+              "unit": "/s",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Fencing switched off",
+          "resultBody": "Token 33 is exactly one behind 34, so Worker 1's stale write is accepted again and overwrites the file Worker 2 now owns.",
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "store",
+                "tone": "bad",
+                "sub": "stale token 33 accepted"
+              },
+              {
+                "id": "w2",
+                "tone": "bad",
+                "sub": "its file overwritten"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Can a retry ever turn a fencing rejection into a success?",
+        "Token 33 will never be valid again.",
+        "A rejected token means someone else owns the lock now."
+      ],
+      "nextId": null
     },
     {
       "id": "cq-05",
@@ -828,7 +1580,10 @@
             }
           ],
           "resultTitle": "One candidate goes first",
-          "resultBody": "Staggered timeouts let one node request votes before the others wake up, so it wins a majority on the first round and failover takes under a second."
+          "resultBody": "Staggered timeouts let one node request votes before the others wake up, so it wins a majority on the first round and failover takes under a second.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "same-timeout",
@@ -859,7 +1614,30 @@
           ],
           "resultTitle": "Everyone runs at once",
           "resultBody": "Identical timeouts are what cause the split votes: all nodes become candidates together and each votes for itself.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "c1",
+                "tone": "bad",
+                "cpu": 81,
+                "sub": "split vote, term 19"
+              },
+              {
+                "id": "c2",
+                "tone": "bad",
+                "cpu": 80
+              },
+              {
+                "id": "c3",
+                "tone": "bad",
+                "cpu": 79
+              }
+            ]
+          }
         },
         {
           "id": "more-nodes",
@@ -890,7 +1668,50 @@
           ],
           "resultTitle": "More voters, more split votes",
           "resultBody": "Extra candidates with the same timing split the vote even more ways; the fix is timing, not headcount.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 240
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "c1",
+                "tone": "bad",
+                "cpu": 82,
+                "sub": "5-way split vote"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "c4",
+                "kind": "server",
+                "label": "Node D (candidate)",
+                "tone": "warn",
+                "cpu": 78
+              },
+              {
+                "id": "c5",
+                "kind": "server",
+                "label": "Node E (candidate)",
+                "tone": "warn",
+                "cpu": 77
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "c1",
+                "to": "c4"
+              },
+              {
+                "from": "c2",
+                "to": "c5"
+              },
+              {
+                "from": "c4",
+                "to": "c5"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1014,7 +1835,10 @@
             }
           ],
           "resultTitle": "Acked means replicated",
-          "resultBody": "Any future leader must win votes from a majority, and that majority overlaps the one holding the entry, so acknowledged orders survive."
+          "resultBody": "Any future leader must win votes from a majority, and that majority overlaps the one holding the entry, so acknowledged orders survive.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "fsync-local",
@@ -1045,7 +1869,20 @@
           ],
           "resultTitle": "Durable on one dead box",
           "resultBody": "The entry survives on the old leader's disk, but the cluster elects a node without it and the orders never reappear.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "new",
+                "tone": "bad",
+                "cpu": 88,
+                "sub": "elected without 1,200 orders"
+              }
+            ]
+          }
         },
         {
           "id": "async-replicate",
@@ -1076,7 +1913,24 @@
           ],
           "resultTitle": "Acked before anyone copied",
           "resultBody": "A crash in the replication gap loses exactly the writes clients were told succeeded, which is how the 1,200 orders vanished.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "f2",
+                "tone": "bad",
+                "sub": "replication gap: orders lost"
+              },
+              {
+                "id": "new",
+                "tone": "warn",
+                "cpu": 89
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1292,7 +2146,48 @@
             }
           ],
           "resultTitle": "More members, slower commits",
-          "resultBody": "Each write now needs three fsyncs instead of two on the same slow network disks, so commit latency rises. Two more slow members also mean more late heartbeats, and leader changes creep up to 45 an hour."
+          "resultBody": "Each write now needs three fsyncs instead of two on the same slow network disks, so commit latency rises. Two more slow members also mean more late heartbeats, and leader changes creep up to 45 an hour.",
+          "tradeoffs": {
+            "costMonthlyDelta": 240
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "e1",
+                "tone": "bad",
+                "cpu": 88,
+                "sub": "waits on 3 slow fsyncs"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "e4",
+                "kind": "db",
+                "label": "etcd-4",
+                "tone": "bad",
+                "cpu": 74,
+                "sub": "fsync p99 180 ms"
+              },
+              {
+                "id": "e5",
+                "kind": "db",
+                "label": "etcd-5",
+                "tone": "bad",
+                "cpu": 74,
+                "sub": "fsync p99 180 ms"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "e1",
+                "to": "e4"
+              },
+              {
+                "from": "e1",
+                "to": "e5"
+              }
+            ]
+          }
         },
         {
           "id": "long-timeouts",
@@ -1318,13 +2213,27 @@
             {
               "key": "p99",
               "label": "API p99",
-              "value": 2200,
+              "value": 1200,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Fewer elections, same slow writes",
-          "resultBody": "Leader changes drop to 6 an hour, but every write still waits on a 180 ms fsync, so API p99 stays above 2 s. A real leader failure now takes 5 s to detect."
+          "resultTitle": "Holding: churn down to 6 an hour",
+          "resultBody": "Leader changes drop to 6 an hour and API p99 eases to 1.2 s. etcd-1's burstable CPU credit balance is falling about 8% an hour.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "e1",
+                "tone": "warn",
+                "cpu": 86,
+                "sub": "CPU credits draining"
+              }
+            ]
+          },
+          "consequenceIncidentId": "cq-bill-01"
         }
       ],
       "hints": [
@@ -1334,6 +2243,256 @@
       ],
       "nextId": null,
       "reviewed": true
+    },
+    {
+      "id": "cq-bill-01",
+      "incidentCode": "INC-017D",
+      "level": 17,
+      "patternId": "consensus-quorums",
+      "canonical": false,
+      "isCascade": true,
+      "parentIncidentCode": "INC-017",
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 90,
+      "title": "etcd leader throttled at peak",
+      "brief": "The 5 s timeouts held until the morning peak. etcd-1 has burned its burstable CPU credits, is throttled to its 20% baseline, misses heartbeats, and API writes time out.",
+      "constraint": "The control plane must stay on etcd; members can be replaced one at a time.",
+      "question": "What fixes the leader stalls for good?",
+      "metricsBefore": [
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 100,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "fsync",
+          "label": "WAL fsync p99",
+          "value": 180,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "elections",
+          "label": "Leader changes",
+          "value": 14,
+          "unit": "per hour",
+          "tone": "bad"
+        },
+        {
+          "key": "p99",
+          "label": "API p99",
+          "value": 8000,
+          "unit": "ms",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Kubernetes API",
+            "tone": "bad",
+            "sub": "writes timing out"
+          },
+          {
+            "id": "e1",
+            "kind": "db",
+            "label": "etcd-1 (leader)",
+            "tone": "bad",
+            "cpu": 100,
+            "sub": "CPU credits 0, throttled"
+          },
+          {
+            "id": "e2",
+            "kind": "db",
+            "label": "etcd-2",
+            "tone": "warn",
+            "cpu": 80,
+            "sub": "fsync p99 180 ms"
+          },
+          {
+            "id": "e3",
+            "kind": "db",
+            "label": "etcd-3",
+            "tone": "warn",
+            "cpu": 78,
+            "sub": "fsync p99 180 ms"
+          }
+        ],
+        "edges": [
+          {
+            "from": "api",
+            "to": "e1"
+          },
+          {
+            "from": "e1",
+            "to": "e2"
+          },
+          {
+            "from": "e1",
+            "to": "e3"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "fixed-ssd",
+          "label": "Replace members one by one with fixed-CPU, local-SSD VMs",
+          "correct": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 450
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 40,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "fsync",
+              "label": "WAL fsync p99",
+              "value": 4,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "elections",
+              "label": "Leader changes",
+              "value": 0,
+              "unit": "per hour",
+              "tone": "good"
+            },
+            {
+              "key": "p99",
+              "label": "API p99",
+              "value": 90,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Steady CPU, fast fsync",
+          "resultBody": "Swapping one member at a time keeps quorum. Fixed-performance CPUs never throttle, local SSD brings fsync p99 to about 4 ms, and leader changes stop. The honest cost: about $450 a month more."
+        },
+        {
+          "id": "timeout-15",
+          "label": "Raise the election timeout further, from 5 s to 15 s",
+          "correct": false,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "fsync",
+              "label": "WAL fsync p99",
+              "value": 180,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "elections",
+              "label": "Leader changes",
+              "value": 5,
+              "unit": "per hour",
+              "tone": "warn"
+            },
+            {
+              "key": "p99",
+              "label": "API p99",
+              "value": 9000,
+              "unit": "ms",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Slower to notice, same stall",
+          "resultBody": "Fewer elections fire, but a throttled leader still stalls every commit, and a real failure would now take 15 s to fail over.",
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "e1",
+                "tone": "bad",
+                "cpu": 100,
+                "sub": "throttled; 15 s to fail over"
+              },
+              {
+                "id": "api",
+                "tone": "bad",
+                "sub": "writes stall up to 15 s"
+              }
+            ]
+          }
+        },
+        {
+          "id": "unlimited-burst",
+          "label": "Switch the three etcd VMs to unlimited burst credit mode",
+          "correct": false,
+          "tradeoffs": {
+            "costMonthlyDelta": 90
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 70,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "fsync",
+              "label": "WAL fsync p99",
+              "value": 180,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "elections",
+              "label": "Leader changes",
+              "value": 20,
+              "unit": "per hour",
+              "tone": "bad"
+            },
+            {
+              "key": "p99",
+              "label": "API p99",
+              "value": 2100,
+              "unit": "ms",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Unthrottled, disks still slow",
+          "resultBody": "The members stop being throttled, but WAL fsync p99 is still 180 ms on network disks, so commits stay slow and API p99 sits near 2 s. Surplus credits are billed too.",
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "e1",
+                "tone": "bad",
+                "cpu": 70,
+                "sub": "unthrottled, fsync 180 ms"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "A credit balance hitting zero means a hard CPU cap.",
+        "Even unthrottled, the WAL waits 180 ms on every fsync.",
+        "Is the problem the protocol, or the hardware it runs on?"
+      ],
+      "nextId": null
     }
   ]
 }

@@ -16,15 +16,15 @@
       "severity": "P0",
       "xp": 150,
       "title": "Unbounded in-memory queue",
-      "brief": "Producers keep appending jobs in RAM while workers are stuck, and the process OOMs.",
-      "constraint": "Work arrives faster than it completes.",
+      "brief": "Producers push 4,000 jobs/s into an in-memory queue while workers clear 3,000/s. The heap is at 96% and climbing; when it OOMs, every queued job is lost.",
+      "constraint": "A job is worthless if it waits more than 15 s.",
       "question": "What should producers see?",
       "metricsBefore": [
         {
           "key": "rps",
           "label": "Traffic",
           "value": 4000,
-          "unit": "req/s",
+          "unit": "jobs/s",
           "tone": "neutral"
         },
         {
@@ -36,16 +36,23 @@
         },
         {
           "key": "p95",
-          "label": "p95 latency",
-          "value": 0,
+          "label": "Queue wait p95",
+          "value": 170000,
           "unit": "ms",
-          "tone": "warn"
+          "tone": "bad"
         },
         {
           "key": "errors",
-          "label": "Errors",
+          "label": "Jobs lost",
+          "value": 25,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "idle",
+          "label": "Worker idle",
           "value": 0,
-          "unit": "errors",
+          "unit": "%",
           "tone": "neutral"
         }
       ],
@@ -122,27 +129,37 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 33,
+              "value": 74,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "p95",
-              "label": "p95 latency",
-              "value": 80,
+              "label": "Queue wait p95",
+              "value": 6000,
               "unit": "ms",
               "tone": "good"
             },
             {
               "key": "errors",
-              "label": "Errors",
+              "label": "Jobs lost",
               "value": 0,
-              "unit": "errors",
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "idle",
+              "label": "Worker idle",
+              "value": 2,
+              "unit": "%",
               "tone": "good"
             }
           ],
           "resultTitle": "Incident solved",
-          "resultBody": "A bounded queue that blocks, drops, or returns 429 when full instead of growing forever."
+          "resultBody": "A bounded queue that blocks, drops, or returns 429 when full instead of growing forever.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "infinite-buffer",
@@ -173,7 +190,22 @@
             }
           ],
           "resultTitle": "Heap grows until OOM",
-          "resultBody": "An infinite buffer absorbs 4,000 jobs/s while workers are stuck, so memory climbs until the process is killed and every queued job in RAM is lost."
+          "resultBody": "An infinite buffer absorbs 4,000 jobs/s while workers are stuck, so memory climbs until the process is killed and every queued job in RAM is lost.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "q",
+                "sub": "heap 100%, OOM-killed"
+              },
+              {
+                "id": "w",
+                "sub": "jobs lost with the process"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "ignore-lag",
@@ -204,7 +236,33 @@
             }
           ],
           "resultTitle": "Lag becomes the outage",
-          "resultBody": "An alert fires, but nothing slows the producers, so the queue keeps growing between pages; by the time anyone acts, jobs are 50 minutes stale and the process runs out of memory anyway."
+          "resultBody": "An alert fires, but nothing slows the producers, so the queue keeps growing between pages; by the time anyone acts, jobs are 50 minutes stale and the process runs out of memory anyway.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "q",
+                "sub": "50 min stale"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "alert",
+                "kind": "worker",
+                "label": "Lag alert",
+                "tone": "warn",
+                "sub": "paging, nothing throttles"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "q",
+                "to": "alert"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -212,7 +270,161 @@
         "Unbounded buffers hide the fire.",
         "Slow or reject producers."
       ],
-      "nextId": "idemp-01"
+      "nextId": "idemp-01",
+      "format": "knob",
+      "knob": {
+        "label": "Queue bound",
+        "unit": "k jobs",
+        "min": 1,
+        "max": 500,
+        "step": 1,
+        "start": 500,
+        "target": [
+          10,
+          30
+        ],
+        "question": "Bound the queue: workers clear 3,000 jobs/s and a job is worthless after 15 s.",
+        "curve": [
+          {
+            "at": 1,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 60
+              },
+              {
+                "key": "p95",
+                "value": 300
+              },
+              {
+                "key": "errors",
+                "value": 0
+              },
+              {
+                "key": "idle",
+                "value": 30
+              }
+            ]
+          },
+          {
+            "at": 5,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 68
+              },
+              {
+                "key": "p95",
+                "value": 1600
+              },
+              {
+                "key": "errors",
+                "value": 0
+              },
+              {
+                "key": "idle",
+                "value": 10
+              }
+            ]
+          },
+          {
+            "at": 10,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 72
+              },
+              {
+                "key": "p95",
+                "value": 3300
+              },
+              {
+                "key": "errors",
+                "value": 0
+              },
+              {
+                "key": "idle",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "at": 30,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 74
+              },
+              {
+                "key": "p95",
+                "value": 10000
+              },
+              {
+                "key": "errors",
+                "value": 0
+              },
+              {
+                "key": "idle",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "at": 60,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 80
+              },
+              {
+                "key": "p95",
+                "value": 20000
+              },
+              {
+                "key": "errors",
+                "value": 8
+              },
+              {
+                "key": "idle",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "at": 500,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 99
+              },
+              {
+                "key": "p95",
+                "value": 170000
+              },
+              {
+                "key": "errors",
+                "value": 25
+              },
+              {
+                "key": "idle",
+                "value": 0
+              }
+            ]
+          }
+        ],
+        "low": {
+          "title": "Too little buffer to ride bursts",
+          "body": "A bound under 10k jobs holds less than 3 s of work, so ordinary bursts fill it and push producers back while workers sit idle up to 30% of the time between bursts."
+        },
+        "high": {
+          "title": "Jobs rot in a deep queue",
+          "body": "Past about 45k jobs the wait tops 15 s at 3,000 jobs/s, so work expires before it runs; near 500k the heap fills and the process OOMs with every job in RAM."
+        },
+        "good": {
+          "title": "Absorbs bursts, keeps jobs fresh",
+          "body": "10k to 30k jobs is 3 to 10 s of work at 3,000 jobs/s: bursts are absorbed, every job runs inside its 15 s deadline, and producers are pushed back only under sustained overload."
+        }
+      }
     },
     {
       "id": "bp-02",
@@ -401,7 +613,8 @@
             ]
           },
           "resultTitle": "Uploaders told the truth",
-          "resultBody": "The queue is capped at 150,000 jobs (~30 min of work); accepted uploads get 202 with a status URL, and the rest get 503 with Retry-After: 120, which the client retries with jitter. Cost: at peak ~30% of uploads are deferred, and clients must implement the retry."
+          "resultBody": "The queue is capped at 150,000 jobs (~30 min of work); accepted uploads get 202 with a status URL, and the rest get 503 with Retry-After: 120, which the client retries with jitter. Cost: at peak ~30% of uploads are deferred, and clients must implement the retry.",
+          "cascadeIncidentId": "bp-casc-01"
         },
         {
           "id": "scale-api",
@@ -440,7 +653,24 @@
             }
           ],
           "resultTitle": "More doors, same GPUs",
-          "resultBody": "The API was never the bottleneck: with transcoders fixed at 5,000 jobs/min and 7,200 arriving, the queue still grows by 2,200 a minute and the wait passes 6.3 hours."
+          "resultBody": "The API was never the bottleneck: with transcoders fixed at 5,000 jobs/min and 7,200 arriving, the queue still grows by 2,200 a minute and the wait passes 6.3 hours.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "tone": "good",
+                "cpu": 12,
+                "sub": "x3 pods, still always 200"
+              },
+              {
+                "id": "q",
+                "sub": "+2,200 jobs/min"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 300
+          }
         },
         {
           "id": "fake-progress",
@@ -479,7 +709,23 @@
             }
           ],
           "resultTitle": "Re-uploads flood the queue",
-          "resultBody": "The bar stalls at 99%, users assume failure and upload again, and the duplicates push the backlog to 2.1 million jobs while tickets double to 260 an hour."
+          "resultBody": "The bar stalls at 99%, users assume failure and upload again, and the duplicates push the backlog to 2.1 million jobs while tickets double to 260 an hour.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "users",
+                "tone": "bad",
+                "sub": "re-uploading at 99%"
+              },
+              {
+                "id": "q",
+                "sub": "2.1M jobs"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -660,7 +906,22 @@
               "unit": "%",
               "tone": "good"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "buf",
+                "sub": "unbounded, 4 GB of lines"
+              },
+              {
+                "id": "app",
+                "sub": "GC pauses 6 s"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "sync-logging",
@@ -699,7 +960,22 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "12 lines x 200 ms per request"
+              },
+              {
+                "id": "col",
+                "sub": "on the request path"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -878,36 +1154,43 @@
           "retry": true,
           "metricsAfter": [
             {
-              "key": "rps",
-              "label": "Fetch rate",
-              "value": 20000,
-              "unit": "rec/s",
-              "tone": "bad"
-            },
-            {
               "key": "cpu",
               "label": "CPU",
-              "value": 99,
+              "value": 80,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "heap",
-              "label": "Heap used",
-              "value": 24,
+              "label": "Heap",
+              "value": 9,
               "unit": "GB",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 30,
-              "unit": "err/s",
-              "tone": "bad"
+              "value": 5,
+              "unit": "/s",
+              "tone": "warn"
             }
           ],
-          "resultTitle": "OOM every 50 minutes instead",
-          "resultBody": "The buffer still grows by 19,500 records/s, so 32 GB only delays the crash, and multi-second full-GC pauses now trigger consumer-group rebalances on top."
+          "resultTitle": "No crash yet, holding for now",
+          "resultBody": "The consumer stops crashing and errors fall to 5 a second; ten minutes in, heap reads 9 GB of 32 GB. The in-memory buffer is still growing by about 0.5 GB a minute.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "c",
+                "tone": "warn",
+                "cpu": 80,
+                "sub": "heap 9/32 GB, climbing"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 600
+          },
+          "consequenceIncidentId": "bp-bill-01"
         },
         {
           "id": "more-consumers",
@@ -946,7 +1229,39 @@
             }
           ],
           "resultTitle": "Partner API answers 429",
-          "resultBody": "40 pods fetch in parallel, but the partner cap is still 500 req/s in total; each pod buffers its share, the partner starts returning 429s, and the pods' retries push errors to 900/s."
+          "resultBody": "40 pods fetch in parallel, but the partner cap is still 500 req/s in total; each pod buffers its share, the partner starts returning 429s, and the pods' retries push errors to 900/s.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "partner",
+                "tone": "bad",
+                "sub": "429 on overflow"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "c2",
+                "kind": "worker",
+                "label": "39 more consumers",
+                "tone": "bad",
+                "cpu": 70,
+                "sub": "each buffering its share"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "topic",
+                "to": "c2"
+              },
+              {
+                "from": "c2",
+                "to": "partner"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 1200
+          }
         }
       ],
       "hints": [
@@ -1126,7 +1441,18 @@
               "unit": "min",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "w",
+                "sub": "scaler stops at 30% CPU"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 400
+          }
         },
         {
           "id": "fixed-400",
@@ -1165,7 +1491,20 @@
               "unit": "min",
               "tone": "good"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "w",
+                "tone": "good",
+                "cpu": 12,
+                "sub": "400 workers, idle most of the year"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 38000
+          }
         }
       ],
       "hints": [
@@ -1337,7 +1676,27 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "w",
+                "sub": "x60, 12k req/s of retries"
+              },
+              {
+                "id": "bank",
+                "sub": "suspended 1 h"
+              },
+              {
+                "id": "q",
+                "tone": "bad",
+                "sub": "90k pending"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 900
+          }
         },
         {
           "id": "fixed-sleep",
@@ -1376,7 +1735,18 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "w",
+                "sub": "10 retries/s each, 3k req/s"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -1545,7 +1915,34 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "es",
+                "cpu": 80,
+                "sub": "29k req/s of long tail"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "pcdn",
+                "kind": "cdn",
+                "label": "CDN prefix cache",
+                "tone": "warn",
+                "sub": "35% hit rate"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "users",
+                "to": "pcdn"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 200
+          }
         },
         {
           "id": "add-nodes",
@@ -1584,7 +1981,20 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "es",
+                "tone": "warn",
+                "cpu": 55,
+                "sub": "+6 nodes, same 44k req/s"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 2400
+          }
         }
       ],
       "hints": [
@@ -1754,7 +2164,18 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "q",
+                "sub": "10,000 deep, 12 s wait"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "longer-client-timeout",
@@ -1793,7 +2214,23 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "users",
+                "tone": "bad",
+                "sub": "refreshing at 6 s"
+              },
+              {
+                "id": "q",
+                "sub": "9 s wait"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -1815,7 +2252,7 @@
       "title": "Replaying a 3-day backlog knocks out the points API",
       "brief": "Loyalto's points consumers were down for 3 days, and Kafka kept 26 million events. On restart the autoscaler launched 200 consumers, which write 40k rows/s into a Postgres rated for 5k. The live points API on that DB now times out.",
       "constraint": "No events may be skipped; every customer must get their points.",
-      "question": "How fast should the backlog be replayed?",
+      "question": "The API is back. Now how fast should the backlog be replayed?",
       "metricsBefore": [
         {
           "key": "rps",
@@ -1977,7 +2414,28 @@
               "unit": "%",
               "tone": "warn"
             }
-          ]
+          ],
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "rep",
+                "kind": "replica",
+                "label": "Read replica",
+                "tone": "bad",
+                "cpu": 95,
+                "sub": "3 h behind"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "api",
+                "to": "rep"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 700
+          }
         },
         {
           "id": "skip-to-latest",
@@ -2016,7 +2474,24 @@
               "unit": "%",
               "tone": "good"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "k",
+                "tone": "bad",
+                "sub": "26M events skipped"
+              },
+              {
+                "id": "db",
+                "tone": "good",
+                "cpu": 30
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -2024,7 +2499,117 @@
         "Kafka can deliver far faster than the database can absorb.",
         "Let the slowest component set the replay pace."
       ],
-      "nextId": null
+      "nextId": null,
+      "format": "two-step",
+      "mitigation": {
+        "question": "The live points API is timing out right now. What stops the bleeding first?",
+        "choices": [
+          {
+            "id": "pause-consumers",
+            "label": "Pause the replay consumer group until the API recovers",
+            "correct": true,
+            "approach": "optimal",
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "resultTitle": "Writes stop, the API breathes",
+            "resultBody": "Consumers stop writing, Postgres falls from 100% to 35% CPU within a minute and the points API recovers; the 26M-event backlog waits, safely retained in Kafka.",
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "DB CPU",
+                "value": 35,
+                "unit": "%",
+                "tone": "good"
+              },
+              {
+                "key": "p95",
+                "label": "Points API p95",
+                "value": 70,
+                "unit": "ms",
+                "tone": "good"
+              },
+              {
+                "key": "errors",
+                "label": "Points API errors",
+                "value": 0.5,
+                "unit": "%",
+                "tone": "good"
+              }
+            ]
+          },
+          {
+            "id": "restart-primary",
+            "label": "Restart the Points Postgres primary to clear its load",
+            "correct": false,
+            "approach": "anti_pattern",
+            "retry": true,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "resultTitle": "Down for 40 s, then slammed again",
+            "resultBody": "The restart drops every connection for 40 s and API errors hit 100%; when Postgres returns, 200 consumers reconnect and push it back to 100% CPU within a minute.",
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "DB CPU",
+                "value": 100,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "Points API p95",
+                "value": 9000,
+                "unit": "ms",
+                "tone": "bad"
+              },
+              {
+                "key": "errors",
+                "label": "Points API errors",
+                "value": 60,
+                "unit": "%",
+                "tone": "bad"
+              }
+            ]
+          },
+          {
+            "id": "resize-db",
+            "label": "Scale Points Postgres up to a 4x larger instance now",
+            "correct": false,
+            "approach": "viable_with_tradeoffs",
+            "retry": true,
+            "tradeoffs": {
+              "costMonthlyDelta": 1400
+            },
+            "resultTitle": "Resize takes 25 minutes",
+            "resultBody": "The resize needs 25 minutes and a failover at the end; until then the API keeps timing out, and even 20k writes/s of capacity is half the 40k arriving.",
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "DB CPU",
+                "value": 100,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "Points API p95",
+                "value": 9000,
+                "unit": "ms",
+                "tone": "bad"
+              },
+              {
+                "key": "errors",
+                "label": "Points API errors",
+                "value": 48,
+                "unit": "%",
+                "tone": "bad"
+              }
+            ]
+          }
+        ]
+      }
     },
     {
       "id": "bp-10",
@@ -2231,7 +2816,22 @@
             }
           ],
           "resultTitle": "Bigger window, bigger buffers",
-          "resultBody": "A larger window lets the server push more before blocking, but the phone still reads 2 MB/s; buffers swell on both ends and delay grows to 60 s."
+          "resultBody": "A larger window lets the server push more before blocking, but the phone still reads 2 MB/s; buffers swell on both ends and delay grows to 60 s.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "users",
+                "sub": "60 s behind"
+              },
+              {
+                "id": "srv",
+                "sub": "64 MB windows, buffers swell"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "spill-to-disk",
@@ -2270,7 +2870,27 @@
             }
           ],
           "resultTitle": "Disk becomes the leak",
-          "resultBody": "The heap OOM turns into ~130 GB/hour of disk writes; dashboards fall 10 minutes behind live data and the volume fills before the evening peak."
+          "resultBody": "The heap OOM turns into ~130 GB/hour of disk writes; dashboards fall 10 minutes behind live data and the volume fills before the evening peak.",
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "disk",
+                "kind": "db",
+                "label": "Local disk",
+                "tone": "bad",
+                "sub": "130 GB/h, filling"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "srv",
+                "to": "disk"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 150
+          }
         }
       ],
       "hints": [
@@ -2457,7 +3077,8 @@
             ]
           },
           "resultTitle": "Checkout keeps its lane",
-          "resultBody": "The gateway tags requests critical, default or sheddable; above the concurrency limit it rejects exports with 503 + Retry-After before they use any API capacity, and checkout p95 returns to 180 ms. Cost: exports stall for ~20 minutes at peak, and the priority map must be kept current as endpoints change."
+          "resultBody": "The gateway tags requests critical, default or sheddable; above the concurrency limit it rejects exports with 503 + Retry-After before they use any API capacity, and checkout p95 returns to 180 ms. Cost: exports stall for ~20 minutes at peak, and the priority map must be kept current as endpoints change.",
+          "cascadeIncidentId": "bp-casc-02"
         },
         {
           "id": "shorter-timeouts",
@@ -2496,7 +3117,18 @@
             }
           ],
           "resultTitle": "Failing faster, still failing",
-          "resultBody": "Requests now die at 5 s instead of 30 s, but checkout still waits in the same queue behind exports, so about a third of checkouts keep timing out."
+          "resultBody": "Requests now die at 5 s instead of 30 s, but checkout still waits in the same queue behind exports, so about a third of checkouts keep timing out.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "sub": "5 s timeouts, same FIFO"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "random-drop",
@@ -2535,7 +3167,19 @@
             }
           ],
           "resultTitle": "Paying customers dropped too",
-          "resultBody": "Random drop brings load under 9,000 req/s, but it rejects checkouts as readily as exports: 35% of paying shoppers are turned away while exports keep their share."
+          "resultBody": "Random drop brings load under 9,000 req/s, but it rejects checkouts as readily as exports: 35% of paying shoppers are turned away while exports keep their share.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gw",
+                "tone": "bad",
+                "sub": "drops 35%, checkout too"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -2716,7 +3360,23 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "widget",
+                "cpu": 100,
+                "sub": "800k RPC/s bursts"
+              },
+              {
+                "id": "mesh",
+                "tone": "warn"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "widget-cache",
@@ -2755,7 +3415,27 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "wcache",
+                "kind": "cache",
+                "label": "Widget cache",
+                "tone": "warn",
+                "sub": "30% hit rate"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "mesh",
+                "to": "wcache"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 120
+          }
         }
       ],
       "hints": [
@@ -2933,7 +3613,18 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "sync",
+                "sub": "100 MB bodies, bigger OOMs"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 500
+          }
         },
         {
           "id": "jitter-only",
@@ -2972,7 +3663,18 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "sync",
+                "sub": "500 x 40 MB = 20 GB buffered"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -3153,7 +3855,18 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "http",
+                "sub": "32 GB heap, 9 s GC"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 800
+          }
         },
         {
           "id": "bigger-exec-queue",
@@ -3192,7 +3905,22 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "exec",
+                "sub": "5,000 queued, 40 GB of bodies"
+              },
+              {
+                "id": "http",
+                "cpu": 90
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -3360,7 +4088,18 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "sub": "110k req/s, 29% timeouts"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "triple-origin",
@@ -3399,7 +4138,20 @@
               "unit": "%",
               "tone": "good"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "tone": "warn",
+                "cpu": 50,
+                "sub": "x3 nodes, 2/3 duplicates"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 4500
+          }
         }
       ],
       "hints": [
@@ -3635,7 +4387,22 @@
             }
           ],
           "resultTitle": "Wrong at both speeds",
-          "resultBody": "At 40 ms, 4,000 req/s is still 160 in flight and p95 stays near 4 s; once the vacuum ends, the limit rejects half the traffic a 5 ms database could have served."
+          "resultBody": "At 40 ms, 4,000 req/s is still 160 in flight and p95 stays near 4 s; once the vacuum ends, the limit rejects half the traffic a 5 ms database could have served.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gw",
+                "sub": "fixed 4,000 req/s"
+              },
+              {
+                "id": "api",
+                "sub": "160 in flight"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "retry-with-backoff",
@@ -3674,7 +4441,19 @@
             }
           ],
           "resultTitle": "Retries amplify the overload",
-          "resultBody": "Each timeout now costs up to three attempts, pushing effective load toward 14,000 req/s; in-flight passes 500 and API pods start OOM-restarting."
+          "resultBody": "Each timeout now costs up to three attempts, pushing effective load toward 14,000 req/s; in-flight passes 500 and API pods start OOM-restarting.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "cpu": 100,
+                "sub": "500+ in flight, OOM restarts"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -3884,7 +4663,19 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "users",
+                "tone": "bad",
+                "sub": "free filers get 429"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "adaptive-limit",
@@ -3916,7 +4707,18 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "queue",
+                "sub": "adaptive limit, still 35/s"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -3925,6 +4727,771 @@
         "You can't add hosts, but nothing stops you from making this one host bigger."
       ],
       "nextId": null
+    },
+    {
+      "id": "bp-bill-01",
+      "incidentCode": "INC-013-04B",
+      "level": 13,
+      "patternId": "backpressure",
+      "canonical": false,
+      "isCascade": true,
+      "reviewed": true,
+      "parentIncidentCode": "INC-013-04",
+      "severity": "P1",
+      "xp": 90,
+      "title": "Order consumer stuck in a rebalance loop",
+      "brief": "The 32 GB heap bought 50 minutes. Full GCs now freeze the consumer for 14 s, Kafka evicts it from the group, and every rebalance refetches 20,000 records/s into a heap that is nearly full.",
+      "constraint": "The partner enrich API is still capped at 500 req/s.",
+      "question": "What finally stops the buffer from outgrowing the heap?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Fetched",
+          "value": 20000,
+          "unit": "rec/s",
+          "tone": "bad"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 99,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "heap",
+          "label": "Heap",
+          "value": 31,
+          "unit": "GB",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 60,
+          "unit": "/s",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "topic",
+            "kind": "queue",
+            "label": "Kafka orders topic",
+            "sub": "rebalancing"
+          },
+          {
+            "id": "c",
+            "kind": "worker",
+            "label": "Reactive consumer",
+            "tone": "bad",
+            "cpu": 99,
+            "sub": "31/32 GB, 14 s GC"
+          },
+          {
+            "id": "partner",
+            "kind": "server",
+            "label": "Partner enrich API",
+            "tone": "warn",
+            "sub": "500 req/s cap"
+          }
+        ],
+        "edges": [
+          {
+            "from": "topic",
+            "to": "c"
+          },
+          {
+            "from": "c",
+            "to": "partner"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "bound-inflight",
+          "label": "Bound in-flight records and pause fetching until they drain",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Fetch matches what the partner takes",
+          "resultBody": "The consumer pauses its partitions at 2,000 in-flight records and resumes as enrichment drains them, so it fetches about 500 records/s; heap settles near 2 GB and rebalances stop.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 40,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "heap",
+              "label": "Heap",
+              "value": 2,
+              "unit": "GB",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "/s",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "topic",
+                "kind": "queue",
+                "label": "Kafka orders topic",
+                "tone": "good",
+                "sub": "lag retained on disk"
+              },
+              {
+                "id": "c",
+                "kind": "worker",
+                "label": "Reactive consumer",
+                "tone": "good",
+                "cpu": 40,
+                "sub": "2,000 in flight max"
+              },
+              {
+                "id": "partner",
+                "kind": "server",
+                "label": "Partner enrich API",
+                "tone": "good",
+                "sub": "500 req/s"
+              }
+            ],
+            "edges": [
+              {
+                "from": "topic",
+                "to": "c"
+              },
+              {
+                "from": "c",
+                "to": "partner"
+              }
+            ]
+          }
+        },
+        {
+          "id": "session-timeout",
+          "label": "Raise session.timeout.ms so GC pauses don't trigger rebalances",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Stays in the group, still OOMs",
+          "resultBody": "The consumer keeps its partitions through 14 s pauses, but it still fetches 40 times faster than it can enrich; the heap fills and the JVM dies within the hour.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 97,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "heap",
+              "label": "Heap",
+              "value": 32,
+              "unit": "GB",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 40,
+              "unit": "/s",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "c",
+                "sub": "no rebalance, heap 32/32 GB"
+              },
+              {
+                "id": "topic",
+                "sub": "partitions held through GC"
+              }
+            ]
+          }
+        },
+        {
+          "id": "heap-64",
+          "label": "Raise the heap again, from 32 GB to 64 GB per pod",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 1200
+          },
+          "resultTitle": "Longer fuse, longer pauses",
+          "resultBody": "A 64 GB heap delays the OOM to about 100 minutes, but full GCs now take 25 s, the group rebalances even more often, and the instance bill doubles again.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "heap",
+              "label": "Heap",
+              "value": 40,
+              "unit": "GB",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 70,
+              "unit": "/s",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "c",
+                "sub": "64 GB heap, 25 s GC pauses"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "A bigger heap only moves the crash later.",
+        "The consumer fetches 40 times faster than the partner lets it enrich.",
+        "Make fetching wait on what is still in flight."
+      ],
+      "nextId": "idemp-01"
+    },
+    {
+      "id": "bp-casc-01",
+      "incidentCode": "INC-013-02B",
+      "level": 13,
+      "patternId": "backpressure",
+      "canonical": false,
+      "isCascade": true,
+      "reviewed": true,
+      "parentIncidentCode": "INC-013-02",
+      "severity": "P2",
+      "xp": 70,
+      "title": "Rejected uploaders all retry in the same second",
+      "brief": "The cap works, but every 503 says Retry-After: 30. Rejected uploaders' apps retry in lockstep, so every 30 s a 40k-request wave hits Clipstream's API and 90% of it bounces again.",
+      "constraint": "Transcoders still clear 5,000 jobs a minute.",
+      "question": "How do rejected clients come back without a synchronized wave?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Retry wave",
+          "value": 40000,
+          "unit": "req/s",
+          "tone": "bad"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 95,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Bounced",
+          "value": 90,
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Uploaders",
+            "sub": "retry in lockstep"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Upload API",
+            "tone": "bad",
+            "cpu": 92,
+            "sub": "40k waves every 30 s"
+          },
+          {
+            "id": "q",
+            "kind": "queue",
+            "label": "Transcode queue",
+            "sub": "capped"
+          },
+          {
+            "id": "gpu",
+            "kind": "gpu",
+            "label": "Transcoders",
+            "cpu": 95,
+            "sub": "5,000 jobs/min"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "q"
+          },
+          {
+            "from": "q",
+            "to": "gpu"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "jitter-retry-after",
+          "label": "Randomize Retry-After per response, 20 to 90 seconds",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "The wave flattens out",
+          "resultBody": "Clients now return anywhere from 20 to 90 s later, so the 40k wave becomes about 600 retries a second; API CPU falls to 40% and most retries find room in the queue.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 40,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Bounced",
+              "value": 12,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Uploaders",
+                "sub": "retries spread 20-90 s"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Upload API",
+                "tone": "good",
+                "cpu": 40
+              },
+              {
+                "id": "q",
+                "kind": "queue",
+                "label": "Transcode queue",
+                "tone": "good",
+                "sub": "capped"
+              },
+              {
+                "id": "gpu",
+                "kind": "gpu",
+                "label": "Transcoders",
+                "tone": "good",
+                "cpu": 95,
+                "sub": "5,000 jobs/min"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "api"
+              },
+              {
+                "from": "api",
+                "to": "q"
+              },
+              {
+                "from": "q",
+                "to": "gpu"
+              }
+            ]
+          }
+        },
+        {
+          "id": "raise-cap",
+          "label": "Raise the queue cap so far fewer uploads get a 503",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Back to hidden hours-long waits",
+          "resultBody": "Fewer 503s go out, but the queue again grows by 2,200 jobs a minute, and within an hour uploads wait 3 hours while the app still says they are processing.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 98,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Bounced",
+              "value": 30,
+              "unit": "%",
+              "tone": "warn"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "q",
+                "tone": "bad",
+                "sub": "cap raised, 3 h wait"
+              },
+              {
+                "id": "gpu",
+                "cpu": 98
+              }
+            ]
+          }
+        },
+        {
+          "id": "scale-api-waves",
+          "label": "Autoscale the upload API to absorb each retry wave",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 300
+          },
+          "resultTitle": "Bigger door, same bounce",
+          "resultBody": "Extra API pods accept the 40k wave faster, but the queue is still full, so 90% of it is rejected again 30 s later and the extra pods cost money to say no.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 95,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Bounced",
+              "value": 90,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "tone": "warn",
+                "cpu": 60,
+                "sub": "x3 pods, still rejecting"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "The cap is fine; the retry timing is not.",
+        "Every rejected client was told the same number.",
+        "Spread the comebacks out."
+      ],
+      "nextId": "idemp-01"
+    },
+    {
+      "id": "bp-casc-02",
+      "incidentCode": "INC-013-11B",
+      "level": 13,
+      "patternId": "backpressure",
+      "canonical": false,
+      "isCascade": true,
+      "reviewed": true,
+      "parentIncidentCode": "INC-013-11",
+      "severity": "P2",
+      "xp": 70,
+      "title": "Exports shed for five days straight",
+      "brief": "Priority shedding saved checkout, but load hasn't dropped below 9k req/s since the promo began. Exports have been shed for 5 days, and Tallybook's biggest customer missed its month-end close.",
+      "constraint": "Checkout must keep priority during the promo.",
+      "question": "How do exports get served without hurting checkout?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 11000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 90,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Exports failed",
+          "value": 100,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "Checkout p95",
+          "value": 180,
+          "unit": "ms",
+          "tone": "good"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Shoppers + exporters"
+          },
+          {
+            "id": "gw",
+            "kind": "lb",
+            "label": "Gateway",
+            "tone": "bad",
+            "sub": "exports shed 100%"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "API pool",
+            "tone": "warn",
+            "cpu": 90,
+            "sub": "checkout first"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres",
+            "cpu": 70
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "gw"
+          },
+          {
+            "from": "gw",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "reserve-share",
+          "label": "Reserve 10% of API capacity for the export tier",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "A small, guaranteed slice",
+          "resultBody": "Weighted fair queueing gives exports a guaranteed 900 req/s, so the customer's exports finish in about 40 minutes, while checkout keeps the other 90% and its p95 moves only from 180 to 210 ms.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 90,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Exports failed",
+              "value": 1,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "Checkout p95",
+              "value": 210,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Shoppers + exporters"
+              },
+              {
+                "id": "gw",
+                "kind": "lb",
+                "label": "Gateway",
+                "tone": "good",
+                "sub": "WFQ: exports 10%"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "API pool",
+                "tone": "good",
+                "cpu": 90
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres",
+                "cpu": 72
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "gw"
+              },
+              {
+                "from": "gw",
+                "to": "api"
+              },
+              {
+                "from": "api",
+                "to": "db"
+              }
+            ]
+          }
+        },
+        {
+          "id": "promote-exports",
+          "label": "Promote exports back to the same tier as checkout",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Checkout drowns again",
+          "resultBody": "Two thousand export requests a second compete with carts in one tier again; checkout p95 climbs back to 20 s and about a third of payments time out.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Exports failed",
+              "value": 30,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "Checkout p95",
+              "value": 20000,
+              "unit": "ms",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "tone": "bad",
+                "cpu": 99,
+                "sub": "one tier, checkout waits"
+              },
+              {
+                "id": "gw",
+                "tone": "warn",
+                "sub": "no priority"
+              }
+            ]
+          }
+        },
+        {
+          "id": "export-retry",
+          "label": "Let the export client retry every minute until it succeeds",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Retries never find a gap",
+          "resultBody": "Load never falls below 9k req/s, so every export retry is shed again; the retries add 1,500 req/s of rejected traffic and the export still never finishes.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 93,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Exports failed",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "Checkout p95",
+              "value": 200,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gw",
+                "sub": "+1,500 req/s of shed retries"
+              },
+              {
+                "id": "api",
+                "cpu": 93
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Strict priority never serves the low tier while the high tier is busy.",
+        "The promo keeps the high tier busy all day.",
+        "Guarantee the low tier a small share instead of zero."
+      ],
+      "nextId": "idemp-01"
     }
   ]
 }

@@ -17,7 +17,7 @@
       "xp": 150,
       "title": "Budget gone, pager silent",
       "brief": "Checkout errors jump to 2% while CPU sits at 41%. No page fires because every alert watches CPU. At this rate the 99.9% SLO's 43-minute monthly budget is gone in 36 hours.",
-      "constraint": "On-call must be paged for user pain, not for busy machines.",
+      "constraint": "Page for user pain, not busy machines; payment-provider blips burn up to 8x for an hour and heal.",
       "question": "What should page the on-call engineer?",
       "metricsBefore": [
         {
@@ -47,6 +47,20 @@
           "value": 360,
           "unit": "errors",
           "tone": "bad"
+        },
+        {
+          "key": "detect",
+          "label": "Time to page",
+          "value": 2160,
+          "unit": "min",
+          "tone": "bad"
+        },
+        {
+          "key": "noise",
+          "label": "False pages per week",
+          "value": 0,
+          "unit": "per week",
+          "tone": "neutral"
         }
       ],
       "graphBefore": {
@@ -119,8 +133,13 @@
               "tone": "good"
             }
           ],
-          "resultTitle": "Paged in four minutes",
-          "resultBody": "A 2% error rate burns the 0.1% budget at 20x, so the 1 h and 5 min burn-rate alert fires within minutes and clears once errors stop."
+          "resultTitle": "Paged within the hour, not in 36",
+          "resultBody": "A 2% error rate burns the 0.1% budget at 20x. With a 14x threshold the 1 h window crosses it about 42 minutes in, the 5 min window confirms the burn is still happening, and the alert clears once errors stop.",
+          "cascadeIncidentId": "obs-casc-01",
+          "cascadeDelayMs": 4000,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "cpu-lower",
@@ -151,7 +170,18 @@
           ],
           "resultTitle": "Paged all day for nothing",
           "resultBody": "Checkout runs at 41% CPU on every normal afternoon, so the pager fires daily while a real error spike at 30% CPU stays silent.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "sub": "CPU page fires daily at 41%"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "static-count",
@@ -182,7 +212,18 @@
           ],
           "resultTitle": "Quiet at night, loud at noon",
           "resultBody": "At 18,000 req/s the 2% spike is 21,600 errors a minute and pages, but at 3 a.m. traffic the same 2% never crosses 1,000.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "sub": "silent at 3 a.m. under 1,000/min"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -190,7 +231,139 @@
         "The SLO says how many failures a month you can afford.",
         "Alert on how fast that allowance is being spent, over a long and a short window."
       ],
-      "nextId": null
+      "nextId": null,
+      "format": "knob",
+      "knob": {
+        "label": "1 h burn-rate page threshold",
+        "unit": "x",
+        "min": 1,
+        "max": 40,
+        "step": 1,
+        "start": 30,
+        "target": [
+          10,
+          16
+        ],
+        "question": "Pick the 1 h burn threshold: ignore 8x provider blips, page on this 20x burn within 50 minutes.",
+        "curve": [
+          {
+            "at": 1,
+            "metrics": [
+              {
+                "key": "detect",
+                "value": 3
+              },
+              {
+                "key": "noise",
+                "value": 40
+              }
+            ]
+          },
+          {
+            "at": 5,
+            "metrics": [
+              {
+                "key": "detect",
+                "value": 15
+              },
+              {
+                "key": "noise",
+                "value": 12
+              }
+            ]
+          },
+          {
+            "at": 9,
+            "metrics": [
+              {
+                "key": "detect",
+                "value": 27
+              },
+              {
+                "key": "noise",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "at": 10,
+            "metrics": [
+              {
+                "key": "detect",
+                "value": 30
+              },
+              {
+                "key": "noise",
+                "value": 0.3
+              }
+            ]
+          },
+          {
+            "at": 16,
+            "metrics": [
+              {
+                "key": "detect",
+                "value": 48
+              },
+              {
+                "key": "noise",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "at": 19,
+            "metrics": [
+              {
+                "key": "detect",
+                "value": 57
+              },
+              {
+                "key": "noise",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "at": 20,
+            "metrics": [
+              {
+                "key": "detect",
+                "value": 2160
+              },
+              {
+                "key": "noise",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "at": 40,
+            "metrics": [
+              {
+                "key": "detect",
+                "value": 2160
+              },
+              {
+                "key": "noise",
+                "value": 0
+              }
+            ]
+          }
+        ],
+        "low": {
+          "title": "Paged for blips that heal themselves",
+          "body": "Below 10x, payment-provider wobbles that burn up to 8x for an hour cross the threshold, so on-call is woken several times a week for errors that clear on their own, and soon starts ignoring the pager."
+        },
+        "high": {
+          "title": "The 20x burn pages too late, or never",
+          "body": "At a 20x burn the 1 h window reaches a threshold T after 3 x T minutes. Above 16x that is more than 50 minutes, and at 20x or higher this outage never pages while the 36-hour budget drains."
+        },
+        "good": {
+          "title": "Paged in 30 to 48 minutes, blips ignored",
+          "body": "At a 20x burn the 1 h window crosses T after 3 x T minutes, so a 10-16x threshold pages within 30-48 minutes, having spent only 1.4-2.2% of the month's budget, while 8x provider blips never fire."
+        }
+      }
     },
     {
       "id": "obs-02",
@@ -320,7 +493,10 @@
             }
           ],
           "resultTitle": "The real tail shows up",
-          "resultBody": "Merged histograms put the fleet p99 at 1.4 s, matching user reports and pointing straight at the three bad-disk hosts."
+          "resultBody": "Merged histograms put the fleet p99 at 1.4 s, matching user reports and pointing straight at the three bad-disk hosts.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "max-p99",
@@ -351,7 +527,18 @@
           ],
           "resultTitle": "One host sets the number",
           "resultBody": "The worst host alone reads 2.1 s even though it serves under 3% of requests, so the chart overstates the tail and jumps with every noisy box.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "slow",
+                "sub": "its 2.1 s is now the fleet p99"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "weighted-avg",
@@ -382,7 +569,19 @@
           ],
           "resultTitle": "Still an average of tails",
           "resultBody": "Weighting nudges the number to 290 ms, but percentiles do not average: 8% of requests at 1.4 s still hides under a value users never see.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "slow",
+                "tone": "warn",
+                "sub": "1.4 s tail hidden in 290 ms"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -526,7 +725,10 @@
             }
           ],
           "resultTitle": "Tax service caught waiting",
-          "resultBody": "The trace waterfall shows 2.3 s inside the tax service waiting on a new lock; rolling it back brings p99 from 2.8 s to 420 ms."
+          "resultBody": "The trace waterfall shows 2.3 s inside the tax service waiting on a new lock; rolling it back brings p99 from 2.8 s to 420 ms.",
+          "tradeoffs": {
+            "costMonthlyDelta": 200
+          }
         },
         {
           "id": "more-dash",
@@ -557,7 +759,22 @@
           ],
           "resultTitle": "Fourteen green dashboards",
           "resultBody": "Each service's own average looks fine because the slow calls are a small share of its traffic, so nothing links the 2.8 s requests together.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gw",
+                "sub": "14 dashboards, all green"
+              },
+              {
+                "id": "tax",
+                "sub": "avg 60 ms, looks fine"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "debug-logs",
@@ -588,7 +805,55 @@
           ],
           "resultTitle": "Logs pile up, still unlinked",
           "resultBody": "Log volume grows 9x and CPU climbs to 52%, but with no shared id nobody can stitch one slow checkout's lines together across services.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gw",
+                "cpu": 52,
+                "sub": "9x log volume"
+              },
+              {
+                "id": "cart",
+                "cpu": 45
+              },
+              {
+                "id": "pay",
+                "cpu": 47
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "logs",
+                "kind": "db",
+                "label": "Log cluster",
+                "cpu": 90,
+                "tone": "bad",
+                "sub": "9x ingest, no shared id"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "gw",
+                "to": "logs"
+              },
+              {
+                "from": "cart",
+                "to": "logs"
+              },
+              {
+                "from": "tax",
+                "to": "logs"
+              },
+              {
+                "from": "pay",
+                "to": "logs"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 300
+          }
         }
       ],
       "hints": [
@@ -722,7 +987,12 @@
             }
           ],
           "resultTitle": "Every failure has a trace",
-          "resultBody": "Deciding after the request finishes keeps all 170,000 failed payments a day plus a 1% baseline, so storage grows about 5% instead of 100x."
+          "resultBody": "Deciding after the request finishes keeps all 170,000 failed payments a day plus a 1% baseline, so storage grows about 5% instead of 100x.",
+          "cascadeIncidentId": "obs-casc-02",
+          "cascadeDelayMs": 4000,
+          "tradeoffs": {
+            "costMonthlyDelta": 150
+          }
         },
         {
           "id": "head-100",
@@ -753,7 +1023,26 @@
           ],
           "resultTitle": "Storage bill up 100x",
           "resultBody": "Every one of 345 million daily requests is stored, the span pipeline backs up and the trace store costs a hundred times the 20% budget.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "q",
+                "tone": "bad",
+                "cpu": 95,
+                "sub": "345M traces/day, backing up"
+              },
+              {
+                "id": "store",
+                "tone": "bad",
+                "cpu": 90,
+                "sub": "100x storage"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 9000
+          }
         },
         {
           "id": "user-hash",
@@ -784,7 +1073,19 @@
           ],
           "resultTitle": "Still guessing up front",
           "resultBody": "Hashing makes traces consistent per user, but the choice is still made before anyone knows the request will fail, so 99% of failures vanish.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gw",
+                "sub": "still decided up front",
+                "label": "Gateway (1% of users)"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -909,7 +1210,10 @@
             }
           ],
           "resultTitle": "Back to 3,000 series",
-          "resultBody": "Without user_id the counter has 150 series per host, store memory falls from 93% to 40%, and per-user questions go to trace and log search."
+          "resultBody": "Without user_id the counter has 150 series per host, store memory falls from 93% to 40%, and per-user questions go to trace and log search.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "scale-store",
@@ -921,26 +1225,41 @@
               "label": "CPU",
               "value": 80,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
               "value": 150,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 30,
+              "value": 10,
               "unit": "errors",
-              "tone": "bad"
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Paying for every new user",
-          "resultBody": "Memory drops to 80% for now, but series grow with every signup, so the 12x bill becomes 36x and the OOM returns next quarter.",
-          "retry": true
+          "resultTitle": "Store stable at 80%, series still climbing",
+          "resultBody": "Tripled memory and three shards bring the store to 80% and the OOMs stop tonight. Series still grow with every signup, about 4% a week, and the metrics bill is now 36x what it was last month.",
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "tsdb",
+                "tone": "warn",
+                "cpu": 80,
+                "sub": "3 shards, series +4%/week"
+              }
+            ]
+          },
+          "consequenceIncidentId": "obs-bill-01",
+          "approach": "viable_with_tradeoffs",
+          "tradeoffs": {
+            "costMonthlyDelta": 1500
+          }
         },
         {
           "id": "slow-scrape",
@@ -971,7 +1290,23 @@
           ],
           "resultTitle": "Same series, blurrier data",
           "resultBody": "Cost comes from the 300 M distinct series, not the scrape rate, so memory stays at 90% while alerts now lag by five minutes.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "tsdb",
+                "cpu": 90,
+                "sub": "300M series, 5 min stale"
+              },
+              {
+                "id": "dash",
+                "sub": "alerts 5 min late"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -979,7 +1314,35 @@
         "Every unique label combination is its own series.",
         "Keep unbounded ids out of metric labels; they belong on events."
       ],
-      "nextId": null
+      "nextId": null,
+      "format": "culprit",
+      "culprit": {
+        "nodeId": "api",
+        "explanation": "The API fleet's 14:05 deploy added user_id to http_requests_total, and its /metrics output jumped from 180 KB to 41 MB per scrape. The store is only drowning in the series that one label creates.",
+        "wrongNodeFeedback": {
+          "tsdb": "The store is the victim: it is OOMing on the series it was handed. Find what started creating them at 14:05.",
+          "q": "The pipeline is backed up because the samples behind it exploded. Look upstream.",
+          "dash": "On-call only sees the fallout: slow dashboards and late alerts."
+        }
+      },
+      "logs": {
+        "api": [
+          "deploy v3.18 14:05: http_requests_total labels {endpoint,status,user_id}",
+          "/metrics response 180 KB -> 41 MB per scrape"
+        ],
+        "q": [
+          "remote_write: 2.1M samples pending, retrying",
+          "shards scaled 8 -> 40 to keep up"
+        ],
+        "tsdb": [
+          "head series 301M, was 3k at 14:00",
+          "OOMKilled: memory limit reached, replaying WAL"
+        ],
+        "dash": [
+          "dashboard queries timing out after 60 s",
+          "rule evaluation running 45 s behind"
+        ]
+      }
     },
     {
       "id": "obs-06",
@@ -1095,7 +1458,10 @@
             }
           ],
           "resultTitle": "One query, 12 lines",
-          "resultBody": "Each line now has request_id, order_id and service fields, so a single indexed lookup returns all 12 lines for order 88213 in two seconds."
+          "resultBody": "Each line now has request_id, order_id and service fields, so a single indexed lookup returns all 12 lines for order 88213 in two seconds.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "parallel-grep",
@@ -1126,7 +1492,19 @@
           ],
           "resultTitle": "Faster search, same gaps",
           "resultBody": "Parallel grep cuts the wait to eight minutes and spikes log cluster CPU to 70%, yet lines that never mention 88213 are still missed.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "logs",
+                "cpu": 70,
+                "sub": "grep 8 min, lines still missed"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "longer-keep",
@@ -1157,7 +1535,20 @@
           ],
           "resultTitle": "More haystack, no needle",
           "resultBody": "Keeping 9 TB a day for 30 days quadruples storage and makes each grep slower, while nothing ties one request's lines together.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "logs",
+                "cpu": 62,
+                "sub": "270 TB retained",
+                "label": "Log cluster (30 d)"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 800
+          }
         }
       ],
       "hints": [
@@ -1281,7 +1672,10 @@
               "unit": "%",
               "tone": "good"
             }
-          ]
+          ],
+          "tradeoffs": {
+            "costMonthlyDelta": 450
+          }
         },
         {
           "id": "thanos-shard",
@@ -1312,7 +1706,34 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "tsdb",
+                "sub": "still OOM every 2 h"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "thanos",
+                "kind": "server",
+                "label": "Thanos (half built)",
+                "cpu": 5,
+                "tone": "warn",
+                "sub": "not serving queries"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "thanos",
+                "to": "tsdb"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 600
+          }
         },
         {
           "id": "drop-pod-label",
@@ -1343,7 +1764,25 @@
               "unit": "%",
               "tone": "warn"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "tsdb",
+                "tone": "warn",
+                "cpu": 52,
+                "sub": "0.9M series"
+              },
+              {
+                "id": "am",
+                "tone": "warn",
+                "sub": "per-pod alerts can't fire"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -1353,6 +1792,837 @@
       ],
       "nextId": null,
       "reviewed": true
+    },
+    {
+      "id": "obs-casc-01",
+      "incidentCode": "INC-022-C1",
+      "level": 22,
+      "patternId": "observability",
+      "canonical": false,
+      "reviewed": true,
+      "isCascade": true,
+      "parentIncidentCode": "INC-022",
+      "severity": "P2",
+      "xp": 70,
+      "title": "Paged at 3 a.m. for two failed requests",
+      "brief": "Burn-rate paging now covers every service. The internal refunds API gets 40 requests an hour at night; 2 failures read as a 50x burn and page on-call three nights running.",
+      "constraint": "Refunds keeps its 99.9% SLO, and a real refunds outage must still page.",
+      "question": "How do you keep burn-rate paging honest on tiny traffic?",
+      "metricsBefore": [
+        {
+          "key": "reqs",
+          "label": "Night requests",
+          "value": 40,
+          "unit": "per hour",
+          "tone": "neutral"
+        },
+        {
+          "key": "burn",
+          "label": "Reported burn rate",
+          "value": 50,
+          "unit": "x",
+          "tone": "bad"
+        },
+        {
+          "key": "pages",
+          "label": "Night pages",
+          "value": 3,
+          "unit": "per week",
+          "tone": "bad"
+        },
+        {
+          "key": "missed",
+          "label": "Real outages missed",
+          "value": 0,
+          "unit": "per month",
+          "tone": "neutral"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "agents",
+            "kind": "users",
+            "label": "Support agents"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Refunds API",
+            "cpu": 8,
+            "tone": "warn",
+            "sub": "40 req/h at night"
+          },
+          {
+            "id": "alert",
+            "kind": "server",
+            "label": "Burn-rate alerts",
+            "cpu": 4,
+            "tone": "bad",
+            "sub": "50x on 2 errors"
+          },
+          {
+            "id": "oncall",
+            "kind": "users",
+            "label": "On-call"
+          }
+        ],
+        "edges": [
+          {
+            "from": "agents",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "alert"
+          },
+          {
+            "from": "alert",
+            "to": "oncall"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "min-failures",
+          "label": "Require a minimum failure count before a burn alert pages",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 1,
+            "tradeoffSummary": "A rate needs enough events to mean anything; a count floor keeps tiny services quiet."
+          },
+          "resultTitle": "Stray errors open tickets, outages still page",
+          "resultBody": "The alert now also needs at least 10 failed requests in the hour, so 2 stray errors out of 40 open a ticket instead of waking anyone. A real outage fails every request and still pages within the hour. Cost: small partial failures on tiny services are caught more slowly.",
+          "metricsAfter": [
+            {
+              "key": "burn",
+              "label": "Reported burn rate",
+              "value": 50,
+              "unit": "x",
+              "tone": "warn"
+            },
+            {
+              "key": "pages",
+              "label": "Night pages",
+              "value": 0,
+              "unit": "per week",
+              "tone": "good"
+            },
+            {
+              "key": "missed",
+              "label": "Real outages missed",
+              "value": 0,
+              "unit": "per month",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "agents",
+                "kind": "users",
+                "label": "Support agents"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Refunds API",
+                "cpu": 8,
+                "tone": "good",
+                "sub": "40 req/h at night"
+              },
+              {
+                "id": "alert",
+                "kind": "server",
+                "label": "Burn-rate alerts",
+                "cpu": 4,
+                "tone": "good",
+                "sub": "burn + at least 10 failures"
+              },
+              {
+                "id": "oncall",
+                "kind": "users",
+                "label": "On-call",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "agents",
+                "to": "api"
+              },
+              {
+                "from": "api",
+                "to": "alert"
+              },
+              {
+                "from": "alert",
+                "to": "oncall"
+              }
+            ]
+          }
+        },
+        {
+          "id": "raise-threshold",
+          "label": "Raise every service's page threshold from a 14x to a 60x burn",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Checkout's real burn goes silent too",
+          "resultBody": "Refunds stops paging, but checkout's 20x burn can never cross 60x either, so its budget drains without a page: the same blind spot you started the week with.",
+          "metricsAfter": [
+            {
+              "key": "burn",
+              "label": "Reported burn rate",
+              "value": 50,
+              "unit": "x",
+              "tone": "warn"
+            },
+            {
+              "key": "pages",
+              "label": "Night pages",
+              "value": 0,
+              "unit": "per week",
+              "tone": "good"
+            },
+            {
+              "key": "missed",
+              "label": "Real outages missed",
+              "value": 2,
+              "unit": "per month",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "alert",
+                "tone": "warn",
+                "sub": "checkout 20x burn silent"
+              }
+            ]
+          }
+        },
+        {
+          "id": "night-mute",
+          "label": "Mute the refunds API's burn alerts from midnight to 6 a.m.",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "A real night outage goes unseen",
+          "resultBody": "Nights go quiet until a certificate expires at 02:10 on Friday: refunds fail completely, nobody is paged for five hours, and about 200 refunds fail before the day shift notices.",
+          "metricsAfter": [
+            {
+              "key": "burn",
+              "label": "Reported burn rate",
+              "value": 50,
+              "unit": "x",
+              "tone": "warn"
+            },
+            {
+              "key": "pages",
+              "label": "Night pages",
+              "value": 0,
+              "unit": "per week",
+              "tone": "good"
+            },
+            {
+              "key": "missed",
+              "label": "Real outages missed",
+              "value": 1,
+              "unit": "per month",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "tone": "bad",
+                "cpu": 8,
+                "sub": "cert expired, 100% failing"
+              },
+              {
+                "id": "alert",
+                "tone": "neutral",
+                "sub": "muted 00:00-06:00"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Two failures out of forty is a 5% error rate: a big rate built on tiny numbers.",
+        "A real outage on this service fails every request, not two of them.",
+        "Pair the burn-rate condition with a floor on how many requests actually failed."
+      ]
+    },
+    {
+      "id": "obs-casc-02",
+      "incidentCode": "INC-022-C2",
+      "level": 22,
+      "patternId": "observability",
+      "canonical": false,
+      "reviewed": true,
+      "isCascade": true,
+      "parentIncidentCode": "INC-022",
+      "severity": "P2",
+      "xp": 80,
+      "title": "Kept failure traces arrive in pieces",
+      "brief": "Tail sampling runs on 6 collectors behind a round-robin balancer. A trace's spans land on different collectors, so each decides alone: 40% of kept failure traces are missing spans, and collectors hit 92% memory.",
+      "constraint": "Trace storage may grow at most 20%, and payment timeouts take 6 s.",
+      "question": "How do all of a trace's spans reach one sampling decision?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 4000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 70,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "mem",
+          "label": "Memory used",
+          "value": 92,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "partial",
+          "label": "Kept traces missing spans",
+          "value": 40,
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Payment API",
+            "cpu": 40
+          },
+          {
+            "id": "lb",
+            "kind": "lb",
+            "label": "Span balancer (round-robin)",
+            "cpu": 30
+          },
+          {
+            "id": "col",
+            "kind": "worker",
+            "label": "6 tail samplers",
+            "cpu": 70,
+            "tone": "bad",
+            "sub": "memory 92%"
+          },
+          {
+            "id": "store",
+            "kind": "db",
+            "label": "Trace store",
+            "cpu": 35,
+            "tone": "warn",
+            "sub": "40% partial traces"
+          }
+        ],
+        "edges": [
+          {
+            "from": "pay",
+            "to": "lb"
+          },
+          {
+            "from": "lb",
+            "to": "col"
+          },
+          {
+            "from": "col",
+            "to": "store"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "route-traceid",
+          "label": "Route spans by trace ID so one collector sees each trace",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 120,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 2,
+            "tradeoffSummary": "Consistent routing by trace ID; a sampler restart loses the traces it was buffering."
+          },
+          "resultTitle": "One trace, one sampler, one decision",
+          "resultBody": "A load-balancing exporter tier hashes trace_id, so every span of a trace reaches the same sampler, which decides once with the whole trace in view. Partial kept traces fall from 40% to under 1%, and memory drops to 60% because each span is buffered once. Cost: one small extra collector tier.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 55,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "mem",
+              "label": "Memory used",
+              "value": 60,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "partial",
+              "label": "Kept traces missing spans",
+              "value": 1,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "pay",
+                "kind": "server",
+                "label": "Payment API",
+                "cpu": 40
+              },
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Trace-ID routing tier",
+                "cpu": 32,
+                "tone": "good",
+                "sub": "hash(trace_id)"
+              },
+              {
+                "id": "col",
+                "kind": "worker",
+                "label": "6 tail samplers",
+                "cpu": 55,
+                "tone": "good",
+                "sub": "memory 60%"
+              },
+              {
+                "id": "store",
+                "kind": "db",
+                "label": "Trace store",
+                "cpu": 35,
+                "tone": "good",
+                "sub": "complete traces"
+              }
+            ],
+            "edges": [
+              {
+                "from": "pay",
+                "to": "lb"
+              },
+              {
+                "from": "lb",
+                "to": "col"
+              },
+              {
+                "from": "col",
+                "to": "store"
+              }
+            ]
+          }
+        },
+        {
+          "id": "short-wait",
+          "label": "Cut the sampler's decision wait from 30 s to 2 s",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Decided before the slow spans exist",
+          "resultBody": "Memory falls to 50%, but payment timeouts take 6 s, so the sampler decides before the slow spans arrive and throws away exactly the timed-out traces support keeps asking about.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 50,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "mem",
+              "label": "Memory used",
+              "value": 50,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "partial",
+              "label": "Kept traces missing spans",
+              "value": 60,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "col",
+                "tone": "warn",
+                "cpu": 50,
+                "sub": "decides at 2 s, timeouts at 6 s"
+              },
+              {
+                "id": "store",
+                "tone": "bad",
+                "sub": "slow traces missing"
+              }
+            ]
+          }
+        },
+        {
+          "id": "double-mem",
+          "label": "Double each collector's memory and keep round-robin routing",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 500
+          },
+          "resultTitle": "Memory alarm clears, traces still split",
+          "resultBody": "The memory alarm clears for $500 a month more, but spans of one trace still land on different collectors that decide independently, so 40% of kept failure traces still arrive in pieces.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 70,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "mem",
+              "label": "Memory used",
+              "value": 46,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "partial",
+              "label": "Kept traces missing spans",
+              "value": 40,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "col",
+                "tone": "warn",
+                "cpu": 70,
+                "sub": "memory 46%, still split"
+              },
+              {
+                "id": "store",
+                "sub": "40% partial traces, unchanged"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Each collector can only judge the spans it received.",
+        "A round-robin balancer spreads one trace's spans across all six collectors.",
+        "Make the routing key the thing the decision is about."
+      ]
+    },
+    {
+      "id": "obs-bill-01",
+      "incidentCode": "INC-022-B1",
+      "level": 22,
+      "patternId": "observability",
+      "canonical": false,
+      "reviewed": true,
+      "isCascade": true,
+      "parentIncidentCode": "INC-022",
+      "severity": "P1",
+      "xp": 90,
+      "title": "The metrics store OOMs again, on all shards",
+      "brief": "Tripling the metrics store bought six weeks. A signup campaign added 1.4M users; user_id series hit 510M, all three shards OOM in turn, and alert rules have been blind for 20 minutes.",
+      "constraint": "Support still needs per-user debugging, and there is no budget for more memory this quarter.",
+      "question": "What stops metric series from growing with the user count?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 30000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 97,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "series",
+          "label": "Active series",
+          "value": 510,
+          "unit": "M",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Missed alert evaluations",
+          "value": 45,
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "API fleet",
+            "cpu": 50
+          },
+          {
+            "id": "q",
+            "kind": "queue",
+            "label": "Metrics pipeline",
+            "cpu": 75,
+            "tone": "warn"
+          },
+          {
+            "id": "tsdb",
+            "kind": "db",
+            "label": "Metrics store (3 shards)",
+            "cpu": 97,
+            "tone": "bad",
+            "sub": "510M series"
+          },
+          {
+            "id": "dash",
+            "kind": "users",
+            "label": "On-call",
+            "sub": "alerts blind 20 min"
+          }
+        ],
+        "edges": [
+          {
+            "from": "api",
+            "to": "q"
+          },
+          {
+            "from": "q",
+            "to": "tsdb"
+          },
+          {
+            "from": "dash",
+            "to": "tsdb"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "hotfix-drop",
+          "label": "Hotfix the API to drop user_id; look users up in traces",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 1,
+            "tradeoffSummary": "Bounded metric labels; per-user questions move to traces and logs."
+          },
+          "resultTitle": "Series fall back to thousands",
+          "resultBody": "The hotfix rolls out in 20 minutes and each host goes back to about 150 series for the counter. The 510M old series age out of the head block within two hours, memory settles at 35%, and support finds a user's requests by searching traces and logs by user_id.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 35,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "series",
+              "label": "Active series",
+              "value": 0.003,
+              "unit": "M",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Missed alert evaluations",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "API fleet",
+                "cpu": 48,
+                "tone": "good",
+                "sub": "no user_id label"
+              },
+              {
+                "id": "q",
+                "kind": "queue",
+                "label": "Metrics pipeline",
+                "cpu": 20,
+                "tone": "good"
+              },
+              {
+                "id": "tsdb",
+                "kind": "db",
+                "label": "Metrics store (3 shards)",
+                "cpu": 35,
+                "tone": "good",
+                "sub": "3k series"
+              },
+              {
+                "id": "dash",
+                "kind": "users",
+                "label": "On-call",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "api",
+                "to": "q"
+              },
+              {
+                "from": "q",
+                "to": "tsdb"
+              },
+              {
+                "from": "dash",
+                "to": "tsdb"
+              }
+            ]
+          }
+        },
+        {
+          "id": "sample-limit",
+          "label": "Set a sample_limit on the API scrape job to cap its series",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Every API metric goes dark",
+          "resultBody": "The API scrape now exceeds its limit every time, and Prometheus rejects the whole scrape: every API metric goes stale, including the error-rate series the burn-rate alerts need. Memory recovers; visibility is gone.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 45,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "series",
+              "label": "Active series",
+              "value": 0.2,
+              "unit": "M",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Missed alert evaluations",
+              "value": 60,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "tone": "bad",
+                "cpu": 50,
+                "sub": "scrape rejected, metrics stale"
+              },
+              {
+                "id": "tsdb",
+                "tone": "good",
+                "cpu": 45
+              }
+            ]
+          }
+        },
+        {
+          "id": "hash-buckets",
+          "label": "Hash user_id into 1,000 buckets so the label stays bounded",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Bounded series, useless per-user data",
+          "resultBody": "Series drop to about 3M and the store recovers, but each bucket mixes some 3,400 users, so the per-user charts support relies on show noise and the real fix still has to ship.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 50,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "series",
+              "label": "Active series",
+              "value": 3,
+              "unit": "M",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Missed alert evaluations",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "tsdb",
+                "tone": "warn",
+                "cpu": 50,
+                "sub": "3M series"
+              },
+              {
+                "id": "dash",
+                "sub": "user charts mix 3,400 users"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Series count is every label's values multiplied together; one of them grows with signups.",
+        "More memory only moves the date of the next OOM.",
+        "Keep per-user ids in traces and logs, not in metric labels."
+      ]
     }
   ]
 }

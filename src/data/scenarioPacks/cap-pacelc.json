@@ -18,7 +18,7 @@
       "title": "Gift cards double-spent in a split",
       "brief": "The US-EU link drops for 90 s. EU checkout keeps approving gift-card spends from a stale local balance while US users spend the same cards.",
       "constraint": "Balances must never go negative; reviews and carts can tolerate divergence.",
-      "question": "What partition policy should gift-card spends follow?",
+      "question": "Now what partition policy stops double spends in the next split?",
       "metricsBefore": [
         {
           "key": "rps",
@@ -115,7 +115,10 @@
             }
           ],
           "resultTitle": "Balances stay correct",
-          "resultBody": "EU spends fail fast during the 90 s split instead of approving money the US side may already have spent; carts and reviews stay writable."
+          "resultBody": "EU spends fail fast during the 90 s split instead of approving money the US side may already have spent; carts and reviews stay writable.",
+          "tradeoffs": {
+            "costMonthlyDelta": 150
+          }
         },
         {
           "id": "lww-spend",
@@ -146,7 +149,24 @@
           ],
           "resultTitle": "One debit vanished on merge",
           "resultBody": "Last-write-wins keeps only one region's balance, so two $50 spends against a $50 card both succeed and one debit is silently lost.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "eu",
+                "tone": "bad",
+                "sub": "2 debits merged into 1"
+              },
+              {
+                "id": "us",
+                "tone": "warn",
+                "cpu": 75
+              }
+            ]
+          }
         },
         {
           "id": "retry-spend",
@@ -177,7 +197,25 @@
           ],
           "resultTitle": "Approved before anyone agreed",
           "resultBody": "The shopper already got an approval, so background retries are reconciliation after the fact; the double spend has happened.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 40
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "eu",
+                "tone": "bad",
+                "sub": "1.2k spends queued for retry"
+              },
+              {
+                "id": "us",
+                "tone": "warn",
+                "cpu": 76,
+                "sub": "late debits bounce"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -185,7 +223,132 @@
         "An approval is a promise the other region never saw.",
         "Pick consistency for balances, availability for the rest."
       ],
-      "nextId": null
+      "nextId": null,
+      "format": "two-step",
+      "mitigation": {
+        "question": "The link is still down and double spends keep landing. What stops the bleeding now?",
+        "choices": [
+          {
+            "id": "flag-off-eu",
+            "label": "Flag off EU gift-card redemption until the link heals",
+            "correct": true,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 55,
+                "unit": "%",
+                "tone": "good"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 120,
+                "unit": "ms",
+                "tone": "good"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 150,
+                "unit": "errors",
+                "tone": "warn"
+              }
+            ],
+            "resultTitle": "Bleeding stopped",
+            "resultBody": "EU shoppers see \"gift cards unavailable, try again shortly\" while carts and card payments keep flowing. No new double spends land, but the next split needs the same manual flag."
+          },
+          {
+            "id": "scale-eu",
+            "label": "Add two EU replica nodes so approvals clear faster",
+            "correct": false,
+            "tradeoffs": {
+              "costMonthlyDelta": 600
+            },
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 72,
+                "unit": "%",
+                "tone": "warn"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 140,
+                "unit": "ms",
+                "tone": "bad"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 500,
+                "unit": "errors",
+                "tone": "bad"
+              }
+            ],
+            "resultTitle": "More nodes, same stale balance",
+            "resultBody": "The two new EU nodes copy the same stale balances, so they approve already-spent cards faster; double spends keep landing.",
+            "retry": true,
+            "graphPatch": {
+              "nodes": [
+                {
+                  "id": "eu",
+                  "tone": "bad",
+                  "sub": "3 nodes, same stale balances"
+                }
+              ]
+            }
+          },
+          {
+            "id": "restart-eu",
+            "label": "Restart EU checkout pods to drop their cached balances",
+            "correct": false,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 74,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 190,
+                "unit": "ms",
+                "tone": "bad"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 520,
+                "unit": "errors",
+                "tone": "bad"
+              }
+            ],
+            "resultTitle": "Pods reload the stale balance",
+            "resultBody": "Fresh pods read balances from the EU replica, which is still cut off from the US, so within a minute they approve the same spent cards again.",
+            "retry": true,
+            "graphPatch": {
+              "nodes": [
+                {
+                  "id": "eu",
+                  "tone": "bad",
+                  "sub": "reloaded stale balances"
+                }
+              ]
+            }
+          }
+        ]
+      }
     },
     {
       "id": "cap-02",
@@ -290,7 +453,11 @@
             }
           ],
           "resultTitle": "EU stays useful in a split",
-          "resultBody": "Likes, carts and sessions accept local writes and merge on heal, while only payment writes wait for a quorum; errors drop to near zero."
+          "resultBody": "Likes, carts and sessions accept local writes and merge on heal, while only payment writes wait for a quorum; errors drop to near zero.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "cascadeIncidentId": "cap-casc-02"
         },
         {
           "id": "longer-timeout",
@@ -321,7 +488,20 @@
           ],
           "resultTitle": "Requests hang instead of failing",
           "resultBody": "A partition does not heal faster because clients wait longer; users now stare at spinners for 30 s before the same error.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "eu",
+                "tone": "bad",
+                "cpu": 60,
+                "sub": "writes held 30 s"
+              }
+            ]
+          }
         },
         {
           "id": "single-region",
@@ -352,7 +532,20 @@
           ],
           "resultTitle": "The US is exactly what EU cannot reach",
           "resultBody": "During a partition the EU clients cannot reach the US region either, so rerouting adds latency and still ends in errors.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 300
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "eu",
+                "tone": "bad",
+                "cpu": 61,
+                "sub": "reroute to US times out"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -362,6 +555,216 @@
       ],
       "nextId": null,
       "reviewed": true
+    },
+    {
+      "id": "cap-casc-02",
+      "incidentCode": "INC-016C",
+      "level": 16,
+      "patternId": "cap-pacelc",
+      "canonical": false,
+      "isCascade": true,
+      "parentIncidentCode": "INC-016",
+      "reviewed": true,
+      "severity": "P2",
+      "xp": 70,
+      "title": "Like counts drop after heal",
+      "brief": "Likes now merge after a split. After last night's 2-minute split, 12,400 likes vanished: each region's counter was merged by keeping the newer total.",
+      "constraint": "Likes must stay writable in a split; payments stay CP.",
+      "question": "What merge rule keeps both regions' likes?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 42000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 40,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 110,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "errors",
+          "label": "Lost likes",
+          "value": 12400,
+          "unit": "likes",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "EU users"
+          },
+          {
+            "id": "eu",
+            "kind": "replica",
+            "label": "EU node",
+            "tone": "warn",
+            "cpu": 40,
+            "sub": "likes: 51,200"
+          },
+          {
+            "id": "us",
+            "kind": "db",
+            "label": "US primary",
+            "tone": "warn",
+            "cpu": 38,
+            "sub": "likes: 48,900"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "eu"
+          },
+          {
+            "from": "eu",
+            "to": "us"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "pn-counter",
+          "label": "Store per-region counts and sum them on merge (PN-counter)",
+          "correct": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "consistencyGuarantee": "eventual"
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 41,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 112,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Lost likes",
+              "value": 0,
+              "unit": "likes",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Every like counted",
+          "resultBody": "Each region increments only its own slot, and a merge keeps the max of each slot and sums them, so both sides' likes survive any split. Cost: one slot per region per counter."
+        },
+        {
+          "id": "resync-us",
+          "label": "Resync every like count from the US primary after each heal",
+          "correct": false,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 44,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 115,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Lost likes",
+              "value": 7800,
+              "unit": "likes",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "EU likes erased",
+          "resultBody": "Copying the US total over EU throws away every like EU accepted during the split; the loss is now just predictable.",
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "eu",
+                "tone": "bad",
+                "sub": "overwritten by US total"
+              }
+            ]
+          }
+        },
+        {
+          "id": "likes-cp",
+          "label": "Move likes to CP with payments so they never diverge",
+          "correct": false,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 52,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 310,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Lost likes",
+              "value": 2600,
+              "unit": "likes",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Likes read-only again",
+          "resultBody": "During the next split EU users can't like anything, recreating the outage the per-feature change just fixed.",
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "eu",
+                "tone": "bad",
+                "cpu": 55,
+                "sub": "rejecting likes in split"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "What does 'keep the newer total' throw away?",
+        "Each region counted its own likes independently.",
+        "Give each region its own slot and combine the slots."
+      ],
+      "nextId": null
     },
     {
       "id": "cap-03",
@@ -466,7 +869,11 @@
             }
           ],
           "resultTitle": "Fast feeds, fresh self-view",
-          "resultBody": "The Else branch of PACELC trades a little staleness for latency on feeds, while read-your-writes routing keeps the author's own edits visible."
+          "resultBody": "The Else branch of PACELC trades a little staleness for latency on feeds, while read-your-writes routing keeps the author's own edits visible.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "cascadeIncidentId": "cap-casc-01"
         },
         {
           "id": "sync-all",
@@ -497,7 +904,25 @@
           ],
           "resultTitle": "Writes now wait on the ocean",
           "resultBody": "Every write must cross the Pacific before acking, so write latency jumps by the round trip and a slow link stalls the leader.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "leader",
+                "tone": "bad",
+                "cpu": 67,
+                "sub": "writes wait on SG ack"
+              },
+              {
+                "id": "sg",
+                "tone": "warn",
+                "sub": "sync replica"
+              }
+            ]
+          }
         },
         {
           "id": "bigger-leader",
@@ -528,7 +953,20 @@
           ],
           "resultTitle": "The distance didn't change",
           "resultBody": "The 180 ms is network round trip, not server time; a bigger leader shaves a few milliseconds off a delay caused by geography.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 900
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "leader",
+                "tone": "bad",
+                "cpu": 68,
+                "sub": "bigger box, same 180 ms RTT"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -538,6 +976,252 @@
       ],
       "nextId": null,
       "reviewed": true
+    },
+    {
+      "id": "cap-casc-01",
+      "incidentCode": "INC-016B",
+      "level": 16,
+      "patternId": "cap-pacelc",
+      "canonical": false,
+      "isCascade": true,
+      "parentIncidentCode": "INC-016",
+      "reviewed": true,
+      "severity": "P2",
+      "xp": 80,
+      "title": "APAC feeds run a minute behind",
+      "brief": "Feed reads now hit the SG follower. A US backfill pushed its replay lag to 45 s, so APAC feeds show 45-second-old comments and support tickets pile up.",
+      "constraint": "Feeds may be a few seconds stale, not a minute; the backfill must finish tonight.",
+      "question": "How do you keep feeds within their staleness budget?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 60000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 58,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 150,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "stale",
+          "label": "Feed staleness",
+          "value": 45,
+          "unit": "s",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "APAC users"
+          },
+          {
+            "id": "leader",
+            "kind": "db",
+            "label": "US leader",
+            "tone": "warn",
+            "cpu": 58,
+            "sub": "backfill 40k rows/s"
+          },
+          {
+            "id": "sg",
+            "kind": "replica",
+            "label": "SG follower",
+            "tone": "bad",
+            "cpu": 45,
+            "sub": "replay lag 45 s"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "sg"
+          },
+          {
+            "from": "users",
+            "to": "leader"
+          },
+          {
+            "from": "leader",
+            "to": "sg"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "lag-fallback",
+          "label": "Read from the leader when follower lag exceeds 5 s",
+          "correct": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "Bounded staleness: reads pay the ocean round trip only while the follower is behind."
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 64,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 330,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "stale",
+              "label": "Feed staleness",
+              "value": 3,
+              "unit": "s",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Staleness capped",
+          "resultBody": "The router checks the follower's replay lag; while the backfill runs, feed reads go to the US leader at +180 ms, then return to SG once it catches up."
+        },
+        {
+          "id": "second-follower",
+          "label": "Add a second SG follower and split the feed reads across both",
+          "correct": false,
+          "tradeoffs": {
+            "costMonthlyDelta": 400
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 60,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 150,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "stale",
+              "label": "Feed staleness",
+              "value": 45,
+              "unit": "s",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Two lagging copies",
+          "resultBody": "Both followers replay the same backfill stream from the leader, so each is 45 s behind; the reads are split, the staleness is not.",
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "sg",
+                "tone": "bad",
+                "cpu": 30
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "sg2",
+                "kind": "replica",
+                "label": "SG follower 2",
+                "tone": "bad",
+                "cpu": 30,
+                "sub": "replay lag 45 s"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "leader",
+                "to": "sg2"
+              },
+              {
+                "from": "users",
+                "to": "sg2"
+              }
+            ]
+          }
+        },
+        {
+          "id": "feed-cache",
+          "label": "Cache feed pages in SG for 60 s to hide the churn",
+          "correct": false,
+          "tradeoffs": {
+            "costMonthlyDelta": 120
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 50,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 90,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "stale",
+              "label": "Feed staleness",
+              "value": 105,
+              "unit": "s",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Staler, not steadier",
+          "resultBody": "A 60 s cache stacked on a 45 s replay lag serves feeds up to 105 s old; comments still vanish, and now for longer.",
+          "retry": true,
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "fcache",
+                "kind": "cache",
+                "label": "SG feed cache (60 s)",
+                "tone": "bad",
+                "sub": "pages up to 105 s old"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "users",
+                "to": "fcache"
+              },
+              {
+                "from": "fcache",
+                "to": "sg"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Is the follower slow, or just behind?",
+        "Staleness is a number the router can read.",
+        "Bound how stale a follower read may be."
+      ],
+      "nextId": null
     },
     {
       "id": "cap-04",
@@ -647,7 +1331,10 @@
             }
           ],
           "resultTitle": "One owner per seat",
-          "resultBody": "A seat is only sold by its owner region, so a partitioned region refuses that block instead of selling it twice; the other blocks keep selling."
+          "resultBody": "A seat is only sold by its owner region, so a partitioned region refuses that block instead of selling it twice; the other blocks keep selling.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "merge-seats",
@@ -678,7 +1365,25 @@
           ],
           "resultTitle": "Counters don't make seats unique",
           "resultBody": "A CRDT can merge a count, but it cannot un-sell seat 14B to the second buyer; uniqueness needs a single decision point.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "us",
+                "tone": "bad",
+                "cpu": 86,
+                "sub": "seat 14B sold twice"
+              },
+              {
+                "id": "eu",
+                "tone": "bad",
+                "cpu": 84
+              }
+            ]
+          }
         },
         {
           "id": "clock-order",
@@ -709,7 +1414,25 @@
           ],
           "resultTitle": "Clock order came too late",
           "resultBody": "Picking a winner after heal still means one fan was charged and emailed a ticket that no longer exists; the refund storm is the incident.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 40
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "eu",
+                "tone": "bad",
+                "cpu": 87,
+                "sub": "38 buyers refunded"
+              },
+              {
+                "id": "us",
+                "tone": "bad",
+                "cpu": 85
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -835,7 +1558,10 @@
             }
           ],
           "resultTitle": "Latency matched to the data",
-          "resultBody": "Descriptions read from the nearest replica in single-digit milliseconds, and stock checks use a local-region quorum instead of waiting on every ocean."
+          "resultBody": "Descriptions read from the nearest replica in single-digit milliseconds, and stock checks use a local-region quorum instead of waiting on every ocean.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "all-quorum-cache",
@@ -866,7 +1592,34 @@
           ],
           "resultTitle": "Stale stock for a whole day",
           "resultBody": "The cache hides the latency but serves stock counts up to a day old, so the page shows items that sold out this morning.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 250
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "n1",
+                "tone": "warn",
+                "cpu": 79
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "cache",
+                "kind": "cache",
+                "label": "Stock cache (24 h TTL)",
+                "tone": "bad",
+                "sub": "shows sold-out items"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "users",
+                "to": "cache"
+              }
+            ]
+          }
         },
         {
           "id": "all-one",
@@ -897,7 +1650,20 @@
           ],
           "resultTitle": "Stock reads went stale",
           "resultBody": "Descriptions got fast, but stock checks can now read a lagging replica and show sold-out items as available.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "n2",
+                "tone": "bad",
+                "cpu": 80,
+                "sub": "lagging copy says in stock"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1016,7 +1782,10 @@
             }
           ],
           "resultTitle": "No add left behind",
-          "resultBody": "Both regions' adds survive the heal; a rare resurrected item is cheap to fix at checkout, unlike a sale lost to a vanished item."
+          "resultBody": "Both regions' adds survive the heal; a rare resurrected item is cheap to fix at checkout, unlike a sale lost to a vanished item.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "reject-writes",
@@ -1047,7 +1816,20 @@
           ],
           "resultTitle": "Carts went dark for a minute",
           "resultBody": "Shoppers can't add anything for the whole 60 s split, so sales are lost to protect data that merges almost for free.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "eu",
+                "tone": "bad",
+                "cpu": 53,
+                "sub": "cart writes rejected"
+              }
+            ]
+          }
         },
         {
           "id": "newest-wins",
@@ -1078,7 +1860,20 @@
           ],
           "resultTitle": "Still throwing one side away",
           "resultBody": "Better clocks pick the winner more accurately, but last-write-wins still discards every add made on the losing side.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "us",
+                "tone": "bad",
+                "cpu": 54,
+                "sub": "EU adds dropped on merge"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1098,7 +1893,7 @@
       "severity": "P1",
       "xp": 50,
       "title": "Payments reject writes as if partitioned",
-      "brief": "CoinPurse's CP payments store runs 3 replicas in one region. Leader C leaks memory, and its 9 s GC pauses trip the 5 s election timeout, so every pause rejects writes for about 12 s.",
+      "brief": "CoinPurse's CP payments store runs 3 replicas in one region. Every few minutes writes are rejected for about 12 s, as if the network had split.",
       "constraint": "The network is healthy, the leak fix ships Monday, and a fresh process takes two days to fill its heap again.",
       "question": "What stops the write rejections before Monday?",
       "metricsBefore": [
@@ -1136,7 +1931,9 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Payment API"
+            "label": "Payment API",
+            "tone": "bad",
+            "sub": "writes rejected 7%"
           },
           {
             "id": "a",
@@ -1154,9 +1951,9 @@
             "id": "c",
             "kind": "db",
             "label": "Replica C (leader)",
-            "tone": "bad",
+            "tone": "warn",
             "cpu": 91,
-            "sub": "heap full, 9 s GC pauses"
+            "sub": "leader, term 44"
           }
         ],
         "edges": [
@@ -1285,7 +2082,24 @@
             }
           ],
           "resultTitle": "Writes accepted, balances diverge",
-          "resultBody": "Writes stop failing, but there was never a partition to survive. Now any replica accepts debits on its own, and within a day two concurrent spends against the same wallet both succeed and one is lost on merge."
+          "resultBody": "Writes stop failing, but there was never a partition to survive. Now any replica accepts debits on its own, and within a day two concurrent spends against the same wallet both succeed and one is lost on merge.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "a",
+                "tone": "warn",
+                "sub": "accepting debits alone"
+              },
+              {
+                "id": "b",
+                "tone": "warn",
+                "sub": "accepting debits alone"
+              }
+            ]
+          }
         },
         {
           "id": "long-election",
@@ -1304,20 +2118,34 @@
             {
               "key": "p99",
               "label": "p99 write latency",
-              "value": 9000,
+              "value": 6000,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
               "label": "Rejected writes",
-              "value": 3,
+              "value": 1,
               "unit": "%",
               "tone": "warn"
             }
           ],
-          "resultTitle": "No elections, same frozen leader",
-          "resultBody": "Pauses no longer trigger elections, but while the leader is frozen for 9 s no write can commit, so p99 stays at 9 s. A real leader crash would now take 30 s to fail over."
+          "resultTitle": "Holding: no more elections",
+          "resultBody": "Pauses no longer trigger elections, so rejected writes drop to 1% and p99 eases to 6 s. Leader C's pauses have grown from 9 s to 11 s since yesterday.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "c",
+                "tone": "warn",
+                "cpu": 91,
+                "sub": "pauses now 11 s, heap climbing"
+              }
+            ]
+          },
+          "consequenceIncidentId": "cap-bill-01"
         }
       ],
       "hints": [
@@ -1326,7 +2154,265 @@
         "The fix for the leak is already written. What resets a full heap tonight?"
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "format": "culprit",
+      "logs": {
+        "users": [
+          "14:02:11 POST /debit 503 no leader, retrying",
+          "14:02:23 writes accepted again, leader=C",
+          "14:06:40 POST /debit 503 no leader, retrying"
+        ],
+        "a": [
+          "14:02:11 no heartbeat from leader C for 5.0 s",
+          "14:02:11 starting election, term 43",
+          "14:02:23 lost election: C has the longer log, term 44"
+        ],
+        "b": [
+          "14:02:12 granted vote to A for term 43",
+          "14:02:23 granted vote to C for term 44",
+          "heap 41%, fsync p99 3 ms"
+        ],
+        "c": [
+          "14:02:02 GC pause 9.2 s (old gen 98% full)",
+          "14:02:11 stepping down: saw term 43 from A",
+          "heap after full GC: 97% (71% yesterday)"
+        ]
+      },
+      "culprit": {
+        "nodeId": "c",
+        "explanation": "Replica C's own log shows 9 s GC pauses with an old generation still 97% full after collection: the leaking leader freezes, misses heartbeats, and each pause costs a 12 s election.",
+        "wrongNodeFeedback": {
+          "users": "The API only reports the rejections; it retries correctly once a leader is back.",
+          "a": "A starts elections because it stopped hearing from C. That is a symptom, not the cause.",
+          "b": "B is healthy: low heap, fast disk. It just votes."
+        }
+      }
+    },
+    {
+      "id": "cap-bill-01",
+      "incidentCode": "INC-016D",
+      "level": 16,
+      "patternId": "cap-pacelc",
+      "canonical": false,
+      "isCascade": true,
+      "parentIncidentCode": "INC-016",
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 90,
+      "title": "Payments freeze 40 s at a time",
+      "brief": "The 30 s election timeout rode out C's pauses for a day, but the leak kept growing: pauses now pass 31 s, elections fire anyway, and each one freezes payments for 40 s.",
+      "constraint": "The leak fix still ships Monday; the network is healthy.",
+      "question": "What stops the 40-second freezes tonight?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Payment writes",
+          "value": 4000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 96,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p99",
+          "label": "p99 write latency",
+          "value": 31000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Rejected writes",
+          "value": 12,
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Payment API",
+            "tone": "bad",
+            "sub": "writes frozen 40 s"
+          },
+          {
+            "id": "a",
+            "kind": "db",
+            "label": "Replica A",
+            "cpu": 40
+          },
+          {
+            "id": "b",
+            "kind": "db",
+            "label": "Replica B",
+            "cpu": 40
+          },
+          {
+            "id": "c",
+            "kind": "db",
+            "label": "Replica C (leader)",
+            "tone": "bad",
+            "cpu": 96,
+            "sub": "heap 99%, 31 s GC pauses"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "c"
+          },
+          {
+            "from": "c",
+            "to": "a"
+          },
+          {
+            "from": "c",
+            "to": "b"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "handoff-reset",
+          "label": "Hand leadership to A, restart C, reset timeout to 5 s",
+          "correct": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 45,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p99",
+              "label": "p99 write latency",
+              "value": 40,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Rejected writes",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Heap reset, fast failover back",
+          "resultBody": "A planned transfer costs a sub-second blip, C restarts with an empty heap so the pauses stop, and the 5 s timeout means a real crash fails over quickly again."
+        },
+        {
+          "id": "timeout-60",
+          "label": "Raise the election timeout again, from 30 s to 60 s",
+          "correct": false,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 96,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p99",
+              "label": "p99 write latency",
+              "value": 31000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Rejected writes",
+              "value": 9,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Frozen longer, not less",
+          "resultBody": "The 31 s pauses stay under 60 s, so no elections fire, but every pause is 31 s without commits, and a real crash now takes a minute to fail over.",
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "users",
+                "tone": "bad",
+                "sub": "writes stall 31 s per pause"
+              }
+            ]
+          }
+        },
+        {
+          "id": "fourth-replica",
+          "label": "Add a fourth replica so the pauses on leader C matter less",
+          "correct": false,
+          "tradeoffs": {
+            "costMonthlyDelta": 150
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 96,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p99",
+              "label": "p99 write latency",
+              "value": 31000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Rejected writes",
+              "value": 12,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "C still leads the pauses",
+          "resultBody": "A fourth member does nothing for a leader that freezes: writes still stop for every pause, and four members tolerate no more failures than three.",
+          "retry": true,
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "d",
+                "kind": "db",
+                "label": "Replica D (new)",
+                "cpu": 20,
+                "sub": "catching up"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "c",
+                "to": "d"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "The pauses kept growing while the timeout hid them.",
+        "A longer timeout only changes how long a pause may freeze writes.",
+        "What resets a full heap without a 30 s election?"
+      ],
+      "nextId": null
     }
   ]
 }

@@ -16,7 +16,7 @@
       "severity": "P0",
       "xp": 150,
       "title": "Stolen admin token won't die",
-      "brief": "An engineer's laptop is stolen. Its admin JWT is valid for 24 h and 40 services verify it locally, so clicking 'revoke session' changes nothing.",
+      "brief": "An engineer's laptop was stolen at 09:40. Security clicked 'revoke session' at 10:02, yet admin calls from the laptop's token keep succeeding across all 40 services.",
       "constraint": "Revocation must take effect within minutes without a database read on every one of 90k req/s.",
       "question": "How do you make revocation stick?",
       "metricsBefore": [
@@ -54,7 +54,9 @@
           {
             "id": "users",
             "kind": "users",
-            "label": "Users + thief"
+            "label": "Users + thief",
+            "tone": "bad",
+            "sub": "thief using admin token"
           },
           {
             "id": "gw",
@@ -120,7 +122,11 @@
             }
           ],
           "resultTitle": "Stolen token dies in seconds",
-          "resultBody": "The token's jti goes into a Redis denylist checked in under 1 ms and its refresh token is revoked; entries only need to live 10 minutes, until the token expires anyway."
+          "resultBody": "The token's jti goes into a Redis denylist checked in under 1 ms and its refresh token is revoked; entries only need to live 10 minutes, until the token expires anyway.",
+          "tradeoffs": {
+            "costMonthlyDelta": 40
+          },
+          "cascadeIncidentId": "auth-casc-01"
         },
         {
           "id": "db-lookup",
@@ -151,7 +157,20 @@
           ],
           "resultTitle": "Postgres takes all 90k req/s",
           "resultBody": "Revocation works, but 90k session reads a second push the users database past 95% CPU and checkout calls start timing out.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 96,
+                "sub": "90k session reads/s"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "rotate-key",
@@ -182,7 +201,28 @@
           ],
           "resultTitle": "Everyone logged out at once",
           "resultBody": "A new signing key invalidates all 2M live tokens, not just the stolen one, so every user re-logs in and the login tier melts under 40k logins/s.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "login",
+                "kind": "server",
+                "label": "Login tier",
+                "tone": "bad",
+                "cpu": 100,
+                "sub": "40k logins/s"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "users",
+                "to": "login"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -190,7 +230,36 @@
         "Shrink the window, then track only the few tokens revoked inside it.",
         "Short access tokens plus refresh tokens, and a small denylist in Redis."
       ],
-      "nextId": null
+      "nextId": null,
+      "format": "culprit",
+      "logs": {
+        "users": [
+          "WAF: admin API calls from a new ASN, 14 per minute",
+          "UA curl/8.4 on /admin/* routes, token sub=admin-ekim"
+        ],
+        "gw": [
+          "INFO 90k req/s forwarded, Authorization header passed through",
+          "INFO /admin/* has no gateway policy; auth delegated to services"
+        ],
+        "api": [
+          "DEBUG jwt ok (local verify): sub=admin-ekim role=admin exp in 21h",
+          "DEBUG revocation check: none configured",
+          "INFO DELETE /admin/users/4411 by admin-ekim -> 200"
+        ],
+        "db": [
+          "10:02 UPDATE sessions SET revoked_at=now() WHERE user='admin-ekim'",
+          "0 reads of sessions.revoked_at since 10:02"
+        ]
+      },
+      "culprit": {
+        "nodeId": "api",
+        "explanation": "The 40 services check only the JWT's signature and exp locally and never consult revocation, so the revoked session row is never read. A 24-hour token lives 24 hours.",
+        "wrongNodeFeedback": {
+          "users": "The thief is the attacker, not the bug; you can't patch a stolen laptop. Ask why the system still accepts the token.",
+          "db": "The Users DB did record the revocation at 10:02; its logs show nobody ever reads it.",
+          "gw": "The gateway only passes the header through; the services are the ones saying yes."
+        }
+      }
     },
     {
       "id": "auth-02",
@@ -201,7 +270,7 @@
       "severity": "P1",
       "xp": 120,
       "title": "Auth service called 360k times a second",
-      "brief": "Each of 12 microservices calls the auth service's /introspect endpoint on every request. 30k user req/s became 360k auth calls/s and p95 hit 640 ms.",
+      "brief": "Auth service CPU hit 96% and API p95 is 640 ms, yet user traffic is flat at 30k req/s. Find out why auth is doing so much work.",
       "constraint": "Tokens are signed JWTs; logout must still take effect within 10 minutes.",
       "question": "How should services validate tokens?",
       "metricsBefore": [
@@ -317,7 +386,24 @@
           ],
           "resultTitle": "Logouts lag by an hour",
           "resultBody": "Auth CPU falls to 40%, but a revoked or logged-out token keeps working for up to 60 minutes in every service that cached it.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "auth",
+                "cpu": 40,
+                "tone": "neutral"
+              },
+              {
+                "id": "svc",
+                "tone": "warn",
+                "sub": "cached 1 h: logouts ignored"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "gateway-verify",
@@ -347,7 +433,10 @@
             }
           ],
           "resultTitle": "Auth leaves the hot path",
-          "resultBody": "The gateway checks signature and exp in about 50 µs with keys it already holds, so 360k introspection calls/s drop to zero and auth only serves logins and refreshes."
+          "resultBody": "The gateway checks signature and exp in about 50 µs with keys it already holds, so 360k introspection calls/s drop to zero and auth only serves logins and refreshes.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "scale-auth",
@@ -378,7 +467,32 @@
           ],
           "resultTitle": "Bigger bill, same fan-out",
           "resultBody": "Three times the auth servers absorb 360k calls/s for now, but every request still waits on 12 extra hops and auth stays a single point of failure.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "auth2",
+                "kind": "server",
+                "label": "Auth fleet x3",
+                "tone": "warn",
+                "cpu": 70,
+                "sub": "360k calls/s, 12 hops"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "svc",
+                "to": "auth2"
+              },
+              {
+                "from": "auth2",
+                "to": "db"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 1500
+          }
         }
       ],
       "hints": [
@@ -387,7 +501,40 @@
         "Validate once at the edge; keep the auth service for logins."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "format": "culprit",
+      "logs": {
+        "users": [
+          "RUM: API p95 640 ms, up from 90 ms",
+          "RUM: sessions and signups flat week over week"
+        ],
+        "gw": [
+          "INFO 30k req/s in, 30k out, flat week over week",
+          "INFO upstream p95 610 ms"
+        ],
+        "svc": [
+          "DEBUG orders: POST auth/introspect before every handler",
+          "DEBUG cart: POST auth/introspect before every handler",
+          "INFO shared auth middleware v3 rolled out to all 12 services"
+        ],
+        "auth": [
+          "WARN /introspect at 360k req/s, CPU 96%",
+          "WARN worker queue 4,200 deep, p95 610 ms"
+        ],
+        "db": [
+          "WARN token lookups 360k/s, cache hit 71%",
+          "INFO no slow queries, CPU 71%"
+        ]
+      },
+      "culprit": {
+        "nodeId": "svc",
+        "explanation": "A shared middleware makes each of the 12 services call /introspect on every request, turning 30k user requests into 360k auth calls. The auth service is only the victim of that fan-out.",
+        "wrongNodeFeedback": {
+          "auth": "Auth is the loud victim: it's doing exactly the work it is asked. Ask who sends it 12x the user traffic.",
+          "db": "The token DB is busy because auth is busy; its queries are healthy.",
+          "gw": "The gateway passes through the same 30k req/s as last week."
+        }
+      }
     },
     {
       "id": "auth-03",
@@ -503,7 +650,24 @@
           ],
           "resultTitle": "Forged tokens accepted",
           "resultBody": "The 401s stop, but for up to 24 hours a token with any signature passes, so anyone can mint an admin claim and walk in.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gw",
+                "tone": "warn",
+                "sub": "signatures unchecked"
+              },
+              {
+                "id": "api",
+                "tone": "bad",
+                "sub": "forged admin claims accepted"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "fetch-always",
@@ -534,7 +698,20 @@
           ],
           "resultTitle": "Identity provider knocked over",
           "resultBody": "45k JWKS fetches a second hit an endpoint sized for a few a minute; it falls over and every validation and login fails with it.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "idp",
+                "tone": "bad",
+                "cpu": 100,
+                "sub": "45k JWKS fetches/s"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "refetch-on-kid",
@@ -564,7 +741,10 @@
             }
           ],
           "resultTitle": "New kid learned in one fetch",
-          "resultBody": "The first token with the new kid triggers one JWKS fetch, the gateways learn the key and 401s stop within seconds, without hammering the IdP."
+          "resultBody": "The first token with the new kid triggers one JWKS fetch, the gateways learn the key and 401s stop within seconds, without hammering the IdP.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -689,7 +869,24 @@
           ],
           "resultTitle": "Cracked at GPU speed",
           "resultBody": "A GPU tries billions of SHA-256 guesses a second, so a leaked table of 8M accounts falls in hours; login CPU drops but the hashes protect nobody.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "auth",
+                "cpu": 20,
+                "tone": "good"
+              },
+              {
+                "id": "db",
+                "tone": "warn",
+                "sub": "hashes crackable at GPU speed"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "tune-isolate",
@@ -719,7 +916,10 @@
             }
           ],
           "resultTitle": "Slow for attackers, not for you",
-          "resultBody": "Cost 12 is 4x cheaper than 14 yet still ~250 ms per guess, and on its own pool a login burst no longer starves token refresh and API calls."
+          "resultBody": "Cost 12 is 4x cheaper than 14 yet still ~250 ms per guess, and on its own pool a login burst no longer starves token refresh and API calls.",
+          "tradeoffs": {
+            "costMonthlyDelta": 150
+          }
         },
         {
           "id": "cache-hash",
@@ -750,7 +950,27 @@
           ],
           "resultTitle": "A fast oracle for every password",
           "resultBody": "Logins get cheap, but Redis now holds a fast-to-check record of every recent password; one dump and attackers skip bcrypt entirely.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "hcache",
+                "kind": "cache",
+                "label": "Password-hash cache",
+                "tone": "bad",
+                "sub": "fast oracle for passwords"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "auth",
+                "to": "hcache"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 60
+          }
         }
       ],
       "hints": [
@@ -875,7 +1095,18 @@
           ],
           "resultTitle": "Bots slip under, offices blocked",
           "resultBody": "Each bot IP sends one attempt every 2 minutes, well under 5/min, while a 300-person office behind one NAT now gets 429s every morning.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "lb",
+                "sub": "5/min per IP: offices get 429"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "lockout",
@@ -906,7 +1137,19 @@
           ],
           "resultTitle": "Victims locked, attackers unfazed",
           "resultBody": "Stuffing tries each leaked pair once, so valid pairs still succeed on the first attempt, and attackers can now lock out 50k real users on purpose.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "warn",
+                "sub": "50k real users locked out"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "risk-challenge",
@@ -936,7 +1179,11 @@
             }
           ],
           "resultTitle": "Stolen pairs stop working",
-          "resultBody": "New-device logins from high-failure IPs get a challenge and breached-password matches force a reset, so the 0.6% hit rate falls near zero while real users pass."
+          "resultBody": "New-device logins from high-failure IPs get a challenge and breached-password matches force a reset, so the 0.6% hit rate falls near zero while real users pass.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "cascadeIncidentId": "auth-casc-02"
         }
       ],
       "hints": [
@@ -1061,7 +1308,23 @@
           ],
           "resultTitle": "The broken nodes stay hidden",
           "resultBody": "Most retries land on a healthy node, but 6 of 40 nodes still reject fresh tokens, 401 traffic doubles and the clock fault is never fixed.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "new",
+                "sub": "still 3 min slow"
+              },
+              {
+                "id": "lb",
+                "tone": "warn",
+                "sub": "401 retries doubled"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "ntp-leeway",
@@ -1091,7 +1354,10 @@
             }
           ],
           "resultTitle": "Clocks agree, tokens pass",
-          "resultBody": "The 6 drifted nodes resync to within milliseconds, and a 60-second leeway absorbs normal sub-second drift, so fresh tokens stop failing nbf checks."
+          "resultBody": "The 6 drifted nodes resync to within milliseconds, and a 60-second leeway absorbs normal sub-second drift, so fresh tokens stop failing nbf checks.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "longer-tokens",
@@ -1122,7 +1388,23 @@
           ],
           "resultTitle": "Still not valid, now less revocable",
           "resultBody": "The token's nbf is still 3 minutes ahead of the drifted clocks, so the 401s continue, and a stolen token now stays usable for a whole day.",
-          "retry": true
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "new",
+                "sub": "nbf still 3 min ahead"
+              },
+              {
+                "id": "users",
+                "tone": "warn",
+                "sub": "stolen tokens live 24 h"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -1226,31 +1508,44 @@
           "correct": false,
           "approach": "anti_pattern",
           "retry": true,
-          "resultTitle": "Fewer signings, revocation broken",
-          "resultBody": "Signings drop 72x, so the leak slows to a crawl, but a revoked or stolen token now stays valid for up to 12 hours, which breaks the 10-minute revocation promise.",
+          "resultTitle": "Refreshes recover, holding for now",
+          "resultBody": "Signings drop 72x, so refresh failures fall to 2% and descriptors creep up slowly. Access tokens now stay valid for 12 hours, and nothing checks them before expiry.",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 10,
+              "value": 30,
               "unit": "%",
               "tone": "good"
             },
             {
               "key": "fds",
-              "label": "Open files per pod",
-              "value": 20000,
-              "unit": "fds",
-              "tone": "good"
+              "label": "Open descriptors",
+              "value": 64200,
+              "unit": "",
+              "tone": "warn"
             },
             {
               "key": "errors",
-              "label": "Refreshes failed",
-              "value": 0.1,
+              "label": "Failed refreshes",
+              "value": 2,
               "unit": "%",
-              "tone": "good"
+              "tone": "warn"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "signer",
+                "tone": "warn",
+                "sub": "leak slowed, tokens live 12 h"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "consequenceIncidentId": "auth-bill-01"
         },
         {
           "id": "rolling-restart",
@@ -1363,13 +1658,879 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "newsig",
+                "kind": "server",
+                "label": "New signing service",
+                "tone": "bad",
+                "cpu": 40,
+                "sub": "same HSM SDK, leaking"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "gw",
+                "to": "newsig"
+              },
+              {
+                "from": "newsig",
+                "to": "hsm"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 200
+          }
         }
       ],
       "hints": [
         "CPU and latency look normal; count something else on the signer.",
         "The descriptor count starts near zero every time a pod starts.",
         "Friday is close; you only need to keep any pod from reaching 20 hours of uptime."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "auth-bill-01",
+      "incidentCode": "INC-023-07B",
+      "level": 23,
+      "patternId": "auth-at-scale",
+      "canonical": false,
+      "isCascade": true,
+      "reviewed": true,
+      "parentIncidentCode": "INC-023-07",
+      "severity": "P1",
+      "xp": 90,
+      "title": "Offboarded contractor's token still works",
+      "brief": "The 12-hour tokens kept refreshes up. HR offboarded a contractor at 09:00; at 11:30 their token is still exporting customer lists, because no service checks a token before its 12-hour expiry.",
+      "constraint": "The signer's descriptor-leak fix still ships Friday.",
+      "question": "What kills the token now and restores the 10-minute promise?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Refreshes",
+          "value": 46,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 38,
+          "unit": "%",
+          "tone": "neutral"
+        },
+        {
+          "key": "fds",
+          "label": "Open descriptors",
+          "value": 64200,
+          "unit": "",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Revoked-token calls",
+          "value": 40,
+          "unit": "/min",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Clients + contractor",
+            "tone": "bad",
+            "sub": "exports after offboarding"
+          },
+          {
+            "id": "gw",
+            "kind": "lb",
+            "label": "API gateway",
+            "cpu": 30
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Services",
+            "tone": "warn",
+            "cpu": 38,
+            "sub": "verify JWT locally"
+          },
+          {
+            "id": "signer",
+            "kind": "server",
+            "label": "Token signer (8 pods)",
+            "tone": "warn",
+            "cpu": 30,
+            "sub": "12 h tokens, leak slowed"
+          },
+          {
+            "id": "redis",
+            "kind": "cache",
+            "label": "Redis",
+            "cpu": 10,
+            "sub": "idle"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "gw"
+          },
+          {
+            "from": "gw",
+            "to": "api"
+          },
+          {
+            "from": "gw",
+            "to": "signer"
+          },
+          {
+            "from": "api",
+            "to": "redis"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "denylist-and-restore",
+          "label": "Denylist its jti, then restore 10-minute tokens with signer restarts",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Token dead in seconds, promise restored",
+          "resultBody": "The contractor's jti goes into a Redis denylist and their next call gets 401; access tokens return to 10 minutes, and 12-hourly signer restarts keep descriptors well under 65k until Friday.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 40,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "fds",
+              "label": "Open descriptors",
+              "value": 30000,
+              "unit": "",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Revoked-token calls",
+              "value": 0,
+              "unit": "/min",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Clients"
+              },
+              {
+                "id": "gw",
+                "kind": "lb",
+                "label": "API gateway",
+                "cpu": 30
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Services",
+                "tone": "good",
+                "cpu": 40,
+                "sub": "JWT + denylist check"
+              },
+              {
+                "id": "signer",
+                "kind": "server",
+                "label": "Token signer (8 pods)",
+                "tone": "good",
+                "cpu": 42,
+                "sub": "10 min tokens, restart /12 h"
+              },
+              {
+                "id": "redis",
+                "kind": "cache",
+                "label": "Redis denylist",
+                "tone": "good",
+                "cpu": 12,
+                "sub": "< 1 ms lookups"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "gw"
+              },
+              {
+                "from": "gw",
+                "to": "api"
+              },
+              {
+                "from": "gw",
+                "to": "signer"
+              },
+              {
+                "from": "api",
+                "to": "redis"
+              }
+            ]
+          }
+        },
+        {
+          "id": "rotate-signing-key",
+          "label": "Rotate the JWT signing key so the contractor's token dies",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Everyone logged out, signer overwhelmed",
+          "resultBody": "All 2M live tokens die at once, not just the contractor's; the leaking signer pods must mint 2M new tokens in minutes, hit 65k descriptors, and 70% of refreshes fail.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 95,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "fds",
+              "label": "Open descriptors",
+              "value": 65536,
+              "unit": "",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Revoked-token calls",
+              "value": 0,
+              "unit": "/min",
+              "tone": "good"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "signer",
+                "tone": "bad",
+                "cpu": 95,
+                "sub": "EMFILE: 2M re-signs"
+              },
+              {
+                "id": "users",
+                "sub": "2M users logged out"
+              }
+            ]
+          }
+        },
+        {
+          "id": "delete-account",
+          "label": "Delete the contractor's account and sessions from the Users DB",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "The token never asks the database",
+          "resultBody": "Services verify the JWT locally and never read the account row, so the contractor's token keeps working until 21:00, and the audit log shows exports after the deletion.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 38,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "fds",
+              "label": "Open descriptors",
+              "value": 64300,
+              "unit": "",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Revoked-token calls",
+              "value": 40,
+              "unit": "/min",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "tone": "bad",
+                "sub": "still accepting contractor token"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "A signed token is valid until exp unless something says otherwise.",
+        "Deleting data the services never read changes nothing.",
+        "Kill this one token, then shrink the window back."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "auth-casc-01",
+      "incidentCode": "INC-023B",
+      "level": 23,
+      "patternId": "auth-at-scale",
+      "canonical": false,
+      "isCascade": true,
+      "reviewed": true,
+      "parentIncidentCode": "INC-023",
+      "severity": "P1",
+      "xp": 80,
+      "title": "Token refresh storm every ten minutes",
+      "brief": "Switching to 10-minute tokens re-logged all 2M users at 10:05, so their tokens expire together. Every ten minutes 2M refreshes land within 30 s and the token service melts.",
+      "constraint": "Access tokens must stay at 10 minutes for revocation.",
+      "question": "How do refreshes stop arriving all at once?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Refresh peak",
+          "value": 66000,
+          "unit": "req/s",
+          "tone": "bad"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 99,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "Refresh p95",
+          "value": 4000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Failed refreshes",
+          "value": 38,
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "2M app clients",
+            "sub": "refresh in sync"
+          },
+          {
+            "id": "gw",
+            "kind": "lb",
+            "label": "API gateway",
+            "cpu": 40
+          },
+          {
+            "id": "tok",
+            "kind": "server",
+            "label": "Token service",
+            "tone": "bad",
+            "cpu": 99,
+            "sub": "66k refreshes/s peaks"
+          },
+          {
+            "id": "redis",
+            "kind": "cache",
+            "label": "Denylist Redis",
+            "tone": "good",
+            "cpu": 15
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "gw"
+          },
+          {
+            "from": "gw",
+            "to": "tok"
+          },
+          {
+            "from": "gw",
+            "to": "redis"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "jitter-refresh",
+          "label": "Refresh at a random point in the token's last 30% of life",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Refreshes spread across the window",
+          "resultBody": "Each client now refreshes somewhere between minute 7 and 10, so 2M refreshes spread over 3 minutes: about 11k a second instead of 66k, and token-service CPU settles near 55%.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 55,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "Refresh p95",
+              "value": 60,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Failed refreshes",
+              "value": 0.1,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "2M app clients",
+                "sub": "refresh jittered"
+              },
+              {
+                "id": "gw",
+                "kind": "lb",
+                "label": "API gateway",
+                "tone": "good",
+                "cpu": 40
+              },
+              {
+                "id": "tok",
+                "kind": "server",
+                "label": "Token service",
+                "tone": "good",
+                "cpu": 55,
+                "sub": "~11k refreshes/s"
+              },
+              {
+                "id": "redis",
+                "kind": "cache",
+                "label": "Denylist Redis",
+                "tone": "good",
+                "cpu": 15
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "gw"
+              },
+              {
+                "from": "gw",
+                "to": "tok"
+              },
+              {
+                "from": "gw",
+                "to": "redis"
+              }
+            ]
+          }
+        },
+        {
+          "id": "back-to-24h",
+          "label": "Extend access tokens back to 24 hours to thin out refreshes",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Refreshes vanish, so does revocation",
+          "resultBody": "Refreshes almost disappear, but a revoked token lives a day again, undoing the fix for the stolen admin token, and the next forced re-login syncs every client again.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 20,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "Refresh p95",
+              "value": 40,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Failed refreshes",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "tok",
+                "tone": "good",
+                "cpu": 20,
+                "sub": "quiet"
+              },
+              {
+                "id": "users",
+                "tone": "bad",
+                "sub": "stolen tokens live 24 h"
+              }
+            ]
+          }
+        },
+        {
+          "id": "keep-20x",
+          "label": "Keep the token service at 20x its usual size for the peaks",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 6000
+          },
+          "resultTitle": "Paying for 30 seconds in ten minutes",
+          "resultBody": "Twenty times the pods absorb each 30 s spike, but they idle 95% of every ten minutes, adding about $6k a month, and the peaks grow with every new user.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 60,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "Refresh p95",
+              "value": 120,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Failed refreshes",
+              "value": 1,
+              "unit": "%",
+              "tone": "warn"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "tok",
+                "tone": "warn",
+                "cpu": 60,
+                "sub": "x20 pods, idle 95% of the time"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "The tokens were all born in the same minute.",
+        "Every client refreshes at exactly the same age.",
+        "Add randomness to when each client refreshes."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "auth-casc-02",
+      "incidentCode": "INC-023-05B",
+      "level": 23,
+      "patternId": "auth-at-scale",
+      "canonical": false,
+      "isCascade": true,
+      "reviewed": true,
+      "parentIncidentCode": "INC-023-05",
+      "severity": "P2",
+      "xp": 70,
+      "title": "One carrier's users hit a CAPTCHA every login",
+      "brief": "Risk challenges stopped the stuffing, but a big carrier's CGNAT puts 400k real customers behind 900 IPs that also carried bots. They now get a CAPTCHA every login; 1 in 5 give up.",
+      "constraint": "The botnet is still probing from residential and mobile IPs.",
+      "question": "How do real users on shared IPs stop being challenged?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Logins",
+          "value": 330,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 45,
+          "unit": "%",
+          "tone": "neutral"
+        },
+        {
+          "key": "errors",
+          "label": "Carrier users challenged",
+          "value": 22,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "abandon",
+          "label": "Login abandon",
+          "value": 20,
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Carrier users + bots",
+            "tone": "warn",
+            "sub": "900 shared IPs"
+          },
+          {
+            "id": "lb",
+            "kind": "lb",
+            "label": "Edge limiter",
+            "cpu": 22
+          },
+          {
+            "id": "login",
+            "kind": "server",
+            "label": "Login API + risk engine",
+            "tone": "warn",
+            "cpu": 45,
+            "sub": "IP reputation: high risk"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Accounts DB",
+            "cpu": 30
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "lb"
+          },
+          {
+            "from": "lb",
+            "to": "login"
+          },
+          {
+            "from": "login",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "trusted-device",
+          "label": "Let signed trusted-device cookies skip the login challenge",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Known phones sail through",
+          "resultBody": "After one good login a device gets a signed per-device cookie the risk engine trusts, so 95% of returning carrier users skip the CAPTCHA while bots without one are still challenged.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 44,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Carrier users challenged",
+              "value": 1.5,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "abandon",
+              "label": "Login abandon",
+              "value": 2,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Carrier users + bots",
+                "sub": "trusted devices"
+              },
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Edge limiter",
+                "cpu": 22
+              },
+              {
+                "id": "login",
+                "kind": "server",
+                "label": "Login API + risk engine",
+                "tone": "good",
+                "cpu": 44,
+                "sub": "device trust + IP risk"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Accounts DB",
+                "cpu": 30
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "lb"
+              },
+              {
+                "from": "lb",
+                "to": "login"
+              },
+              {
+                "from": "login",
+                "to": "db"
+              }
+            ]
+          }
+        },
+        {
+          "id": "allowlist-carrier",
+          "label": "Allowlist the carrier's 900 IP addresses in the risk engine",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Bots ride the same carrier",
+          "resultBody": "Carrier users sail through, and so do the bots renting mobile proxies on that carrier; successful stuffing logins climb back to 0.4% within a day.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 70,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Carrier users challenged",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "abandon",
+              "label": "Login abandon",
+              "value": 2,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "users",
+                "tone": "bad",
+                "sub": "bots on the allowlist"
+              },
+              {
+                "id": "login",
+                "cpu": 70,
+                "sub": "0.4% stuffing succeeds"
+              }
+            ]
+          }
+        },
+        {
+          "id": "raise-threshold",
+          "label": "Raise the risk threshold so far fewer logins get challenged",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Everyone challenged less, bots too",
+          "resultBody": "Challenges drop for everyone, including the botnet; stuffing successes rise to 0.3% while carrier users behind the worst-scored IPs still see a CAPTCHA.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 65,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Carrier users challenged",
+              "value": 12,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "abandon",
+              "label": "Login abandon",
+              "value": 11,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "login",
+                "cpu": 65,
+                "tone": "bad",
+                "sub": "bots slip under the threshold"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "The IP is shared by real users and bots, so it can't tell them apart.",
+        "A returning user's device is stronger evidence than the IP.",
+        "Remember devices that already passed a login."
       ],
       "nextId": null
     }

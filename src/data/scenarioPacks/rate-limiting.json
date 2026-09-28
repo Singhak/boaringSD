@@ -17,7 +17,7 @@
       "xp": 150,
       "title": "One client floods the public API",
       "brief": "A single API key sends 20,000 req/s and the shared cluster’s p99 jumps from 80ms to 4s.",
-      "constraint": "Other tenants are healthy but share the same edge.",
+      "constraint": "Other tenants send 3,000 req/s in total and share the same edge and cluster.",
       "question": "What protects the majority of clients?",
       "metricsBefore": [
         {
@@ -133,7 +133,10 @@
             }
           ],
           "resultTitle": "Incident solved",
-          "resultBody": "Per-key rate limits at the edge so one caller cannot consume the whole fleet."
+          "resultBody": "Per-key rate limits at the edge so one caller cannot consume the whole fleet.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "more-servers",
@@ -164,7 +167,20 @@
             }
           ],
           "resultTitle": "Fleet grows, flood keeps pace",
-          "resultBody": "New servers buy a few minutes, but nothing stops the single key's 20,000 req/s from filling them too; CPU stays at 100% and p95 reaches 1.1 s for every tenant."
+          "resultBody": "New servers buy a few minutes, but nothing stops the single key's 20,000 req/s from filling them too; CPU stays at 100% and p95 reaches 1.1 s for every tenant.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "cpu": 100,
+                "sub": "flood fills the new servers too",
+                "label": "API (+4 servers)"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 800
+          }
         },
         {
           "id": "longer-timeouts",
@@ -195,7 +211,19 @@
             }
           ],
           "resultTitle": "Requests just wait longer",
-          "resultBody": "Longer timeouts keep queued requests alive, so the flood holds even more connections; other tenants now wait about 1 s instead of failing fast, and CPU stays pegged."
+          "resultBody": "Longer timeouts keep queued requests alive, so the flood holds even more connections; other tenants now wait about 1 s instead of failing fast, and CPU stays pegged.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "cpu": 100,
+                "sub": "connections held 30 s"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -203,7 +231,154 @@
         "Unbounded QPS is the incident.",
         "Cap by key at the edge."
       ],
-      "nextId": "cb-01"
+      "nextId": "cb-01",
+      "format": "knob",
+      "knob": {
+        "label": "Per-key limit",
+        "unit": "req/s",
+        "min": 500,
+        "max": 20000,
+        "step": 500,
+        "start": 20000,
+        "target": [
+          1500,
+          4500
+        ],
+        "question": "Set the per-key limit: the biggest honest key peaks at 1,200 req/s; p99 climbs past 8,000 total.",
+        "curve": [
+          {
+            "at": 500,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 30
+              },
+              {
+                "key": "p95",
+                "value": 70
+              },
+              {
+                "key": "errors",
+                "value": 300
+              }
+            ]
+          },
+          {
+            "at": 1000,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 33
+              },
+              {
+                "key": "p95",
+                "value": 70
+              },
+              {
+                "key": "errors",
+                "value": 60
+              }
+            ]
+          },
+          {
+            "at": 1500,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 36
+              },
+              {
+                "key": "p95",
+                "value": 72
+              },
+              {
+                "key": "errors",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "at": 4500,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 70
+              },
+              {
+                "key": "p95",
+                "value": 120
+              },
+              {
+                "key": "errors",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "at": 6000,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 86
+              },
+              {
+                "key": "p95",
+                "value": 420
+              },
+              {
+                "key": "errors",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "at": 10000,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 97
+              },
+              {
+                "key": "p95",
+                "value": 800
+              },
+              {
+                "key": "errors",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "at": 20000,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 99
+              },
+              {
+                "key": "p95",
+                "value": 900
+              },
+              {
+                "key": "errors",
+                "value": 0
+              }
+            ]
+          }
+        ],
+        "low": {
+          "title": "Honest tenants get throttled",
+          "body": "Below 1,500 req/s the limit clips the biggest honest tenant's 1,200 req/s peaks and their bursts: at 1,000 its peak traffic gets 429s, and at 500 several paying tenants are throttled while the flood was already harmless."
+        },
+        "high": {
+          "title": "The flood still fills the cluster",
+          "body": "Above 4,500 req/s the noisy key keeps enough of its 20,000 req/s that, added to the other tenants' 3,000, total load passes the 8,000 req/s knee; CPU pins and p95 climbs back toward a second."
+        },
+        "good": {
+          "title": "Flood capped, honest peaks fit",
+          "body": "The noisy key is held to at most 4,500 req/s, so total load stays under about 7,500 req/s, below the 8,000 knee, while the biggest honest tenant's 1,200 req/s peak still fits with room for bursts. CPU settles between 36% and 70%."
+        }
+      }
     },
     {
       "id": "rl-02",
@@ -351,7 +526,19 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gw",
+                "tone": "warn",
+                "sub": "2/min per IP, NAT users blocked"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "hard-lock",
@@ -383,7 +570,20 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "auth",
+                "tone": "bad",
+                "cpu": 48,
+                "sub": "20k accounts re-locked hourly"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -548,7 +748,23 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "sub": "10 s window, 200-msg edge bursts"
+              },
+              {
+                "id": "carrier",
+                "cpu": 80,
+                "sub": "100 msg/s bursts"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "retry-next-minute",
@@ -580,7 +796,19 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "q",
+                "tone": "bad",
+                "sub": "backlog resent every :00"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -738,7 +966,23 @@
               "unit": "ms",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gw",
+                "sub": "10 req/min"
+              },
+              {
+                "id": "users",
+                "tone": "warn",
+                "sub": "12% of type-ahead gets 429"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "result-cache",
@@ -770,7 +1014,38 @@
               "unit": "ms",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gw",
+                "sub": "60 req/min + result cache"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "rc",
+                "kind": "cache",
+                "label": "Result cache",
+                "cpu": 20,
+                "tone": "warn",
+                "sub": "4% hit ratio"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "gw",
+                "to": "rc"
+              },
+              {
+                "from": "rc",
+                "to": "search"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 150
+          }
         }
       ],
       "hints": [
@@ -903,7 +1178,9 @@
               "unit": "x",
               "tone": "good"
             }
-          ]
+          ],
+          "cascadeIncidentId": "rl-casc-01",
+          "cascadeDelayMs": 4000
         },
         {
           "id": "divide-by-pods",
@@ -935,7 +1212,24 @@
               "unit": "x",
               "tone": "warn"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "g1",
+                "sub": "4 req/s each = 160 total",
+                "label": "Gateway pods x40"
+              },
+              {
+                "id": "ledger",
+                "tone": "warn",
+                "cpu": 52
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "sticky-key",
@@ -967,7 +1261,20 @@
               "unit": "x",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "g1",
+                "tone": "bad",
+                "cpu": 97,
+                "sub": "big partners pinned to one pod"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -1122,7 +1429,19 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gw",
+                "cpu": 97,
+                "sub": "46k req/s, mostly retries"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "one-retry",
@@ -1154,7 +1473,22 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "sdk",
+                "sub": "1 instant retry, in lockstep"
+              },
+              {
+                "id": "gw",
+                "cpu": 85
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -1328,7 +1662,28 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gw",
+                "label": "Gateway (80k global limit)"
+              },
+              {
+                "id": "api",
+                "tone": "bad",
+                "cpu": 99
+              },
+              {
+                "id": "db",
+                "tone": "warn",
+                "cpu": 80
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "priority-queue",
@@ -1360,7 +1715,20 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "tone": "bad",
+                "cpu": 84,
+                "sub": "gold first, still saturated"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -1527,7 +1895,23 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "apps",
+                "tone": "warn",
+                "sub": "30-widget dashboards rejected"
+              },
+              {
+                "id": "db",
+                "cpu": 90
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "lower-rpm",
@@ -1559,7 +1943,23 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "apps",
+                "tone": "bad",
+                "sub": "18% of calls get 429"
+              },
+              {
+                "id": "gw",
+                "sub": "10 req/min"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -1710,7 +2110,23 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "partner",
+                "tone": "bad",
+                "sub": "retries 429s in 1 s too"
+              },
+              {
+                "id": "hook",
+                "cpu": 85
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "more-threads",
@@ -1742,7 +2158,24 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "hook",
+                "cpu": 100,
+                "label": "Webhook handler (400 threads)"
+              },
+              {
+                "id": "db",
+                "cpu": 100,
+                "sub": "lock waits over 10 s"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -1910,7 +2343,22 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "job",
+                "sub": "01:00-05:00 UTC, APAC peak"
+              },
+              {
+                "id": "api",
+                "cpu": 95
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "fixed-quota",
@@ -1942,7 +2390,23 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "job",
+                "sub": "fixed 6k req/s"
+              },
+              {
+                "id": "api",
+                "cpu": 92,
+                "sub": "sitting on the 12k ceiling"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -2091,13 +2555,13 @@
           "correct": false,
           "approach": "viable_with_tradeoffs",
           "retry": true,
-          "resultTitle": "Fixed until the next host migration",
-          "resultBody": "The drifted VM is fixed within 10 minutes of the alert, but each weekly migration opens a new stretch of doubled limits, and the alert only fires after 5 s of skew. Scalpers still average about 1.3x the limit.",
+          "resultTitle": "Drifted VM restarted, limit back near 300",
+          "resultBody": "The alert caught gateway 6 and the restart resynced its clock, so the scalper is back to about 330 a minute. The alert only fires after 5 s of skew, though, and the next weekly host migration is on Tuesday.",
           "metricsAfter": [
             {
               "key": "limit",
               "label": "Effective per-key limit",
-              "value": 390,
+              "value": 330,
               "unit": "per min",
               "tone": "warn"
             },
@@ -2111,11 +2575,24 @@
             {
               "key": "scalped",
               "label": "Tickets bought by bots",
-              "value": 9,
+              "value": 5,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gw6",
+                "tone": "warn",
+                "sub": "restarted, next migration Tue"
+              }
+            ]
+          },
+          "consequenceIncidentId": "rl-bill-01",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "wider-window",
@@ -2147,7 +2624,22 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "redis",
+                "sub": "3,000 per 10 min"
+              },
+              {
+                "id": "bots",
+                "sub": "buys 3,000 tickets in 12 s"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -2266,7 +2758,9 @@
               "unit": "per week",
               "tone": "good"
             }
-          ]
+          ],
+          "cascadeIncidentId": "rl-casc-02",
+          "cascadeDelayMs": 4000
         },
         {
           "id": "per-session",
@@ -2291,7 +2785,22 @@
               "unit": "per week",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "bots",
+                "label": "Bot sessions (6,000/min)"
+              },
+              {
+                "id": "auth",
+                "cpu": 70
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "short-code",
@@ -2323,7 +2832,22 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "redis",
+                "sub": "5-minute codes"
+              },
+              {
+                "id": "auth",
+                "sub": "6% of codes expire unused"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -2465,7 +2989,24 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cdn",
+                "tone": "warn",
+                "sub": "5 s TTL, hit ratio 71%"
+              },
+              {
+                "id": "app",
+                "tone": "warn",
+                "sub": "+10k req/s of refills"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "return-200",
@@ -2490,7 +3031,18 @@
               "unit": "%",
               "tone": "good"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cdn",
+                "sub": "cached error body for 60 s"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -2644,7 +3196,18 @@
               "unit": "s",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gw",
+                "sub": "5 conns/min per IP; bot needs 1"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "client-throttle",
@@ -2669,7 +3232,23 @@
               "unit": "s",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "users",
+                "tone": "warn",
+                "sub": "paste bursts delayed"
+              },
+              {
+                "id": "gw",
+                "cpu": 62
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -2821,7 +3400,20 @@
               "unit": "ms",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "net",
+                "tone": "bad",
+                "cpu": 85,
+                "sub": "queue +1,700 pkt/s, 2 s delay"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "long-timeouts",
@@ -2846,7 +3438,19 @@
               "unit": "ms",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "users",
+                "tone": "warn",
+                "sub": "rubber-banding, still connected"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -2990,7 +3594,33 @@
               "unit": "req/s",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "campus",
+                "sub": "NAT IP unlimited"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "dorm",
+                "kind": "users",
+                "label": "Dorm scraping script",
+                "tone": "bad",
+                "sub": "8k req/s unthrottled"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "dorm",
+                "to": "gw"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "raise-ip",
@@ -3022,7 +3652,24 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gw",
+                "tone": "warn",
+                "sub": "20k/min per IP"
+              },
+              {
+                "id": "api",
+                "tone": "bad",
+                "cpu": 95
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -3198,7 +3845,18 @@
               "unit": "min",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "5/min per user: nobody hits it"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "more-shards",
@@ -3230,7 +3888,19 @@
               "unit": "min",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "sub": "3M writes/s of 8M needed",
+                "label": "Notification DB (x10 shards)"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 18000
+          }
         }
       ],
       "hints": [
@@ -3374,7 +4044,24 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gw",
+                "tone": "warn",
+                "sub": "keys on client-forged XFF"
+              },
+              {
+                "id": "api",
+                "tone": "bad",
+                "cpu": 91
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "raise-limit",
@@ -3399,7 +4086,24 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gw",
+                "tone": "warn",
+                "sub": "10k req/s per LB IP"
+              },
+              {
+                "id": "api",
+                "tone": "bad",
+                "cpu": 94
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -3579,7 +4283,19 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gw",
+                "tone": "warn",
+                "sub": "static 2k: 45% of peak rejected"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "long-timeout",
@@ -3618,7 +4334,22 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gw",
+                "sub": "30 s timeouts, deep queues"
+              },
+              {
+                "id": "db",
+                "cpu": 100
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -3767,7 +4498,22 @@
               "unit": "calls",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cron",
+                "sub": "staggered 0-60 s, 30 full syncs"
+              },
+              {
+                "id": "sup",
+                "sub": "key suspended at 00:04"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "per-pod",
@@ -3799,7 +4545,19 @@
               "unit": "calls",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cron",
+                "sub": "3,000 req/s outbound",
+                "label": "60 pods, 50 req/s each"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -3875,8 +4633,7 @@
             "id": "api",
             "kind": "server",
             "label": "Video API",
-            "cpu": 70,
-            "sub": "limiter here"
+            "cpu": 70
           },
           {
             "id": "sess",
@@ -3974,7 +4731,22 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "sub": "session cache 2% hit"
+              },
+              {
+                "id": "sess",
+                "cpu": 91
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "stricter-api-limit",
@@ -4006,7 +4778,22 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "sub": "20 req/s cap, still after lookup"
+              },
+              {
+                "id": "sess",
+                "cpu": 96
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -4014,7 +4801,41 @@
         "Every rejection still pays for a database query first.",
         "Move the rejection ahead of the expensive work."
       ],
-      "nextId": null
+      "nextId": null,
+      "format": "culprit",
+      "culprit": {
+        "nodeId": "api",
+        "explanation": "The Video API logs show every 429 is decided after auth.loadSession() has already queried the session DB, so each rejected bot request still costs a lookup. The DB is only the victim.",
+        "wrongNodeFeedback": {
+          "sess": "The session DB is drowning, but it is only answering the queries it is sent. Look at what decides to send a query for a request that is about to be rejected.",
+          "edge": "The edge forwards everything because nobody asked it to limit; it is not broken. Find where the 429 is actually decided.",
+          "gw": "The gateway passes traffic through untouched. The expensive work happens further in.",
+          "bots": "The botnet is the trigger, not the fault: an attack like this is expected. What makes each rejected request so costly?"
+        }
+      },
+      "logs": {
+        "bots": [
+          "90k req/s from 31k IPs, rotating credentials",
+          "87% of responses are 429"
+        ],
+        "edge": [
+          "/api/* pass-through to origin: 90k req/s",
+          "no rate rules configured for /api"
+        ],
+        "gw": [
+          "forwarded 90k req/s to video-api, 0 rejected",
+          "upstream p95 2.4 s"
+        ],
+        "api": [
+          "req 7f2a: auth.loadSession 21 ms -> limiter DENY 429",
+          "middleware order: [auth.loadSession, limiter.check, handler]",
+          "78k 429/s, each preceded by a session query"
+        ],
+        "sess": [
+          "QPS 90k, CPU 97%",
+          "slow: SELECT * FROM sessions WHERE token=$1 (2.1 s)"
+        ]
+      }
     },
     {
       "id": "rl-restart-01",
@@ -4201,7 +5022,35 @@
               "unit": "ms",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "g1",
+                "cpu": 90,
+                "sub": "heap 94%, old map still used"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "redis",
+                "kind": "cache",
+                "label": "Redis Cluster (half migrated)",
+                "cpu": 10,
+                "tone": "warn",
+                "sub": "fallback path active"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "g1",
+                "to": "redis"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 900
+          }
         },
         {
           "id": "cms-sketch",
@@ -4233,7 +5082,25 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "g1",
+                "tone": "warn",
+                "cpu": 48,
+                "sub": "sketch: 4% false 429s"
+              },
+              {
+                "id": "users",
+                "tone": "warn",
+                "sub": "4% wrongly throttled"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -4243,6 +5110,824 @@
       ],
       "nextId": null,
       "reviewed": true
+    },
+    {
+      "id": "rl-casc-01",
+      "incidentCode": "INC-009-C1",
+      "level": 9,
+      "patternId": "rate-limiting",
+      "canonical": false,
+      "reviewed": true,
+      "isCascade": true,
+      "parentIncidentCode": "INC-009",
+      "severity": "P1",
+      "xp": 80,
+      "title": "Limiter's Redis blips and every partner gets 429",
+      "brief": "The shared Redis limiter failed over for 25 s during payroll. The limiter fails closed on errors, so all 24 gateway pods returned 429 to every partner and 2,400 payouts failed.",
+      "constraint": "The ledger survives at most 600 req/s, and Redis failovers happen a few times a month.",
+      "question": "How should the limiter behave when Redis is unreachable?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Partner traffic",
+          "value": 2400,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 30,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "rejected",
+          "label": "Rejected",
+          "value": 100,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "failed",
+          "label": "Payouts failed",
+          "value": 2400,
+          "unit": "payouts",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "partner",
+            "kind": "users",
+            "label": "Partner API keys"
+          },
+          {
+            "id": "g1",
+            "kind": "server",
+            "label": "Gateway pods x24",
+            "cpu": 30,
+            "tone": "bad",
+            "sub": "fail closed: 429 to all"
+          },
+          {
+            "id": "redis",
+            "kind": "cache",
+            "label": "Limiter Redis",
+            "tone": "bad",
+            "sub": "failing over, 25 s"
+          },
+          {
+            "id": "ledger",
+            "kind": "db",
+            "label": "Ledger DB",
+            "cpu": 20
+          }
+        ],
+        "edges": [
+          {
+            "from": "partner",
+            "to": "g1"
+          },
+          {
+            "from": "g1",
+            "to": "redis"
+          },
+          {
+            "from": "g1",
+            "to": "ledger"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "local-fallback",
+          "label": "On Redis errors, fall back to local per-pod buckets",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 2,
+            "tradeoffSummary": "Degrade to an approximate local limit instead of choosing between no limit and no service."
+          },
+          "resultTitle": "Payouts flow through the blip",
+          "resultBody": "When a Redis call fails, each pod switches to an in-memory bucket of the limit divided by pod count, about 4 req/s per partner at 24 pods, and returns to the shared counter when Redis recovers. The 25 s blip admits roughly the contracted rate, far under the ledger's 600 req/s. Cost: the limit is approximate during a failover.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 38,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "rejected",
+              "label": "Rejected",
+              "value": 2,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "failed",
+              "label": "Payouts failed",
+              "value": 0,
+              "unit": "payouts",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "partner",
+                "kind": "users",
+                "label": "Partner API keys"
+              },
+              {
+                "id": "g1",
+                "kind": "server",
+                "label": "Gateway pods x24",
+                "cpu": 38,
+                "tone": "good",
+                "sub": "local buckets during failover"
+              },
+              {
+                "id": "redis",
+                "kind": "cache",
+                "label": "Limiter Redis",
+                "tone": "warn",
+                "sub": "failing over, 25 s"
+              },
+              {
+                "id": "ledger",
+                "kind": "db",
+                "label": "Ledger DB",
+                "cpu": 38,
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "partner",
+                "to": "g1"
+              },
+              {
+                "from": "g1",
+                "to": "redis"
+              },
+              {
+                "from": "g1",
+                "to": "ledger"
+              }
+            ]
+          }
+        },
+        {
+          "id": "fail-open",
+          "label": "Fail open and skip rate limiting while Redis is down",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "The ledger melts instead",
+          "resultBody": "Payouts continue, but the partners' retry backlog floods in unthrottled: 2,400 req/s hit a ledger that survives 600, it pins at 99% CPU, and the ledger outage outlasts the Redis blip it was meant to ride through.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "rejected",
+              "label": "Rejected",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "failed",
+              "label": "Payouts failed",
+              "value": 1800,
+              "unit": "payouts",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "g1",
+                "tone": "warn",
+                "cpu": 45,
+                "sub": "limiter skipped"
+              },
+              {
+                "id": "ledger",
+                "tone": "bad",
+                "cpu": 99,
+                "sub": "2,400 req/s unthrottled"
+              }
+            ]
+          }
+        },
+        {
+          "id": "retry-redis",
+          "label": "Retry each failed Redis call three times before rejecting",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Slow rejections instead of fast ones",
+          "resultBody": "Every request now waits through three timed-out attempts, about 1.5 s, before being rejected anyway. Gateway threads pile up, p99 hits 2 s for every partner, and the 25 s blip still fails nearly every payout.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 60,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "rejected",
+              "label": "Rejected",
+              "value": 95,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "failed",
+              "label": "Payouts failed",
+              "value": 2300,
+              "unit": "payouts",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "g1",
+                "tone": "bad",
+                "cpu": 60,
+                "sub": "threads stuck in Redis retries"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "The limiter has to decide something when its counter store is gone.",
+        "Rejecting everything and admitting everything both break a promise.",
+        "An approximate limit is better than no limit or no service for 25 seconds."
+      ]
+    },
+    {
+      "id": "rl-casc-02",
+      "incidentCode": "INC-009-C2",
+      "level": 9,
+      "patternId": "rate-limiting",
+      "canonical": false,
+      "reviewed": true,
+      "isCascade": true,
+      "parentIncidentCode": "INC-009",
+      "severity": "P2",
+      "xp": 70,
+      "title": "Bots pump SMS codes to premium numbers",
+      "brief": "Code-burning stopped the guessing, so the bots switched: they request fresh codes nonstop, 40k SMS an hour to premium-rate numbers they own. The SMS bill hit $6,000 today.",
+      "constraint": "Real users sometimes need two or three resends when delivery is slow.",
+      "question": "What limit stops the SMS flood without stranding real users?",
+      "metricsBefore": [
+        {
+          "key": "sms",
+          "label": "SMS sent",
+          "value": 40000,
+          "unit": "per hour",
+          "tone": "bad"
+        },
+        {
+          "key": "bill",
+          "label": "SMS spend",
+          "value": 6000,
+          "unit": "$/day",
+          "tone": "bad"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 45,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "stranded",
+          "label": "Users without a code",
+          "value": 0,
+          "unit": "%",
+          "tone": "neutral"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "bots",
+            "kind": "users",
+            "label": "Bot sessions",
+            "tone": "bad"
+          },
+          {
+            "id": "gw",
+            "kind": "lb",
+            "label": "Gateway"
+          },
+          {
+            "id": "auth",
+            "kind": "server",
+            "label": "Verify service",
+            "cpu": 45,
+            "tone": "warn",
+            "sub": "sends on every request"
+          },
+          {
+            "id": "sms",
+            "kind": "server",
+            "label": "SMS provider",
+            "tone": "bad",
+            "sub": "40k/h to premium numbers"
+          }
+        ],
+        "edges": [
+          {
+            "from": "bots",
+            "to": "gw"
+          },
+          {
+            "from": "gw",
+            "to": "auth"
+          },
+          {
+            "from": "auth",
+            "to": "sms"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "per-number-resend",
+          "label": "Limit resends per phone number with growing cooldowns",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 2,
+            "tradeoffSummary": "Key the limit on the costly resource, the destination number, not the session asking."
+          },
+          "resultTitle": "The pump runs dry",
+          "resultBody": "Each number now gets at most 3 codes an hour, with cooldowns of 30 s, 2 minutes and then 10 minutes, and premium-rate number ranges are refused outright. SMS volume falls from 40k to about 900 an hour, while a real user still gets two resends. Cost: a number lookup before each send.",
+          "metricsAfter": [
+            {
+              "key": "sms",
+              "label": "SMS sent",
+              "value": 900,
+              "unit": "per hour",
+              "tone": "good"
+            },
+            {
+              "key": "bill",
+              "label": "SMS spend",
+              "value": 140,
+              "unit": "$/day",
+              "tone": "good"
+            },
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "stranded",
+              "label": "Users without a code",
+              "value": 0.2,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "bots",
+                "kind": "users",
+                "label": "Bot sessions",
+                "tone": "warn"
+              },
+              {
+                "id": "gw",
+                "kind": "lb",
+                "label": "Gateway"
+              },
+              {
+                "id": "auth",
+                "kind": "server",
+                "label": "Verify service",
+                "cpu": 30,
+                "tone": "good",
+                "sub": "3 codes/h per number"
+              },
+              {
+                "id": "sms",
+                "kind": "server",
+                "label": "SMS provider",
+                "tone": "good",
+                "sub": "900/h"
+              }
+            ],
+            "edges": [
+              {
+                "from": "bots",
+                "to": "gw"
+              },
+              {
+                "from": "gw",
+                "to": "auth"
+              },
+              {
+                "from": "auth",
+                "to": "sms"
+              }
+            ]
+          }
+        },
+        {
+          "id": "captcha-verify",
+          "label": "Put a CAPTCHA in front of every code verification attempt",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "The money is spent at send time",
+          "resultBody": "The CAPTCHA guards verification, but the cost is paid when a code is sent. The bots never verify anything, so 40k SMS an hour keep flowing and the bill keeps climbing.",
+          "metricsAfter": [
+            {
+              "key": "sms",
+              "label": "SMS sent",
+              "value": 39000,
+              "unit": "per hour",
+              "tone": "bad"
+            },
+            {
+              "key": "bill",
+              "label": "SMS spend",
+              "value": 5900,
+              "unit": "$/day",
+              "tone": "bad"
+            },
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 47,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "stranded",
+              "label": "Users without a code",
+              "value": 2,
+              "unit": "%",
+              "tone": "warn"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "auth",
+                "sub": "CAPTCHA on verify, sends unchanged"
+              }
+            ]
+          }
+        },
+        {
+          "id": "global-cap",
+          "label": "Cap total SMS sends platform-wide at 5,000 per hour",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Bots spend the whole hourly cap",
+          "resultBody": "The bill is capped, but the bots use all 5,000 sends in the first ten minutes of each hour, so real users get no code at all for fifty minutes of every hour.",
+          "metricsAfter": [
+            {
+              "key": "sms",
+              "label": "SMS sent",
+              "value": 5000,
+              "unit": "per hour",
+              "tone": "warn"
+            },
+            {
+              "key": "bill",
+              "label": "SMS spend",
+              "value": 750,
+              "unit": "$/day",
+              "tone": "warn"
+            },
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 45,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "stranded",
+              "label": "Users without a code",
+              "value": 85,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "sms",
+                "tone": "warn",
+                "sub": "capped 5k/h, bots take it all"
+              },
+              {
+                "id": "auth",
+                "tone": "bad",
+                "cpu": 45,
+                "sub": "real users get no code"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "The bots no longer want to log in; they want you to send messages.",
+        "Money is spent at the moment a code is sent, not when it is checked.",
+        "Limit the scarce thing per destination, and keep a little room for honest resends."
+      ]
+    },
+    {
+      "id": "rl-bill-01",
+      "incidentCode": "INC-009-B1",
+      "level": 9,
+      "patternId": "rate-limiting",
+      "canonical": false,
+      "reviewed": true,
+      "isCascade": true,
+      "parentIncidentCode": "INC-009",
+      "severity": "P1",
+      "xp": 90,
+      "title": "Scalpers double the limit again during an on-sale",
+      "brief": "The NTP alert fixed gateway 6, until Tuesday's host migration drifted gateways 2 and 4 by 30 s during a stadium on-sale. The alert fired after 6 minutes; scalpers bought 22% of tickets.",
+      "constraint": "Hosts migrate weekly; the 300 per minute limit must hold whatever a gateway's clock says.",
+      "question": "What takes gateway clocks out of the limiter entirely?",
+      "metricsBefore": [
+        {
+          "key": "limit",
+          "label": "Effective per-key limit",
+          "value": 600,
+          "unit": "per min",
+          "tone": "bad"
+        },
+        {
+          "key": "skew",
+          "label": "Worst gateway clock skew",
+          "value": 30,
+          "unit": "s",
+          "tone": "bad"
+        },
+        {
+          "key": "scalped",
+          "label": "Tickets bought by bots",
+          "value": 22,
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "bots",
+            "kind": "users",
+            "label": "Scalper bot",
+            "tone": "bad"
+          },
+          {
+            "id": "gw",
+            "kind": "lb",
+            "label": "Gateways 1-6",
+            "tone": "warn",
+            "sub": "2 and 4 drifted 30 s"
+          },
+          {
+            "id": "redis",
+            "kind": "cache",
+            "label": "Redis counters"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Ticket API"
+          }
+        ],
+        "edges": [
+          {
+            "from": "bots",
+            "to": "gw"
+          },
+          {
+            "from": "gw",
+            "to": "redis"
+          },
+          {
+            "from": "gw",
+            "to": "api"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "redis-expire",
+          "label": "Key counters by user alone and let Redis EXPIRE end windows",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 1,
+            "tradeoffSummary": "One clock, Redis's own expiry, defines every window; gateway time never enters the key."
+          },
+          "resultTitle": "Windows timed by Redis alone",
+          "resultBody": "The first request in a window runs INCR on user:{id} and sets a 60 s EXPIRE, so the window is timed by Redis and no gateway clock appears in the key. The scalper is held to 300 a minute through any drift. Cost: each user's window starts at their first request, so edges differ per user.",
+          "metricsAfter": [
+            {
+              "key": "limit",
+              "label": "Effective per-key limit",
+              "value": 300,
+              "unit": "per min",
+              "tone": "good"
+            },
+            {
+              "key": "skew",
+              "label": "Worst gateway clock skew",
+              "value": 30,
+              "unit": "s",
+              "tone": "warn"
+            },
+            {
+              "key": "scalped",
+              "label": "Tickets bought by bots",
+              "value": 3,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "bots",
+                "kind": "users",
+                "label": "Scalper bot",
+                "tone": "warn"
+              },
+              {
+                "id": "gw",
+                "kind": "lb",
+                "label": "Gateways 1-6",
+                "tone": "warn",
+                "sub": "clocks irrelevant now"
+              },
+              {
+                "id": "redis",
+                "kind": "cache",
+                "label": "Redis counters",
+                "tone": "good",
+                "sub": "INCR + EXPIRE 60 s"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Ticket API",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "bots",
+                "to": "gw"
+              },
+              {
+                "from": "gw",
+                "to": "redis"
+              },
+              {
+                "from": "gw",
+                "to": "api"
+              }
+            ]
+          }
+        },
+        {
+          "id": "alert-1s",
+          "label": "Tighten the NTP drift alert from 5 s down to 1 s of skew",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Faster alarms, same doubled limits",
+          "resultBody": "The alert now fires within a minute of a migration, but it still reacts only after drift exists, each restart takes 10 minutes, and harmless 1 s blips page twice a day. Scalpers still get about 1.4x the limit during every migration.",
+          "metricsAfter": [
+            {
+              "key": "limit",
+              "label": "Effective per-key limit",
+              "value": 420,
+              "unit": "per min",
+              "tone": "bad"
+            },
+            {
+              "key": "skew",
+              "label": "Worst gateway clock skew",
+              "value": 1,
+              "unit": "s",
+              "tone": "warn"
+            },
+            {
+              "key": "scalped",
+              "label": "Tickets bought by bots",
+              "value": 10,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gw",
+                "tone": "bad",
+                "sub": "restart loop after every migration"
+              }
+            ]
+          }
+        },
+        {
+          "id": "no-migrate",
+          "label": "Opt the six gateway VMs out of live host migration entirely",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Maintenance reboots them instead",
+          "resultBody": "The cloud still performs forced maintenance: VMs that cannot live-migrate are stopped and restarted, so gateways vanish for 3 minutes each week and come back with unsynced clocks anyway.",
+          "metricsAfter": [
+            {
+              "key": "limit",
+              "label": "Effective per-key limit",
+              "value": 600,
+              "unit": "per min",
+              "tone": "bad"
+            },
+            {
+              "key": "skew",
+              "label": "Worst gateway clock skew",
+              "value": 25,
+              "unit": "s",
+              "tone": "bad"
+            },
+            {
+              "key": "scalped",
+              "label": "Tickets bought by bots",
+              "value": 18,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gw",
+                "tone": "bad",
+                "sub": "2 rebooting for maintenance",
+                "label": "Gateways 1-6 (no live migration)"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "The alert can only react to drift that has already happened.",
+        "The window key is built from each gateway's own clock.",
+        "Let the one shared store decide when a window ends."
+      ]
     }
   ]
 }

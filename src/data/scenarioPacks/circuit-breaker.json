@@ -15,8 +15,8 @@
       "canonical": true,
       "severity": "P0",
       "xp": 150,
-      "title": "Payments hang every checkout",
-      "brief": "The payment provider is down and every checkout thread waits 30 seconds.",
+      "title": "Checkout threads pile up at 30 seconds",
+      "brief": "Checkout p95 hit 30 s and 200 errors are piling up; browsing still works but is slowing. Something checkout depends on stopped answering.",
       "constraint": "The rest of the site could still browse.",
       "question": "What stops the thread pileup?",
       "metricsBefore": [
@@ -66,8 +66,8 @@
           {
             "id": "pay",
             "kind": "server",
-            "label": "Payments (down)",
-            "tone": "bad"
+            "label": "Payments provider",
+            "tone": "warn"
           }
         ],
         "edges": [
@@ -152,7 +152,11 @@
             }
           ],
           "resultTitle": "Incident solved",
-          "resultBody": "Open a circuit after consecutive failures and fail fast instead of waiting on the timeout."
+          "resultBody": "Open a circuit after consecutive failures and fail fast instead of waiting on the timeout.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "cascadeIncidentId": "cb-casc-01"
         },
         {
           "id": "longer-timeout",
@@ -183,7 +187,19 @@
             }
           ],
           "resultTitle": "Threads wait even longer",
-          "resultBody": "A longer timeout parks each checkout thread even longer on a provider that is down; p95 climbs to 37 s and 240 errors pile up as the pool exhausts."
+          "resultBody": "A longer timeout parks each checkout thread even longer on a provider that is down; p95 climbs to 37 s and 240 errors pile up as the pool exhausts.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "cpu": 99,
+                "sub": "threads parked 37 s"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "retry-harder",
@@ -214,7 +230,24 @@
             }
           ],
           "resultTitle": "Retries multiply the pileup",
-          "resultBody": "Every failed payment call is retried immediately, doubling the threads parked on the dead provider; CPU stays at 97% and even browsing starts to slow."
+          "resultBody": "Every failed payment call is retried immediately, doubling the threads parked on the dead provider; CPU stays at 97% and even browsing starts to slow.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "cpu": 97,
+                "sub": "2x calls to dead provider"
+              },
+              {
+                "id": "pay",
+                "tone": "bad",
+                "sub": "retry storm"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -222,7 +255,32 @@
         "Retries make it worse.",
         "Fail fast, then probe."
       ],
-      "nextId": "pool-01"
+      "nextId": "pool-01",
+      "format": "culprit",
+      "logs": {
+        "users": [
+          "RUM: checkout spinner over 20 s in 41% of sessions",
+          "RUM: catalog p95 1.1 s, up from 300 ms"
+        ],
+        "app": [
+          "WARN http pool 200/200 busy, 1,340 requests queued",
+          "INFO stack sample: 197 threads in PaymentsClient.authorize()",
+          "WARN CPU 97%: selector spin + GC on parked threads"
+        ],
+        "pay": [
+          "ERROR connect api.payprov.example:443 timed out after 30000 ms",
+          "ERROR 0 successful authorizations in the last 180 s",
+          "WARN provider status: major outage, card authorizations"
+        ]
+      },
+      "culprit": {
+        "nodeId": "pay",
+        "explanation": "The payments provider hasn't returned one authorization in 3 minutes and every connect times out at 30 s. Checkout's CPU and full pool are just threads parked waiting on it.",
+        "wrongNodeFeedback": {
+          "app": "Checkout is the victim: its logs show 197 of 200 threads parked inside the payments client, waiting rather than computing.",
+          "users": "Users only see the symptom, slow checkouts. Follow the requests downstream."
+        }
+      }
     },
     {
       "id": "cb-02",
@@ -390,7 +448,40 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 100,
+                "sub": "shared DB saturated"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "inv2",
+                "kind": "server",
+                "label": "Inventory x20 (warming)",
+                "tone": "warn",
+                "cpu": 70,
+                "sub": "4 min warm-up"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "cart",
+                "to": "inv2"
+              },
+              {
+                "from": "inv2",
+                "to": "db"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 1200
+          }
         },
         {
           "id": "backoff-everywhere",
@@ -422,7 +513,18 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "inv",
+                "sub": "30k req/s of attempts"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -615,7 +717,18 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "400/400 threads waiting"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "retry-slow",
@@ -661,7 +774,20 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "tax",
+                "tone": "bad",
+                "cpu": 80,
+                "sub": "6k req/s, 11 s responses"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -817,7 +943,18 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "OPEN, waiting on on-call"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "timer-close",
@@ -849,7 +986,24 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "search",
+                "tone": "bad",
+                "cpu": 95,
+                "sub": "9k req/s herd, p95 3 s"
+              },
+              {
+                "id": "app",
+                "sub": "breaker reopening every minute"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -1031,7 +1185,24 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "tone": "bad",
+                "sub": "breaker OPEN: all 8 pods cut"
+              },
+              {
+                "id": "p1",
+                "cpu": 5,
+                "sub": "healthy, no traffic"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "retry-other-pod",
@@ -1070,7 +1241,28 @@
               "unit": "%",
               "tone": "warn"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "p1",
+                "cpu": 64,
+                "sub": "+retries"
+              },
+              {
+                "id": "p6",
+                "sub": "still 2k req/s of 500s"
+              },
+              {
+                "id": "api",
+                "tone": "warn",
+                "sub": "p95 1.2 s"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -1242,7 +1434,19 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "tone": "bad",
+                "sub": "OPEN, probes hang 10 s"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "disable-breaker",
@@ -1274,7 +1478,20 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "tone": "bad",
+                "cpu": 92,
+                "sub": "threads wait 2 s on recs"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -1446,7 +1663,22 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "auth",
+                "sub": "OPEN again at 90%"
+              },
+              {
+                "id": "bot",
+                "sub": "ramped to 14k req/s"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "remove-breaker",
@@ -1485,7 +1717,24 @@
               "unit": "%",
               "tone": "good"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "auth",
+                "tone": "warn",
+                "sub": "no breaker, no fail-fast"
+              },
+              {
+                "id": "db",
+                "tone": "warn",
+                "sub": "next stall hangs logins"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -1667,7 +1916,22 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "search",
+                "sub": "30 trips/hour"
+              },
+              {
+                "id": "price",
+                "sub": "crashes after 20 probes"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "long-open",
@@ -1706,7 +1970,24 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "price",
+                "cpu": 2,
+                "sub": "idle 5 min, still cold"
+              },
+              {
+                "id": "search",
+                "tone": "bad",
+                "sub": "5-min gaps, no quotes"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -1877,7 +2158,18 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "reopens every 10 s, 30 s to detect"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "client-retry",
@@ -1916,7 +2208,19 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "cpu": 100,
+                "sub": "2x threads from browser retries"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -1924,7 +2228,137 @@
         "Compare the timeout to the vendor's normal p99, and to user patience.",
         "Make a hung call finish, as a failure, much sooner."
       ],
-      "nextId": null
+      "nextId": null,
+      "format": "knob",
+      "knob": {
+        "label": "Address-vendor timeout",
+        "unit": "ms",
+        "min": 200,
+        "max": 30000,
+        "step": 100,
+        "start": 30000,
+        "target": [
+          1000,
+          1500
+        ],
+        "question": "Set the vendor timeout so failures surface fast without cutting healthy calls.",
+        "curve": [
+          {
+            "at": 200,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 30
+              },
+              {
+                "key": "p95",
+                "value": 250
+              },
+              {
+                "key": "abandon",
+                "value": 34
+              }
+            ]
+          },
+          {
+            "at": 600,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 31
+              },
+              {
+                "key": "p95",
+                "value": 650
+              },
+              {
+                "key": "abandon",
+                "value": 22
+              }
+            ]
+          },
+          {
+            "at": 1000,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 32
+              },
+              {
+                "key": "p95",
+                "value": 1050
+              },
+              {
+                "key": "abandon",
+                "value": 5
+              }
+            ]
+          },
+          {
+            "at": 1500,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 34
+              },
+              {
+                "key": "p95",
+                "value": 1550
+              },
+              {
+                "key": "abandon",
+                "value": 4
+              }
+            ]
+          },
+          {
+            "at": 3000,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 45
+              },
+              {
+                "key": "p95",
+                "value": 3000
+              },
+              {
+                "key": "abandon",
+                "value": 30
+              }
+            ]
+          },
+          {
+            "at": 30000,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 86
+              },
+              {
+                "key": "p95",
+                "value": 30000
+              },
+              {
+                "key": "abandon",
+                "value": 61
+              }
+            ]
+          }
+        ],
+        "low": {
+          "title": "Timeout cuts healthy calls",
+          "body": "Below the vendor's 900 ms p99, healthy answers time out too: at 600 ms about 1 in 5 calls fail, so half-open probes keep failing and the breaker never closes after the vendor recovers."
+        },
+        "high": {
+          "title": "Failures still register too late",
+          "body": "Shoppers abandon at 3 s, so any timeout near or above that still loses the sale, and each hung call holds a checkout thread for the whole wait."
+        },
+        "good": {
+          "title": "Fails fast, keeps healthy calls",
+          "body": "At 1.0 to 1.5 s the timeout sits just above the 900 ms p99: healthy calls pass, hung ones fail within about a second, the breaker trips in seconds and abandonment falls to 4%."
+        }
+      }
     },
     {
       "id": "cb-10",
@@ -2059,7 +2493,8 @@
               "unit": "%",
               "tone": "good"
             }
-          ]
+          ],
+          "cascadeIncidentId": "cb-casc-02"
         },
         {
           "id": "bigger-pool",
@@ -2091,7 +2526,23 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "390/400 threads on PDF"
+              },
+              {
+                "id": "auth",
+                "tone": "warn",
+                "sub": "login p95 8 s"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "async-shared",
@@ -2123,7 +2574,23 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "shared executor full of PDF"
+              },
+              {
+                "id": "auth",
+                "tone": "warn",
+                "sub": "login p95 6 s"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -2305,7 +2772,24 @@
               "unit": "%",
               "tone": "warn"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "alert",
+                "tone": "warn",
+                "sub": "muted until morning"
+              },
+              {
+                "id": "player",
+                "tone": "bad",
+                "sub": "04:10 playback broken, unpaged"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "raise-count",
@@ -2344,7 +2828,18 @@
               "unit": "%",
               "tone": "warn"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "alert",
+                "sub": "60 pages/h"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -2514,7 +3009,27 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "refund",
+                "kind": "worker",
+                "label": "Nightly refund job",
+                "tone": "warn",
+                "sub": "31 chargebacks first"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "pay",
+                "to": "refund"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 40
+          }
         },
         {
           "id": "rare-probe",
@@ -2553,7 +3068,18 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "pay",
+                "sub": "replay probe every 5 min, 12 dupes/h"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -2724,7 +3250,18 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "svc",
+                "sub": "11 of 40 have breakers"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "drop-retries",
@@ -2763,7 +3300,24 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "svc",
+                "tone": "bad",
+                "sub": "threads hang 10 s"
+              },
+              {
+                "id": "geo",
+                "cpu": 90,
+                "sub": "12k req/s"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -2946,7 +3500,25 @@
               "unit": "%",
               "tone": "good"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "orders",
+                "tone": "warn",
+                "cpu": 24,
+                "sub": "+1 ms Redis read per call"
+              },
+              {
+                "id": "redis",
+                "tone": "warn",
+                "sub": "still on the hot path"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "redis-cluster",
@@ -2985,7 +3557,28 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "rc",
+                "kind": "cache",
+                "label": "Redis Cluster x6",
+                "tone": "bad",
+                "cpu": 40,
+                "sub": "slot migration: 1/3 OPEN"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "orders",
+                "to": "rc"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -3167,7 +3760,22 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "pay",
+                "sub": "closed; EU calls hang 10 s"
+              },
+              {
+                "id": "eu",
+                "sub": "3k req/s timing out"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "failover-eu-to-us",
@@ -3206,7 +3814,20 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "us",
+                "tone": "bad",
+                "cpu": 60,
+                "sub": "92% EU declines"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -3383,7 +4004,19 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "tone": "warn",
+                "sub": "blind to 60% partial outages"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "long-open",
@@ -3422,7 +4055,19 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "tone": "bad",
+                "sub": "open 10 min per trip"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -3588,31 +4233,44 @@
           "correct": false,
           "approach": "anti_pattern",
           "retry": true,
-          "resultTitle": "Breaker quiet, pages crawl",
-          "resultBody": "The breaker no longer counts 4 s calls as failures, so listing pages wait on every GC pause instead of failing fast; at hour 8 the heap runs out and pods are OOM-killed anyway.",
+          "resultTitle": "Breaker quiet, pages holding for now",
+          "resultBody": "The breaker no longer trips on GC pauses, so broken thumbnails drop to 8% and p95 settles near 2.4 s. Thumbnailer heap is still climbing about 3% an hour.",
           "metricsAfter": [
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 92,
+              "value": 89,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 4200,
+              "value": 2400,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
               "label": "Broken thumbnails",
-              "value": 22,
+              "value": 8,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "thumb",
+                "tone": "warn",
+                "sub": "heap climbing 3%/h"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "consequenceIncidentId": "cb-bill-01"
         },
         {
           "id": "placeholder-fallback",
@@ -3644,7 +4302,23 @@
               "unit": "%",
               "tone": "bad"
             }
-          ]
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "tone": "warn",
+                "sub": "grey placeholders"
+              },
+              {
+                "id": "thumb",
+                "sub": "leak unchecked"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         }
       ],
       "hints": [
@@ -3653,6 +4327,871 @@
         "You only need to keep heap from climbing for two more days."
       ],
       "nextId": null
+    },
+    {
+      "id": "cb-casc-01",
+      "incidentCode": "INC-010B",
+      "level": 10,
+      "patternId": "circuit-breaker",
+      "canonical": false,
+      "isCascade": true,
+      "reviewed": true,
+      "parentIncidentCode": "INC-010",
+      "severity": "P1",
+      "xp": 80,
+      "title": "Payment backlog replay floods the recovered provider",
+      "brief": "While the breaker was open, checkout queued 42k orders as payment-pending. The provider is back, the replay worker fired all 42k at once, and 70% of calls now get 429.",
+      "constraint": "The provider's contract quota is 800 authorizations per second.",
+      "question": "How should the pending-payment backlog drain?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Replay calls",
+          "value": 6000,
+          "unit": "req/s",
+          "tone": "bad"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 78,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "429 responses",
+          "value": 70,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "backlog",
+          "label": "Pending orders",
+          "value": 42000,
+          "unit": "orders",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Shoppers"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Checkout",
+            "cpu": 40
+          },
+          {
+            "id": "queue",
+            "kind": "queue",
+            "label": "Pending payments",
+            "tone": "warn",
+            "sub": "42k orders"
+          },
+          {
+            "id": "worker",
+            "kind": "worker",
+            "label": "Replay worker",
+            "tone": "bad",
+            "cpu": 78,
+            "sub": "6k calls/s"
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Payments provider",
+            "tone": "bad",
+            "sub": "429 on 70%"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "queue"
+          },
+          {
+            "from": "queue",
+            "to": "worker"
+          },
+          {
+            "from": "worker",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "pace-replay",
+          "label": "Drain the backlog through a 600/s token bucket, oldest first",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Backlog clears in about 70 seconds",
+          "resultBody": "The worker releases 600 authorizations a second, under the 800/s quota, so 429s fall to 0.3% and 42k orders clear in about 70 s; live checkouts keep the remaining 200/s of headroom.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 35,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "429 responses",
+              "value": 0.3,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "backlog",
+              "label": "Pending orders",
+              "value": 0,
+              "unit": "orders",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Shoppers"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Checkout",
+                "tone": "good",
+                "cpu": 38
+              },
+              {
+                "id": "queue",
+                "kind": "queue",
+                "label": "Pending payments",
+                "tone": "good",
+                "sub": "draining 600/s"
+              },
+              {
+                "id": "worker",
+                "kind": "worker",
+                "label": "Replay worker",
+                "tone": "good",
+                "cpu": 35,
+                "sub": "token bucket 600/s"
+              },
+              {
+                "id": "pay",
+                "kind": "server",
+                "label": "Payments provider",
+                "tone": "good",
+                "sub": "under quota"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "queue"
+              },
+              {
+                "from": "queue",
+                "to": "worker"
+              },
+              {
+                "from": "worker",
+                "to": "pay"
+              }
+            ]
+          }
+        },
+        {
+          "id": "more-replay-workers",
+          "label": "Scale the replay worker to 10 pods to finish faster",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 300
+          },
+          "resultTitle": "More senders, more 429s",
+          "resultBody": "Ten pods fire 18k calls a second into an 800/s quota; 95% come back 429, every rejected order is re-queued, and the backlog grows to 48k.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 90,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "429 responses",
+              "value": 95,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "backlog",
+              "label": "Pending orders",
+              "value": 48000,
+              "unit": "orders",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "worker",
+                "cpu": 90,
+                "sub": "x10 pods, 18k calls/s"
+              },
+              {
+                "id": "pay",
+                "sub": "429 on 95%"
+              },
+              {
+                "id": "queue",
+                "tone": "bad",
+                "sub": "48k orders"
+              }
+            ]
+          }
+        },
+        {
+          "id": "cancel-pending",
+          "label": "Cancel pending orders older than 5 minutes and email buyers",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Revenue walks out the door",
+          "resultBody": "31k of the 42k orders are older than 5 minutes; cancelling them loses about $1.9M in sales, and the other 11k still replay at once and draw 429s.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 60,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "429 responses",
+              "value": 55,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "backlog",
+              "label": "Pending orders",
+              "value": 11000,
+              "unit": "orders",
+              "tone": "warn"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "queue",
+                "sub": "31k cancelled, 11k left"
+              },
+              {
+                "id": "users",
+                "tone": "bad",
+                "sub": "4k angry emails"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "The provider has a quota, and the replay worker ignores it.",
+        "Draining faster only helps if the provider accepts the calls.",
+        "Release the backlog at a steady rate just below 800 a second."
+      ],
+      "nextId": "pool-01"
+    },
+    {
+      "id": "cb-casc-02",
+      "incidentCode": "INC-010-10B",
+      "level": 10,
+      "patternId": "circuit-breaker",
+      "canonical": false,
+      "isCascade": true,
+      "reviewed": true,
+      "parentIncidentCode": "INC-010-10",
+      "severity": "P2",
+      "xp": 70,
+      "title": "Invoice downloads fail instantly at month-end",
+      "brief": "The 20-thread PDF bulkhead saved login, but at month-end 900 customers a minute request invoices. The bulkhead is full, 85% of downloads get an instant 503, and users hammer retry.",
+      "constraint": "The PDF vendor still takes up to 20 s per invoice.",
+      "question": "How do invoice requests stop failing without starving other calls?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 6000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 30,
+          "unit": "%",
+          "tone": "neutral"
+        },
+        {
+          "key": "errors",
+          "label": "Invoice 503s",
+          "value": 85,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "retries",
+          "label": "User retries",
+          "value": 2700,
+          "unit": "/min",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Customers"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App server",
+            "tone": "warn",
+            "cpu": 30,
+            "sub": "PDF bulkhead 20/20"
+          },
+          {
+            "id": "pdf",
+            "kind": "server",
+            "label": "PDF vendor",
+            "tone": "warn",
+            "sub": "20 s per invoice"
+          },
+          {
+            "id": "auth",
+            "kind": "server",
+            "label": "Auth service",
+            "tone": "good",
+            "cpu": 20,
+            "sub": "login fine"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pdf"
+          },
+          {
+            "from": "app",
+            "to": "auth"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "async-invoice",
+          "label": "Queue invoice jobs and email a link when each is ready",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 60
+          },
+          "resultTitle": "Requests accepted, PDFs arrive by email",
+          "resultBody": "Requests return 202 in 40 ms and land on a job queue; a separate async worker keeps 300 vendor calls in flight, clearing 900 invoices a minute, and customers get a link within about a minute.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 32,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Invoice 503s",
+              "value": 0.5,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "retries",
+              "label": "User retries",
+              "value": 40,
+              "unit": "/min",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Customers"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App server",
+                "tone": "good",
+                "cpu": 28,
+                "sub": "202 Accepted"
+              },
+              {
+                "id": "jobs",
+                "kind": "queue",
+                "label": "Invoice jobs",
+                "tone": "good",
+                "sub": "~1 min wait"
+              },
+              {
+                "id": "pdfw",
+                "kind": "worker",
+                "label": "Async PDF worker",
+                "tone": "good",
+                "cpu": 40,
+                "sub": "300 calls in flight"
+              },
+              {
+                "id": "pdf",
+                "kind": "server",
+                "label": "PDF vendor",
+                "tone": "good",
+                "sub": "20 s per invoice"
+              },
+              {
+                "id": "auth",
+                "kind": "server",
+                "label": "Auth service",
+                "tone": "good",
+                "cpu": 20
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "jobs"
+              },
+              {
+                "from": "jobs",
+                "to": "pdfw"
+              },
+              {
+                "from": "pdfw",
+                "to": "pdf"
+              },
+              {
+                "from": "app",
+                "to": "auth"
+              }
+            ]
+          }
+        },
+        {
+          "id": "widen-bulkhead",
+          "label": "Raise the PDF bulkhead from 20 to 200 request threads",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Login starves again",
+          "resultBody": "At 20 s per call the 200 PDF threads fill in seconds and still clear only 600 invoices a minute; the extra stacks push pods to 94% memory and login p95 climbs to 3 s under GC.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 55,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Invoice 503s",
+              "value": 33,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "retries",
+              "label": "User retries",
+              "value": 1100,
+              "unit": "/min",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "tone": "bad",
+                "cpu": 55,
+                "sub": "200 PDF threads, 94% memory"
+              },
+              {
+                "id": "auth",
+                "tone": "warn",
+                "sub": "login p95 3 s"
+              }
+            ]
+          }
+        },
+        {
+          "id": "client-auto-retry",
+          "label": "Retry a rejected invoice automatically every 2 seconds",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Retries keep the bulkhead pinned",
+          "resultBody": "Rejected downloads now come back every 2 s on their own, so rejections climb to 6k a minute; the bulkhead stays at 20/20 and 88% of downloads still fail.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 38,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Invoice 503s",
+              "value": 88,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "retries",
+              "label": "User retries",
+              "value": 6000,
+              "unit": "/min",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "tone": "bad",
+                "cpu": 38,
+                "sub": "20/20, 6k rejections/min"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "The bulkhead did its job: login is fine.",
+        "Twenty threads at 20 s each is only 60 invoices a minute.",
+        "An invoice does not have to arrive in the same HTTP request."
+      ],
+      "nextId": "pool-01"
+    },
+    {
+      "id": "cb-bill-01",
+      "incidentCode": "INC-010-17B",
+      "level": 10,
+      "patternId": "circuit-breaker",
+      "canonical": false,
+      "isCascade": true,
+      "reviewed": true,
+      "parentIncidentCode": "INC-010-17",
+      "severity": "P1",
+      "xp": 90,
+      "title": "Thumbnailer pods OOM-killed mid-afternoon",
+      "brief": "Loosening the slow-call threshold bought 90 minutes. At hour 8 the leak filled the heap: 5 of 8 thumbnailer pods were OOM-killed, and the 3 survivors hang listing pages 4 s per image.",
+      "constraint": "The leak fix still ships in two days.",
+      "question": "What keeps thumbnails up until the leak fix lands?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 12000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 97,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 4000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Broken thumbnails",
+          "value": 48,
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Shoppers"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Listings page",
+            "tone": "warn",
+            "cpu": 45,
+            "sub": "breaker won't trip on 4 s"
+          },
+          {
+            "id": "thumb",
+            "kind": "server",
+            "label": "Thumbnailer (3 of 8 up)",
+            "tone": "bad",
+            "cpu": 97,
+            "sub": "5 pods OOM-killed"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "thumb"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "restore-and-recycle",
+          "label": "Restore the slow-call limit and recycle pods every 4 hours",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Pages fail fast again, heap stays low",
+          "resultBody": "With the 1.5 s slow-call limit back, the breaker serves placeholders for sick pods within seconds, and staggered restarts every 4 hours keep heap under 60%; p95 returns to 200 ms. Cost: brief cold caches after each restart.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 46,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 200,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Broken thumbnails",
+              "value": 0.4,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Shoppers"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Listings page",
+                "tone": "good",
+                "cpu": 35,
+                "sub": "slow-call limit 1.5 s"
+              },
+              {
+                "id": "thumb",
+                "kind": "server",
+                "label": "Thumbnailer",
+                "tone": "good",
+                "cpu": 46,
+                "sub": "heap below 60%"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "thumb"
+              }
+            ]
+          }
+        },
+        {
+          "id": "double-memory",
+          "label": "Double thumbnailer memory limits from 2 GB to 4 GB per pod",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 400
+          },
+          "resultTitle": "Later OOMs, longer pauses",
+          "resultBody": "Pods now last until hour 16, but a 4 GB heap's full GC stops each pod for about 9 s, and the loosened breaker lets pages wait through every pause; p95 hits 6 s.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 90,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 6000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Broken thumbnails",
+              "value": 20,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "thumb",
+                "cpu": 90,
+                "sub": "4 GB heap, 9 s GC pauses"
+              },
+              {
+                "id": "app",
+                "tone": "bad",
+                "sub": "pages wait out GC"
+              }
+            ]
+          }
+        },
+        {
+          "id": "double-pods",
+          "label": "Scale thumbnailer from 8 to 16 pods to spread the leak",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 640
+          },
+          "resultTitle": "Twice the pods, same slow death",
+          "resultBody": "Sixteen pods halve each pod's leak rate, so the next OOM wave lands near hour 15 instead of 8, but GC pauses still reach 4 s and the loose breaker keeps pages hanging.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 70,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3800,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Broken thumbnails",
+              "value": 12,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "thumb",
+                "cpu": 70,
+                "tone": "warn",
+                "sub": "leaking at half rate"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "thumb2",
+                "kind": "server",
+                "label": "Thumbnailer +8 pods",
+                "tone": "warn",
+                "cpu": 70,
+                "sub": "also leaking"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "thumb2"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "The looser threshold is why pages now hang on every GC pause.",
+        "Replacing a pod resets its heap to about 30%.",
+        "Undo the band-aid and keep heap from ever reaching 95%."
+      ],
+      "nextId": "pool-01"
     }
   ]
 }

@@ -18,7 +18,7 @@
       "title": "Payment API delays checkout",
       "brief": "The checkout endpoint calls a payment provider synchronously and waits on every call.",
       "constraint": "The dependency is slow and thread-blocking.",
-      "question": "What makes request latency recover?",
+      "question": "Browsing is back. What takes the vendor off checkout's request path?",
       "metricsBefore": [
         {
           "key": "rps",
@@ -152,7 +152,12 @@
             }
           ],
           "resultTitle": "Asynchronous Decoupling Succeeded",
-          "resultBody": "Enqueueing payment jobs via Kafka acknowledges the client in 15ms. Background workers drain the queue at a sustainable rate, shielding client-facing API threads from downstream vendor latency."
+          "resultBody": "Enqueueing payment jobs via Kafka acknowledges the client in 15ms. Background workers drain the queue at a sustainable rate, shielding client-facing API threads from downstream vendor latency.",
+          "tradeoffs": {
+            "costMonthlyDelta": 150
+          },
+          "cascadeIncidentId": "queue-casc-01",
+          "cascadeDelayMs": 4000
         },
         {
           "id": "longer-timeout",
@@ -183,7 +188,22 @@
             }
           ],
           "resultTitle": "Worker Pool Exhaustion Persists",
-          "resultBody": "Increasing timeouts keeps HTTP worker threads locked on TCP sockets. Under high concurrency, connection pools starve and cascade 504 Gateway Timeouts to all customer requests."
+          "resultBody": "Increasing timeouts keeps HTTP worker threads locked on TCP sockets. Under high concurrency, connection pools starve and cascade 504 Gateway Timeouts to all customer requests.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "threads parked 60 s on vendor"
+              },
+              {
+                "id": "pay",
+                "sub": "still slow"
+              }
+            ]
+          }
         },
         {
           "id": "more-servers",
@@ -214,7 +234,20 @@
             }
           ],
           "resultTitle": "Resource Saturation & Thread Starvation",
-          "resultBody": "Adding more stateless servers merely shifts thread starvation. Each new pod still locks its worker threads on the unresponsive third-party API, increasing cloud costs by 6x without resolving client latency."
+          "resultBody": "Adding more stateless servers merely shifts thread starvation. Each new pod still locks its worker threads on the unresponsive third-party API, increasing cloud costs by 6x without resolving client latency.",
+          "tradeoffs": {
+            "costMonthlyDelta": 900
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "label": "API x24",
+                "cpu": 92,
+                "sub": "every pod blocked on vendor"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -222,7 +255,115 @@
         "Users only need an ack now.",
         "Enqueue and return."
       ],
-      "nextId": "shard-01"
+      "nextId": "shard-01",
+      "format": "two-step",
+      "mitigation": {
+        "question": "Every API thread is parked on the payment vendor. What stops the bleeding first?",
+        "choices": [
+          {
+            "id": "m-bulkhead",
+            "label": "Cap vendor calls at 50 threads with a 2 s timeout",
+            "correct": true,
+            "approach": "optimal",
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "resultTitle": "Browsing recovers",
+            "resultBody": "Payment calls now share a 50-thread bulkhead and give up after 2 s, so the rest of the API gets its threads back and browsing p95 falls to about 300 ms. Checkout itself is still slow.",
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 60,
+                "unit": "%",
+                "tone": "warn"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 2500,
+                "unit": "ms",
+                "tone": "warn"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 8,
+                "unit": "errors",
+                "tone": "warn"
+              }
+            ]
+          },
+          {
+            "id": "m-restart",
+            "label": "Restart every API pod to free the blocked threads",
+            "correct": false,
+            "approach": "anti_pattern",
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "resultTitle": "Threads block again in 40 s",
+            "resultBody": "Fresh pods accept traffic, call the same slow vendor and park every thread again within 40 seconds; the restarts add a burst of 502s on top.",
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 94,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 9000,
+                "unit": "ms",
+                "tone": "bad"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 40,
+                "unit": "errors",
+                "tone": "bad"
+              }
+            ]
+          },
+          {
+            "id": "m-retry",
+            "label": "Retry failed payment calls at once to clear the backlog",
+            "correct": false,
+            "approach": "anti_pattern",
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "resultTitle": "Retry storm on the vendor",
+            "resultBody": "Every timeout turns into two or three more calls, the vendor slows further under the extra load, and checkout p95 passes 10 seconds.",
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 96,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 11000,
+                "unit": "ms",
+                "tone": "bad"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 70,
+                "unit": "errors",
+                "tone": "bad"
+              }
+            ]
+          }
+        ]
+      }
     },
     {
       "id": "queue-02",
@@ -369,7 +510,10 @@
             }
           ],
           "resultTitle": "Fast User Response & Reliable Delivery",
-          "resultBody": "Offloading email dispatch to background workers returns immediate response to users. SMTP network latency and retries are isolated from the web request loop."
+          "resultBody": "Offloading email dispatch to background workers returns immediate response to users. SMTP network latency and retries are isolated from the web request loop.",
+          "tradeoffs": {
+            "costMonthlyDelta": 60
+          }
         },
         {
           "id": "keep-waiting-smtp",
@@ -400,7 +544,22 @@
             }
           ],
           "resultTitle": "Request Latency Spikes to 8s",
-          "resultBody": "Synchronous SMTP handshakes across the public internet tie up API worker threads for seconds, causing request queues to back up and p95 latency to explode."
+          "resultBody": "Synchronous SMTP handshakes across the public internet tie up API worker threads for seconds, causing request queues to back up and p95 latency to explode.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "threads waiting on SMTP"
+              },
+              {
+                "id": "pay",
+                "label": "SMTP relay"
+              }
+            ]
+          }
         },
         {
           "id": "send-web-request",
@@ -431,7 +590,19 @@
             }
           ],
           "resultTitle": "Silent Task Loss on Server Restart",
-          "resultBody": "Unmanaged in-process threads are immediately killed when the container autoscales or restarts, silently losing user emails without retry mechanisms."
+          "resultBody": "Unmanaged in-process threads are immediately killed when the container autoscales or restarts, silently losing user emails without retry mechanisms.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "cpu": 92,
+                "sub": "emails lost on every restart"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -586,7 +757,10 @@
             }
           ],
           "resultTitle": "Web Tier CPU Stabilized",
-          "resultBody": "Heavy image transcoding is isolated onto dedicated worker nodes with autoscaling, keeping the web API fleet responsive and healthy."
+          "resultBody": "Heavy image transcoding is isolated onto dedicated worker nodes with autoscaling, keeping the web API fleet responsive and healthy.",
+          "tradeoffs": {
+            "costMonthlyDelta": 200
+          }
         },
         {
           "id": "render-thumbnails-reques",
@@ -617,7 +791,19 @@
             }
           ],
           "resultTitle": "100% CPU Saturation & Event Loop Blocked",
-          "resultBody": "Synchronous CPU-intensive image resizing pins CPU cores to 100%, causing Node/Go event loops to stall and dropping concurrent user connections."
+          "resultBody": "Synchronous CPU-intensive image resizing pins CPU cores to 100%, causing Node/Go event loops to stall and dropping concurrent user connections.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "cpu": 100,
+                "sub": "resizing 4K images inline"
+              }
+            ]
+          }
         },
         {
           "id": "cache-upload-browser",
@@ -648,7 +834,19 @@
             }
           ],
           "resultTitle": "Client Battery Drain & Inconsistent Compression",
-          "resultBody": "Pushing the work to client devices drains mobile batteries, produces inconsistent thumbnail quality across browsers, and exposes upload endpoints to abuse."
+          "resultBody": "Pushing the work to client devices drains mobile batteries, produces inconsistent thumbnail quality across browsers, and exposes upload endpoints to abuse.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "cpu": 92,
+                "sub": "untrusted client thumbnails"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -803,7 +1001,10 @@
             }
           ],
           "resultTitle": "Zero Double Billing on Worker Retries",
-          "resultBody": "Idempotency keys ensure redelivered payment tasks are recognized and deduplicated, guaranteeing customers are charged exactly once."
+          "resultBody": "Idempotency keys ensure redelivered payment tasks are recognized and deduplicated, guaranteeing customers are charged exactly once.",
+          "tradeoffs": {
+            "costMonthlyDelta": 40
+          }
         },
         {
           "id": "disable-redelivery",
@@ -834,7 +1035,18 @@
             }
           ],
           "resultTitle": "Silent Payment Data Loss",
-          "resultBody": "Disabling redeliveries drops customer orders permanently whenever a worker dies mid-flight, causing severe financial and inventory discrepancies."
+          "resultBody": "Disabling redeliveries drops customer orders permanently whenever a worker dies mid-flight, causing severe financial and inventory discrepancies.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "crashed jobs dropped"
+              }
+            ]
+          }
         },
         {
           "id": "let-request-handle",
@@ -865,7 +1077,18 @@
             }
           ],
           "resultTitle": "Customer Rage & Double-Charge Spikes",
-          "resultBody": "Users who receive a timeout error click 'Pay' multiple times, resulting in multiple charges and massive support ticket volume."
+          "resultBody": "Users who receive a timeout error click 'Pay' multiple times, resulting in multiple charges and massive support ticket volume.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "pay",
+                "sub": "double charges on retry"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1020,7 +1243,10 @@
             }
           ],
           "resultTitle": "Order Storm Smoothly Absorbed",
-          "resultBody": "The queue buffers 50,000 flash sale requests per second and workers write to PostgreSQL at a sustainable 2,500 writes/sec, preventing DB connection pool crashes."
+          "resultBody": "The queue buffers 50,000 flash sale requests per second and workers write to PostgreSQL at a sustainable 2,500 writes/sec, preventing DB connection pool crashes.",
+          "tradeoffs": {
+            "costMonthlyDelta": 300
+          }
         },
         {
           "id": "scale-api-layer",
@@ -1051,7 +1277,34 @@
             }
           ],
           "resultTitle": "Postgres Connection Exhaustion (100% CPU)",
-          "resultBody": "500 API pods open thousands of direct database connections, exhausting Postgres max_connections and crashing the entire database cluster."
+          "resultBody": "500 API pods open thousands of direct database connections, exhausting Postgres max_connections and crashing the entire database cluster.",
+          "tradeoffs": {
+            "costMonthlyDelta": 2500
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "label": "API x500"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres",
+                "tone": "bad",
+                "cpu": 100,
+                "sub": "max_connections hit"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "db"
+              }
+            ]
+          }
         },
         {
           "id": "increase-timeout-budget",
@@ -1082,7 +1335,19 @@
             }
           ],
           "resultTitle": "Cascading Edge Timeout Catastrophe",
-          "resultBody": "Extended timeouts cause thousands of connections to accumulate at the load balancer, exhausting reverse proxy sockets and bringing down the domain."
+          "resultBody": "Extended timeouts cause thousands of connections to accumulate at the load balancer, exhausting reverse proxy sockets and bringing down the domain.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "cpu": 92,
+                "sub": "sockets held for 3 min"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1237,7 +1502,10 @@
             }
           ],
           "resultTitle": "Bounded Memory & Graceful Shedding",
-          "resultBody": "Limiting queue capacity prevents broker out-of-memory crashes while backpressure signals clients to slow down, maintaining system stability."
+          "resultBody": "Limiting queue capacity prevents broker out-of-memory crashes while backpressure signals clients to slow down, maintaining system stability.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "more-retries-no",
@@ -1268,7 +1536,27 @@
             }
           ],
           "resultTitle": "Infinite Poison Loop & Worker Starvation",
-          "resultBody": "Retrying failing tasks without backoff creates a retry storm that starves healthy jobs and locks all background workers in continuous failure loops."
+          "resultBody": "Retrying failing tasks without backoff creates a retry storm that starves healthy jobs and locks all background workers in continuous failure loops.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "q",
+                "kind": "queue",
+                "label": "Job queue",
+                "tone": "bad",
+                "sub": "instant-retry storm"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "q"
+              }
+            ]
+          }
         },
         {
           "id": "no-acknowledgement",
@@ -1299,7 +1587,27 @@
             }
           ],
           "resultTitle": "Data Loss on Worker Crash",
-          "resultBody": "Auto-acknowledging messages removes them from the broker before execution; if a worker crashes during processing, the task is lost forever."
+          "resultBody": "Auto-acknowledging messages removes them from the broker before execution; if a worker crashes during processing, the task is lost forever.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "q",
+                "kind": "queue",
+                "label": "Job queue",
+                "tone": "warn",
+                "sub": "tasks lost on crash"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "q"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1454,7 +1762,10 @@
             }
           ],
           "resultTitle": "Resilient Distributed Saga",
-          "resultBody": "Decoupling order validation, billing, and fulfillment into sequential asynchronous queue topics provides fault tolerance and compensation checkpoints."
+          "resultBody": "Decoupling order validation, billing, and fulfillment into sequential asynchronous queue topics provides fault tolerance and compensation checkpoints.",
+          "tradeoffs": {
+            "costMonthlyDelta": 150
+          }
         },
         {
           "id": "all-work-web",
@@ -1485,7 +1796,18 @@
             }
           ],
           "resultTitle": "Web Connection Timeouts (p99 > 15s)",
-          "resultBody": "Chaining multiple slow synchronous HTTP calls inside a single user request causes high failure rates whenever any single downstream dependency lags."
+          "resultBody": "Chaining multiple slow synchronous HTTP calls inside a single user request causes high failure rates whenever any single downstream dependency lags.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "15 s monolithic request"
+              }
+            ]
+          }
         },
         {
           "id": "a-single-long",
@@ -1516,7 +1838,28 @@
             }
           ],
           "resultTitle": "Distributed Deadlocks & Cross-Service Lock Contention",
-          "resultBody": "Synchronous 2PC locks resources across microservices for seconds; coordinator failures leave database rows locked indefinitely."
+          "resultBody": "Synchronous 2PC locks resources across microservices for seconds; coordinator failures leave database rows locked indefinitely.",
+          "tradeoffs": {
+            "costMonthlyDelta": 200
+          },
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "coord",
+                "kind": "server",
+                "label": "2PC coordinator",
+                "tone": "bad",
+                "cpu": 70,
+                "sub": "locks held for seconds"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "coord"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1671,7 +2014,10 @@
             }
           ],
           "resultTitle": "Idempotent Deduplication Active",
-          "resultBody": "Checking message deduplication IDs before processing guarantees at-least-once queue delivery does not cause duplicate side effects."
+          "resultBody": "Checking message deduplication IDs before processing guarantees at-least-once queue delivery does not cause duplicate side effects.",
+          "tradeoffs": {
+            "costMonthlyDelta": 20
+          }
         },
         {
           "id": "no-retries",
@@ -1702,7 +2048,18 @@
             }
           ],
           "resultTitle": "Critical Order Loss on Network Glitches",
-          "resultBody": "Disabling retries turns reliable delivery into at-most-once delivery, dropping orders whenever temporary network blips occur."
+          "resultBody": "Disabling retries turns reliable delivery into at-most-once delivery, dropping orders whenever temporary network blips occur.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "orders lost on network blips"
+              }
+            ]
+          }
         },
         {
           "id": "no-acknowledgements",
@@ -1733,7 +2090,19 @@
             }
           ],
           "resultTitle": "Duplicates stop, crashed jobs vanish",
-          "resultBody": "Auto-ack removes each message the moment it is delivered, so a worker that crashes mid-job loses it for good. Duplicates drop, but at-least-once has quietly become at-most-once."
+          "resultBody": "Auto-ack removes each message the moment it is delivered, so a worker that crashes mid-job loses it for good. Duplicates drop, but at-least-once has quietly become at-most-once.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "cpu": 92,
+                "sub": "crashed jobs vanish"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1888,7 +2257,10 @@
             }
           ],
           "resultTitle": "Sub-50ms User Interaction",
-          "resultBody": "Returning an immediate 202 Accepted frees the user browser while background workers process the order and push completion status via WebSockets."
+          "resultBody": "Returning an immediate 202 Accepted frees the user browser while background workers process the order and push completion status via WebSockets.",
+          "tradeoffs": {
+            "costMonthlyDelta": 80
+          }
         },
         {
           "id": "wait-all-apis",
@@ -1919,7 +2291,18 @@
             }
           ],
           "resultTitle": "Browser Timeout (HTTP 504)",
-          "resultBody": "Synchronously waiting on 4 third-party APIs guarantees p99 response times above 10 seconds, frustrating users and causing duplicate orders."
+          "resultBody": "Synchronously waiting on 4 third-party APIs guarantees p99 response times above 10 seconds, frustrating users and causing duplicate orders.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "spinner until 4 APIs finish"
+              }
+            ]
+          }
         },
         {
           "id": "accept-broken-order",
@@ -1950,7 +2333,18 @@
             }
           ],
           "resultTitle": "Massive Inventory Overselling & Chargebacks",
-          "resultBody": "Accepting orders blindly creates thousands of unfulfillable commitments that must be refunded manually at significant cost."
+          "resultBody": "Accepting orders blindly creates thousands of unfulfillable commitments that must be refunded manually at significant cost.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "pay",
+                "sub": "oversold, unpaid orders"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2105,7 +2499,10 @@
             }
           ],
           "resultTitle": "Crash-Resilient At-Least-Once Delivery",
-          "resultBody": "Acknowledging messages only after the local ACID commit ensures that crashed workers trigger safe re-delivery to surviving nodes."
+          "resultBody": "Acknowledging messages only after the local ACID commit ensures that crashed workers trigger safe re-delivery to surviving nodes.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "unbounded-retries",
@@ -2136,7 +2533,18 @@
             }
           ],
           "resultTitle": "High In-Flight Data Loss",
-          "resultBody": "If a worker crashes while executing an auto-acked message, the message is already gone from the broker and cannot be recovered."
+          "resultBody": "If a worker crashes while executing an auto-acked message, the message is already gone from the broker and cannot be recovered.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "in-flight jobs lost on crash"
+              }
+            ]
+          }
         },
         {
           "id": "no-monitoring",
@@ -2167,7 +2575,19 @@
             }
           ],
           "resultTitle": "Blind Silent Failures in Production",
-          "resultBody": "Silently swallowing exceptions prevents on-call engineers from detecting systemic downstream outages and customer data corruption."
+          "resultBody": "Silently swallowing exceptions prevents on-call engineers from detecting systemic downstream outages and customer data corruption.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "cpu": 92,
+                "sub": "failures silently swallowed"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2322,7 +2742,10 @@
             }
           ],
           "resultTitle": "Webhook Fan-out Completely Decoupled",
-          "resultBody": "Webhooks are broadcast through Kafka and dispatched by dedicated egress workers, preventing external partner outages from slowing down the primary API."
+          "resultBody": "Webhooks are broadcast through Kafka and dispatched by dedicated egress workers, preventing external partner outages from slowing down the primary API.",
+          "tradeoffs": {
+            "costMonthlyDelta": 120
+          }
         },
         {
           "id": "wait-every-partner",
@@ -2353,7 +2776,19 @@
             }
           ],
           "resultTitle": "API still waits on the slowest partner",
-          "resultBody": "Concurrent calls cut the sum to the maximum, but every request still waits for the slowest partner, and an unreachable one holds each billing call until its timeout fires."
+          "resultBody": "Concurrent calls cut the sum to the maximum, but every request still waits for the slowest partner, and an unreachable one holds each billing call until its timeout fires.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "pay",
+                "label": "12 partners",
+                "sub": "slowest partner gates API"
+              }
+            ]
+          }
         },
         {
           "id": "drop-webhooks-when",
@@ -2384,7 +2819,19 @@
             }
           ],
           "resultTitle": "SLA Violations & Broken Integrations",
-          "resultBody": "Dropping webhooks under load violates API developer contracts and causes partner inventory and billing systems to fall out of sync."
+          "resultBody": "Dropping webhooks under load violates API developer contracts and causes partner inventory and billing systems to fall out of sync.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "pay",
+                "label": "12 partners",
+                "sub": "webhooks dropped"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2539,7 +2986,10 @@
             }
           ],
           "resultTitle": "Poison Message Isolated to DLQ",
-          "resultBody": "Moving malformed payloads to a Dead Letter Queue preserves healthy message flow for remaining customers while alerting engineers for offline inspection."
+          "resultBody": "Moving malformed payloads to a Dead Letter Queue preserves healthy message flow for remaining customers while alerting engineers for offline inspection.",
+          "tradeoffs": {
+            "costMonthlyDelta": 10
+          }
         },
         {
           "id": "retry-same-message",
@@ -2570,7 +3020,27 @@
             }
           ],
           "resultTitle": "Queue Head-of-Line Blocking",
-          "resultBody": "Retrying an unparseable payload in an infinite loop blocks the entire queue partition, preventing millions of valid messages from being processed."
+          "resultBody": "Retrying an unparseable payload in an infinite loop blocks the entire queue partition, preventing millions of valid messages from being processed.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "q",
+                "kind": "queue",
+                "label": "Job queue",
+                "tone": "bad",
+                "sub": "head blocked by bad payload"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "q"
+              }
+            ]
+          }
         },
         {
           "id": "stop-all-workers",
@@ -2601,7 +3071,28 @@
             }
           ],
           "resultTitle": "Complete Background Processing Outage",
-          "resultBody": "Terminating the worker fleet turns an individual bad payload into a complete system-wide processing blackout."
+          "resultBody": "Terminating the worker fleet turns an individual bad payload into a complete system-wide processing blackout.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "w",
+                "kind": "worker",
+                "label": "Workers",
+                "tone": "bad",
+                "cpu": 0,
+                "sub": "fleet halted"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "w"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2727,7 +3218,10 @@
             }
           ],
           "resultTitle": "Jobs stay hidden while they're alive",
-          "resultBody": "Workers call ChangeMessageVisibility every 60 seconds to push the timeout 2 minutes out. A running job stays invisible for as long as it takes, and a crashed worker stops the heartbeat, so its job reappears within 2 minutes. Fleet CPU falls from 96% to 30%."
+          "resultBody": "Workers call ChangeMessageVisibility every 60 seconds to push the timeout 2 minutes out. A running job stays invisible for as long as it takes, and a crashed worker stops the heartbeat, so its job reappears within 2 minutes. Fleet CPU falls from 96% to 30%.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "more-workers",
@@ -2759,7 +3253,20 @@
             }
           ],
           "resultTitle": "More workers, more copies of each job",
-          "resultBody": "The extra workers pick up the reappearing messages faster, so each video is now transcoded 6 or 7 times. The bill triples and CPU stays at 90%."
+          "resultBody": "The extra workers pick up the reappearing messages faster, so each video is now transcoded 6 or 7 times. The bill triples and CPU stays at 90%.",
+          "tradeoffs": {
+            "costMonthlyDelta": 1200
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "worker",
+                "label": "Transcoders x3",
+                "cpu": 90,
+                "sub": "6.5 copies per video"
+              }
+            ]
+          }
         },
         {
           "id": "long-timeout",
@@ -2778,7 +3285,7 @@
             {
               "key": "p95",
               "label": "p95 finish time",
-              "value": 700,
+              "value": 900,
               "unit": "s",
               "tone": "warn"
             },
@@ -2790,8 +3297,25 @@
               "tone": "good"
             }
           ],
-          "resultTitle": "Duplicates gone, crashes stranded",
-          "resultBody": "Duplicate work stops, but when a worker is killed its video stays hidden for 12 hours before anyone retries it. Spot-instance reclaims strand about 40 uploads a day, far past the 2-minute retry rule."
+          "resultTitle": "Duplicates gone, fleet at 32%",
+          "resultBody": "Each video is now transcoded once and fleet CPU falls to 32%. One odd sign: three uploads caught in the 14:02 spot reclaim are still invisible in the queue.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "queue",
+                "sub": "visibility 12 h"
+              },
+              {
+                "id": "worker",
+                "tone": "good",
+                "cpu": 32
+              }
+            ]
+          },
+          "consequenceIncidentId": "queue-bill-01"
         }
       ],
       "hints": [
@@ -2918,7 +3442,12 @@
             }
           ],
           "resultTitle": "The queue absorbs the burst",
-          "resultBody": "A token bucket in Redis lets all workers together send 90 messages per second, just under the limit. The 180,000 texts drain in about 33 minutes, inside the one-hour allowance, with zero 429s. Cost: late signups wait up to half an hour for their text."
+          "resultBody": "A token bucket in Redis lets all workers together send 90 messages per second, just under the limit. The 180,000 texts drain in about 33 minutes, inside the one-hour allowance, with zero 429s. Cost: late signups wait up to half an hour for their text.",
+          "tradeoffs": {
+            "costMonthlyDelta": 30
+          },
+          "cascadeIncidentId": "queue-casc-02",
+          "cascadeDelayMs": 4000
         },
         {
           "id": "more-keys",
@@ -2950,7 +3479,19 @@
             }
           ],
           "resultTitle": "The provider suspends the account",
-          "resultBody": "The limit is per account, not per key. The extra keys look like limit evasion, the provider suspends sending for 24 hours, and now every text fails, including login codes."
+          "resultBody": "The limit is per account, not per key. The extra keys look like limit evasion, the provider suspends sending for 24 hours, and now every text fails, including login codes.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "worker",
+                "cpu": 70,
+                "sub": "account suspended 24 h"
+              }
+            ]
+          }
         },
         {
           "id": "drop-old",
@@ -2982,7 +3523,23 @@
             }
           ],
           "resultTitle": "The backlog vanishes, so do the texts",
-          "resultBody": "The queue empties quickly because most messages are discarded, and workers still retry immediately and still exceed the limit. About 160,000 new users never receive their welcome code."
+          "resultBody": "The queue empties quickly because most messages are discarded, and workers still retry immediately and still exceed the limit. About 160,000 new users never receive their welcome code.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "queue",
+                "tone": "bad",
+                "sub": "160k texts dropped"
+              },
+              {
+                "id": "worker",
+                "cpu": 30
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3111,7 +3668,10 @@
             }
           ],
           "resultTitle": "Retries spread out as the carrier recovers",
-          "resultBody": "Each retry waits a random time between 0 and min(10 min, 2 s x 2^attempt). The 400,000 jobs arrive spread over time instead of together, the carrier stays up at about 3,000 req/s, and the backlog clears in roughly 40 minutes."
+          "resultBody": "Each retry waits a random time between 0 and min(10 min, 2 s x 2^attempt). The 400,000 jobs arrive spread over time instead of together, the carrier stays up at about 3,000 req/s, and the backlog clears in roughly 40 minutes.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "fixed-delay",
@@ -3143,7 +3703,22 @@
             }
           ],
           "resultTitle": "Retries arrive in synchronized waves",
-          "resultBody": "Every failed job waits exactly 30 seconds, so they all come back together. The carrier gets a 40,000 req/s spike every 30 seconds and fails on each one, and the backlog barely shrinks."
+          "resultBody": "Every failed job waits exactly 30 seconds, so they all come back together. The carrier gets a 40,000 req/s spike every 30 seconds and fails on each one, and the backlog barely shrinks.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "queue",
+                "sub": "retries in 30 s waves"
+              },
+              {
+                "id": "carrier",
+                "sub": "spike every 30 s"
+              }
+            ]
+          }
         },
         {
           "id": "dlq-all",
@@ -3175,7 +3750,34 @@
             }
           ],
           "resultTitle": "Quiet carrier, 400,000 stuck labels",
-          "resultBody": "The storm stops, but 400,000 labels now wait for someone to replay the DLQ by hand. A replay all at once would recreate the same spike, so most parcels miss the 17:00 pickup."
+          "resultBody": "The storm stops, but 400,000 labels now wait for someone to replay the DLQ by hand. A replay all at once would recreate the same spike, so most parcels miss the 17:00 pickup.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "worker",
+                "tone": "good",
+                "cpu": 5
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "dlq",
+                "kind": "queue",
+                "label": "Dead-letter queue",
+                "tone": "bad",
+                "sub": "400k labels parked"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "queue",
+                "to": "dlq"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3304,7 +3906,10 @@
             }
           ],
           "resultTitle": "Points and position commit together",
-          "resultBody": "Each batch updates balances and writes the partition's offset in one Postgres transaction. After a rebalance the consumer seeks to the stored offset, so a replayed event is either already committed with its offset or not applied at all. Double credits drop to 0 at the cost of ~2 ms per batch."
+          "resultBody": "Each batch updates balances and writes the partition's offset in one Postgres transaction. After a rebalance the consumer seeks to the stored offset, so a replayed event is either already committed with its offset or not applied at all. Double credits drop to 0 at the cost of ~2 ms per batch.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "idempotent-producer",
@@ -3336,7 +3941,18 @@
             }
           ],
           "resultTitle": "Fixes duplicates on the wrong side",
-          "resultBody": "The idempotent producer stops checkout from writing the same event twice to the log. These duplicates come from the consumer reading events again after a rebalance, so every deploy still double-credits about 18,000 purchases."
+          "resultBody": "The idempotent producer stops checkout from writing the same event twice to the log. These duplicates come from the consumer reading events again after a rebalance, so every deploy still double-credits about 18,000 purchases.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "worker",
+                "sub": "still double-crediting"
+              }
+            ]
+          }
         },
         {
           "id": "commit-first",
@@ -3375,7 +3991,19 @@
             }
           ],
           "resultTitle": "No duplicates, missing points instead",
-          "resultBody": "This is at-most-once delivery: if a consumer dies after committing but before writing, those events are skipped for good. Double credits stop, but about 11,000 purchases per deploy now get no points at all."
+          "resultBody": "This is at-most-once delivery: if a consumer dies after committing but before writing, those events are skipped for good. Double credits stop, but about 11,000 purchases per deploy now get no points at all.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "worker",
+                "tone": "bad",
+                "sub": "11k purchases skipped"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3493,7 +4121,10 @@
             }
           ],
           "resultTitle": "Urgent mail skips the bulk line",
-          "resultBody": "Resets and 2FA codes go to their own queue with 5 dedicated workers and 200 sends/s of the provider budget. They arrive in about 4 seconds, while bulk mail drains at 1,300 sends/s, about 38 minutes, behind them."
+          "resultBody": "Resets and 2FA codes go to their own queue with 5 dedicated workers and 200 sends/s of the provider budget. They arrive in about 4 seconds, while bulk mail drains at 1,300 sends/s, about 38 minutes, behind them.",
+          "tradeoffs": {
+            "costMonthlyDelta": 150
+          }
         },
         {
           "id": "double-workers",
@@ -3525,7 +4156,20 @@
             }
           ],
           "resultTitle": "The provider cap sets the speed",
-          "resultBody": "Throughput can only reach the 1,500 sends/s provider cap, so the 3 million bulk emails still take 33 minutes. Every reset still waits behind them, now for about 33 minutes instead of 45."
+          "resultBody": "Throughput can only reach the 1,500 sends/s provider cap, so the 3 million bulk emails still take 33 minutes. Every reset still waits behind them, now for about 33 minutes instead of 45.",
+          "tradeoffs": {
+            "costMonthlyDelta": 900
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "worker",
+                "label": "Senders x60",
+                "cpu": 70,
+                "sub": "capped at 1,500/s"
+              }
+            ]
+          }
         },
         {
           "id": "priority-field",
@@ -3557,7 +4201,18 @@
             }
           ],
           "resultTitle": "SQS ignores the attribute",
-          "resultBody": "An SQS standard queue returns messages in roughly arrival order no matter what attributes they carry. Workers only see the priority after receiving the message, so resets still wait about 45 minutes behind the import."
+          "resultBody": "An SQS standard queue returns messages in roughly arrival order no matter what attributes they carry. Workers only see the priority after receiving the message, so resets still wait about 45 minutes behind the import.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "queue",
+                "sub": "attribute ignored, 3M ahead"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3695,7 +4350,10 @@
             }
           ],
           "resultTitle": "The event commits with the order",
-          "resultBody": "The order row and its outbox row commit together or not at all. A relay (Debezium reading the WAL) publishes outbox rows to Kafka and marks them sent, so a crash only delays an event. Missing orders drop to 0. Cost: delivery is at-least-once, so the warehouse consumer must dedupe by order ID."
+          "resultBody": "The order row and its outbox row commit together or not at all. A relay (Debezium reading the WAL) publishes outbox rows to Kafka and marks them sent, so a crash only delays an event. Missing orders drop to 0. Cost: delivery is at-least-once, so the warehouse consumer must dedupe by order ID.",
+          "tradeoffs": {
+            "costMonthlyDelta": 150
+          }
         },
         {
           "id": "publish-first",
@@ -3734,7 +4392,19 @@
             }
           ],
           "resultTitle": "Events for orders that never existed",
-          "resultBody": "Lost events stop, but 3% of orders roll back after publishing, for example on failed fraud checks. The warehouse now packs about 820 boxes a week for orders that were never committed."
+          "resultBody": "Lost events stop, but 3% of orders roll back after publishing, for example on failed fraud checks. The warehouse now packs about 820 boxes a week for orders that were never committed.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "worker",
+                "tone": "bad",
+                "sub": "820 ghost orders a week"
+              }
+            ]
+          }
         },
         {
           "id": "retry-publish",
@@ -3766,7 +4436,20 @@
             }
           ],
           "resultTitle": "Retries don't survive a dead pod",
-          "resultBody": "Retries cover brief broker errors, but an OOM-killed or redeployed pod never runs its retry loop. Missing orders fall only from 1,140 to about 700 a week, and slow retries add 50 ms to p95."
+          "resultBody": "Retries cover brief broker errors, but an OOM-killed or redeployed pod never runs its retry loop. Missing orders fall only from 1,140 to about 700 a week, and slow retries add 50 ms to p95.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "tone": "bad",
+                "cpu": 58,
+                "sub": "retries die with the pod"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3894,7 +4577,10 @@
             }
           ],
           "resultTitle": "One commit per 500 rows",
-          "resultBody": "Consumers prefetch 500 messages, write them with one multi-row INSERT, then ack the batch. Per-commit overhead is paid once per 500 rows, so throughput reaches about 25,000 rows/s at 40% Postgres CPU and the backlog drains in minutes. Cost: a crash replays up to 500 events, so inserts use ON CONFLICT DO NOTHING."
+          "resultBody": "Consumers prefetch 500 messages, write them with one multi-row INSERT, then ack the batch. Per-commit overhead is paid once per 500 rows, so throughput reaches about 25,000 rows/s at 40% Postgres CPU and the backlog drains in minutes. Cost: a crash replays up to 500 events, so inserts use ON CONFLICT DO NOTHING.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "raise-watermark",
@@ -3926,7 +4612,18 @@
             }
           ],
           "resultTitle": "A few more minutes before the alarm",
-          "resultBody": "Consumers are still 3,000 events/s behind, so the extra headroom fills within minutes. Then the alarm blocks every publisher, devices buffer and drop data, and the broker is left too close to its OOM limit."
+          "resultBody": "Consumers are still 3,000 events/s behind, so the extra headroom fills within minutes. Then the alarm blocks every publisher, devices buffer and drop data, and the broker is left too close to its OOM limit.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "queue",
+                "sub": "memory 95%, alarm next"
+              }
+            ]
+          }
         },
         {
           "id": "max-length",
@@ -3965,7 +4662,18 @@
             }
           ],
           "resultTitle": "Memory capped by deleting telemetry",
-          "resultBody": "The broker stays healthy by discarding the oldest messages, 3,000 every second, which breaks the no-drop rule. Consumer throughput is still stuck at 5,000/s."
+          "resultBody": "The broker stays healthy by discarding the oldest messages, 3,000 every second, which breaks the no-drop rule. Consumer throughput is still stuck at 5,000/s.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "queue",
+                "sub": "dropping 3,000 msg/s"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3974,7 +4682,137 @@
         "Do more work per round-trip to Postgres."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "format": "knob",
+      "knob": {
+        "label": "Rows per bulk INSERT",
+        "unit": "rows",
+        "min": 1,
+        "max": 5000,
+        "step": 1,
+        "start": 1,
+        "target": [
+          200,
+          1000
+        ],
+        "question": "Pick a batch size that outruns 8,000 events/s without giant transactions.",
+        "curve": [
+          {
+            "at": 1,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 90
+              },
+              {
+                "key": "p95",
+                "value": 45
+              },
+              {
+                "key": "mem",
+                "value": 88
+              }
+            ]
+          },
+          {
+            "at": 50,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 75
+              },
+              {
+                "key": "p95",
+                "value": 50
+              },
+              {
+                "key": "mem",
+                "value": 86
+              }
+            ]
+          },
+          {
+            "at": 200,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 50
+              },
+              {
+                "key": "p95",
+                "value": 55
+              },
+              {
+                "key": "mem",
+                "value": 35
+              }
+            ]
+          },
+          {
+            "at": 500,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 40
+              },
+              {
+                "key": "p95",
+                "value": 60
+              },
+              {
+                "key": "mem",
+                "value": 20
+              }
+            ]
+          },
+          {
+            "at": 1000,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 38
+              },
+              {
+                "key": "p95",
+                "value": 110
+              },
+              {
+                "key": "mem",
+                "value": 18
+              }
+            ]
+          },
+          {
+            "at": 5000,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 45
+              },
+              {
+                "key": "p95",
+                "value": 1600
+              },
+              {
+                "key": "mem",
+                "value": 35
+              }
+            ]
+          }
+        ],
+        "low": {
+          "title": "Still a commit every few rows",
+          "body": "Under 200 rows per batch, consumers still pay commit overhead constantly: at 50 they reach about 9,000 rows/s, only 1,000 above arrivals, so the backlog barely shrinks and broker memory stays near the alarm."
+        },
+        "high": {
+          "title": "Giant transactions",
+          "body": "Above 1,000 rows, each bulk INSERT becomes a long transaction: at 5,000 it holds locks for over a second, p95 reaches 1.6 s, and every consumer crash replays 5,000 events."
+        },
+        "good": {
+          "title": "One commit per hundreds of rows",
+          "body": "Around 500 rows per batch, one commit covers hundreds of rows: consumers reach about 25,000 rows/s at 40% Postgres CPU, the backlog drains in minutes, and a crash replays at most one batch."
+        }
+      }
     },
     {
       "id": "queue-20",
@@ -4092,7 +4930,10 @@
             }
           ],
           "resultTitle": "Every completed step can be undone",
-          "resultBody": "The orchestrator records each finished step. On failure it enqueues cancel-car, cancel-hotel and cancel-flight for completed steps, newest first, retried with backoff and keyed by booking reference so a repeated cancel is harmless. Stranded flights drop to 0. Cost: some fares carry a cancellation fee, which the business absorbs."
+          "resultBody": "The orchestrator records each finished step. On failure it enqueues cancel-car, cancel-hotel and cancel-flight for completed steps, newest first, retried with backoff and keyed by booking reference so a repeated cancel is harmless. Stranded flights drop to 0. Cost: some fares carry a cancellation fee, which the business absorbs.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "two-phase",
@@ -4124,7 +4965,18 @@
             }
           ],
           "resultTitle": "Partners have nothing to prepare",
-          "resultBody": "2PC needs every participant to support prepare and commit. The airline and hotel APIs only book or cancel, so the coordinator can't hold a booking in a prepared state and trips still end half-booked."
+          "resultBody": "2PC needs every participant to support prepare and commit. The airline and hotel APIs only book or cancel, so the coordinator can't hold a booking in a prepared state and trips still end half-booked.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "partners can't prepare"
+              }
+            ]
+          }
         },
         {
           "id": "retry-hotel",
@@ -4156,7 +5008,20 @@
             }
           ],
           "resultTitle": "Retrying a sold-out hotel forever",
-          "resultBody": "Most failures are sold-out rooms, so retries never succeed. Trips sit in 'pending' for hours while the flight is already charged, and 540 travellers a week still end up with a flight and no hotel."
+          "resultBody": "Most failures are sold-out rooms, so retries never succeed. Trips sit in 'pending' for hours while the flight is already charged, and 540 travellers a week still end up with a flight and no hotel.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "worker",
+                "tone": "bad",
+                "cpu": 50,
+                "sub": "retrying sold-out hotels"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -4283,7 +5148,10 @@
             }
           ],
           "resultTitle": "Workers recycle before the leak bites",
-          "resultBody": "A scheduled rolling restart sends SIGTERM to one worker at a time every 4 hours; each finishes its current job, exits and returns with a clean heap. Peak memory stays near 1.3 GB, OOM kills stop and redeliveries fall to 0.1%. Cost: one cron job to delete on Thursday."
+          "resultBody": "A scheduled rolling restart sends SIGTERM to one worker at a time every 4 hours; each finishes its current job, exits and returns with a clean heap. Peak memory stays near 1.3 GB, OOM kills stop and redeliveries fall to 0.1%. Cost: one cron job to delete on Thursday.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "dlq",
@@ -4315,7 +5183,27 @@
             }
           ],
           "resultTitle": "Healthy jobs pile up in the DLQ",
-          "resultBody": "These jobs aren't poison; the leak kills whichever job happens to be running when memory runs out. About 50 valid resizes a day land in the dead-letter queue and need a manual replay, and the OOM kills continue every six hours."
+          "resultBody": "These jobs aren't poison; the leak kills whichever job happens to be running when memory runs out. About 50 valid resizes a day land in the dead-letter queue and need a manual replay, and the OOM kills continue every six hours.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "dlq",
+                "kind": "queue",
+                "label": "Dead-letter queue",
+                "tone": "warn",
+                "sub": "50 valid jobs a day"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "queue",
+                "to": "dlq"
+              }
+            ]
+          }
         },
         {
           "id": "checkpoint",
@@ -4347,7 +5235,19 @@
             }
           ],
           "resultTitle": "A week of work for a three-day bug",
-          "resultBody": "Checkpoints would let a killed job resume from its last step, but the rewrite takes longer than Thursday's fix, adds three queues to operate, and the workers keep leaking and getting OOM-killed every six hours meanwhile."
+          "resultBody": "Checkpoints would let a killed job resume from its last step, but the rewrite takes longer than Thursday's fix, adds three queues to operate, and the workers keep leaking and getting OOM-killed every six hours meanwhile.",
+          "tradeoffs": {
+            "costMonthlyDelta": 150
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "worker",
+                "cpu": 52,
+                "sub": "still leaking, 3 new queues"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -4357,6 +5257,712 @@
       ],
       "nextId": null,
       "reviewed": true
+    },
+    {
+      "canonical": false,
+      "isCascade": true,
+      "reviewed": true,
+      "id": "queue-casc-01",
+      "incidentCode": "INC-006-22",
+      "level": 6,
+      "patternId": "async-queues",
+      "parentIncidentCode": "INC-006",
+      "severity": "P1",
+      "xp": 80,
+      "title": "One bad payment job stalls the queue",
+      "brief": "Checkout now enqueues payments. One job carries currency 'EURO' instead of 'EUR': the vendor SDK throws, the worker crashes, RabbitMQ redelivers it first, and 40,000 payments wait behind it.",
+      "constraint": "Paid orders must never be dropped; every payment job is safe to run twice.",
+      "question": "How do you get the other 40,000 payments moving?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 2000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 30,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "depth",
+          "label": "Queue depth",
+          "value": 40000,
+          "unit": "jobs",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Worker crashes",
+          "value": 480,
+          "unit": "per hour",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Shoppers"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Checkout API",
+            "tone": "good",
+            "cpu": 30
+          },
+          {
+            "id": "queue",
+            "kind": "queue",
+            "label": "Payment queue",
+            "tone": "bad",
+            "sub": "40k jobs waiting"
+          },
+          {
+            "id": "worker",
+            "kind": "worker",
+            "label": "Payment workers",
+            "tone": "warn",
+            "cpu": 12,
+            "sub": "crash-loop on job 5521"
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Payment vendor"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "queue"
+          },
+          {
+            "from": "queue",
+            "to": "worker"
+          },
+          {
+            "from": "worker",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "dlq-after-5",
+          "label": "Dead-letter a job after 5 failed deliveries, then alert",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "The bad job steps aside",
+          "resultBody": "After its fifth crash the job lands in a dead-letter queue with an alert, the workers move on, and the 40,000 payments drain in about 3 minutes; someone fixes 'EURO' and replays it. Cost: a DLQ to watch.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 35,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "depth",
+              "label": "Queue depth",
+              "value": 0,
+              "unit": "jobs",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Worker crashes",
+              "value": 0,
+              "unit": "per hour",
+              "tone": "good"
+            }
+          ]
+        },
+        {
+          "id": "restart-workers",
+          "label": "Restart the payment workers to clear the stuck job",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Same job, same crash",
+          "resultBody": "The job was never acked, so RabbitMQ hands it to the first fresh worker, which crashes on 'EURO' within a second; the restart only adds a cold-start pause.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "depth",
+              "label": "Queue depth",
+              "value": 41000,
+              "unit": "jobs",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Worker crashes",
+              "value": 520,
+              "unit": "per hour",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "worker",
+                "tone": "bad",
+                "sub": "restarted, crashed again"
+              },
+              {
+                "id": "queue",
+                "sub": "41k jobs waiting"
+              }
+            ]
+          }
+        },
+        {
+          "id": "purge-queue",
+          "label": "Purge the payment queue and email every customer to retry",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "40,000 paid orders dropped",
+          "resultBody": "The queue is empty in a second, but 40,000 orders are gone, most customers never come back to retry, and the one broken job would have been fixable in minutes.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "depth",
+              "label": "Queue depth",
+              "value": 0,
+              "unit": "jobs",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Worker crashes",
+              "value": 0,
+              "unit": "per hour",
+              "tone": "good"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "queue",
+                "tone": "good",
+                "sub": "purged"
+              },
+              {
+                "id": "app",
+                "tone": "bad",
+                "sub": "40k orders lost"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Look at which message keeps coming back.",
+        "A job that fails every time will never succeed by being retried.",
+        "Move a message that keeps failing out of the line."
+      ]
+    },
+    {
+      "canonical": false,
+      "isCascade": true,
+      "reviewed": true,
+      "id": "queue-casc-02",
+      "incidentCode": "INC-006-23",
+      "level": 6,
+      "patternId": "async-queues",
+      "parentIncidentCode": "INC-006-14",
+      "severity": "P1",
+      "xp": 80,
+      "title": "Login codes stuck behind welcome texts",
+      "brief": "The 90/s token bucket is draining 180,000 welcome texts over 33 minutes. But login 2FA codes share the same SMS queue and bucket, so they wait 30 minutes too, and logins fail.",
+      "constraint": "The provider allows 100 msg/s per account; 2FA codes need under 30 s and run about 5/s.",
+      "question": "How do login codes get out now?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "SMS sent",
+          "value": 90,
+          "unit": "msg/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 30,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "wait",
+          "label": "2FA code wait",
+          "value": 1800,
+          "unit": "s",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Failed logins",
+          "value": 2400,
+          "unit": "per min",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Auth + signup API",
+            "tone": "warn",
+            "cpu": 30,
+            "sub": "2FA timeouts"
+          },
+          {
+            "id": "queue",
+            "kind": "queue",
+            "label": "SMS queue",
+            "tone": "bad",
+            "sub": "175k texts ahead of codes"
+          },
+          {
+            "id": "worker",
+            "kind": "worker",
+            "label": "SMS workers",
+            "tone": "good",
+            "cpu": 10,
+            "sub": "90/s token bucket"
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "queue"
+          },
+          {
+            "from": "queue",
+            "to": "worker"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "reserved-lane",
+          "label": "Give 2FA codes their own queue and a reserved 10/s of budget",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 20
+          },
+          "resultTitle": "Codes skip the welcome line",
+          "resultBody": "Codes get their own queue and a 10/s slice of the 100/s limit, so they arrive in about 2 seconds, while welcome texts drain at 80/s and finish in about 37 minutes instead of 33. Cost: a second queue and a split bucket.",
+          "metricsAfter": [
+            {
+              "key": "rps",
+              "label": "SMS sent",
+              "value": 90,
+              "unit": "msg/s",
+              "tone": "neutral"
+            },
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "wait",
+              "label": "2FA code wait",
+              "value": 2,
+              "unit": "s",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Failed logins",
+              "value": 0,
+              "unit": "per min",
+              "tone": "good"
+            }
+          ]
+        },
+        {
+          "id": "raise-bucket",
+          "label": "Raise the shared bucket to 100/s to push codes through faster",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Same line, now at the limit",
+          "resultBody": "Every code still waits behind 175,000 welcome texts, now for 29 minutes instead of 30, and sending at exactly the provider limit brings 429s back on every burst.",
+          "metricsAfter": [
+            {
+              "key": "rps",
+              "label": "SMS sent",
+              "value": 100,
+              "unit": "msg/s",
+              "tone": "neutral"
+            },
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "wait",
+              "label": "2FA code wait",
+              "value": 1740,
+              "unit": "s",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Failed logins",
+              "value": 2300,
+              "unit": "per min",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "queue",
+                "sub": "codes still 29 min back"
+              },
+              {
+                "id": "worker",
+                "tone": "warn",
+                "sub": "429s at 100/s"
+              }
+            ]
+          }
+        },
+        {
+          "id": "email-fallback",
+          "label": "Fall back to emailing login codes when SMS is delayed",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Codes land in spam folders",
+          "resultBody": "Phone-only accounts have no email on file, about 30% of the rest find the code in spam after it has expired, and failed logins only fall from 2,400 to 1,500 a minute.",
+          "metricsAfter": [
+            {
+              "key": "rps",
+              "label": "SMS sent",
+              "value": 90,
+              "unit": "msg/s",
+              "tone": "neutral"
+            },
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 32,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "wait",
+              "label": "2FA code wait",
+              "value": 1800,
+              "unit": "s",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Failed logins",
+              "value": 1500,
+              "unit": "per min",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "1,500 failed logins/min"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "email",
+                "kind": "server",
+                "label": "Email fallback",
+                "tone": "warn",
+                "cpu": 15,
+                "sub": "30% land in spam"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "email"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Which messages share the queue with the welcome burst?",
+        "One line and one budget treat every message as equally urgent.",
+        "Urgent traffic needs its own line and its own slice of the limit."
+      ]
+    },
+    {
+      "canonical": false,
+      "isCascade": true,
+      "reviewed": true,
+      "id": "queue-bill-01",
+      "incidentCode": "INC-006-24",
+      "level": 6,
+      "patternId": "async-queues",
+      "parentIncidentCode": "INC-006-13",
+      "severity": "P1",
+      "xp": 80,
+      "title": "480 uploads vanish after a spot reclaim",
+      "brief": "The 12-hour visibility timeout held all day. Then AWS reclaimed 60 spot transcoders at 18:40; their 480 in-flight videos stay invisible until 06:40, and creators are flooding support.",
+      "constraint": "A crashed job must be retried within 2 minutes; transcodes run about 8 minutes and are idempotent.",
+      "question": "What brings the stranded jobs back and keeps them safe next time?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Uploads",
+          "value": 2000,
+          "unit": "jobs/h",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 30,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "stranded",
+          "label": "Stranded uploads",
+          "value": 480,
+          "unit": "jobs",
+          "tone": "bad"
+        },
+        {
+          "key": "dupes",
+          "label": "Copies per job",
+          "value": 1.0,
+          "unit": "x",
+          "tone": "good"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Creators"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Upload API",
+            "tone": "good",
+            "cpu": 20
+          },
+          {
+            "id": "queue",
+            "kind": "queue",
+            "label": "SQS",
+            "tone": "bad",
+            "sub": "480 invisible until 06:40"
+          },
+          {
+            "id": "worker",
+            "kind": "worker",
+            "label": "Transcoders",
+            "tone": "warn",
+            "cpu": 30,
+            "sub": "60 reclaimed at 18:40"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "queue"
+          },
+          {
+            "from": "queue",
+            "to": "worker"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "reenqueue-heartbeat",
+          "label": "Re-enqueue the 480 from the uploads table, then add heartbeats",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Stranded videos back in minutes",
+          "resultBody": "The 480 are re-enqueued by upload ID and finish within 15 minutes; when the old copies reappear at 06:40 the idempotent worker sees each video done and skips it. A 2-minute timeout extended by heartbeat covers the next reclaim.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 34,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "stranded",
+              "label": "Stranded uploads",
+              "value": 0,
+              "unit": "jobs",
+              "tone": "good"
+            },
+            {
+              "key": "dupes",
+              "label": "Copies per job",
+              "value": 1.0,
+              "unit": "x",
+              "tone": "good"
+            }
+          ]
+        },
+        {
+          "id": "back-to-30s",
+          "label": "Lower the visibility timeout back to 30 seconds for new jobs",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Duplicates return, strands stay",
+          "resultBody": "The 480 stranded messages keep the 12-hour timeout they were received with, and new 8-minute jobs reappear mid-run again, so each video is transcoded about 4 times.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 96,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "stranded",
+              "label": "Stranded uploads",
+              "value": 480,
+              "unit": "jobs",
+              "tone": "bad"
+            },
+            {
+              "key": "dupes",
+              "label": "Copies per job",
+              "value": 4.1,
+              "unit": "x",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "worker",
+                "tone": "bad",
+                "cpu": 96,
+                "sub": "~4 copies per video"
+              }
+            ]
+          }
+        },
+        {
+          "id": "on-demand-fleet",
+          "label": "Launch 60 on-demand transcoders to replace the reclaimed ones",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 900
+          },
+          "resultTitle": "Fresh workers, nothing to see",
+          "resultBody": "The new workers only receive visible messages, so the 480 stranded jobs stay hidden until 06:40 and the extra $900 a month buys idle capacity.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 15,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "stranded",
+              "label": "Stranded uploads",
+              "value": 480,
+              "unit": "jobs",
+              "tone": "bad"
+            },
+            {
+              "key": "dupes",
+              "label": "Copies per job",
+              "value": 1.0,
+              "unit": "x",
+              "tone": "good"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "worker",
+                "label": "Transcoders + 60 on-demand",
+                "cpu": 15,
+                "sub": "idle: jobs still hidden"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Is the lost work on a worker, or hidden in the queue?",
+        "A fixed timeout can't be both longer than a job and shorter than a crash window.",
+        "Replay the work from your own records, and let live workers renew their claim."
+      ]
     }
   ]
 }

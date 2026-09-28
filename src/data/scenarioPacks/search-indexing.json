@@ -63,6 +63,14 @@
             "cpu": 38
           },
           {
+            "id": "checkout",
+            "kind": "server",
+            "label": "Checkout API",
+            "tone": "bad",
+            "cpu": 30,
+            "sub": "writes timing out"
+          },
+          {
             "id": "db",
             "kind": "db",
             "label": "Postgres primary",
@@ -77,6 +85,14 @@
           },
           {
             "from": "api",
+            "to": "db"
+          },
+          {
+            "from": "users",
+            "to": "checkout"
+          },
+          {
+            "from": "checkout",
             "to": "db"
           }
         ]
@@ -110,7 +126,12 @@
             }
           ],
           "resultTitle": "Lookups instead of scans",
-          "resultBody": "The index maps each term like 'boots' straight to its 18k product IDs, so a query reads one posting list instead of scanning 40M rows; the primary drops back to checkout duty."
+          "resultBody": "The index maps each term like 'boots' straight to its 18k product IDs, so a query reads one posting list instead of scanning 40M rows; the primary drops back to checkout duty.",
+          "tradeoffs": {
+            "costMonthlyDelta": 150
+          },
+          "cascadeIncidentId": "srch-casc-01",
+          "cascadeDelayMs": 4000
         },
         {
           "id": "btree",
@@ -141,7 +162,18 @@
           ],
           "resultTitle": "The wildcard ignores the index",
           "resultBody": "A B-tree is sorted by the title's first characters, so a leading % wildcard cannot seek into it; the planner still scans all 40M rows per search.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "sub": "seq scan, new index unused"
+              }
+            ]
+          }
         },
         {
           "id": "redis",
@@ -172,7 +204,34 @@
           ],
           "resultTitle": "The long tail misses the cache",
           "resultBody": "Only 12% of searches repeat within 10 minutes, so 88% still fall through to the ILIKE scan and the primary stays pinned near 90% CPU.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 60
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "cpu": 88,
+                "sub": "88% of searches miss"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "redis",
+                "kind": "cache",
+                "label": "Redis (12% hit rate)",
+                "tone": "warn",
+                "cpu": 15
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "api",
+                "to": "redis"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -180,7 +239,38 @@
         "Search asks 'which rows contain this word', the reverse of a row lookup.",
         "Map each term to the list of documents that contain it."
       ],
-      "nextId": null
+      "nextId": null,
+      "format": "culprit",
+      "logs": {
+        "users": [
+          "3,000 searches/s, mostly one or two words",
+          "top queries: boots, jacket, rain coat"
+        ],
+        "api": [
+          "GET /search?q=boots -> SELECT ... WHERE title ILIKE '%boots%'",
+          "query 3,912 ms, rows scanned 40,112,556",
+          "pool: 180/200 connections busy on search"
+        ],
+        "checkout": [
+          "ERROR canceling statement due to statement timeout (INSERT INTO orders)",
+          "POST /checkout 504 after 5,000 ms",
+          "payment capture retry 2/3"
+        ],
+        "db": [
+          "pg_stat_statements: 91% of CPU time from role search_api",
+          "autovacuum on orders finished in 12 s",
+          "checkpoint complete: wrote 18,204 buffers"
+        ]
+      },
+      "culprit": {
+        "nodeId": "api",
+        "explanation": "The Search API sends ILIKE '%boots%' queries that scan all 40M rows, and pg_stat_statements pins 91% of the primary's CPU on them. The primary and checkout are victims of that query shape.",
+        "wrongNodeFeedback": {
+          "db": "The primary is hot, but its own stats say whose queries burn the CPU. A bigger primary would just run the same scans.",
+          "checkout": "Checkout's inserts time out waiting on a busy primary; it is a victim, not the cause.",
+          "users": "3,000 short searches a second is ordinary traffic. What turns each one into a 40M-row job?"
+        }
+      }
     },
     {
       "id": "srch-02",
@@ -310,7 +400,10 @@
             }
           ],
           "resultTitle": "Both sides speak 'run shoe'",
-          "resultBody": "Documents and queries now pass through the same lowercase and stemming chain, so 'Running Shoes' and 'run shoe' both become run + shoe; zero-result queries fall from 18% to 3%."
+          "resultBody": "Documents and queries now pass through the same lowercase and stemming chain, so 'Running Shoes' and 'run shoe' both become run + shoe; zero-result queries fall from 18% to 3%.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "query-only",
@@ -348,7 +441,19 @@
           ],
           "resultTitle": "Stemmed query, raw index",
           "resultBody": "The query 'running' becomes 'run', but the index still holds 'Running' and 'running', so previously working searches miss too and zero results climb to 21%.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "idx",
+                "tone": "bad",
+                "sub": "zero results 21%"
+              }
+            ]
+          }
         },
         {
           "id": "fuzzy",
@@ -386,7 +491,20 @@
           ],
           "resultTitle": "Slow and oddly matched",
           "resultBody": "Expanding each term to everything within two edits multiplies posting-list reads, so CPU jumps to 81% and 'shoe' now also matches 'shop' and 'show'.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "idx",
+                "tone": "bad",
+                "cpu": 81,
+                "sub": "fuzzy expansions"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -514,7 +632,10 @@
             }
           ],
           "resultTitle": "Repetition stops paying",
-          "resultBody": "BM25's term-frequency curve flattens after a few mentions, so the 60th 'python' adds almost nothing, while a rare term like 'django' counts for more; CTR recovers to 8%."
+          "resultBody": "BM25's term-frequency curve flattens after a few mentions, so the 60th 'python' adds almost nothing, while a rare term like 'django' counts for more; CTR recovers to 8%.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "newest",
@@ -552,7 +673,18 @@
           ],
           "resultTitle": "Fresh but irrelevant",
           "resultBody": "Recency ignores how well a listing matches, so a new 'python-adjacent sales' post beats an exact senior Python role and spammers simply repost daily.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "idx",
+                "sub": "spam reposted daily ranks first"
+              }
+            ]
+          }
         },
         {
           "id": "popular",
@@ -590,7 +722,18 @@
           ],
           "resultTitle": "Old winners keep winning",
           "resultBody": "Listings already on page one collect the applications, so the stuffed posts that ranked first keep their lead and new relevant roles never surface.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "idx",
+                "sub": "stuffed posts keep page one"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -714,7 +857,10 @@
             }
           ],
           "resultTitle": "Load spreads evenly",
-          "resultBody": "Each of the 16 shards holds a slice of documents with its own local index, so 'error' is split 16 ways and intersections happen locally before a small top-k merge."
+          "resultBody": "Each of the 16 shards holds a slice of documents with its own local index, so 'error' is split 16 ways and intersections happen locally before a small top-k merge.",
+          "tradeoffs": {
+            "costMonthlyDelta": 400
+          }
         },
         {
           "id": "replicas",
@@ -745,7 +891,36 @@
           ],
           "resultTitle": "The hot spot just moves",
           "resultBody": "Replicas split 'error' lookups four ways, but multi-term queries still pull 400M-entry posting lists across the network, and 'timeout' becomes the next 90% shard.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 450
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "hot",
+                "cpu": 78,
+                "tone": "warn",
+                "sub": "+3 replicas, still 78%"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "tu",
+                "kind": "replica",
+                "label": "Term shard 't-u'",
+                "tone": "bad",
+                "cpu": 90,
+                "sub": "'timeout' is the new hot term"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "api",
+                "to": "tu"
+              }
+            ]
+          }
         },
         {
           "id": "cache-terms",
@@ -776,7 +951,19 @@
           ],
           "resultTitle": "Cache churns on every write",
           "resultBody": "Logs arrive at 200k lines/s, so the 'error' posting list changes every millisecond; cached copies are stale at once and the shard keeps rebuilding them.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "hot",
+                "cpu": 90,
+                "sub": "cache rebuilt every write"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -902,7 +1089,10 @@
             }
           ],
           "resultTitle": "Each page costs the same",
-          "resultBody": "A search_after cursor asks each shard only for 20 hits past the last sort key, so page 500 costs what page 1 does and the coordinator merges 240 hits instead of 120,000."
+          "resultBody": "A search_after cursor asks each shard only for 20 hits past the last sort key, so page 500 costs what page 1 does and the coordinator merges 240 hits instead of 120,000.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "more-shards",
@@ -933,7 +1123,23 @@
           ],
           "resultTitle": "Twice the hits to merge",
           "resultBody": "Every shard must still return its own top 10,000 for page 500, so 24 shards send 240,000 hits and the coordinator's sort gets twice as expensive.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 300
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "coord",
+                "cpu": 96,
+                "sub": "merging 240,000 hits"
+              },
+              {
+                "id": "s2",
+                "label": "Shard 24"
+              }
+            ]
+          }
         },
         {
           "id": "heap",
@@ -964,7 +1170,18 @@
           ],
           "resultTitle": "Bigger heap, longer pauses",
           "resultBody": "The 120,000-hit sort still runs on every deep page; the larger heap only defers garbage collection into 900 ms pauses that stall the shallow queries too.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "coord",
+                "sub": "GC pauses 900 ms"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -972,7 +1189,120 @@
         "The cost grows with offset plus size, times the shard count.",
         "Page from the last sort key instead of an offset."
       ],
-      "nextId": null
+      "nextId": null,
+      "format": "knob",
+      "knob": {
+        "label": "Max offset (from + size)",
+        "unit": "results",
+        "min": 20,
+        "max": 10000,
+        "step": 20,
+        "start": 10000,
+        "target": [
+          200,
+          2000
+        ],
+        "question": "Set the offset cap; anything deeper must page with a search_after cursor.",
+        "curve": [
+          {
+            "at": 20,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 30
+              },
+              {
+                "key": "p95",
+                "value": 110
+              },
+              {
+                "key": "errors",
+                "value": 1400
+              }
+            ]
+          },
+          {
+            "at": 200,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 33
+              },
+              {
+                "key": "p95",
+                "value": 130
+              },
+              {
+                "key": "errors",
+                "value": 60
+              }
+            ]
+          },
+          {
+            "at": 1000,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 38
+              },
+              {
+                "key": "p95",
+                "value": 150
+              },
+              {
+                "key": "errors",
+                "value": 20
+              }
+            ]
+          },
+          {
+            "at": 2000,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 44
+              },
+              {
+                "key": "p95",
+                "value": 240
+              },
+              {
+                "key": "errors",
+                "value": 30
+              }
+            ]
+          },
+          {
+            "at": 10000,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 91
+              },
+              {
+                "key": "p95",
+                "value": 3800
+              },
+              {
+                "key": "errors",
+                "value": 700
+              }
+            ]
+          }
+        ],
+        "low": {
+          "title": "Real shoppers hit the wall",
+          "body": "Users rarely pass page 5, but a cap under 200 results (page 10) turns their occasional page 6 to 10 into errors; at 20 every 'next page' click fails, about 1,400 errors a second."
+        },
+        "high": {
+          "title": "Scrapers still dig deep",
+          "body": "Above 2,000 results, offset pages stay deep enough to hurt: at the 10,000 default each of 12 shards returns 10,000 hits and the coordinator sorts 120,000 to keep 20."
+        },
+        "good": {
+          "title": "Every page costs about the same",
+          "body": "A cap near 1,000 covers every real user's pages 1 to 50, deeper requests switch to search_after, and the coordinator merges about 12,000 hits instead of 120,000, so p95 falls to roughly 150 ms."
+        }
+      }
     },
     {
       "id": "srch-06",
@@ -1102,7 +1432,12 @@
             }
           ],
           "resultTitle": "Every commit reaches search",
-          "resultBody": "CDC reads committed rows from the Postgres WAL into a durable queue, and indexers replay them with retries, so no update is lost and search trails the database by about 2 s."
+          "resultBody": "CDC reads committed rows from the Postgres WAL into a durable queue, and indexers replay them with retries, so no update is lost and search trails the database by about 2 s.",
+          "tradeoffs": {
+            "costMonthlyDelta": 120
+          },
+          "cascadeIncidentId": "srch-casc-02",
+          "cascadeDelayMs": 4000
         },
         {
           "id": "retry-inline",
@@ -1112,35 +1447,48 @@
             {
               "key": "cpu",
               "label": "CPU",
-              "value": 80,
+              "value": 78,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 1100,
+              "value": 600,
               "unit": "ms",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "errors",
               "label": "Errors",
-              "value": 210,
+              "value": 120,
               "unit": "errors",
-              "tone": "bad"
+              "tone": "warn"
             },
             {
               "key": "stale",
               "label": "Stale listings",
               "value": 90000,
               "unit": "docs",
-              "tone": "bad"
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Slower and still lossy",
-          "resultBody": "Retries add up to 3 s to every seller save during index slowdowns, and a crash between the DB commit and the index call still drops the update for good.",
-          "retry": true
+          "resultTitle": "Stale prices slow to a trickle",
+          "resultBody": "Most timed-out index calls now succeed on a retry, so new stale listings drop by 75%. But seller saves wait up to 3 s whenever the index slows, and busy API threads have climbed to 70%.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "cpu": 78,
+                "sub": "saves wait up to 3 s"
+              }
+            ]
+          },
+          "consequenceIncidentId": "srch-bill-01"
         },
         {
           "id": "nightly",
@@ -1178,7 +1526,25 @@
           ],
           "resultTitle": "A day behind by design",
           "resultBody": "A 90M-row nightly rebuild loads the primary for hours, and any price changed at 9 am stays wrong in search until the next night's run.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 90,
+                "sub": "nightly 90M-row rebuild"
+              },
+              {
+                "id": "idx",
+                "tone": "warn",
+                "sub": "a day behind"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1332,7 +1698,28 @@
             }
           ],
           "resultTitle": "Right-sized in two weeks, not today",
-          "resultBody": "Three nodes would eventually cache the index between them, but provisioning the cluster and reindexing takes the team about two weeks while p95 stays at 2.8 s. The result costs three times as much and fans every query out to six small shards."
+          "resultBody": "Three nodes would eventually cache the index between them, but provisioning the cluster and reindexing takes the team about two weeks while p95 stays at 2.8 s. The result costs three times as much and fans every query out to six small shards.",
+          "tradeoffs": {
+            "costMonthlyDelta": 500
+          },
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "n2",
+                "kind": "db",
+                "label": "New 3-node cluster",
+                "tone": "warn",
+                "cpu": 5,
+                "sub": "ready in ~2 weeks"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "api",
+                "to": "n2"
+              }
+            ]
+          }
         },
         {
           "id": "bigger-heap",
@@ -1364,7 +1751,19 @@
             }
           ],
           "resultTitle": "Less page cache, more disk reads",
-          "resultBody": "The heap does not hold the segments. Growing it squeezes the page cache on the 8 GB box from about 4 GB to 2 GB, so more queries miss memory, the disk stays pinned at its 3,000 IOPS limit and p95 climbs to 4.1 s."
+          "resultBody": "The heap does not hold the segments. Growing it squeezes the page cache on the 8 GB box from about 4 GB to 2 GB, so more queries miss memory, the disk stays pinned at its 3,000 IOPS limit and p95 climbs to 4.1 s.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "idx",
+                "cpu": 80,
+                "sub": "page cache down to 2 GB"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1374,6 +1773,756 @@
       ],
       "nextId": null,
       "reviewed": true
+    },
+    {
+      "canonical": false,
+      "isCascade": true,
+      "reviewed": true,
+      "id": "srch-casc-01",
+      "incidentCode": "INC-020-08",
+      "level": 20,
+      "patternId": "search-indexing",
+      "parentIncidentCode": "INC-020",
+      "severity": "P1",
+      "xp": 80,
+      "title": "Search goes dark during a node patch",
+      "brief": "Product search now runs on one OpenSearch node with no replicas. A kernel patch rebooted it, and every search returned 503 for 6 minutes during the lunch peak.",
+      "constraint": "Patches ship monthly, and checkout's Postgres primary must never serve search again.",
+      "question": "How does search survive losing a node?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 3000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 34,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 60,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 3000,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Shoppers"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Search API",
+            "tone": "warn",
+            "cpu": 12,
+            "sub": "503 Service Unavailable"
+          },
+          {
+            "id": "os",
+            "kind": "replica",
+            "label": "OpenSearch node 1",
+            "tone": "bad",
+            "sub": "rebooting: 1 copy of each shard"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres primary",
+            "cpu": 34
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "os"
+          },
+          {
+            "from": "db",
+            "to": "os"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "replica-node",
+          "label": "Add a second node and one replica of every shard",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 150
+          },
+          "resultTitle": "Reboots become routine",
+          "resultBody": "With a replica of every shard on node 2, the cluster promotes the copies when node 1 reboots and searches keep answering; patch one node at a time. Cost: about $150 a month and double the indexing writes.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 34,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 62,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ]
+        },
+        {
+          "id": "ilike-fallback",
+          "label": "Fall back to ILIKE queries on Postgres when search is down",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "The primary melts again",
+          "resultBody": "The next reboot sends 3,000 ILIKE scans a second back to Postgres, CPU hits 96% and checkout writes time out alongside search, the outage you just fixed.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 96,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 4000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1900,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 96,
+                "sub": "ILIKE scans are back"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "api",
+                "to": "db"
+              }
+            ]
+          }
+        },
+        {
+          "id": "s3-snapshots",
+          "label": "Snapshot the index to S3 hourly and restore it after failures",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 20
+          },
+          "resultTitle": "Data safe, search still down",
+          "resultBody": "A snapshot protects data, not uptime: the lone node still leaves search dark on every reboot, and a lost disk would now mean a 25-minute restore of 40M products.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 34,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 60,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 3000,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "os",
+                "sub": "hourly snapshots, still alone"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "s3",
+                "kind": "db",
+                "label": "S3 snapshots",
+                "tone": "neutral"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "os",
+                "to": "s3"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "How many copies of each shard exist right now?",
+        "A node reboot should not be a search outage.",
+        "Keep a copy of every shard on a different machine."
+      ]
+    },
+    {
+      "canonical": false,
+      "isCascade": true,
+      "reviewed": true,
+      "id": "srch-casc-02",
+      "incidentCode": "INC-020-09",
+      "level": 20,
+      "patternId": "search-indexing",
+      "parentIncidentCode": "INC-020",
+      "severity": "P2",
+      "xp": 60,
+      "title": "Old prices win the race into search",
+      "brief": "The CDC feed runs 8 indexers on one unordered queue. When a seller edits a price twice within a second, the older event sometimes lands last: 9,000 listings show the previous price.",
+      "constraint": "Indexing must keep up with 12,000 changes/s; search may lag by seconds.",
+      "question": "How do you stop an older change overwriting a newer one?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 12000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 45,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 95,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 90,
+          "unit": "errors",
+          "tone": "bad"
+        },
+        {
+          "key": "stale",
+          "label": "Stale docs",
+          "value": 9000,
+          "unit": "docs",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres primary",
+            "cpu": 41
+          },
+          {
+            "id": "q",
+            "kind": "queue",
+            "label": "Changelog queue",
+            "sub": "no per-key ordering"
+          },
+          {
+            "id": "w",
+            "kind": "worker",
+            "label": "Indexers x8",
+            "tone": "warn",
+            "cpu": 45,
+            "sub": "out-of-order applies"
+          },
+          {
+            "id": "idx",
+            "kind": "replica",
+            "label": "Search nodes",
+            "tone": "bad",
+            "cpu": 38,
+            "sub": "9,000 older prices"
+          }
+        ],
+        "edges": [
+          {
+            "from": "db",
+            "to": "q"
+          },
+          {
+            "from": "q",
+            "to": "w"
+          },
+          {
+            "from": "w",
+            "to": "idx"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "external-version",
+          "label": "Index with external versions set to each change's WAL LSN",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Late events are rejected",
+          "resultBody": "Each write carries its commit's LSN as an external version, so the index refuses any event older than the one it holds; late deliveries become no-ops and all 8 indexers keep running. Cost: a logged version conflict per race.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 46,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 96,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            },
+            {
+              "key": "stale",
+              "label": "Stale docs",
+              "value": 0,
+              "unit": "docs",
+              "tone": "good"
+            }
+          ]
+        },
+        {
+          "id": "single-indexer",
+          "label": "Run a single indexer so every event applies in order",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "In order, 25 minutes behind",
+          "resultBody": "One indexer applies about 2,000 changes/s against 12,000 arriving, so its lag grows by minutes every minute and soon every price in search is stale.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 20,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 95,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 400,
+              "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "stale",
+              "label": "Stale docs",
+              "value": 250000,
+              "unit": "docs",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "w",
+                "label": "Indexer x1",
+                "tone": "bad",
+                "cpu": 20,
+                "sub": "lag 25 min and growing"
+              },
+              {
+                "id": "q",
+                "tone": "bad",
+                "sub": "backlog 18M events"
+              }
+            ]
+          }
+        },
+        {
+          "id": "reread-row",
+          "label": "Re-read the listing from Postgres before each index write",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Still racy, now slower",
+          "resultBody": "Two indexers can read the row at different moments and still write in the wrong order, and the extra 12,000 reads/s push the primary from 41% to 68% CPU.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 68,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 140,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 40,
+              "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "stale",
+              "label": "Stale docs",
+              "value": 3000,
+              "unit": "docs",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "warn",
+                "cpu": 68,
+                "sub": "+12k reads/s"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Two indexers can finish their work in either order.",
+        "The database already stamps every commit with an increasing position.",
+        "Let the index refuse a write older than the one it already has."
+      ]
+    },
+    {
+      "canonical": false,
+      "isCascade": true,
+      "reviewed": true,
+      "id": "srch-bill-01",
+      "incidentCode": "INC-020-10",
+      "level": 20,
+      "patternId": "search-indexing",
+      "parentIncidentCode": "INC-020",
+      "severity": "P1",
+      "xp": 80,
+      "title": "Index retries exhaust the Listings API",
+      "brief": "The inline retries held until tonight's segment merge slowed index writes to 2 s. Every save now retries three times, API threads sit at 400/400, and seller saves fail with 503.",
+      "constraint": "Search may lag by seconds but must never lose an update; saves can't wait on search.",
+      "question": "What takes the index off the save path for good?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 12000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 94,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 3100,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 2600,
+          "unit": "errors",
+          "tone": "bad"
+        },
+        {
+          "key": "stale",
+          "label": "Stale docs",
+          "value": 410000,
+          "unit": "docs",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Sellers"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Listings API",
+            "tone": "bad",
+            "cpu": 94,
+            "sub": "threads 400/400"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres primary",
+            "cpu": 40
+          },
+          {
+            "id": "idx",
+            "kind": "replica",
+            "label": "Search nodes",
+            "tone": "warn",
+            "cpu": 88,
+            "sub": "segment merge, 2 s writes"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "db"
+          },
+          {
+            "from": "api",
+            "to": "idx"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "outbox-relay",
+          "label": "Write an outbox row in the same transaction; relay it to search",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 60
+          },
+          "resultTitle": "Saves stop waiting on search",
+          "resultBody": "The save commits the listing and an outbox row together, and a relay worker feeds the index with retries off the request path; saves fall to 90 ms and no update is lost. Cost: a $60 relay worker and seconds of lag.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 45,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 90,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            },
+            {
+              "key": "stale",
+              "label": "Stale docs",
+              "value": 0,
+              "unit": "docs",
+              "tone": "good"
+            }
+          ]
+        },
+        {
+          "id": "drop-slow",
+          "label": "Skip the index write whenever it takes over 200 ms",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Fast saves, lost prices",
+          "resultBody": "Saves recover to 100 ms, but every write skipped during the merge is simply gone, so stale listings keep climbing past 600,000 with no way to know which ones.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 50,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 100,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            },
+            {
+              "key": "stale",
+              "label": "Stale docs",
+              "value": 620000,
+              "unit": "docs",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "tone": "good",
+                "cpu": 50,
+                "sub": "index writes skipped"
+              },
+              {
+                "id": "idx",
+                "tone": "bad",
+                "sub": "620k stale docs"
+              }
+            ]
+          }
+        },
+        {
+          "id": "double-pods",
+          "label": "Double the Listings API pods to hold more in-flight retries",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 600
+          },
+          "resultTitle": "Twice the retries, same index",
+          "resultBody": "Twice the pods send twice the concurrent retries into an index already slowed by its merge, so index writes stretch to 4 s and the new threads fill up within minutes.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 3600,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 2300,
+              "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "stale",
+              "label": "Stale docs",
+              "value": 430000,
+              "unit": "docs",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "label": "Listings API x2",
+                "sub": "threads 800/800"
+              },
+              {
+                "id": "idx",
+                "tone": "bad",
+                "cpu": 97,
+                "sub": "4 s writes"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "The retries hid the problem; the save still waits on search.",
+        "The database commit is the only write that must succeed synchronously.",
+        "Record the change in the same transaction and deliver it later."
+      ]
     }
   ]
 }

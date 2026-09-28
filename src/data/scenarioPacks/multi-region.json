@@ -18,7 +18,7 @@
       "title": "Single-region blast radius",
       "brief": "An availability-zone storm takes the only region offline and the product is unreachable worldwide.",
       "constraint": "RTO is 15 minutes; RPO is near-zero for orders.",
-      "question": "What architecture reduces that blast radius?",
+      "question": "Now what architecture keeps one region from taking everything down?",
       "metricsBefore": [
         {
           "key": "rps",
@@ -140,7 +140,10 @@
             }
           ],
           "resultTitle": "Incident solved",
-          "resultBody": "Run a second region with failover (or active-active) rather than one regional stack."
+          "resultBody": "Run a second region with failover (or active-active) rather than one regional stack.",
+          "tradeoffs": {
+            "costMonthlyDelta": 1500
+          }
         },
         {
           "id": "bigger-vm",
@@ -171,7 +174,18 @@
             }
           ],
           "resultTitle": "Bigger box, same dead region",
-          "resultBody": "A larger VM still lives inside US-East, the region that is down, so all 15,000 req/s keep failing until the whole region recovers."
+          "resultBody": "A larger VM still lives inside US-East, the region that is down, so all 15,000 req/s keep failing until the whole region recovers.",
+          "tradeoffs": {
+            "costMonthlyDelta": 300
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "us",
+                "sub": "bigger VM, same dead region"
+              }
+            ]
+          }
         },
         {
           "id": "more-disks",
@@ -202,7 +216,27 @@
             }
           ],
           "resultTitle": "Storage was never the failure",
-          "resultBody": "The extra disks attach in the same offline region; errors stay above 5,000 and the 15-minute RTO is blown while you wait for the provider."
+          "resultBody": "The extra disks attach in the same offline region; errors stay above 5,000 and the 15-minute RTO is blown while you wait for the provider.",
+          "tradeoffs": {
+            "costMonthlyDelta": 200
+          },
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "disks",
+                "kind": "db",
+                "label": "Extra disks (US-East)",
+                "tone": "bad",
+                "sub": "offline with the region"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "us",
+                "to": "disks"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -210,7 +244,112 @@
         "Failover must already have capacity.",
         "Serve from a second region."
       ],
-      "nextId": "bp-01"
+      "nextId": "bp-01",
+      "format": "two-step",
+      "mitigation": {
+        "question": "US-East is dark and every request fails. What do you do first?",
+        "choices": [
+          {
+            "id": "cdn-stale",
+            "label": "Serve cached pages from the CDN with a status banner",
+            "correct": true,
+            "resultTitle": "Browsing is back, checkout is not",
+            "resultBody": "The CDN serves stale-if-error copies of the catalog and product pages, so most browsing works again while a banner explains checkout is paused. Orders still wait for the region.",
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 10,
+                "unit": "%",
+                "tone": "neutral"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 90,
+                "unit": "ms",
+                "tone": "good"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 1500,
+                "unit": "errors",
+                "tone": "warn"
+              }
+            ],
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            }
+          },
+          {
+            "id": "restore-backup",
+            "label": "Restore last night's backup into us-west and switch DNS",
+            "correct": false,
+            "resultTitle": "Back online, minus a day of orders",
+            "resultBody": "The restore takes 3 hours, far past the 15-minute RTO, and the site returns without every order placed since last night's snapshot, nowhere near a near-zero RPO.",
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 10,
+                "unit": "%",
+                "tone": "warn"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 220,
+                "unit": "ms",
+                "tone": "warn"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 5000,
+                "unit": "errors",
+                "tone": "bad"
+              }
+            ],
+            "tradeoffs": {
+              "costMonthlyDelta": 900
+            }
+          },
+          {
+            "id": "longer-timeouts",
+            "label": "Raise client and LB timeouts so requests wait for recovery",
+            "correct": false,
+            "resultTitle": "Requests hang instead of failing",
+            "resultBody": "Requests now hang for 60 s before failing, so apps and browsers retry on top of stuck connections; all 15,000 req/s still fail, only slower.",
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 12,
+                "unit": "%",
+                "tone": "warn"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 60000,
+                "unit": "ms",
+                "tone": "bad"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 5000,
+                "unit": "errors",
+                "tone": "bad"
+              }
+            ],
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            }
+          }
+        ]
+      }
     },
     {
       "id": "mr-02",
@@ -385,7 +524,8 @@
             ]
           },
           "resultTitle": "Failover happens behind the IP",
-          "resultBody": "Clients resolve two anycast IPs that never change; the edge health-checks each region and shifts traffic to us-west within about 30 s, regardless of what any resolver has cached. New connections land on us-west immediately. Cost: roughly $1.8k a month for the edge service plus data-transfer fees."
+          "resultBody": "Clients resolve two anycast IPs that never change; the edge health-checks each region and shifts traffic to us-west within about 30 s, regardless of what any resolver has cached. New connections land on us-west immediately. Cost: roughly $1.8k a month for the edge service plus data-transfer fees.",
+          "cascadeIncidentId": "mr-casc-01"
         },
         {
           "id": "ttl-5s",
@@ -417,7 +557,24 @@
             }
           ],
           "resultTitle": "Resolvers and pools ignore it",
-          "resultBody": "Next time, many ISP resolvers floor TTLs at 60-300 s and mobile apps hold keep-alive connections for hours without re-resolving, so 12% of traffic still reaches the dead region; DNS query volume also rises 700x."
+          "resultBody": "Next time, many ISP resolvers floor TTLs at 60-300 s and mobile apps hold keep-alive connections for hours without re-resolving, so 12% of traffic still reaches the dead region; DNS query volume also rises 700x.",
+          "tradeoffs": {
+            "costMonthlyDelta": 20
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "dns",
+                "label": "DNS (TTL 5 s)",
+                "tone": "warn",
+                "sub": "resolvers floor at 300 s"
+              },
+              {
+                "id": "east",
+                "sub": "12% still arriving"
+              }
+            ]
+          }
         },
         {
           "id": "multi-a-record",
@@ -449,7 +606,23 @@
             }
           ],
           "resultTitle": "Half the connects wait for timeouts",
-          "resultBody": "Clients pick an IP at random, and many SDKs don't try the second address until a 21 s TCP timeout; half of new connections stall on the dead region before failing or falling back."
+          "resultBody": "Clients pick an IP at random, and many SDKs don't try the second address until a 21 s TCP timeout; half of new connections stall on the dead region before failing or falling back.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "users",
+                "tone": "bad",
+                "sub": "21 s stall on dead IP"
+              },
+              {
+                "id": "dns",
+                "sub": "both IPs published"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -485,6 +658,13 @@
           "value": 55,
           "unit": "%",
           "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "Checkout p95",
+          "value": 180,
+          "unit": "ms",
+          "tone": "neutral"
         },
         {
           "key": "lag",
@@ -583,6 +763,13 @@
               "tone": "good"
             },
             {
+              "key": "p95",
+              "label": "Checkout p95",
+              "value": 185,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
               "key": "lag",
               "label": "Replica lag",
               "value": 1.8,
@@ -598,7 +785,10 @@
             }
           ],
           "resultTitle": "Replication lag is now a budget",
-          "resultBody": "Lag is a paged metric: 2 s wakes on-call and 5 s applies write backpressure at checkout. Worst-case loss drops from 9,400 orders to about 65, at the price of occasional checkout throttling when the WAN link degrades."
+          "resultBody": "Lag is a paged metric: 2 s wakes on-call and 5 s applies write backpressure at checkout. Worst-case loss drops from 9,400 orders to about 65, at the price of occasional checkout throttling when the WAN link degrades.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "sync-commit",
@@ -616,7 +806,7 @@
             },
             {
               "key": "p95",
-              "label": "p95 latency",
+              "label": "Checkout p95",
               "value": 460,
               "unit": "ms",
               "tone": "bad"
@@ -637,7 +827,24 @@
             }
           ],
           "resultTitle": "RPO zero, checkout too slow",
-          "resultBody": "Nothing is lost now, but each commit waits a 70 ms round trip and checkout makes four writes; p95 climbs from 180 to 460 ms, far past the latency budget."
+          "resultBody": "Nothing is lost now, but each commit waits a 70 ms round trip and checkout makes four writes; p95 climbs from 180 to 460 ms, far past the latency budget.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "west",
+                "tone": "bad",
+                "sub": "checkout p95 460 ms"
+              },
+              {
+                "id": "rdb",
+                "tone": "good",
+                "sub": "lag 0, every commit waits"
+              }
+            ]
+          }
         },
         {
           "id": "fast-dns",
@@ -669,7 +876,23 @@
             }
           ],
           "resultTitle": "Faster failover, same data loss",
-          "resultBody": "Promotion now takes 50 seconds instead of 20 minutes, which fixes RTO. The replica is still 12 minutes behind with nobody watching, so the next failover drops the same 9,400 orders."
+          "resultBody": "Promotion now takes 50 seconds instead of 20 minutes, which fixes RTO. The replica is still 12 minutes behind with nobody watching, so the next failover drops the same 9,400 orders.",
+          "tradeoffs": {
+            "costMonthlyDelta": 50
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "lb",
+                "tone": "good",
+                "sub": "promotion in 50 s"
+              },
+              {
+                "id": "rdb",
+                "sub": "still 12 min behind"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -678,7 +901,137 @@
         "Treat replica lag as a budget you measure, alert on, and enforce at write time."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "format": "knob",
+      "knob": {
+        "label": "Throttle checkout writes when replica lag exceeds",
+        "unit": "s",
+        "min": 0,
+        "max": 60,
+        "step": 1,
+        "start": 60,
+        "target": [
+          2,
+          5
+        ],
+        "question": "Set the replica lag that triggers write backpressure at checkout.",
+        "curve": [
+          {
+            "at": 0,
+            "metrics": [
+              {
+                "key": "p95",
+                "value": 2400
+              },
+              {
+                "key": "lag",
+                "value": 0.4
+              },
+              {
+                "key": "errors",
+                "value": 5
+              }
+            ]
+          },
+          {
+            "at": 1,
+            "metrics": [
+              {
+                "key": "p95",
+                "value": 900
+              },
+              {
+                "key": "lag",
+                "value": 1
+              },
+              {
+                "key": "errors",
+                "value": 13
+              }
+            ]
+          },
+          {
+            "at": 2,
+            "metrics": [
+              {
+                "key": "p95",
+                "value": 190
+              },
+              {
+                "key": "lag",
+                "value": 2
+              },
+              {
+                "key": "errors",
+                "value": 26
+              }
+            ]
+          },
+          {
+            "at": 5,
+            "metrics": [
+              {
+                "key": "p95",
+                "value": 185
+              },
+              {
+                "key": "lag",
+                "value": 4.8
+              },
+              {
+                "key": "errors",
+                "value": 62
+              }
+            ]
+          },
+          {
+            "at": 15,
+            "metrics": [
+              {
+                "key": "p95",
+                "value": 180
+              },
+              {
+                "key": "lag",
+                "value": 15
+              },
+              {
+                "key": "errors",
+                "value": 195
+              }
+            ]
+          },
+          {
+            "at": 60,
+            "metrics": [
+              {
+                "key": "p95",
+                "value": 180
+              },
+              {
+                "key": "lag",
+                "value": 60
+              },
+              {
+                "key": "errors",
+                "value": 780
+              }
+            ]
+          }
+        ],
+        "low": {
+          "title": "Throttling on normal WAN jitter",
+          "body": "Cross-region lag normally wanders between 0.3 and 1.2 s, so a trigger this low throttles checkout several times a minute and p95 jumps from 180 ms to 900 ms or worse."
+        },
+        "high": {
+          "title": "The RPO is blown by design",
+          "body": "Lag may drift this far before anything pushes back: at 13 orders/s, a 15 s threshold leaves about 195 orders unreplicated when the primary dies, three times the 5 s RPO."
+        },
+        "good": {
+          "title": "Lag held inside the RPO",
+          "body": "Normal 0.3-1.2 s jitter never trips the throttle, but a degraded WAN link is pushed back before lag passes 5 s: at 13 orders/s the worst failover loses about 65 orders, not 9,400."
+        }
+      }
     },
     {
       "id": "mr-04",
@@ -885,7 +1238,18 @@
             }
           ],
           "resultTitle": "DNS still sees Virginia",
-          "resultBody": "The rules are correct but the input is wrong: every lookup still arrives from the Virginia resolver, and corporate resolvers rarely forward EDNS Client Subnet, so the map keeps choosing us-east."
+          "resultBody": "The rules are correct but the input is wrong: every lookup still arrives from the Virginia resolver, and corporate resolvers rarely forward EDNS Client Subnet, so the map keeps choosing us-east.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "dns",
+                "sub": "finer rules, still sees Virginia"
+              }
+            ]
+          }
         },
         {
           "id": "cdn-api",
@@ -917,7 +1281,31 @@
             }
           ],
           "resultTitle": "Personalised APIs don't cache",
-          "resultBody": "Static assets speed up, but ticket lists and inboxes are per-user and uncacheable, so the hit rate on API calls is 3% and each page still makes five 240 ms round trips to Virginia."
+          "resultBody": "Static assets speed up, but ticket lists and inboxes are per-user and uncacheable, so the hit rate on API calls is 3% and each page still makes five 240 ms round trips to Virginia.",
+          "tradeoffs": {
+            "costMonthlyDelta": 300
+          },
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "cdn",
+                "kind": "cdn",
+                "label": "CDN Singapore PoP",
+                "tone": "warn",
+                "sub": "API hit rate 3%"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "users",
+                "to": "cdn"
+              },
+              {
+                "from": "cdn",
+                "to": "east"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1137,7 +1525,28 @@
             }
           ],
           "resultTitle": "Four regions, same config",
-          "resultBody": "The new region subscribes to the same config service and receives the same bad value at the same moment, so the outage just has one more region in it and costs 33% more."
+          "resultBody": "The new region subscribes to the same config service and receives the same bad value at the same moment, so the outage just has one more region in it and costs 33% more.",
+          "tradeoffs": {
+            "costMonthlyDelta": 6000
+          },
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "sa",
+                "kind": "server",
+                "label": "sa-east (new)",
+                "tone": "bad",
+                "cpu": 10,
+                "sub": "429 everything"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "cfg",
+                "to": "sa"
+              }
+            ]
+          }
         },
         {
           "id": "two-person-review",
@@ -1169,7 +1578,18 @@
             }
           ],
           "resultTitle": "Reviewers approved the typo",
-          "resultBody": "Review catches some mistakes, but the next bad value looks reasonable in a diff, both reviewers approve it, and it still lands on every region at once with the same 100% rejection."
+          "resultBody": "Review catches some mistakes, but the next bad value looks reasonable in a diff, both reviewers approve it, and it still lands on every region at once with the same 100% rejection.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cfg",
+                "sub": "approved, pushed to all"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1384,7 +1804,22 @@
             }
           ],
           "resultTitle": "Pinned to the region that died",
-          "resultBody": "Stickiness keeps users near their session in normal times, but when the home region is the one that fails, every pinned user still loses their session and the login storm is identical."
+          "resultBody": "Stickiness keeps users near their session in normal times, but when the home region is the one that fails, every pinned user still loses their session and the login storm is identical.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "users",
+                "sub": "pinned to dead home region"
+              },
+              {
+                "id": "auth",
+                "sub": "login storm again"
+              }
+            ]
+          }
         },
         {
           "id": "wan-reads",
@@ -1416,7 +1851,23 @@
             }
           ],
           "resultTitle": "Session store died with its region",
-          "resultBody": "In normal times every request pays a 70 ms cross-region lookup, and when us-east is actually down the store is unreachable too, so all 2.1M users are logged out anyway."
+          "resultBody": "In normal times every request pays a 70 ms cross-region lookup, and when us-east is actually down the store is unreachable too, so all 2.1M users are logged out anyway.",
+          "tradeoffs": {
+            "costMonthlyDelta": 150
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "west",
+                "cpu": 80,
+                "sub": "+70 ms per request"
+              },
+              {
+                "id": "redis",
+                "sub": "unreachable with us-east"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1635,7 +2086,10 @@
             }
           ],
           "resultTitle": "Only the majority side writes",
-          "resultBody": "When the Atlantic link drops, US plus the witness hold 2 of 3 votes and keep writing; EU loses its lease and fencing tokens reject its stale writes. Oversells fall to 0, at the price of EU checkout failing during the 4-minute partition."
+          "resultBody": "When the Atlantic link drops, US plus the witness hold 2 of 3 votes and keep writing; EU loses its lease and fencing tokens reject its stale writes. Oversells fall to 0, at the price of EU checkout failing during the 4-minute partition.",
+          "tradeoffs": {
+            "costMonthlyDelta": 350
+          }
         },
         {
           "id": "lww",
@@ -1667,7 +2121,22 @@
             }
           ],
           "resultTitle": "Oversell hidden, not prevented",
-          "resultBody": "LWW keeps one of the two decrements and silently drops the other, so the stock count looks sane while 300 customers still hold orders for consoles that do not exist. 40 ms of clock skew also reorders writes."
+          "resultBody": "LWW keeps one of the two decrements and silently drops the other, so the stock count looks sane while 300 customers still hold orders for consoles that do not exist. 40 ms of clock skew also reorders writes.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "usdb",
+                "sub": "LWW drops decrements"
+              },
+              {
+                "id": "eudb",
+                "sub": "300 oversold, hidden"
+              }
+            ]
+          }
         },
         {
           "id": "short-heartbeat",
@@ -1699,7 +2168,23 @@
             }
           ],
           "resultTitle": "Split brain now triggers in 2 s",
-          "resultBody": "On an 80 ms link, routine packet loss now looks like a dead peer. Both sides self-promote three times a day instead of once a quarter, and oversold units climb to 520."
+          "resultBody": "On an 80 ms link, routine packet loss now looks like a dead peer. Both sides self-promote three times a day instead of once a quarter, and oversold units climb to 520.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "usdb",
+                "cpu": 66,
+                "sub": "self-promotes 3x a day"
+              },
+              {
+                "id": "eudb",
+                "sub": "split brain in 2 s"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1891,7 +2376,18 @@
             }
           ],
           "resultTitle": "Everyone else is scaling too",
-          "resultBody": "During a regional outage every tenant fails over into the same zones, instance requests return insufficient-capacity errors, and new nodes take minutes to boot even when granted; the 4 pods melt long before help arrives."
+          "resultBody": "During a regional outage every tenant fails over into the same zones, instance requests return insufficient-capacity errors, and new nodes take minutes to boot even when granted; the 4 pods melt long before help arrives.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "pods",
+                "sub": "InsufficientCapacity errors"
+              }
+            ]
+          }
         },
         {
           "id": "faster-failover",
@@ -1923,7 +2419,22 @@
             }
           ],
           "resultTitle": "The crash just arrives sooner",
-          "resultBody": "Full traffic now reaches 4 pods 30 seconds after the outage instead of 3 minutes, so they saturate sooner, crash-loop under load and slow the autoscaler's readiness checks even further."
+          "resultBody": "Full traffic now reaches 4 pods 30 seconds after the outage instead of 3 minutes, so they saturate sooner, crash-loop under load and slow the autoscaler's readiness checks even further.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "lb",
+                "sub": "moves traffic in 30 s"
+              },
+              {
+                "id": "pods",
+                "sub": "crash-looping under load"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2097,7 +2608,10 @@
             }
           ],
           "resultTitle": "Residency and latency both fixed",
-          "resultBody": "EU profiles are re-indexed in eu-central and deleted from us-east; EU search skips the ~90 ms Atlantic hop and p95 falls from 340 to 45 ms. Cost: a second cluster (~$6k/month), and global admin search must federate over non-PII fields."
+          "resultBody": "EU profiles are re-indexed in eu-central and deleted from us-east; EU search skips the ~90 ms Atlantic hop and p95 falls from 340 to 45 ms. Cost: a second cluster (~$6k/month), and global admin search must federate over non-PII fields.",
+          "tradeoffs": {
+            "costMonthlyDelta": 6000
+          }
         },
         {
           "id": "encrypt",
@@ -2129,7 +2643,19 @@
             }
           ],
           "resultTitle": "Ciphertext is still US storage",
-          "resultBody": "Counsel rejects it: the 2.1M profiles still live in us-east, just encrypted. Encrypted fields also cannot be tokenized for full-text search, so relevance collapses and decrypt-on-read pushes p95 to 410 ms."
+          "resultBody": "Counsel rejects it: the 2.1M profiles still live in us-east, just encrypted. Encrypted fields also cannot be tokenized for full-text search, so relevance collapses and decrypt-on-read pushes p95 to 410 ms.",
+          "tradeoffs": {
+            "costMonthlyDelta": 200
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "search",
+                "cpu": 88,
+                "sub": "encrypted, still in us-east"
+              }
+            ]
+          }
         },
         {
           "id": "cdn-cache",
@@ -2161,7 +2687,31 @@
             }
           ],
           "resultTitle": "Faster, and now PII is in two places",
-          "resultBody": "About 40% of repeat queries hit the edge, so p95 dips to 210 ms, but the index is still in us-east and search results containing personal data are now cached at edge PoPs too."
+          "resultBody": "About 40% of repeat queries hit the edge, so p95 dips to 210 ms, but the index is still in us-east and search results containing personal data are now cached at edge PoPs too.",
+          "tradeoffs": {
+            "costMonthlyDelta": 400
+          },
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "edge",
+                "kind": "cdn",
+                "label": "Frankfurt CDN edge",
+                "tone": "bad",
+                "sub": "PII cached at edge"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "eu-users",
+                "to": "edge"
+              },
+              {
+                "from": "edge",
+                "to": "api"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2354,7 +2904,8 @@
             ]
           },
           "resultTitle": "No customer has two billers",
-          "resultBody": "Every customer row has a home_region, and each cron only bills its own. Because each customer is written by one region, the invoice row's unique key also works. If a region is marked failed, the survivor adopts its customers after the failover is declared, so billing still runs. Cost: takeover is an explicit, audited step."
+          "resultBody": "Every customer row has a home_region, and each cron only bills its own. Because each customer is written by one region, the invoice row's unique key also works. If a region is marked failed, the survivor adopts its customers after the failover is declared, so billing still runs. Cost: takeover is an explicit, audited step.",
+          "cascadeIncidentId": "mr-casc-02"
         },
         {
           "id": "unique-per-region",
@@ -2386,7 +2937,22 @@
             }
           ],
           "resultTitle": "Both inserts win locally",
-          "resultBody": "Each region's insert succeeds against its own copy before replication delivers the other one about 400 ms later; the conflict is detected after both crons already emailed the invoice."
+          "resultBody": "Each region's insert succeeds against its own copy before replication delivers the other one about 400 ms later; the conflict is detected after both crons already emailed the invoice.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "sub": "conflict seen 400 ms late"
+              },
+              {
+                "id": "mail",
+                "sub": "92k sent"
+              }
+            ]
+          }
         },
         {
           "id": "disable-eu-cron",
@@ -2418,7 +2984,24 @@
             }
           ],
           "resultTitle": "Billing now dies with us-east",
-          "resultBody": "Duplicates stop, but billing lives in one region again: when us-east is down on the 1st, nobody bills, and the next outage delays 48k invoices by 30 hours until someone runs it by hand."
+          "resultBody": "Duplicates stop, but billing lives in one region again: when us-east is down on the 1st, nobody bills, and the next outage delays 48k invoices by 30 hours until someone runs it by hand.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cron-eu",
+                "tone": "neutral",
+                "label": "Billing cron eu-west (off)"
+              },
+              {
+                "id": "cron-us",
+                "tone": "warn",
+                "sub": "billing dies with us-east"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2636,7 +3219,18 @@
             }
           ],
           "resultTitle": "The long tail was never cached",
-          "resultBody": "Popular photos stay cached longer, but most of the 90 TB is rarely viewed and never in the cache, so 21% of requests still miss to a dead origin, and new uploads can't be written anywhere."
+          "resultBody": "Popular photos stay cached longer, but most of the 90 TB is rarely viewed and never in the cache, so 21% of requests still miss to a dead origin, and new uploads can't be written anywhere.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cdn",
+                "sub": "30-day TTL, tail uncached"
+              }
+            ]
+          }
         },
         {
           "id": "app-dual-write",
@@ -2668,7 +3262,34 @@
             }
           ],
           "resultTitle": "Copies drift with nothing to repair them",
-          "resultBody": "Uploads now wait on a cross-region PUT, adding 120 ms, and whenever one write fails the buckets silently diverge; the 90 TB already uploaded was never copied, so old listings remain broken."
+          "resultBody": "Uploads now wait on a cross-region PUT, adding 120 ms, and whenever one write fails the buckets silently diverge; the 90 TB already uploaded was never copied, so old listings remain broken.",
+          "tradeoffs": {
+            "costMonthlyDelta": 300
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "eu",
+                "cpu": 44,
+                "sub": "+120 ms per upload"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "eus3",
+                "kind": "db",
+                "label": "eu-west bucket (new only)",
+                "tone": "warn",
+                "sub": "copies diverge"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "eu",
+                "to": "eus3"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2735,20 +3356,21 @@
           {
             "id": "eu",
             "kind": "server",
-            "label": "eu-west pods (old key)",
+            "label": "eu-west pods",
             "tone": "bad",
-            "cpu": 35
+            "cpu": 35,
+            "sub": "401 on new tokens"
           },
           {
             "id": "euv",
             "kind": "db",
-            "label": "eu-west vault (stale)",
-            "tone": "bad"
+            "label": "eu-west vault",
+            "tone": "warn"
           },
           {
             "id": "usv",
             "kind": "db",
-            "label": "us-east vault (new key)",
+            "label": "us-east vault",
             "tone": "good"
           }
         ],
@@ -2849,7 +3471,10 @@
             }
           ],
           "resultTitle": "Both regions trust both keys",
-          "resultBody": "The new key reaches both vaults and the JWKS first; pods accept old and new keys for one 60-minute token lifetime, and only then does signing switch. 401s fall from 4,200/s to 0. Cost: each rotation takes an hour and needs a vault replication-lag alert."
+          "resultBody": "The new key reaches both vaults and the JWKS first; pods accept old and new keys for one 60-minute token lifetime, and only then does signing switch. 401s fall from 4,200/s to 0. Cost: each rotation takes an hour and needs a vault replication-lag alert.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "remote-vault",
@@ -2881,7 +3506,25 @@
             }
           ],
           "resultTitle": "EU auth now depends on us-east",
-          "resultBody": "Verification works today, but every key-cache miss crosses an 85 ms WAN hop, p95 rises to 180 ms, and the next us-east outage takes EU logins down with it, which is the failover this incident was about."
+          "resultBody": "Verification works today, but every key-cache miss crosses an 85 ms WAN hop, p95 rises to 180 ms, and the next us-east outage takes EU logins down with it, which is the failover this incident was about.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "eu",
+                "tone": "warn",
+                "sub": "85 ms WAN hop per key miss"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "eu",
+                "to": "usv"
+              }
+            ]
+          }
         },
         {
           "id": "restart-pods",
@@ -2913,7 +3556,24 @@
             }
           ],
           "resultTitle": "Restart reloads the same stale key",
-          "resultBody": "Pods reload from the EU vault replica, which never received the new key, so they come back verifying with the old one. 401s stay near 3,900/s and the 20-minute rollout removes capacity mid-incident."
+          "resultBody": "Pods reload from the EU vault replica, which never received the new key, so they come back verifying with the old one. 401s stay near 3,900/s and the 20-minute rollout removes capacity mid-incident.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "eu",
+                "cpu": 48,
+                "sub": "restarted, same old key"
+              },
+              {
+                "id": "euv",
+                "tone": "bad",
+                "sub": "still k-2026-08 only"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -2922,7 +3582,43 @@
         "Split rotation into distribute-and-accept, then switch-signing, with an overlap window."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "format": "culprit",
+      "culprit": {
+        "nodeId": "euv",
+        "explanation": "The eu-west vault still holds only key k-2026-08: the rotation to k-2026-09 happened in us-east and was never replicated, so EU pods verified September's tokens against August's key.",
+        "wrongNodeFeedback": {
+          "eu": "The pods fail verification, but they trust whatever keyset their local vault hands them. Check what it holds.",
+          "usv": "us-east rotated and signs correctly. The question is who else has the new key.",
+          "lb": "The LB moved traffic to eu-west exactly as the failover plan says.",
+          "users": "Users send valid tokens; they are signed with the current key."
+        }
+      },
+      "logs": {
+        "users": [
+          "POST /login -> 401 invalid_token",
+          "client retry 3/3 -> 401"
+        ],
+        "lb": [
+          "failover: eu-west weight 100, us-east weight 0",
+          "eu-west backend 401 rate 38%"
+        ],
+        "eu": [
+          "jwt verify failed: kid=k-2026-09 not in keyset",
+          "keyset refreshed from local vault: [k-2026-08]",
+          "auth failures 4,200/s"
+        ],
+        "euv": [
+          "secret jwt/signing versions: [k-2026-08]",
+          "last replication from us-east: 31 days ago",
+          "no pending writes"
+        ],
+        "usv": [
+          "rotated jwt/signing -> k-2026-09",
+          "signing with k-2026-09 since 09:00 UTC",
+          "status healthy"
+        ]
+      }
     },
     {
       "id": "mr-13",
@@ -3125,7 +3821,18 @@
             }
           ],
           "resultTitle": "Accurate for a month",
-          "resultBody": "The runbook is correct on the day it's written, but services keep adding new dependencies; without exercising the path, the next outage still finds four new us-east hostnames and takes 2.5 hours."
+          "resultBody": "The runbook is correct on the day it's written, but services keep adding new dependencies; without exercising the path, the next outage still finds four new us-east hostnames and takes 2.5 hours.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "eu",
+                "sub": "4 new us-east hostnames"
+              }
+            ]
+          }
         },
         {
           "id": "more-replication",
@@ -3157,7 +3864,23 @@
             }
           ],
           "resultTitle": "Data was never the problem",
-          "resultBody": "Every write now pays an 80 ms cross-region round trip, yet in the next outage the eu-west services still call us-east hostnames and wait on the same broken config."
+          "resultBody": "Every write now pays an 80 ms cross-region round trip, yet in the next outage the eu-west services still call us-east hostnames and wait on the same broken config.",
+          "tradeoffs": {
+            "costMonthlyDelta": 1200
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "warn",
+                "sub": "sync, +80 ms per write"
+              },
+              {
+                "id": "eu",
+                "sub": "still calling us-east"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3350,7 +4073,23 @@
             }
           ],
           "resultTitle": "Mixed versions still overlap",
-          "resultBody": "A rolling deploy still has old and new pods side by side for minutes in every region, so old pods keep failing on the missing column, and a bad release now hits all regions at once with no staged rollback."
+          "resultBody": "A rolling deploy still has old and new pods side by side for minutes in every region, so old pods keep failing on the missing column, and a bad release now hits all regions at once with no staged rollback.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "us",
+                "tone": "bad",
+                "sub": "old pods fail mid-rollout"
+              },
+              {
+                "id": "eu",
+                "sub": "global blast radius"
+              }
+            ]
+          }
         },
         {
           "id": "pause-replication",
@@ -3364,25 +4103,43 @@
               "label": "CPU",
               "value": 47,
               "unit": "%",
-              "tone": "warn"
+              "tone": "neutral"
             },
             {
               "key": "p95",
               "label": "p95 latency",
-              "value": 700,
+              "value": 320,
               "unit": "ms",
-              "tone": "warn"
+              "tone": "good"
             },
             {
               "key": "errors",
               "label": "eu-west errors",
-              "value": 12,
+              "value": 0.5,
               "unit": "%",
-              "tone": "bad"
+              "tone": "warn"
             }
           ],
-          "resultTitle": "Four hours of lag builds up",
-          "resultBody": "eu-west errors pause, but its data falls four hours behind, users see stale profiles, and if us-east fails meanwhile you lose four hours of writes; when replication resumes the DDL breaks v41 anyway."
+          "resultTitle": "eu-west errors stop, for now",
+          "resultBody": "With replication paused, the rename never reaches eu-west and v41 serves cleanly again; errors fall from 30% to 0.5%. One thing to watch: eu-west replication lag is 9 minutes and growing a minute per minute.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "consequenceIncidentId": "mr-bill-01",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "eu",
+                "tone": "good",
+                "sub": "v41 serving"
+              },
+              {
+                "id": "db",
+                "tone": "warn",
+                "sub": "replication paused, lag 9 min"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3587,7 +4344,23 @@
             }
           ],
           "resultTitle": "Both checks still see nothing",
-          "resultBody": "Two users who claim within the same second both check both regions, both find the handle free, and both write; the race narrows but check-then-write across async replicas can't close it."
+          "resultBody": "Two users who claim within the same second both check both regions, both find the handle free, and both write; the race narrows but check-then-write across async replicas can't close it.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "us-api",
+                "cpu": 33,
+                "sub": "checks both regions"
+              },
+              {
+                "id": "tbl",
+                "sub": "still ~60 dup handles/day"
+              }
+            ]
+          }
         },
         {
           "id": "strong-gsi",
@@ -3619,7 +4392,18 @@
             }
           ],
           "resultTitle": "GSIs can't read strongly",
-          "resultBody": "DynamoDB global secondary indexes only support eventually consistent reads, and even a strong base-table read is strong only within one region; the other region's pending write is still invisible."
+          "resultBody": "DynamoDB global secondary indexes only support eventually consistent reads, and even a strong base-table read is strong only within one region; the other region's pending write is still invisible.",
+          "tradeoffs": {
+            "costMonthlyDelta": 50
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "tbl",
+                "sub": "GSI reads stay eventual"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -3770,7 +4554,10 @@
             }
           ],
           "resultTitle": "Concurrent adds now union",
-          "resultBody": "Adds from both regions merge per item instead of one whole cart overwriting the other, so lost items fall from 3.2% of carts to 0. Cost: tombstones grow cart documents ~18% until compaction, and a remove racing an add keeps the item."
+          "resultBody": "Adds from both regions merge per item instead of one whole cart overwriting the other, so lost items fall from 3.2% of carts to 0. Cost: tombstones grow cart documents ~18% until compaction, and a remove racing an add keeps the item.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "ntp",
@@ -3802,7 +4589,22 @@
             }
           ],
           "resultTitle": "Clocks agree, edits still collide",
-          "resultBody": "Clocks now agree within 1 ms, but the phone and laptop edits are truly concurrent. LWW still keeps one whole cart and discards the other, so 3.1% of carts keep losing items."
+          "resultBody": "Clocks now agree within 1 ms, but the phone and laptop edits are truly concurrent. LWW still keeps one whole cart and discards the other, so 3.1% of carts keep losing items.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "usdb",
+                "sub": "clocks agree, LWW still drops"
+              },
+              {
+                "id": "apdb",
+                "sub": "3.1% carts lose items"
+              }
+            ]
+          }
         },
         {
           "id": "home-region",
@@ -3834,7 +4636,24 @@
             }
           ],
           "resultTitle": "No conflicts, but 150 ms writes",
-          "resultBody": "A single writer per cart ends conflicts, but ap-south shoppers homed in us-east now write across a 150 ms round trip; cart p95 rises from 60 to 210 ms, breaking the stated constraint."
+          "resultBody": "A single writer per cart ends conflicts, but ap-south shoppers homed in us-east now write across a 150 ms round trip; cart p95 rises from 60 to 210 ms, breaking the stated constraint.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "ap",
+                "tone": "bad",
+                "sub": "cart writes 210 ms"
+              },
+              {
+                "id": "usdb",
+                "tone": "warn",
+                "sub": "single writer per cart"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -4026,7 +4845,19 @@
             }
           ],
           "resultTitle": "The primary now waits on a throttled box",
-          "resultBody": "Reads are fresh, but every us-east commit now waits 85 ms of WAN plus replay on a CPU-starved replica. Write p95 jumps from 12 ms to 1.6 s during the batch, breaking the constraint on primary latency."
+          "resultBody": "Reads are fresh, but every us-east commit now waits 85 ms of WAN plus replay on a CPU-starved replica. Write p95 jumps from 12 ms to 1.6 s during the batch, breaking the constraint on primary latency.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "primary",
+                "tone": "bad",
+                "sub": "commits wait on replica"
+              }
+            ]
+          }
         },
         {
           "id": "active-active",
@@ -4058,7 +4889,23 @@
             }
           ],
           "resultTitle": "Same node, same replay backlog",
-          "resultBody": "The batch writes still originate in us-east and must replay on the same credit-starved eu-west node, so lag stays near 14 minutes. Meanwhile the team has started a quarter-long migration with new write conflicts to resolve."
+          "resultBody": "The batch writes still originate in us-east and must replay on the same credit-starved eu-west node, so lag stays near 14 minutes. Meanwhile the team has started a quarter-long migration with new write conflicts to resolve.",
+          "tradeoffs": {
+            "costMonthlyDelta": 2500
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "replica",
+                "sub": "same replay backlog"
+              },
+              {
+                "id": "primary",
+                "tone": "warn",
+                "sub": "write conflicts to resolve"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -4067,6 +4914,897 @@
         "Postgres replays WAL on one process, so the replica's CPU sets the pace."
       ],
       "nextId": null
+    },
+    {
+      "id": "mr-casc-01",
+      "incidentCode": "INC-012-02B",
+      "level": 12,
+      "patternId": "multi-region",
+      "canonical": false,
+      "isCascade": true,
+      "parentIncidentCode": "INC-012-02",
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 80,
+      "title": "Failback knocks us-east over again",
+      "brief": "us-east recovered and TicketHub's global LB moved all 60k req/s back in one step. Cold caches sent every read to Postgres, and us-east fell over within 3 minutes.",
+      "constraint": "us-west runs at 71% CPU on full traffic and cannot carry it through tonight's peak.",
+      "question": "How should traffic return to the recovered region?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 60000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 97,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 8000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Failed requests",
+          "value": 45,
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Fans"
+          },
+          {
+            "id": "gslb",
+            "kind": "lb",
+            "label": "Global LB",
+            "sub": "us-east weight 100%"
+          },
+          {
+            "id": "east",
+            "kind": "server",
+            "label": "us-east (recovered)",
+            "tone": "bad",
+            "cpu": 90,
+            "sub": "cache hit 4%"
+          },
+          {
+            "id": "edb",
+            "kind": "db",
+            "label": "us-east Postgres",
+            "tone": "bad",
+            "cpu": 98,
+            "sub": "every read a miss"
+          },
+          {
+            "id": "west",
+            "kind": "server",
+            "label": "us-west",
+            "cpu": 12,
+            "sub": "idle after failback"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "gslb"
+          },
+          {
+            "from": "gslb",
+            "to": "east"
+          },
+          {
+            "from": "gslb",
+            "to": "west"
+          },
+          {
+            "from": "east",
+            "to": "edb"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "weighted-ramp",
+          "label": "Ramp us-east back by LB weight, 5% to 100% over an hour",
+          "correct": true,
+          "resultTitle": "Caches warm before the flood",
+          "resultBody": "The LB sends 5%, then 25%, 50% and 100% of traffic to us-east, holding each step until cache hit rate passes 90% and p95 is normal. Postgres sees a trickle of misses instead of a wall. Cost: us-west carries most of the load for an hour.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 58,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 220,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Failed requests",
+              "value": 0.3,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Fans"
+              },
+              {
+                "id": "gslb",
+                "kind": "lb",
+                "label": "Global LB",
+                "tone": "good",
+                "sub": "weights ramped 5-100%"
+              },
+              {
+                "id": "east",
+                "kind": "server",
+                "label": "us-east (recovered)",
+                "tone": "good",
+                "cpu": 55,
+                "sub": "cache hit 93%"
+              },
+              {
+                "id": "edb",
+                "kind": "db",
+                "label": "us-east Postgres",
+                "tone": "good",
+                "cpu": 58
+              },
+              {
+                "id": "west",
+                "kind": "server",
+                "label": "us-west",
+                "tone": "good",
+                "cpu": 40
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "gslb"
+              },
+              {
+                "from": "gslb",
+                "to": "east"
+              },
+              {
+                "from": "gslb",
+                "to": "west"
+              },
+              {
+                "from": "east",
+                "to": "edb"
+              }
+            ]
+          },
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "complexityScore": 2,
+            "tradeoffSummary": "An hour of slower failback in exchange for no second outage."
+          }
+        },
+        {
+          "id": "double-pods",
+          "label": "Double us-east's pod count, then switch all traffic back",
+          "correct": false,
+          "resultTitle": "More pods, more cache misses",
+          "resultBody": "Twice the pods open twice the Postgres connections, and every one starts with an empty cache, so the database hits max_connections in 90 seconds and us-east falls over again.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 9500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Failed requests",
+              "value": 52,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "east",
+                "label": "us-east (2x pods)",
+                "sub": "cache hit 3%"
+              },
+              {
+                "id": "edb",
+                "cpu": 100,
+                "sub": "max_connections hit"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 700
+          }
+        },
+        {
+          "id": "stay-west",
+          "label": "Keep all traffic on us-west and leave us-east as standby",
+          "correct": false,
+          "resultTitle": "One region, no headroom",
+          "resultBody": "us-west holds at 71% CPU until the evening peak pushes it to 96% and p95 to 2 s, and the idle standby's caches stay cold, so the next failback hits the same wall.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 96,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Failed requests",
+              "value": 3,
+              "unit": "%",
+              "tone": "warn"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "west",
+                "tone": "bad",
+                "cpu": 96,
+                "sub": "evening peak at 96%"
+              },
+              {
+                "id": "east",
+                "tone": "neutral",
+                "cpu": 5,
+                "sub": "cold standby"
+              },
+              {
+                "id": "edb",
+                "tone": "neutral",
+                "cpu": 5,
+                "sub": "idle"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        }
+      ],
+      "hints": [
+        "The region is healthy; its caches are empty.",
+        "A cold cache turns every read into a database query.",
+        "Let the region warm up on a fraction of the traffic first."
+      ]
+    },
+    {
+      "id": "mr-casc-02",
+      "incidentCode": "INC-012-10B",
+      "level": 12,
+      "patternId": "multi-region",
+      "canonical": false,
+      "isCascade": true,
+      "parentIncidentCode": "INC-012-10",
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 90,
+      "title": "Two regions bill eu-west's customers after a false alarm",
+      "brief": "A 90-second monitoring blip marked eu-west failed at 00:02. InvoiceIQ's us-east adopted its 22k customers while eu-west's cron was still running, so 22k invoices went out twice.",
+      "constraint": "Billing must still run on the 1st if one region really is down.",
+      "question": "How does a survivor take over billing without two regions billing at once?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Invoice writes",
+          "value": 80,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 58,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 450,
+          "unit": "ms",
+          "tone": "neutral"
+        },
+        {
+          "key": "errors",
+          "label": "Duplicate invoices",
+          "value": 22000,
+          "unit": "invoices",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "mon",
+            "kind": "server",
+            "label": "Health monitor",
+            "tone": "warn",
+            "sub": "marked eu-west failed"
+          },
+          {
+            "id": "cron-us",
+            "kind": "worker",
+            "label": "Billing cron us-east",
+            "tone": "bad",
+            "cpu": 58,
+            "sub": "adopted 22k customers"
+          },
+          {
+            "id": "cron-eu",
+            "kind": "worker",
+            "label": "Billing cron eu-west",
+            "cpu": 55,
+            "sub": "still billing"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Multi-master DB",
+            "tone": "warn",
+            "sub": "async replication"
+          },
+          {
+            "id": "mail",
+            "kind": "server",
+            "label": "Email provider",
+            "tone": "bad",
+            "sub": "22k sent twice"
+          }
+        ],
+        "edges": [
+          {
+            "from": "mon",
+            "to": "cron-us"
+          },
+          {
+            "from": "cron-us",
+            "to": "db"
+          },
+          {
+            "from": "cron-eu",
+            "to": "db"
+          },
+          {
+            "from": "cron-us",
+            "to": "mail"
+          },
+          {
+            "from": "cron-eu",
+            "to": "mail"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "lease-fencing",
+          "label": "Bill under a renewable lease; fence writes by lease epoch",
+          "correct": true,
+          "resultTitle": "Only the lease holder bills",
+          "resultBody": "Each region's billing ownership is a 60 s lease in a small quorum store. eu-west's cron checks its lease before every batch and stops when it cannot renew; us-east adopts only after the lease expires, and invoice writes carrying an old epoch are rejected. Cost: a quorum store and a 60 s pause on real takeovers.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 40,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 460,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Duplicate invoices",
+              "value": 0,
+              "unit": "invoices",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "mon",
+                "kind": "server",
+                "label": "Health monitor",
+                "sub": "alerts only"
+              },
+              {
+                "id": "lease",
+                "kind": "db",
+                "label": "Lease store (quorum)",
+                "tone": "good",
+                "sub": "60 s lease + epoch"
+              },
+              {
+                "id": "cron-us",
+                "kind": "worker",
+                "label": "Billing cron us-east",
+                "tone": "good",
+                "cpu": 40
+              },
+              {
+                "id": "cron-eu",
+                "kind": "worker",
+                "label": "Billing cron eu-west",
+                "tone": "good",
+                "cpu": 38
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Multi-master DB",
+                "sub": "rejects stale epochs"
+              },
+              {
+                "id": "mail",
+                "kind": "server",
+                "label": "Email provider",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "cron-us",
+                "to": "lease"
+              },
+              {
+                "from": "cron-eu",
+                "to": "lease"
+              },
+              {
+                "from": "cron-us",
+                "to": "db"
+              },
+              {
+                "from": "cron-eu",
+                "to": "db"
+              },
+              {
+                "from": "cron-us",
+                "to": "mail"
+              },
+              {
+                "from": "cron-eu",
+                "to": "mail"
+              }
+            ]
+          },
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 150,
+            "complexityScore": 3,
+            "tradeoffSummary": "A small quorum store and a 60 s pause before any takeover."
+          }
+        },
+        {
+          "id": "delay-30",
+          "label": "Wait a fixed 30 minutes after a failure alert to adopt",
+          "correct": false,
+          "resultTitle": "A slow cron still overlaps",
+          "resultBody": "The blip no longer triggers adoption, but a real slowdown kept eu-west's cron billing for 40 minutes; at minute 30 us-east started too, and 6,000 customers were still invoiced twice.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 56,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 450,
+              "unit": "ms",
+              "tone": "neutral"
+            },
+            {
+              "key": "errors",
+              "label": "Duplicate invoices",
+              "value": 6000,
+              "unit": "invoices",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cron-us",
+                "sub": "adopts at minute 30"
+              },
+              {
+                "id": "mail",
+                "sub": "6k sent twice"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "peer-health",
+          "label": "Have each cron probe the other region's health endpoint first",
+          "correct": false,
+          "resultTitle": "The check shares the blip",
+          "resultBody": "During the same network blip, us-east can't reach eu-west's health endpoint either, so it still concludes eu-west is dead and bills its 22k customers a second time.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 58,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 470,
+              "unit": "ms",
+              "tone": "neutral"
+            },
+            {
+              "key": "errors",
+              "label": "Duplicate invoices",
+              "value": 21000,
+              "unit": "invoices",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cron-us",
+                "sub": "peer check timed out"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "cron-us",
+                "to": "cron-eu"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        }
+      ],
+      "hints": [
+        "Deciding from outside that a region is dead is always a guess.",
+        "The old owner must find out that it has lost the right to bill.",
+        "Give ownership an expiry, and let writes from a stale owner be rejected by number."
+      ]
+    },
+    {
+      "id": "mr-bill-01",
+      "incidentCode": "INC-012-14B",
+      "level": 12,
+      "patternId": "multi-region",
+      "canonical": false,
+      "isCascade": true,
+      "parentIncidentCode": "INC-012-14",
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 90,
+      "title": "Resuming replication would break eu-west again",
+      "brief": "The pause bought three hours. Fitbase's eu-west now serves 3-hour-old profiles, and resuming replication would replay the phone column rename into v41, which still reads users.phone.",
+      "constraint": "eu-west's v42 rollout is tomorrow; regions still deploy one at a time, hours apart.",
+      "question": "How do you catch eu-west up without breaking v41?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 26000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 44,
+          "unit": "%",
+          "tone": "neutral"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 320,
+          "unit": "ms",
+          "tone": "neutral"
+        },
+        {
+          "key": "lag",
+          "label": "eu-west lag",
+          "value": 10800,
+          "unit": "s",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "eu-west errors",
+          "value": 0.5,
+          "unit": "%",
+          "tone": "warn"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "us",
+            "kind": "server",
+            "label": "us-east (v42)",
+            "cpu": 44
+          },
+          {
+            "id": "eu",
+            "kind": "server",
+            "label": "eu-west (v41)",
+            "tone": "warn",
+            "cpu": 40,
+            "sub": "profiles 3 h stale"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Replicated DB",
+            "tone": "bad",
+            "sub": "eu-west paused 3 h"
+          }
+        ],
+        "edges": [
+          {
+            "from": "us",
+            "to": "db"
+          },
+          {
+            "from": "eu",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "readd-column",
+          "label": "Re-add users.phone in us-east, dual-write it, then resume",
+          "correct": true,
+          "resultTitle": "Both versions find their column",
+          "resultBody": "A hotfix migration adds phone back and backfills it from phone_e164, and v42 writes both. When replication resumes, eu-west replays the rename and then the re-add, so v41 keeps reading phone while the 3 h backlog drains in 20 minutes. Cost: phone is dropped again only after every region runs v42.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 47,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 300,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "lag",
+              "label": "eu-west lag",
+              "value": 1.2,
+              "unit": "s",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "eu-west errors",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "us",
+                "kind": "server",
+                "label": "us-east (v42)",
+                "tone": "good",
+                "cpu": 47,
+                "sub": "writes phone + phone_e164"
+              },
+              {
+                "id": "eu",
+                "kind": "server",
+                "label": "eu-west (v41)",
+                "tone": "good",
+                "cpu": 42
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Replicated DB",
+                "tone": "good",
+                "sub": "both columns, lag 1 s"
+              }
+            ],
+            "edges": [
+              {
+                "from": "us",
+                "to": "db"
+              },
+              {
+                "from": "eu",
+                "to": "db"
+              }
+            ]
+          },
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "complexityScore": 3,
+            "tradeoffSummary": "One extra hotfix migration and a later cleanup release."
+          }
+        },
+        {
+          "id": "resume-and-roll",
+          "label": "Resume replication and roll eu-west to v42 right away",
+          "correct": false,
+          "resultTitle": "30% errors during the rollout",
+          "resultBody": "The rename lands before the rollout finishes, so for 25 minutes every remaining v41 pod fails on users.phone, and eu-west skips the hours-apart staging the team relies on.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 52,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 900,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "lag",
+              "label": "eu-west lag",
+              "value": 2,
+              "unit": "s",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "eu-west errors",
+              "value": 30,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "eu",
+                "tone": "bad",
+                "sub": "v41 pods: column not found"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "snapshot-rebuild",
+          "label": "Rebuild eu-west's database from a fresh us-east snapshot now",
+          "correct": false,
+          "resultTitle": "The snapshot has the rename too",
+          "resultBody": "The 6-hour restore brings eu-west current, but the snapshot already contains phone_e164 instead of phone, so v41 fails on every profile read the moment it reconnects.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 46,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 800,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "lag",
+              "label": "eu-west lag",
+              "value": 0,
+              "unit": "s",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "eu-west errors",
+              "value": 30,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "sub": "restored, phone_e164 only"
+              },
+              {
+                "id": "eu",
+                "tone": "bad",
+                "sub": "column not found"
+              }
+            ]
+          },
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        }
+      ],
+      "hints": [
+        "v41 only breaks if the column it reads disappears.",
+        "You can change what the replicated stream will contain before you resume it.",
+        "A column can come back as easily as it left."
+      ]
     }
   ]
 }

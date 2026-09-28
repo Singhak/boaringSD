@@ -18,7 +18,7 @@
       "title": "Refund hit the wrong order",
       "brief": "ShopKart split orders across 4 MySQL shards, each with its own AUTO_INCREMENT. Order #88,213,007 now exists on two shards, and 1,900 refunds a day land on the wrong customer.",
       "constraint": "IDs must stay 64-bit BIGINTs, roughly time-sorted, and shards grow from 4 to 16 next quarter.",
-      "question": "How should new order IDs be generated?",
+      "question": "Refunds are safe for now. What stops new order IDs from colliding?",
       "metricsBefore": [
         {
           "key": "rps",
@@ -121,7 +121,12 @@
             }
           ],
           "resultTitle": "One ID space for every shard",
-          "resultBody": "Each of up to 1,024 workers mints 4,096 IDs per millisecond without asking anyone, so the 4 shards can never collide and IDs still sort by time. Cost: worker IDs must be assigned uniquely."
+          "resultBody": "Each of up to 1,024 workers mints 4,096 IDs per millisecond without asking anyone, so the 4 shards can never collide and IDs still sort by time. Cost: worker IDs must be assigned uniquely.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "cascadeIncidentId": "idg-casc-01",
+          "cascadeDelayMs": 4000
         },
         {
           "id": "offset-increment",
@@ -152,7 +157,24 @@
           ],
           "resultTitle": "Works until the reshard",
           "resultBody": "Interleaving fixes today's 4 shards, but moving to 16 means changing the step on live tables; rows copied during the split collide again and refunds keep misrouting.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "s1",
+                "tone": "warn",
+                "sub": "step 4, offset 1"
+              },
+              {
+                "id": "s2",
+                "tone": "bad",
+                "sub": "copied rows collide"
+              }
+            ]
+          }
         },
         {
           "id": "uuid-v4",
@@ -183,7 +205,29 @@
           ],
           "resultTitle": "Unique but too wide and random",
           "resultBody": "UUIDv4 never collides, but it is 128 bits, breaking the 40 services that store BIGINT order IDs, and random inserts scatter across the B-tree so shard CPU climbs to 84%.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "s1",
+                "cpu": 84,
+                "sub": "random B-tree inserts"
+              },
+              {
+                "id": "s2",
+                "cpu": 82,
+                "sub": "random B-tree inserts"
+              },
+              {
+                "id": "api",
+                "tone": "warn",
+                "sub": "40 services expect BIGINT"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -191,7 +235,115 @@
         "The constraint wants 64 bits, time order and more shards later.",
         "Split the 64 bits into time, who generated it, and a per-millisecond counter."
       ],
-      "nextId": null
+      "nextId": null,
+      "format": "two-step",
+      "mitigation": {
+        "question": "Refunds are landing on strangers right now. What stops the damage first?",
+        "choices": [
+          {
+            "id": "m-match-customer",
+            "label": "Refund only when order ID and customer ID both match",
+            "correct": true,
+            "approach": "optimal",
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "resultTitle": "Misrouted refunds stop",
+            "resultBody": "The refund API now rejects any order whose customer does not match the requester, so the 1,900 misroutes a day drop to zero and the rare mismatch goes to manual review. The IDs still collide underneath.",
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 72,
+                "unit": "%",
+                "tone": "warn"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 185,
+                "unit": "ms",
+                "tone": "warn"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 40,
+                "unit": "errors",
+                "tone": "warn"
+              }
+            ]
+          },
+          {
+            "id": "m-restart-shards",
+            "label": "Restart all four shards to resync their AUTO_INCREMENT counters",
+            "correct": false,
+            "approach": "anti_pattern",
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "resultTitle": "Counters resume where they were",
+            "resultBody": "MySQL 8 persists each AUTO_INCREMENT value across restarts, so every shard resumes its own sequence; checkout was down for two minutes and refunds keep hitting the wrong customer.",
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 74,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 420,
+                "unit": "ms",
+                "tone": "bad"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 1900,
+                "unit": "errors",
+                "tone": "bad"
+              }
+            ]
+          },
+          {
+            "id": "m-freeze-refunds",
+            "label": "Freeze every refund until the duplicate orders are cleaned up",
+            "correct": false,
+            "approach": "anti_pattern",
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "resultTitle": "Nobody gets their money back",
+            "resultBody": "Misroutes stop, but about 28,000 legitimate refunds a day pile up, support tickets triple within hours, and card-network rules give you days, not weeks, to pay them.",
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 70,
+                "unit": "%",
+                "tone": "warn"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 180,
+                "unit": "ms",
+                "tone": "warn"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 900,
+                "unit": "errors",
+                "tone": "bad"
+              }
+            ]
+          }
+        ]
+      }
     },
     {
       "id": "idg-02",
@@ -298,7 +450,10 @@
             }
           ],
           "resultTitle": "New rows land on the right edge",
-          "resultBody": "UUIDv7 keeps the 128-bit format partners expect, but its leading 48-bit timestamp makes the 30,000 inserts/s append to the newest index pages, so the hit rate returns to about 99%."
+          "resultBody": "UUIDv7 keeps the 128-bit format partners expect, but its leading 48-bit timestamp makes the 30,000 inserts/s append to the newest index pages, so the hit rate returns to about 99%.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "more-ram",
@@ -329,7 +484,20 @@
           ],
           "resultTitle": "Bought a few weeks",
           "resultBody": "More RAM holds more of the random pages for now, but the table grows by 2.6 billion rows a day and the working set outruns 128 GB again within weeks.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 900
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "warn",
+                "cpu": 74,
+                "sub": "hit rate 84%, table growing"
+              }
+            ]
+          }
         },
         {
           "id": "hash-partition",
@@ -360,7 +528,19 @@
           ],
           "resultTitle": "Sixteen random indexes instead of one",
           "resultBody": "Each partition still receives uniformly random keys, so every insert touches a cold page somewhere; locality is unchanged and planning overhead adds CPU.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "cpu": 86,
+                "sub": "16 random indexes"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -418,9 +598,9 @@
           {
             "id": "gen",
             "kind": "server",
-            "label": "ID worker 17 (clock -800ms)",
+            "label": "ID worker 17",
             "cpu": 61,
-            "tone": "bad"
+            "tone": "warn"
           },
           {
             "id": "q",
@@ -433,7 +613,8 @@
             "kind": "worker",
             "label": "Dedupe consumer",
             "cpu": 55,
-            "tone": "warn"
+            "tone": "bad",
+            "sub": "3,100 events dropped"
           }
         ],
         "edges": [
@@ -476,7 +657,10 @@
             }
           ],
           "resultTitle": "No reused timestamps",
-          "resultBody": "The worker compares each tick with the last millisecond it used and stalls or errors for up to 800 ms instead of reusing it; NTP is also set to slew, not step, so pauses stay rare."
+          "resultBody": "The worker compares each tick with the last millisecond it used and stalls or errors for up to 800 ms instead of reusing it; NTP is also set to slew, not step, so pauses stay rare.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "wider-sequence",
@@ -507,7 +691,23 @@
           ],
           "resultTitle": "More room, same collision",
           "resultBody": "A wider sequence only raises IDs per millisecond. After the step the sequence resets to 0 for a timestamp already used, so the same 3,100 IDs are minted again.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gen",
+                "tone": "bad",
+                "sub": "seq 16 bits, still repeats"
+              },
+              {
+                "id": "dedupe",
+                "sub": "3,100 still dropped"
+              }
+            ]
+          }
         },
         {
           "id": "retry-on-conflict",
@@ -538,7 +738,23 @@
           ],
           "resultTitle": "The duplicates never hit the DB",
           "resultBody": "Kafka consumers, caches and logs see the ID before any unique index does, so events are still dropped as repeats; the DB retry only covers one of several sinks.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gen",
+                "cpu": 64,
+                "sub": "regenerates on DB error"
+              },
+              {
+                "id": "dedupe",
+                "sub": "2,400 still dropped"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -546,7 +762,32 @@
         "Which bits repeat when the timestamp repeats?",
         "Remember the last millisecond the worker issued."
       ],
-      "nextId": null
+      "nextId": null,
+      "format": "culprit",
+      "logs": {
+        "gen": [
+          "ntpd: time stepped by -0.800113 s",
+          "idgen: now=1759023841120 last_issued=1759023841920",
+          "idgen: sequence reset to 0 for ts=1759023841121"
+        ],
+        "q": [
+          "broker: produce 52.1k msg/s, 0 errors",
+          "events-7: ISR 3/3, under-replicated 0"
+        ],
+        "dedupe": [
+          "WARN drop event 1759023841121-17-0003: id already seen",
+          "WARN 3,100 duplicate ids in 5 min, all worker=17",
+          "consumer lag 1.2k msgs, catching up"
+        ]
+      },
+      "culprit": {
+        "nodeId": "gen",
+        "explanation": "Worker 17's log shows ntpd stepping its clock back 800 ms and the generator issuing timestamps below the last one it used, so it re-minted IDs it had already handed out. The dedupe consumer only noticed the repeats.",
+        "wrongNodeFeedback": {
+          "dedupe": "The consumer is doing its job: dropping IDs it has already seen. Where did the repeated IDs come from?",
+          "q": "Kafka is healthy with lag 0; it only carries the IDs it is given."
+        }
+      }
     },
     {
       "id": "idg-04",
@@ -668,7 +909,10 @@
             }
           ],
           "resultTitle": "Each ID has exactly one owner",
-          "resultBody": "A pod claims a free ID with a compare-and-set lease and renews it every few seconds; if it dies the lease expires before the ID is reused. Cost: startup now depends on etcd."
+          "resultBody": "A pod claims a free ID with a compare-and-set lease and renews it every few seconds; if it dies the lease expires before the ID is reused. Cost: startup now depends on etcd.",
+          "tradeoffs": {
+            "costMonthlyDelta": 120
+          }
         },
         {
           "id": "random-id",
@@ -699,7 +943,23 @@
           ],
           "resultTitle": "The birthday problem wins",
           "resultBody": "With 220 pods drawing from 1,024 slots, the chance that at least two share an ID is above 99.99%, so duplicates keep appearing on every scale-up.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "p1",
+                "label": "Pod a7f (worker 877)"
+              },
+              {
+                "id": "p2",
+                "label": "Pod c19 (worker 877)",
+                "sub": "collision on scale-up"
+              }
+            ]
+          }
         },
         {
           "id": "ip-octet",
@@ -730,7 +990,24 @@
           ],
           "resultTitle": "IPs repeat across subnets",
           "resultBody": "The cluster spans four /24 subnets, so 10.0.1.23 and 10.0.3.23 both become worker 23, and recycled IPs can revive an ID still in use elsewhere.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "p1",
+                "label": "Pod a7f (worker 23)",
+                "sub": "10.0.1.23"
+              },
+              {
+                "id": "p2",
+                "label": "Pod c19 (worker 23)",
+                "sub": "10.0.3.23"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -844,7 +1121,12 @@
             }
           ],
           "resultTitle": "One write per 10,000 IDs",
-          "resultBody": "Each API server bumps the counter by 10,000 in one UPDATE and serves IDs locally, so the ticket server sees about 2 writes/s. Cost: a crashed server leaves a gap of unused IDs."
+          "resultBody": "Each API server bumps the counter by 10,000 in one UPDATE and serves IDs locally, so the ticket server sees about 2 writes/s. Cost: a crashed server leaves a gap of unused IDs.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "cascadeIncidentId": "idg-casc-02",
+          "cascadeDelayMs": 4000
         },
         {
           "id": "redis-incr",
@@ -875,7 +1157,36 @@
           ],
           "resultTitle": "Failover rewinds the counter",
           "resultBody": "Redis handles 18,000 INCR/s easily, but a failover promotes a replica a few hundred increments behind, and the next signups receive IDs that already belong to users.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 60
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "tix",
+                "tone": "neutral",
+                "cpu": 5,
+                "sub": "retired"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "redis",
+                "kind": "cache",
+                "label": "Redis INCR",
+                "tone": "bad",
+                "cpu": 22,
+                "sub": "failover rewound 300 IDs"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "api",
+                "to": "redis"
+              }
+            ]
+          }
         },
         {
           "id": "read-replicas",
@@ -906,7 +1217,46 @@
           ],
           "resultTitle": "Replicas cannot mint tickets",
           "resultBody": "Every ticket is a write, so only the primary can issue it; the replicas sit idle while the ticket server stays at 94% CPU and signups still wait.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 400
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "tix",
+                "cpu": 95
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "rep1",
+                "kind": "replica",
+                "label": "Replica 1",
+                "tone": "neutral",
+                "cpu": 3,
+                "sub": "idle: tickets are writes"
+              },
+              {
+                "id": "rep2",
+                "kind": "replica",
+                "label": "Replica 2",
+                "tone": "neutral",
+                "cpu": 3,
+                "sub": "idle"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "tix",
+                "to": "rep1"
+              },
+              {
+                "from": "tix",
+                "to": "rep2"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1030,7 +1380,10 @@
             }
           ],
           "resultTitle": "Nothing left to enumerate",
-          "resultBody": "Ownership checks stop the 2.1M downloads outright, and random public IDs reveal neither order nor volume, while joins keep the internal BIGINT. Cost: one extra indexed lookup per request."
+          "resultBody": "Ownership checks stop the 2.1M downloads outright, and random public IDs reveal neither order nor volume, while joins keep the internal BIGINT. Cost: one extra indexed lookup per request.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
         },
         {
           "id": "base64",
@@ -1061,7 +1414,18 @@
           ],
           "resultTitle": "Encoding is not secrecy",
           "resultBody": "The scraper decodes one link, sees 100234, and resumes incrementing within minutes; the daily invoice count is still readable from the decoded values.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "decoded 100234, scrape resumes"
+              }
+            ]
+          }
         },
         {
           "id": "rate-limit",
@@ -1092,7 +1456,23 @@
           ],
           "resultTitle": "The botnet has 40,000 IPs",
           "resultBody": "Spread across 40,000 addresses the scraper stays under the limit, so the weekend haul barely shrinks, and anyone can still infer volume from two IDs a day apart.",
-          "retry": true
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cdn",
+                "tone": "warn",
+                "sub": "40k IPs under the limit"
+              },
+              {
+                "id": "app",
+                "cpu": 60
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1233,7 +1613,7 @@
             {
               "key": "fsync",
               "label": "WAL fsync p99",
-              "value": 180,
+              "value": 160,
               "unit": "ms",
               "tone": "bad"
             },
@@ -1245,8 +1625,26 @@
               "tone": "warn"
             }
           ],
-          "resultTitle": "Fewer lapses, slower recycling",
-          "resultBody": "Leases lapse less often, but etcd still logs slow-fsync warnings and loses its leader a few times an hour, pausing every lease grant. Dead pods now hold their worker ID for 5 minutes, so fast scale-ups run short of free IDs."
+          "resultTitle": "Stalls drop to 4 an hour",
+          "resultBody": "The 5-minute TTL rides out most late heartbeats, so minting pauses fall from 14 to 4 an hour. etcd still logs slow-fsync warnings, and the gp2 burst balance is down to 12% and falling.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "etcd",
+                "tone": "warn",
+                "cpu": 86,
+                "sub": "burst balance 12%, falling"
+              },
+              {
+                "id": "api",
+                "tone": "neutral"
+              }
+            ]
+          },
+          "consequenceIncidentId": "idg-bill-01"
         },
         {
           "id": "five-members",
@@ -1278,7 +1676,20 @@
             }
           ],
           "resultTitle": "More members, slower commits",
-          "resultBody": "Every etcd write must be fsynced by a quorum of 3 out of 5 members, all on the same slow gp2 disks. Nothing is shared out, commit latency rises, and minting pauses climb from 14 to 19 an hour."
+          "resultBody": "Every etcd write must be fsynced by a quorum of 3 out of 5 members, all on the same slow gp2 disks. Nothing is shared out, commit latency rises, and minting pauses climb from 14 to 19 an hour.",
+          "tradeoffs": {
+            "costMonthlyDelta": 80
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "etcd",
+                "label": "etcd x5 (burstable, gp2)",
+                "cpu": 90,
+                "sub": "quorum 3 of 5 on gp2"
+              }
+            ]
+          }
         }
       ],
       "hints": [
@@ -1288,6 +1699,656 @@
       ],
       "nextId": null,
       "reviewed": true
+    },
+    {
+      "canonical": false,
+      "isCascade": true,
+      "reviewed": true,
+      "id": "idg-casc-01",
+      "incidentCode": "INC-019-08",
+      "level": 19,
+      "patternId": "id-generation",
+      "parentIncidentCode": "INC-019",
+      "severity": "P1",
+      "xp": 80,
+      "title": "Order pages open the wrong order",
+      "brief": "Snowflake order IDs are live. Web and Android parse JSON numbers as doubles, exact only to 2^53, so order IDs arrive rounded to a multiple of 256. 70% of order-page loads now 404.",
+      "constraint": "The web app ships daily and Android can force an update; the order key stays a 64-bit BIGINT.",
+      "question": "What gets every client the exact order ID?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 28000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 55,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 62,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 4200,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Web + Android apps",
+            "tone": "bad",
+            "sub": "IDs rounded to 256"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Order API",
+            "tone": "warn",
+            "cpu": 55,
+            "sub": "404 on 70% of lookups"
+          },
+          {
+            "id": "s1",
+            "kind": "db",
+            "label": "Order shards",
+            "cpu": 48
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "s1"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "id-str",
+          "label": "Add an id_str string field and switch clients to it",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Exact IDs reach every client",
+          "resultBody": "JSON strings are never rounded, so the web app and the forced Android update read id_str and every order page resolves; old clients keep the numeric id until they update. Cost: each ID is sent twice, about 20 bytes.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 55,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 62,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ]
+        },
+        {
+          "id": "shift-epoch",
+          "label": "Shift the Snowflake epoch so new IDs stay below 2^53",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "IDs now wrap in 24 days",
+          "resultBody": "Fitting under 2^53 leaves 31 bits of milliseconds beside the 22 worker and sequence bits, about 24 days before the timestamp wraps and IDs repeat. The orders already minted still 404.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 55,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 62,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 2100,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "sub": "old IDs 404, wrap in 24 d"
+              },
+              {
+                "id": "s1",
+                "tone": "warn",
+                "sub": "new IDs repeat in 24 d"
+              }
+            ]
+          }
+        },
+        {
+          "id": "bigint-json",
+          "label": "Parse responses with a BigInt-aware JSON library on web",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Android still rounds",
+          "resultBody": "The web app now reads exact IDs, but Android's JSON parser still turns them into doubles, so about 40% of order-page loads keep returning 404 or someone else's order.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 55,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 62,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 2400,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "users",
+                "sub": "web exact, Android rounds"
+              },
+              {
+                "id": "api",
+                "sub": "404 on 40% of lookups"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "What is the largest integer a double holds exactly?",
+        "The server sends the right number; the client's parser changes it.",
+        "Text survives any JSON parser untouched."
+      ]
+    },
+    {
+      "canonical": false,
+      "isCascade": true,
+      "reviewed": true,
+      "id": "idg-casc-02",
+      "incidentCode": "INC-019-09",
+      "level": 19,
+      "patternId": "id-generation",
+      "parentIncidentCode": "INC-019",
+      "severity": "P2",
+      "xp": 60,
+      "title": "Welcome emails skip 4% of signups",
+      "brief": "With leased ID blocks live, the welcome-email job polls WHERE id > last_seen. Server C hands out 40,xxx while server B still hands out 30,xxx, so B's signups are skipped: 4% never verify.",
+      "constraint": "The ticket server stays off the hot path and blocks stay at 10,000 IDs.",
+      "question": "How should the job find users it hasn't emailed yet?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 18000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 45,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 11,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 720,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Signup API x3",
+            "cpu": 40
+          },
+          {
+            "id": "tix",
+            "kind": "db",
+            "label": "Ticket server",
+            "tone": "good",
+            "cpu": 9
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Users DB",
+            "cpu": 45
+          },
+          {
+            "id": "job",
+            "kind": "worker",
+            "label": "Welcome-email job",
+            "tone": "bad",
+            "sub": "cursor at id 40,112"
+          }
+        ],
+        "edges": [
+          {
+            "from": "api",
+            "to": "tix"
+          },
+          {
+            "from": "api",
+            "to": "db"
+          },
+          {
+            "from": "job",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "pending-flag",
+          "label": "Poll a partial index of users where welcomed is false",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "No signup left behind",
+          "resultBody": "The job now asks for rows still marked welcomed=false through a small partial index and flips the flag after sending, so ID order no longer matters. Cost: one extra UPDATE per signup.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 48,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 11,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ]
+        },
+        {
+          "id": "small-blocks",
+          "label": "Shrink ID blocks from 10,000 to 100 so servers stay close",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Gaps shrink, skips don't",
+          "resultBody": "Servers now drift only a few hundred IDs apart, but the cursor still overtakes the slowest block, skips fall only to about 1%, and the ticket server climbs to 180 writes/s.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 45,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 12,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 180,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "tix",
+                "tone": "warn",
+                "cpu": 30,
+                "sub": "180 writes/s"
+              },
+              {
+                "id": "job",
+                "sub": "still skipping ~1%"
+              }
+            ]
+          }
+        },
+        {
+          "id": "nightly-scan",
+          "label": "Rescan the whole users table nightly for missed signups",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Verified a day late",
+          "resultBody": "Skipped users do get an email, but up to 24 hours late, after most have given up, and the 90M-row scan pins the Users DB at 85% CPU for an hour every night.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 85,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 40,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 700,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 85,
+                "sub": "nightly 90M-row scan"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "With leased blocks, is ID order still signup order?",
+        "A cursor on id assumes every new row gets a bigger id.",
+        "Track which rows still need work, not how far you got."
+      ]
+    },
+    {
+      "canonical": false,
+      "isCascade": true,
+      "reviewed": true,
+      "id": "idg-bill-01",
+      "incidentCode": "INC-019-10",
+      "level": 19,
+      "patternId": "id-generation",
+      "parentIncidentCode": "INC-019-07",
+      "severity": "P1",
+      "xp": 80,
+      "title": "etcd leader flaps and new pods get no worker ID",
+      "brief": "The 5-minute lease TTL bought 50 minutes. Then etcd's gp2 burst credits ran out: WAL fsync p99 is 900 ms, the leader changed 6 times, and 40 new ID pods can't get a lease.",
+      "constraint": "Pods may never mint without a lease; a duplicate trip ID is worse than a stall.",
+      "question": "What gets etcd committing on time again?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 60000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 91,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "fsync",
+          "label": "WAL fsync p99",
+          "value": 900,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "stalls",
+          "label": "Minting stalls",
+          "value": 30,
+          "unit": "per hour",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Trip services"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "ID pods",
+            "tone": "warn",
+            "cpu": 35,
+            "sub": "40 pods waiting for a lease"
+          },
+          {
+            "id": "etcd",
+            "kind": "db",
+            "label": "etcd x3 (burstable, gp2)",
+            "tone": "bad",
+            "cpu": 91,
+            "sub": "burst balance 0%"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "etcd"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "piops-swap",
+          "label": "Swap each etcd member onto a provisioned-IOPS SSD in turn",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 300
+          },
+          "resultTitle": "Commits land in milliseconds again",
+          "resultBody": "Replacing one member at a time keeps quorum while each moves to a volume with guaranteed IOPS; fsync p99 falls to 5 ms, the leader settles and the 40 waiting pods get leases. Cost: about $300 a month.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 32,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "fsync",
+              "label": "WAL fsync p99",
+              "value": 5,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "stalls",
+              "label": "Minting stalls",
+              "value": 0,
+              "unit": "per hour",
+              "tone": "good"
+            }
+          ]
+        },
+        {
+          "id": "long-election",
+          "label": "Raise etcd heartbeat and election timeouts tenfold to stop flaps",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Fewer elections, same slow disk",
+          "resultBody": "The leader stops flapping, but every lease grant still waits on a 900 ms fsync, and a real leader crash now takes 10 s to detect; the new pods keep queueing for IDs.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 90,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "fsync",
+              "label": "WAL fsync p99",
+              "value": 900,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "stalls",
+              "label": "Minting stalls",
+              "value": 22,
+              "unit": "per hour",
+              "tone": "bad"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "etcd",
+                "sub": "election 10 s, fsync 900 ms"
+              },
+              {
+                "id": "api",
+                "tone": "bad",
+                "sub": "38 pods still waiting"
+              }
+            ]
+          }
+        },
+        {
+          "id": "random-fallback",
+          "label": "Let pods mint with random worker IDs until etcd recovers",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "resultTitle": "Duplicate trip IDs return",
+          "resultBody": "A random worker ID can land on any of the 220 IDs already leased to live pods, so within minutes duplicate trip IDs reach the trips DB and the lease system's one guarantee is gone.",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 91,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "fsync",
+              "label": "WAL fsync p99",
+              "value": 900,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "stalls",
+              "label": "Minting stalls",
+              "value": 0,
+              "unit": "per hour",
+              "tone": "good"
+            }
+          ],
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "tone": "bad",
+                "sub": "duplicate trip IDs"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "The longer TTL hid the symptom; the disk never changed.",
+        "gp2 volumes drop to baseline IOPS once burst credits run out.",
+        "etcd's commit speed is bounded by its disk's fsync latency."
+      ]
     }
   ]
 }
