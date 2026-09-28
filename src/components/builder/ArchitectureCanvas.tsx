@@ -14,7 +14,27 @@ import {
   type OnEdgesChange,
   type OnNodesChange,
 } from "@xyflow/react";
-import { Database, Globe, HardDrive, Layers, ListFilter, Plus, Server, Trash2, Users, X, Zap } from "lucide-react";
+import {
+  Activity,
+  Binary,
+  Boxes,
+  Cpu,
+  Database,
+  Globe,
+  HardDrive,
+  Layers,
+  ListFilter,
+  Network,
+  Plus,
+  Route,
+  Search,
+  Server,
+  Shield,
+  Trash2,
+  Users,
+  X,
+  Zap,
+} from "lucide-react";
 import { ArchNode } from "@/components/builder/CustomNodes";
 import { RemovableEdge } from "@/components/builder/RemovableEdge";
 import { playBlipSound } from "@/lib/sound";
@@ -32,6 +52,14 @@ export const PALETTE: { type: ArchitectureNodeType; name: string; icon: React.El
   { type: "queue", name: "Message Queue", icon: ListFilter },
   { type: "database", name: "Primary DB", icon: Database },
   { type: "replica", name: "Read Replica", icon: HardDrive },
+  { type: "connection_pooler", name: "PgBouncer", icon: Network },
+  { type: "id_service", name: "Snowflake ID", icon: Binary },
+  { type: "observability", name: "Observability", icon: Activity },
+  { type: "auth_gateway", name: "Auth Gateway", icon: Shield },
+  { type: "search_index", name: "Search Index", icon: Search },
+  { type: "stream_processor", name: "Stream Worker", icon: Cpu },
+  { type: "consensus_cluster", name: "Raft Cluster", icon: Boxes },
+  { type: "shard_router", name: "Shard Router", icon: Route },
 ];
 
 /** Builds a canvas node in the shape ArchNode renders. */

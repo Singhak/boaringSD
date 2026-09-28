@@ -138,7 +138,7 @@ export default function MentalMathTrainer({
     setEvaluation(result);
     setShowDerivation(true);
     if (isPreflightMode && onPreflightComplete) {
-      onPreflightComplete(result.accuracyScore);
+      onPreflightComplete(result.score);
     }
     // Every attempt counts as evidence; XP only for a passing estimate (once per problem, small daily replay).
     submitEstimate(currentProblem.id, result.score);

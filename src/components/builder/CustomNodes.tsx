@@ -2,10 +2,30 @@
 
 import React, { memo } from "react";
 import { Handle, Position, NodeProps } from "@xyflow/react";
-import { Users, Server, Layers, Zap, Database, HardDrive, Globe, Trash2, ListFilter, Flame, AlertTriangle } from "lucide-react";
-import { CustomNodeData } from "@/types";
+import {
+  Users,
+  Server,
+  Layers,
+  Zap,
+  Database,
+  HardDrive,
+  Globe,
+  Trash2,
+  ListFilter,
+  Flame,
+  AlertTriangle,
+  Network,
+  Binary,
+  Activity,
+  Shield,
+  Search,
+  Cpu,
+  Boxes,
+  Route,
+} from "lucide-react";
+import { ArchitectureNodeType, CustomNodeData } from "@/types";
 
-const iconMap = {
+const iconMap: Record<ArchitectureNodeType, React.ElementType> = {
   client: Users,
   load_balancer: Layers,
   server: Server,
@@ -14,9 +34,17 @@ const iconMap = {
   replica: HardDrive,
   cdn: Globe,
   queue: ListFilter,
+  connection_pooler: Network,
+  id_service: Binary,
+  observability: Activity,
+  auth_gateway: Shield,
+  search_index: Search,
+  stream_processor: Cpu,
+  consensus_cluster: Boxes,
+  shard_router: Route,
 };
 
-const iconColor = {
+const iconColor: Record<ArchitectureNodeType, string> = {
   client: "text-cyan-300",
   load_balancer: "text-emerald-300",
   server: "text-sky-300",
@@ -25,9 +53,17 @@ const iconColor = {
   replica: "text-teal-300",
   cdn: "text-sky-300",
   queue: "text-indigo-300",
+  connection_pooler: "text-emerald-400",
+  id_service: "text-amber-400",
+  observability: "text-rose-400",
+  auth_gateway: "text-purple-300",
+  search_index: "text-orange-400",
+  stream_processor: "text-fuchsia-300",
+  consensus_cluster: "text-lime-300",
+  shard_router: "text-cyan-400",
 };
 
-const typeLabel = {
+const typeLabel: Record<ArchitectureNodeType, string> = {
   client: "Users",
   load_balancer: "Load balancer",
   server: "App server",
@@ -36,6 +72,14 @@ const typeLabel = {
   replica: "Read replica",
   cdn: "CDN",
   queue: "Queue",
+  connection_pooler: "Connection pooler",
+  id_service: "ID generator",
+  observability: "Observability",
+  auth_gateway: "Auth gateway",
+  search_index: "Search index",
+  stream_processor: "Stream processor",
+  consensus_cluster: "Consensus cluster",
+  shard_router: "Shard router",
 };
 
 export const ArchNode = memo(function ArchNode({ data, selected }: NodeProps & { data: CustomNodeData }) {

@@ -4,7 +4,6 @@ import React, { useMemo, useState } from "react";
 import Link from "next/link";
 import {
   ArrowRight,
-  BookOpen,
   ChevronLeft,
   ChevronRight,
   Lock,
@@ -170,14 +169,6 @@ function PatternCard({
                   Start <ArrowRight className="w-3 h-3" />
                 </>
               )}
-            </Link>
-          )}
-          {detailed && p.lessonId && (
-            <Link
-              href={`/learn/${p.lessonId}`}
-              className="text-slate-500 hover:text-slate-300 flex items-center gap-1"
-            >
-              <BookOpen className="w-3 h-3" /> Lesson
             </Link>
           )}
           {detailed && weakness && <span className="text-slate-600 font-normal">Next: {weakness}</span>}
