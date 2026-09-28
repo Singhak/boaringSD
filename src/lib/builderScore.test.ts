@@ -222,3 +222,52 @@ test("a lean passing design stays within budget", () => {
   assert.ok(result.cost <= result.budget, `${result.cost} > ${result.budget}`);
   assert.equal(result.checks.find((c) => c.id === "budget")?.status, "pass");
 });
+
+test("boss-connection-pooling requires connection_pooler and passes when wired", () => {
+  const s = scenario("boss-connection-pooling");
+  const d = startingDesign(s);
+  const withoutPooler = evaluateScenario(d.nodes, d.edges, s);
+  assert.equal(withoutPooler.canPass, false);
+  assert.ok(withoutPooler.failureReasons.includes("require-connection_pooler"));
+
+  add(d, "pooler", "connection_pooler", ["db"]);
+  add(d, "cache", "cache", ["server-1"]);
+  const withPooler = evaluateScenario(d.nodes, d.edges, s);
+  assert.equal(withPooler.canPass, true, JSON.stringify(withPooler.checks));
+});
+
+test("boss-id-generation requires id_service and fails with cache alone", () => {
+  const s = scenario("boss-id-generation");
+  const d = startingDesign(s);
+  add(d, "cache", "cache", ["server-1"]);
+  const cacheOnly = evaluateScenario(d.nodes, d.edges, s);
+  assert.equal(cacheOnly.canPass, false);
+  assert.ok(cacheOnly.failureReasons.includes("require-id_service"));
+
+  add(d, "id-gen", "id_service", ["server-1"]);
+  const withIdService = evaluateScenario(d.nodes, d.edges, s);
+  assert.equal(withIdService.canPass, true, JSON.stringify(withIdService.checks));
+});
+
+test("boss-observability requires observability pipeline", () => {
+  const s = scenario("boss-observability");
+  const d = startingDesign(s);
+  add(d, "obs", "observability", ["server-1"]);
+  const result = evaluateScenario(d.nodes, d.edges, s);
+  assert.equal(result.canPass, true, JSON.stringify(result.checks));
+});
+
+test("boss-idempotency starts over-budget and passes when pruned with a cache", () => {
+  const s = scenario("boss-idempotency");
+  const d = startingDesign(s);
+  const start = evaluateScenario(d.nodes, d.edges, s);
+  assert.equal(start.canPass, false);
+  assert.ok(start.failureReasons.includes("budget"));
+  assert.ok(start.failureReasons.includes("require-cache"));
+
+  d.nodes = d.nodes.filter((n) => !n.id.startsWith("replica") && n.id !== "server-4" && n.id !== "server-5");
+  d.edges = d.edges.filter((e) => !e.source.startsWith("replica") && !e.target.startsWith("replica") && e.target !== "server-4" && e.target !== "server-5" && e.source !== "server-4" && e.source !== "server-5");
+  add(d, "cache", "cache", ["server-1"]);
+  const fixed = evaluateScenario(d.nodes, d.edges, s);
+  assert.equal(fixed.canPass, true, JSON.stringify(fixed.checks));
+});

@@ -251,6 +251,40 @@ test("locked patterns are never suggested", () => {
   assert.equal(action.patternId, "horizontal-scaling");
 });
 
+test("next action: suggests tier final mock interview after completing tier and its boss", () => {
+  let s = onboarded();
+  const tier1Patterns = ["horizontal-scaling", "load-balancing", "read-replicas", "caching", "cdn-edge"] as const;
+  for (const id of tier1Patterns) {
+    const p = pattern(id);
+    s = recordPatternRun(s, p, cleanRun(p.id), T0).stats;
+    const bossScenario = getBuilderScenarioById(p.builderScenarioId)!;
+    s = recordBuilderResult(s, bossScenario, 100, true, [], T0).stats;
+  }
+  const action = selectNextAction(s, T0);
+  assert.equal(action.kind, "interview");
+  assert.equal(action.href, "/interview?problem=interview-url-shortener");
+  assert.match(action.title, /Tier 1: Foundation/);
+});
+
+test("next action: suggests estimation gym when capacity estimation skill is weak on radar", () => {
+  let s = onboarded();
+  const first3 = ["horizontal-scaling", "load-balancing", "read-replicas"] as const;
+  for (const id of first3) {
+    const p = pattern(id);
+    s = recordPatternRun(s, p, cleanRun(p.id), T0).stats;
+    const bossScenario = getBuilderScenarioById(p.builderScenarioId)!;
+    s = recordBuilderResult(s, bossScenario, 100, true, [], T0).stats;
+  }
+  s = recordEstimate(s, "math-1", 10, T0).stats;
+  s = recordEstimate(s, "math-2", 15, T0).stats;
+  s = recordEstimate(s, "math-3", 20, T0).stats;
+
+  const action = selectNextAction(s, T0);
+  assert.equal(action.kind, "estimation");
+  assert.equal(action.href, "/math");
+  assert.match(action.title, /Estimation Gym/);
+});
+
 // ---------------------------------------------------------------------------
 // Migration
 // ---------------------------------------------------------------------------

@@ -658,7 +658,15 @@ export function recordReview(
 // Next action and daily objective
 // ---------------------------------------------------------------------------
 
-export type NextActionKind = "onboarding" | "resume" | "review" | "builder-boss" | "pattern-run" | "practice";
+export type NextActionKind =
+  | "onboarding"
+  | "resume"
+  | "review"
+  | "builder-boss"
+  | "pattern-run"
+  | "practice"
+  | "interview"
+  | "estimation";
 
 export interface NextAction {
   kind: NextActionKind;
@@ -760,6 +768,55 @@ export function selectNextAction(
       xpReward: builderXpFor(clearedWithoutBoss),
       patternId: clearedWithoutBoss.id,
       badge: `Level ${clearedWithoutBoss.levelNumber} boss`,
+    };
+  }
+
+  // Tier final interview: suggested after completing a tier and its builder boss
+  const TIER_MOCK_INTERVIEWS = [
+    { tierMaxLevel: 5, problemId: "interview-url-shortener", tierName: "Tier 1: Foundation" },
+    { tierMaxLevel: 10, problemId: "interview-twitter-timeline", tierName: "Tier 2: Resilience" },
+    { tierMaxLevel: 15, problemId: "interview-whatsapp-chat", tierName: "Tier 3: Mastery" },
+    { tierMaxLevel: 23, problemId: "interview-youtube-video", tierName: "Tier 4: Global Scale" },
+  ];
+
+  for (const tier of TIER_MOCK_INTERVIEWS) {
+    const tierFinalPattern = patterns.find((p) => p.levelNumber === tier.tierMaxLevel);
+    if (tierFinalPattern && isPatternCleared(stats, tierFinalPattern)) {
+      const bossPassed = getEvidence(stats, tierFinalPattern.id).builderPasses > 0;
+      const interviewPassed = (stats.completedInterviews ?? []).includes(tier.problemId);
+      if (bossPassed && !interviewPassed) {
+        if (!nextRun || nextRun.levelNumber === tier.tierMaxLevel + 1) {
+          return {
+            kind: "interview",
+            title: `Tier Final Mock Interview: ${tier.tierName}`,
+            description: "Prove your architectural scope, capacity estimation, topology design, and failure-mode defense.",
+            href: `/interview?problem=${tier.problemId}`,
+            ctaLabel: "Start mock interview",
+            xpReward: 300,
+            badge: `${tier.tierName} final`,
+          };
+        }
+      }
+    }
+  }
+
+  // Capacity estimation training: when estimation skill is weak on the radar or needs practice
+  const radar = calculateSkillRadar(stats);
+  const clearedPatterns = patterns.filter((p) => isPatternCleared(stats, p));
+  const estimationPracticedCount = stats.estimationResults ? Object.keys(stats.estimationResults).length : 0;
+  const isEstimationWeak =
+    (radar.scores.capacity_estimation.hasEnoughData && radar.scores.capacity_estimation.score < 50) ||
+    (radar.growthArea === "capacity_estimation" && clearedPatterns.length >= 3 && estimationPracticedCount === 0);
+
+  if (clearedPatterns.length >= 3 && isEstimationWeak) {
+    return {
+      kind: "estimation",
+      title: "Estimation Gym: Capacity Math",
+      description: "Sharpen your back-of-the-envelope math for QPS, bandwidth, and cache storage targets.",
+      href: "/math",
+      ctaLabel: "Train estimation math",
+      xpReward: 75,
+      badge: "Growth area",
     };
   }
 

@@ -264,6 +264,8 @@ function trafficWiring(nodes: BuilderNodeLike[], edges: BuilderEdgeLike[] | unde
       replicaIds: idsOfType("replica"),
       cdnUsed: has("cdn"),
       queueUsed: has("queue"),
+      observabilityUsed: has("observability"),
+      poolerUsed: has("connection_pooler"),
     };
   }
 
@@ -291,6 +293,10 @@ function trafficWiring(nodes: BuilderNodeLike[], edges: BuilderEdgeLike[] | unde
     replicaIds: idsOfType("replica").filter((r) => neighbours(r).some((n) => typeById.get(n) === "database")),
     cdnUsed: idsOfType("cdn").some((c) => reachable.has(c) || neighbours(c).some((n) => typeById.get(n) === "client")),
     queueUsed: idsOfType("queue").some((q) => neighbours(q).some((n) => servingServers.has(n))),
+    observabilityUsed: idsOfType("observability").some((o) => neighbours(o).some((n) => servingServers.has(n))),
+    poolerUsed: idsOfType("connection_pooler").some((p) =>
+      neighbours(p).some((n) => typeById.get(n) === "database" || servingServers.has(n))
+    ),
   };
 }
 
@@ -307,6 +313,8 @@ export function simulateTopology(
   const hasCache = wiring.cacheUsed;
   const hasCDN = wiring.cdnUsed;
   const hasQueue = wiring.queueUsed;
+  const hasObservability = wiring.observabilityUsed;
+  const hasPooler = wiring.poolerUsed;
 
   const servers = nodes.map((n, i) => ({ n, id: idOf(n, i) })).filter(({ n }) => typeOf(n) === "server");
   const killedId = workload.killOneServer && servers.length > 0 ? servers[servers.length - 1].id : null;
@@ -317,7 +325,7 @@ export function simulateTopology(
   const staticRps = workload.rps * workload.staticAssetShare;
   const dynamicRps = workload.rps - staticRps;
   const serverRps = dynamicRps + (hasCDN ? 0 : staticRps);
-  const workFactor = workload.slowDownstream && !hasQueue ? 2 : 1;
+  const workFactor = workload.slowDownstream && !(hasQueue || hasObservability) ? 2 : 1;
 
   // Behind an LB, traffic splits across the servers it feeds; without one, every client hits the first server.
   const perServerRps = new Map<string, number>();
@@ -338,7 +346,7 @@ export function simulateTopology(
   const replicaLoad = replicaCount > 0 ? dbReads / replicaCount : 0;
 
   const rawServerCpu = (rps: number) => (rps * workFactor * 100) / SERVER_CAPACITY_RPS;
-  const rawPrimaryCpu = (primaryLoad * 100) / DB_CAPACITY_QPS;
+  const rawPrimaryCpu = ((primaryLoad * 100) / DB_CAPACITY_QPS) * (hasPooler ? 0.8 : 1);
   const rawReplicaCpu = (replicaLoad * 100) / DB_CAPACITY_QPS;
 
   const nodeStates: SimulationResult["nodeStates"] = {};
@@ -404,7 +412,7 @@ export function simulateTopology(
       latencyPenalty(Math.min(100, maxDbCpu)) +
       (hasCache ? 0 : 25) +
       (workload.globalUsers && !hasCDN ? 250 : 0) +
-      (workload.slowDownstream && !hasQueue ? 800 : 0);
+      (workload.slowDownstream && !(hasQueue || hasObservability) ? 800 : 0);
     errorRate = Math.min(100, errorLoad);
   }
 
@@ -475,6 +483,14 @@ export const COMPONENT_LABELS: Record<ArchitectureNodeType, string> = {
   replica: "read replica",
   cdn: "CDN",
   queue: "message queue",
+  connection_pooler: "connection pooler",
+  id_service: "ID generation service",
+  observability: "observability pipeline",
+  auth_gateway: "auth gateway",
+  search_index: "search index",
+  stream_processor: "stream processor",
+  consensus_cluster: "consensus cluster",
+  shard_router: "shard router",
 };
 
 // ============================================================================
@@ -491,6 +507,14 @@ export const COMPONENT_MONTHLY_COST: Record<ArchitectureNodeType, number> = {
   replica: 700,
   cdn: 250,
   queue: 200,
+  connection_pooler: 250,
+  id_service: 300,
+  observability: 200,
+  auth_gateway: 300,
+  search_index: 450,
+  stream_processor: 400,
+  consensus_cluster: 800,
+  shard_router: 350,
 };
 
 export function designMonthlyCost(nodes: BuilderNodeLike[]): number {
