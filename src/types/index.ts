@@ -61,6 +61,15 @@ export interface Lesson {
   }[];
 }
 
+export interface DailyResult {
+  incidentId: string;
+  stars: number;
+  budgetLeft: number;
+  hintsUsed: number;
+  wrongDeploys: number;
+  at: string;
+}
+
 export interface UserStats {
   level: number;
   currentXp: number;
@@ -94,6 +103,14 @@ export interface UserStats {
   interviewResults?: Record<string, InterviewResult>;
   reasoningResults?: Record<string, ReasoningResult>;
   defenseStats?: { attempts: number; firstTry: number };
+  /** Banked streak freezes (earned every 7 streak days, max 2); each covers one missed day. */
+  streakFreezes?: number;
+  /** Local date key of the last day a freeze saved the streak. */
+  lastFreezeUsed?: string;
+  /** Scale Journey stages cleared, by ISO week key (last 8 weeks). */
+  journeyWeeks?: Record<string, number>;
+  /** Daily outage results by UTC date key (last 30). */
+  dailyResults?: Record<string, DailyResult>;
 }
 
 export interface EstimationResult {
@@ -273,28 +290,6 @@ export interface GuidedScenario {
     requiredComponents: ArchitectureNodeType[];
     explanation: string;
   };
-}
-
-// Architecture Evolution Mode Types
-export interface EvolutionStage {
-  stage: number;
-  title: string;
-  userCountLabel: string;
-  userCountNumeric: number;
-  status: "healthy" | "warning" | "danger";
-  statusBadge: string;
-  description: string;
-  painPoint?: string;
-  solutionNarrative: string;
-  components: {
-    id: string;
-    type: ArchitectureNodeType;
-    label: string;
-    subtitle?: string;
-    status: "healthy" | "warning" | "overloaded";
-    cpu?: number;
-  }[];
-  metrics: SystemMetrics;
 }
 
 export interface InterviewFollowUp {
@@ -652,6 +647,12 @@ export interface ChoiceResultOverride {
   resultTitle?: string;
   resultBody?: string;
   approach?: ApproachKind;
+  /** When a variant makes this choice correct: the recovered numbers (defaults to the original fix's). */
+  metricsAfter?: IncidentMetric[];
+  /** When a variant makes this choice correct: the healthy topology (defaults to graphBefore, healed). */
+  graphAfter?: IncidentGraph;
+  /** When a variant makes the original fix wrong: how the system degrades. */
+  graphPatch?: GraphPatch;
 }
 
 /** Constraint skins that change which option is correct on replays. */
@@ -661,6 +662,8 @@ export interface IncidentConstraintVariant {
   metricsPatch?: Partial<Record<string, number>>;
   correctChoiceId: string;
   resultOverrides?: Record<string, ChoiceResultOverride>;
+  /** The incident's hints rewritten for this constraint (the originals point at the original fix). */
+  hints?: string[];
 }
 
 export interface IncidentV2 {
