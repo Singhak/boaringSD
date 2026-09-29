@@ -159,21 +159,58 @@ function awardFirstOrReplay(
 // ---------------------------------------------------------------------------
 
 /** Call on meaningful practice only (a solved run, builder pass, or review). */
+/** Lifetime streak milestones; each unlocks a badge once. */
+export const STREAK_MILESTONES = [3, 7, 30, 100] as const;
+/** A freeze is earned every 7 streak days and covers one missed day; at most this many are banked. */
+export const MAX_STREAK_FREEZES = 2;
+
+/** Whole days from one YYYY-MM-DD key to another (local calendar days). */
+function daysBetweenKeys(from: string, to: string): number {
+  const [fy, fm, fd] = from.split("-").map(Number);
+  const [ty, tm, td] = to.split("-").map(Number);
+  return Math.round((new Date(ty, tm - 1, td).getTime() - new Date(fy, fm - 1, fd).getTime()) / DAY_MS);
+}
+
+/** Missed days since the last practice (0 when the player practised today or yesterday). */
+function missedDays(stats: UserStats, now: Date): number {
+  if (!stats.lastPracticeDate) return Infinity;
+  return Math.max(0, daysBetweenKeys(stats.lastPracticeDate, toDateKey(now)) - 1);
+}
+
 export function recordPractice(stats: UserStats, now: Date): UserStats {
   const today = toDateKey(now);
   if (stats.lastPracticeDate === today) return stats;
-  const yesterday = toDateKey(addDays(now, -1));
-  const streakDays = stats.lastPracticeDate === yesterday ? stats.streakDays + 1 : 1;
+  const missed = missedDays(stats, now);
+  const freezes = stats.streakFreezes ?? 0;
+  // Missed days are covered by banked freezes; otherwise the streak starts over.
+  const covered = missed > 0 && missed <= freezes && stats.streakDays > 0;
+  const streakDays = missed === 0 || covered ? stats.streakDays + 1 : 1;
   const practiceDays = [...(stats.practiceDays ?? []).filter((d) => d !== today), today].slice(-60);
-  return { ...stats, streakDays, lastPracticeDate: today, practiceDays };
+
+  let next: UserStats = {
+    ...stats,
+    streakDays,
+    lastPracticeDate: today,
+    practiceDays,
+    streakFreezes: covered ? freezes - missed : freezes,
+    ...(covered ? { lastFreezeUsed: today } : {}),
+  };
+  if (streakDays % 7 === 0) {
+    next = { ...next, streakFreezes: Math.min(MAX_STREAK_FREEZES, (next.streakFreezes ?? 0) + 1) };
+  }
+  for (const m of STREAK_MILESTONES) {
+    const badge = `streak_${m}`;
+    if (streakDays >= m && !next.unlockedBadges.includes(badge)) {
+      next = { ...next, unlockedBadges: [...next.unlockedBadges, badge] };
+    }
+  }
+  return next;
 }
 
-/** Streak as the learner should see it: broken streaks read as 0. */
+/** Streak as the learner should see it: broken streaks read as 0; a gap banked freezes will cover still counts. */
 export function getCurrentStreak(stats: UserStats, now: Date): number {
   if (!stats.lastPracticeDate) return 0;
-  const today = toDateKey(now);
-  const yesterday = toDateKey(addDays(now, -1));
-  return stats.lastPracticeDate === today || stats.lastPracticeDate === yesterday ? stats.streakDays : 0;
+  return missedDays(stats, now) <= (stats.streakFreezes ?? 0) ? stats.streakDays : 0;
 }
 
 export function practicedToday(stats: UserStats, now: Date): boolean {
@@ -542,9 +579,9 @@ export function recordReasoning(
     const e = getEvidence(next, result.patternId);
     next = withEvidence(next, result.patternId, { ...e, reasoningBest: Math.max(e.reasoningBest ?? 0, result.score) });
   }
-  next = recordPractice(next, now);
-
+  // Only a passing answer counts as practice for the streak.
   if (result.score < 60) return { stats: next, xpAwarded: 0, leveledUp: false, firstClear: false };
+  next = recordPractice(next, now);
   // A self-assessment pays at most half the graded bonus; a later graded answer can top it up to the full bonus.
   const gradedKey = `reasoning:${promptId}:first`;
   const selfKey = `reasoning:${promptId}:self`;
@@ -901,6 +938,7 @@ export function migrateStats(raw: unknown, now: Date): UserStats {
     nextLevelXp: nextLevelXpForLevel(level),
     totalScore: asNumber(r.totalScore, currentXp),
     streakDays: asNumber(r.streakDays, 0),
+    streakFreezes: Math.min(MAX_STREAK_FREEZES, Math.max(0, asNumber(r.streakFreezes, 0))),
     completedLessons: asStringArray(r.completedLessons),
     completedChallenges: asStringArray(r.completedChallenges),
     completedGuided: asStringArray(r.completedGuided),

@@ -28,6 +28,7 @@ import {
   recordRunStarted,
   recordTransferMiss,
 } from "@/lib/progression";
+import { track } from "@/lib/events";
 
 const STORAGE_KEY = "sd_quest_user_stats_v1"; // key kept for backward compatibility; shape is versioned inside
 const RUNS_KEY = "sd_quest_run_progress_v1";
@@ -120,6 +121,7 @@ export function completeChallenge(challengeId: string, rewardXp: number): Result
 }
 
 export function completeGuided(scenarioId: string, rewardXp: number): Result {
+  track("guided_complete", { scenarioId });
   return commit(
     completeActivity(
       getUserStats(),
@@ -130,6 +132,7 @@ export function completeGuided(scenarioId: string, rewardXp: number): Result {
 }
 
 export function completeInterview(interviewId: string, rewardXp: number): Result {
+  track("interview_complete", { interviewId });
   return commit(
     completeActivity(
       getUserStats(),
@@ -140,6 +143,7 @@ export function completeInterview(interviewId: string, rewardXp: number): Result
 }
 
 export function submitEstimate(problemId: string, score: number): ProgressionOutcome {
+  track("estimate_submit", { problemId, score });
   return commit(recordEstimate(getUserStats(), problemId, score, new Date()));
 }
 
@@ -156,6 +160,7 @@ export function saveReasoningResult(
   result: Omit<ReasoningResult, "at">,
   bonusXp: number
 ): ProgressionOutcome {
+  track("reasoning_submit", { promptId, score: result.score, selfAssessed: result.selfAssessed });
   return commit(recordReasoning(getUserStats(), promptId, result, bonusXp, new Date()));
 }
 
@@ -186,6 +191,7 @@ export function recordMissionComplete(missionId: string, xpReward: number, multi
 // ---------------------------------------------------------------------------
 
 export function markRunStarted(patternId: PatternId): UserStats {
+  track("run_start", { patternId, mode: "study" });
   return update((s) => recordRunStarted(s, patternId, new Date()));
 }
 
@@ -198,6 +204,12 @@ export function markTransferMiss(patternId: PatternId): UserStats {
 }
 
 export function completePatternRun(pattern: SystemDesignPattern, result: PatternRunResult): ProgressionOutcome {
+  track("run_complete", {
+    patternId: pattern.id,
+    firstTry: result.interventionFirstTry === true,
+    transferFirstTry: result.transferFirstTry ?? null,
+    hintsUsed: result.hintsUsed,
+  });
   return commit(recordPatternRun(getUserStats(), pattern, result, new Date()));
 }
 
@@ -208,10 +220,12 @@ export function submitBuilderResult(
   failureReasons: string[],
   details?: BuilderResultDetails
 ): ProgressionOutcome {
+  track("builder_submit", { scenarioId: scenario.id, passed });
   return commit(recordBuilderResult(getUserStats(), scenario, rewardXp, passed, failureReasons, new Date(), details));
 }
 
 export function submitReview(pattern: SystemDesignPattern, passed: boolean) {
+  track("review_complete", { patternId: pattern.id, passed });
   const out = recordReview(getUserStats(), pattern, passed, new Date());
   if (!out.early) saveUserStats(out.stats);
   return out;
@@ -333,6 +347,11 @@ export function getFeatureUnlockStatus(stats: UserStats) {
       unlocked: clearedLevels >= 3 || chapters.includes("chapter-3"),
       minLevel: 3,
       label: "Case Studies",
+    },
+    journey: {
+      unlocked: clearedLevels >= 5 || chapters.includes("chapter-5"),
+      minLevel: 5,
+      label: "Scale Journey",
     },
   };
 }

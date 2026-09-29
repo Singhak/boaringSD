@@ -465,3 +465,40 @@ test("Side-mode daily XP cap limits maximum XP earned per mode per day", () => {
   assert.equal(totalAwarded, 60, "Estimates capped at 60 XP per day");
 });
 
+
+test("a failed 'defend your call' answer does not advance the streak", () => {
+  const failed = recordReasoning(DEFAULT_STATS, "caching-why", { score: 40, selfAssessed: false }, 30, T0);
+  assert.equal(failed.stats.streakDays, 0);
+  const passed = recordReasoning(DEFAULT_STATS, "caching-why", { score: 70, selfAssessed: false }, 30, T0);
+  assert.equal(passed.stats.streakDays, 1);
+});
+
+test("a 7-day streak banks a freeze, which then covers one missed day", () => {
+  const day = (n: number) => new Date(2026, 8, 1 + n, 10);
+  let s = DEFAULT_STATS;
+  for (let d = 0; d < 7; d++) s = recordPractice(s, day(d));
+  assert.equal(s.streakDays, 7);
+  assert.equal(s.streakFreezes, 1);
+  assert.ok(s.unlockedBadges.includes("streak_3") && s.unlockedBadges.includes("streak_7"));
+
+  // Skip day 7; on day 8 the streak still shows, and practising spends the freeze.
+  assert.equal(getCurrentStreak(s, day(8)), 7);
+  s = recordPractice(s, day(8));
+  assert.equal(s.streakDays, 8);
+  assert.equal(s.streakFreezes, 0);
+  assert.equal(s.lastFreezeUsed, "2026-09-09");
+
+  // With no freeze left, a missed day resets the streak.
+  assert.equal(getCurrentStreak(s, day(10)), 0);
+  assert.equal(recordPractice(s, day(10)).streakDays, 1);
+});
+
+test("freezes cap at two, and a gap longer than the banked freezes still resets", () => {
+  const day = (n: number) => new Date(2026, 8, 1 + n, 10);
+  let s = DEFAULT_STATS;
+  for (let d = 0; d < 28; d++) s = recordPractice(s, day(d));
+  assert.equal(s.streakFreezes, 2);
+  assert.equal(recordPractice(s, day(29)).streakDays, 29, "one missed day is covered");
+  assert.equal(recordPractice(s, day(30)).streakDays, 29, "two missed days are covered by two freezes");
+  assert.equal(recordPractice(s, day(31)).streakDays, 1, "three missed days are not");
+});

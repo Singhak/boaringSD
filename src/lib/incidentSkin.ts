@@ -1,4 +1,4 @@
-import type { IncidentChoice, IncidentConstraintVariant, IncidentMetric, IncidentV2 } from "@/types";
+import type { ChoiceResultOverride, IncidentChoice, IncidentConstraintVariant, IncidentGraph, IncidentMetric, IncidentV2 } from "@/types";
 import { hashSeed } from "@/lib/shuffle";
 
 /**
@@ -65,8 +65,11 @@ function scaleMetrics(metrics: IncidentMetric[] | undefined, scale: number): Inc
   return metrics?.map((m) => (m.key === "rps" ? { ...m, value: niceNumber(m.value * scale) } : m));
 }
 
-export function applySkin(incident: IncidentV2, skin: IncidentSkin): IncidentV2 {
-  const variant = skin.variant;
+export function applySkin(incident: IncidentV2, rawSkin: IncidentSkin): IncidentV2 {
+  const variant = rawSkin.variant;
+  // A variant's numbers are the reason its answer flips, so it keeps authored traffic;
+  // region and occasion still rotate.
+  const skin = variant ? { ...rawSkin, scale: 1 } : rawSkin;
   const metricsPatch = variant?.metricsPatch;
 
   let scaledMetrics = incident.metricsBefore ? scaleMetrics(incident.metricsBefore, skin.scale) : undefined;
@@ -76,9 +79,12 @@ export function applySkin(incident: IncidentV2, skin: IncidentSkin): IncidentV2 
     );
   }
 
+  const originalFix = incident.choices.find((c) => c.correct);
+
   const choices: IncidentChoice[] = incident.choices.map((c) => {
     const isCorrect = variant ? c.id === variant.correctChoiceId : c.correct;
     const override = variant?.resultOverrides?.[c.id];
+    const flipped = flipOutcome(c, isCorrect, override, incident.graphBefore, originalFix);
     const approach =
       override?.approach ??
       (variant ? (isCorrect ? "optimal" : c.approach === "optimal" ? "viable_with_tradeoffs" : c.approach) : c.approach);
@@ -88,12 +94,12 @@ export function applySkin(incident: IncidentV2, skin: IncidentSkin): IncidentV2 
       : scaleTrafficText(c.resultBody, skin.scale);
 
     return {
-      ...c,
+      ...flipped,
       correct: isCorrect,
       approach,
       resultTitle,
       resultBody,
-      metricsAfter: scaleMetrics(c.metricsAfter, skin.scale),
+      metricsAfter: scaleMetrics(flipped.metricsAfter, skin.scale),
     };
   });
 
@@ -104,6 +110,53 @@ export function applySkin(incident: IncidentV2, skin: IncidentSkin): IncidentV2 
     brief: scaleTrafficText(incident.brief, skin.scale),
     constraint: scaleTrafficText(constraintText, skin.scale),
     metricsBefore: scaledMetrics ?? incident.metricsBefore,
+    hints: variant?.hints ?? incident.hints,
     choices,
   };
+}
+
+/** The starting topology with every hot node recovered: the default "after" for a choice a variant makes correct. */
+export function healGraph(graph: IncidentGraph): IncidentGraph {
+  return {
+    ...graph,
+    nodes: graph.nodes.map((n) =>
+      n.tone === "bad" || n.tone === "warn"
+        ? { ...n, tone: "good", ...(n.cpu !== undefined ? { cpu: Math.min(n.cpu, 45) } : {}) }
+        : n
+    ),
+  };
+}
+
+/**
+ * A variant can turn a wrong choice into the fix and the original fix into a mistake.
+ * Swap their physics too, so the right pick heals the system and the old fix no longer
+ * shows a healthy graph or pages a cascade that belongs to a different design.
+ */
+function flipOutcome(
+  c: IncidentChoice,
+  isCorrect: boolean,
+  override: ChoiceResultOverride | undefined,
+  graphBefore: IncidentGraph,
+  originalFix: IncidentChoice | undefined
+): IncidentChoice {
+  if (isCorrect && !c.correct) {
+    return {
+      ...c,
+      graphPatch: undefined,
+      consequenceIncidentId: undefined,
+      graphAfter: override?.graphAfter ?? healGraph(graphBefore),
+      metricsAfter: override?.metricsAfter ?? originalFix?.metricsAfter,
+    };
+  }
+  if (!isCorrect && c.correct) {
+    return {
+      ...c,
+      cascadeIncidentId: undefined,
+      cascadeDelayMs: undefined,
+      graphAfter: override?.graphAfter,
+      graphPatch: override?.graphPatch,
+      metricsAfter: override?.metricsAfter,
+    };
+  }
+  return c;
 }

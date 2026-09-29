@@ -119,6 +119,30 @@ export const BADGES = [
     icon: "Award",
   },
   {
+    id: "streak_3",
+    title: "Warming Up",
+    description: "Practised 3 days in a row.",
+    icon: "Flame",
+  },
+  {
+    id: "streak_7",
+    title: "On Call Week",
+    description: "A 7-day streak. You also banked a streak freeze.",
+    icon: "Flame",
+  },
+  {
+    id: "streak_30",
+    title: "Month of Uptime",
+    description: "A 30-day practice streak.",
+    icon: "Flame",
+  },
+  {
+    id: "streak_100",
+    title: "Five Nines",
+    description: "A 100-day practice streak.",
+    icon: "Flame",
+  },
+  {
     id: "grandmaster",
     title: "System Design Ace",
     description: "Earned 500+ XP and built a fault-tolerant distributed system.",

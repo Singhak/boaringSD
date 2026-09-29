@@ -1,8 +1,8 @@
-import { Award, Calculator, Compass, GitBranch, Sparkles, type LucideIcon } from "lucide-react";
+import { Award, Calculator, Compass, Flag, Sparkles, type LucideIcon } from "lucide-react";
 import { getFeatureUnlockStatus } from "@/lib/storage";
 import type { UserStats } from "@/types";
 
-export type LabId = "builder" | "interview" | "caseStudies" | "evolution" | "estimation";
+export type LabId = "builder" | "interview" | "caseStudies" | "journey" | "estimation";
 
 export interface PracticeLab {
   id: LabId;
@@ -53,14 +53,14 @@ export function getPracticeLabs(stats: UserStats): PracticeLab[] {
       unlockHint: "Unlocks after Level 3",
     },
     {
-      id: "evolution",
-      name: "Architecture Evolution",
-      hint: "How systems grow",
-      desc: "See how one architecture changes from 100 to 10M users.",
-      href: "/evolution",
-      icon: GitBranch,
-      unlocked: true,
-      unlockHint: "",
+      id: "journey",
+      name: "Scale Journey",
+      hint: "Weekly boss",
+      desc: "Grow one system from a front-page spike to 10M users, with a new twist every week.",
+      href: "/journey",
+      icon: Flag,
+      unlocked: unlock.journey.unlocked,
+      unlockHint: "Unlocks after Level 5",
     },
     {
       id: "estimation",

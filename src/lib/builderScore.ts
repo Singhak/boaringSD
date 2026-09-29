@@ -216,7 +216,24 @@ export function sandboxWorkload(rps: number): WorkloadProfile {
   };
 }
 
-export function scenarioWorkload(scenario: BuilderScenario): WorkloadProfile {
+/** The parts of a scenario the simulator and grader read; the Scale Journey builds these directly. */
+export type ScenarioSpec = Pick<
+  BuilderScenario,
+  | "trafficRps"
+  | "readRatio"
+  | "cacheHitRate"
+  | "staticAssetShare"
+  | "globalUsers"
+  | "slowDownstream"
+  | "killOneServer"
+  | "targets"
+  | "requiredComponents"
+  | "budget"
+  | "acceptedArchetypes"
+  | "passThreshold"
+>;
+
+export function scenarioWorkload(scenario: ScenarioSpec): WorkloadProfile {
   return {
     rps: scenario.trafficRps,
     readRatio: scenario.readRatio,
@@ -472,6 +489,8 @@ export interface ScenarioEvaluation {
   canPass: boolean;
   simulation: SimulationResult;
   failureReasons: string[];
+  /** Set when the attempt had a stated priority (see designPriority.ts); missing it costs a star. */
+  priorityOutcome?: "met" | "neutral" | "missed";
 }
 
 export const COMPONENT_LABELS: Record<ArchitectureNodeType, string> = {
@@ -526,7 +545,7 @@ export function designMonthlyCost(nodes: BuilderNodeLike[]): number {
  * design (required components plus enough servers at ~75% CPU, N+1 when a
  * server is killed) with 30% headroom.
  */
-export function scenarioBudget(scenario: BuilderScenario): number {
+export function scenarioBudget(scenario: ScenarioSpec): number {
   if (scenario.budget !== undefined) return scenario.budget;
   const serverRps = scenario.trafficRps * (scenario.requiredComponents.includes("cdn") ? 1 - scenario.staticAssetShare : 1);
   const sized = Math.ceil(serverRps / (SERVER_CAPACITY_RPS * 0.75)) + (scenario.killOneServer ? 1 : 0);
@@ -539,7 +558,7 @@ export function scenarioBudget(scenario: BuilderScenario): number {
 }
 
 /** Optional components this workload gains nothing from. */
-function unneededComponents(scenario: BuilderScenario, nodes: BuilderNodeLike[]): ArchitectureNodeType[] {
+function unneededComponents(scenario: ScenarioSpec, nodes: BuilderNodeLike[]): ArchitectureNodeType[] {
   const required = new Set(scenario.requiredComponents);
   const present = new Set(nodes.map((n) => n.data?.type as ArchitectureNodeType));
   const useless: ArchitectureNodeType[] = [];
@@ -555,7 +574,7 @@ const UNNEEDED_PENALTY = 5;
 export function evaluateScenario(
   nodes: BuilderNodeLike[],
   edges: BuilderEdgeLike[],
-  scenario: BuilderScenario
+  scenario: ScenarioSpec
 ): ScenarioEvaluation {
   const simulation = simulateTopology(nodes, scenarioWorkload(scenario), edges);
   const simulated = applySimulation(nodes, simulation);
