@@ -78,6 +78,8 @@ export default function CampaignChapterPage({
   const router = useRouter();
   const total = getAllCampaignChapters().length;
   const [simMode, setSimMode] = useState<"warroom" | "flight">("warroom");
+  // The incident the Kinetic Sim is on; it moves from hs-01 to lb-01 mid-session.
+  const [flightIncidentId, setFlightIncidentId] = useState<"hs-01" | "lb-01">(pattern?.levelNumber === 1 ? "hs-01" : "lb-01");
 
   if (stats !== null && isPatternUnlocked(stats, pattern) && mode !== "review") {
     const isGuided = mode === "study" || mode === "guided"; // "guided" kept for old links
@@ -101,7 +103,13 @@ export default function CampaignChapterPage({
               LEVEL {pattern.levelNumber} OF {total}: {pattern.title.toUpperCase()} {isGuided ? "(GUIDED STUDY)" : ""}
             </span>
             <span className="chip chip-warn !text-[11px] !py-0 !px-1.5 shrink-0 hidden sm:inline-flex">
-              <Zap className="w-2.5 h-2.5 mr-0.5" /> {isPatternCleared(stats, pattern) ? `Replay +${pattern.rewards.replayXp} XP` : `+${pattern.rewards.firstClearXp} XP`}
+              <Zap className="w-2.5 h-2.5 mr-0.5" /> {simMode === "flight" && pattern.levelNumber <= 2
+                ? (stats.completedMissions ?? []).includes(flightIncidentId)
+                  ? "Replay +15 XP"
+                  : "+150 XP"
+                : isPatternCleared(stats, pattern)
+                ? `Replay +${pattern.rewards.replayXp} XP`
+                : `+${pattern.rewards.firstClearXp} XP`}
             </span>
           </div>
 
@@ -157,27 +165,18 @@ export default function CampaignChapterPage({
           ) : simMode === "flight" && pattern.levelNumber <= 2 ? (
             <SystemFlightSim
               initialIncidentId={pattern.levelNumber === 1 ? "hs-01" : "lb-01"}
+              onIncidentChange={setFlightIncidentId}
               onClose={() => {
                 setSimMode("warroom");
                 router.push("/campaign");
               }}
-              onAllCompleted={({ firstTry }) => {
-                // The flight sim plays both hs-01 (Level 1) and lb-01 (Level 2).
-                // Credit both levels so the learner earns evidence for both patterns.
-                completePatternRun(pattern, {
-                  patternId: pattern.id,
-                  diagnosisFirstTry: firstTry,
-                  interventionFirstTry: firstTry,
-                  transferFirstTry: null,
-                  hintsUsed: 0,
-                  failureReasons: firstTry ? [] : ["intervention"],
-                });
-                const otherPattern = getAllPatterns().find(
-                  (p) => p.levelNumber === (pattern.levelNumber === 1 ? 2 : 1)
-                );
-                if (otherPattern) {
-                  completePatternRun(otherPattern, {
-                    patternId: otherPattern.id,
+              onAllCompleted={({ firstTry, completedIncidentIds }) => {
+                // The flight sim plays hs-01 (Level 1) and lb-01 (Level 2). Credit only the
+                // levels whose incident was actually resolved in this sitting.
+                const playedLevels: number[] = completedIncidentIds.map((id) => (id === "hs-01" ? 1 : 2));
+                for (const played of getAllPatterns().filter((p) => playedLevels.includes(p.levelNumber))) {
+                  completePatternRun(played, {
+                    patternId: played.id,
                     diagnosisFirstTry: firstTry,
                     interventionFirstTry: firstTry,
                     transferFirstTry: null,
@@ -407,6 +406,8 @@ function PatternRun({
   const [levelUp, setLevelUp] = useState<number | null>(null);
   const [rotationOffset, setRotationOffset] = useState<number>(() => readScenarioRotationState()[`pattern:${pattern.id}`] ?? 0);
   const [shuffleSeed, setShuffleSeed] = useState(() => nextShuffleSeed(`run:${pattern.id}`));
+  // Frozen per run: a correct answer bumps runsCleared, which would otherwise swap the question under the card.
+  const [transferIndex, setTransferIndex] = useState(() => stats?.patternProgress?.[pattern.id]?.runsCleared ?? 0);
 
   const cleared = isPatternCleared(stats, pattern);
   const reward = cleared ? `Replay: +${pattern.rewards.replayXp} XP (once a day)` : `+${pattern.rewards.firstClearXp} XP first clear`;
@@ -444,6 +445,7 @@ function PatternRun({
       return next;
     });
     setShuffleSeed(nextShuffleSeed(`run:${pattern.id}`));
+    setTransferIndex(stats?.patternProgress?.[pattern.id]?.runsCleared ?? 0);
     setRun(freshRun(chapter.id));
   };
 
@@ -669,7 +671,7 @@ function PatternRun({
                   key="transfer"
                   shuffleSeed={shuffleSeed}
                   eyebrow="Transfer: same pattern, different product"
-                  question={getRotatingTransferQuestion(pattern, stats?.patternProgress?.[pattern.id]?.runsCleared ?? 0)}
+                  question={getRotatingTransferQuestion(pattern, transferIndex)}
                   submitLabel="Check my answer"
                   continueLabel="See the result"
                   onAnswer={(opt, attempt) => {

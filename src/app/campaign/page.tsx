@@ -208,7 +208,7 @@ export default function CampaignPage() {
                         {currentTier.name}
                       </span>
                       <span className="text-[11px] text-slate-500 font-mono">
-                        Tier {activeTier + 1} of 3
+                        Tier {activeTier + 1} of {TIERS.length}
                       </span>
                     </div>
 
@@ -260,7 +260,7 @@ export default function CampaignPage() {
                     </span>
                   </div>
                   <p className="text-[11px] text-slate-500">
-                    {viewMode === "tiers" ? "Grouped into 3 architectural phases" : "Full 15-node topology flow"}
+                    {viewMode === "tiers" ? `Grouped into ${TIERS.length} architectural phases` : `Full ${patterns.length}-node topology flow`}
                   </p>
                 </div>
 
@@ -543,13 +543,13 @@ export default function CampaignPage() {
                 <Layers className="w-3.5 h-3.5" />
                 Interactive Grid View
               </div>
-              <h2 className="text-2xl display">All 15 Architectural Levels</h2>
+              <h2 className="text-2xl display">All {patterns.length} Architectural Levels</h2>
               <p className="text-[13px] text-slate-400 max-w-xl">
                 Browse every pattern, view architectural constraints, examine review weaknesses, or test your topology against builder bosses.
               </p>
             </div>
             <div className="text-xs text-slate-500 font-mono">
-              6 levels / view · 3 carousel pages
+              6 levels / view · {Math.ceil(patterns.length / 6)} carousel pages
             </div>
           </div>
 
