@@ -101,7 +101,19 @@ interface IncidentWarRoomProps {
   onNewRun?: () => void;
   /** Replays only: reskins traffic, region and occasion so the page feels new. */
   skinSeed?: string;
+  /** Forces this constraint variant on the first incident (the daily outage). */
+  variantIndex?: number;
+  /** Single-incident runs (the daily): called once the incident is solved, instead of chaining on. */
+  onRunSolved?: (summary: WarRoomRunSummary) => void;
   standalone?: boolean;
+}
+
+export interface WarRoomRunSummary {
+  incidentId: string;
+  stars: number;
+  budgetLeft: number;
+  hintsUsed: number;
+  wrongDeploys: number;
 }
 
 const ONBOARDING_FLOW_IDS = ["hs-01", "lb-01"];
@@ -123,6 +135,8 @@ export default function IncidentWarRoom({
   onAllClear,
   onNewRun,
   skinSeed,
+  variantIndex,
+  onRunSolved,
 }: IncidentWarRoomProps) {
   const stats = useUserStats();
   const soundOn = stats?.soundEnabled ?? true;
@@ -158,7 +172,12 @@ export default function IncidentWarRoom({
   // Active incident state
   const baseIncident: IncidentV2 | undefined =
     getIncidentById(incidentId) || getCanonicalIncident(pattern?.levelNumber || 1);
-  const skin = useMemo(() => (skinSeed ? pickSkin(skinSeed, baseIncident) : null), [skinSeed, baseIncident]);
+  const skin = useMemo(() => {
+    if (!skinSeed) return null;
+    const picked = pickSkin(skinSeed, baseIncident);
+    const forced = baseIncident?.id === initialIncidentId ? baseIncident.variants?.[variantIndex ?? -1] : undefined;
+    return forced ? { ...picked, variant: forced } : picked;
+  }, [skinSeed, baseIncident, initialIncidentId, variantIndex]);
   const incident = useMemo(
     () => (baseIncident && skin ? applySkin(baseIncident, skin) : baseIncident),
     [baseIncident, skin]
@@ -588,6 +607,17 @@ export default function IncidentWarRoom({
 
   /** After a solve with nothing pending: the aftershock (campaign) or the next onboarding incident. */
   const advanceAfterSolve = () => {
+    if (onRunSolved) {
+      celebrate();
+      onRunSolved({
+        incidentId: initialIncidentId,
+        stars: runStars(economy),
+        budgetLeft: Math.round(economy.budget),
+        hintsUsed: hintsUsedTotal,
+        wrongDeploys,
+      });
+      return;
+    }
     if (pattern) {
       // In campaign mode, a different system pages you before the level clears.
       setIsAftershock(true);
@@ -652,7 +682,12 @@ export default function IncidentWarRoom({
     };
   });
 
-  const stepsList = pattern
+  const stepsList = onRunSolved
+    ? [
+        { id: incident.id, label: "Daily outage" },
+        { id: "debrief", label: "Resolved" },
+      ]
+    : pattern
     ? [
         { id: incident.id, label: incident.incidentCode ? `${incident.incidentCode} · Incident` : "Incident 01" },
         { id: "aftershock", label: "Aftershock" },
@@ -795,7 +830,6 @@ export default function IncidentWarRoom({
                       ? "⚡ Cascade Outage"
                       : "Live Incident"}
                   </span>
-                  <span className="chip !text-[11px] !py-0 !px-1.5">{incident.constraint}</span>
                   {skin && (
                     <span className="chip chip-accent !text-[11px] !py-0 !px-1.5">
                       {skin.region} · {skin.occasion}
@@ -806,6 +840,11 @@ export default function IncidentWarRoom({
                       <Flame className="w-2.5 h-2.5 text-amber-400 mr-1 inline" /> Second-Order Consequence
                     </span>
                   )}
+                  {/* The constraint decides the answer (and changes under a variant), so it is never clipped. */}
+                  <p className="basis-full text-[12px] leading-snug rounded-md border border-amber-400/25 bg-amber-400/[0.05] px-2 py-1 text-amber-100/90">
+                    <span className="font-semibold text-amber-200">{skin?.variant ? "Constraint (changed): " : "Constraint: "}</span>
+                    {incident.constraint}
+                  </p>
                 </div>
                 <h2 className="text-xl sm:text-2xl display font-bold leading-tight">{incident.title}</h2>
                 <p className="text-[12px] sm:text-[13px] text-slate-300 leading-snug line-clamp-2">{incident.brief}</p>

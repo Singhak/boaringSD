@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   BarChart3,
+  CalendarClock,
   ChevronDown,
   Flame,
   Home,
@@ -17,7 +18,8 @@ import {
 } from "lucide-react";
 import { saveUserStats } from "@/lib/storage";
 import { getPracticeLabs } from "@/lib/labs";
-import { DEFAULT_STATS, getCurrentStreak, getEvidence } from "@/lib/progression";
+import { DEFAULT_STATS, getCurrentStreak, getEvidence, hasFinishedOnboarding, thresholdForLevel } from "@/lib/progression";
+import { isDailyCompleted } from "@/lib/dailyKey";
 import { useUserStats } from "@/lib/useUserStats";
 import { getAllPatterns } from "@/data/patterns";
 
@@ -47,13 +49,21 @@ export default function Navbar() {
   const streak = getCurrentStreak(stats, new Date());
   const allPatterns = getAllPatterns();
   const levelsCleared = allPatterns.filter((p) => getEvidence(stats, p.id).runsCleared > 0).length;
-  const xpProgressPercent = Math.min(100, Math.round(((stats.currentXp % 150) / 150) * 100));
+  const rankFloor = thresholdForLevel(stats.level);
+  const rankSpan = Math.max(1, thresholdForLevel(stats.level + 1) - rankFloor);
+  const xpProgressPercent = Math.min(100, Math.max(0, Math.round(((stats.currentXp - rankFloor) / rankSpan) * 100)));
+  // A dot on "Daily" until today's outage is played.
+  const dailyPending = hasFinishedOnboarding(stats) && !isDailyCompleted(stats);
 
   const coreNavLinks = [
     { name: "Home", href: "/", icon: Home },
+    { name: "Daily", href: "/daily", icon: CalendarClock, dot: dailyPending },
     { name: "Levels", href: "/campaign", icon: Layers },
     { name: "Progress", href: "/dashboard", icon: BarChart3 },
   ];
+  const dailyDot = (
+    <span className="ml-1.5 inline-block w-1.5 h-1.5 rounded-full bg-amber-300 align-middle" aria-label="not played today" />
+  );
 
   const labs = getPracticeLabs(stats);
   const labActive = labs.some((l) => pathname.startsWith(l.href));
@@ -90,6 +100,7 @@ export default function Navbar() {
               }`}
             >
               {link.name}
+              {link.dot && dailyDot}
             </Link>
           ))}
 
@@ -210,6 +221,7 @@ export default function Navbar() {
                 >
                   <Icon className="w-4 h-4 text-slate-400" />
                   {link.name}
+                  {link.dot && dailyDot}
                 </Link>
               );
             })}
