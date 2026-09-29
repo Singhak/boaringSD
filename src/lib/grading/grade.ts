@@ -41,8 +41,9 @@ export async function gradeAnswer(input: unknown, deps: GradeDeps): Promise<Grad
       status: 200,
       body: { mode: "graded", result: { ...verdict, score, provider: deps.provider.name } },
     };
-  } catch {
-    // Grader down or returned junk: the learner can still self-assess.
+  } catch (error) {
+    // Grader down or returned junk: the learner can still self-assess. Log why, or it is undebuggable.
+    console.error("[grade] provider failed:", error instanceof Error ? error.message : error);
     return { status: 200, body: { mode: "self-assess", reason: "The grader is unavailable right now" } };
   }
 }

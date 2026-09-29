@@ -98,7 +98,11 @@ export function createGeminiProvider(apiKey: string, model = DEFAULT_MODEL, fetc
             signal: controller.signal,
           }
         );
-        if (!res.ok) throw new Error(`Gemini responded ${res.status}`);
+        if (!res.ok) {
+          // Google's error body says which of key / model / quota is wrong; it never echoes the key.
+          const detail = (await res.text().catch(() => "")).slice(0, 300);
+          throw new Error(`Gemini responded ${res.status} for model "${model}": ${detail}`);
+        }
         return parseGradingResponse(prompt, await res.json());
       } finally {
         clearTimeout(timer);
