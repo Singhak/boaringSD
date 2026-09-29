@@ -68,6 +68,8 @@ import { ProgressionOutcome, getEvidence, isPatternCleared } from "@/lib/progres
 import { useUserStats } from "@/lib/useUserStats";
 import { builderXpForStars, explainOutcome, type ExplainOutcome } from "@/lib/builderExplain";
 import type { ArchitectureNodeType, BuilderScenario, CustomNodeData, UserStats } from "@/types";
+import DesignComparison from "@/components/builder/DesignComparison";
+import { applyPriority, priorityForAttempt, PRIORITIES, starsWithPriority, type DesignPriority } from "@/lib/designPriority";
 
 const nodeTypes = { customNode: ArchNode };
 const edgeTypes = { removableEdge: RemovableEdge };
@@ -254,6 +256,20 @@ function Workspace({ scenario, stats }: { scenario?: BuilderScenario; stats: Use
   const [initial] = useState<InitialDesign>(() =>
     scenario ? loadInitialDesign(scenario) : { design: SANDBOX_START, source: "default" }
   );
+  // Each visit to a boss brings the next business priority (cost, latency, resilience).
+  const priorityKey = scenario ? `builder-priority:${scenario.id}` : null;
+  const [attempt] = useState(() => (priorityKey ? readScenarioRotationState()[priorityKey] ?? 0 : 0));
+  useEffect(() => {
+    if (priorityKey) saveScenarioRotationState(priorityKey, attempt + 1);
+  }, [priorityKey, attempt]);
+  const priority: DesignPriority | null = scenario ? priorityForAttempt(scenario.id, attempt) : null;
+  const evaluate = useCallback(
+    (n: Node[], e: { source: string; target: string }[], s: BuilderScenario) => {
+      const base = evaluateScenario(n, e, s);
+      return priority ? applyPriority(base, n, s, priority) : base;
+    },
+    [priority]
+  );
 
   const [selected, setSelected] = useState<{ type: "node" | "edge"; id: string; label?: string } | null>(null);
   const [trafficRps, setTrafficRps] = useState<number>(scenario?.trafficRps ?? 10000);
@@ -275,7 +291,7 @@ function Workspace({ scenario, stats }: { scenario?: BuilderScenario; stats: Use
 
   // The starting design is shown with its real load so the failure is visible before any change.
   const [baseline] = useState<ScenarioEvaluation | null>(() =>
-    scenario ? evaluateScenario(designToNodes(initial.design), initial.design.edges, scenario) : null
+    scenario ? evaluate(designToNodes(initial.design), initial.design.edges, scenario) : null
   );
 
   const [nodes, setNodes] = useState<Node[]>(() => {
@@ -447,7 +463,7 @@ function Workspace({ scenario, stats }: { scenario?: BuilderScenario; stats: Use
     playErrorSound();
     const version = designVersion;
     setTimeout(() => {
-      const evaluation = evaluateScenario(nodes, edges, scenario);
+      const evaluation = evaluate(nodes, edges, scenario);
       setNodes((prev) => applySimulation(prev, evaluation.simulation));
       setEdges((eds) => eds.map((e) => ({ ...e, style: undefined })));
       setTested({ version, evaluation });
@@ -472,14 +488,15 @@ function Workspace({ scenario, stats }: { scenario?: BuilderScenario; stats: Use
 
   const submitDesign = () => {
     if (!scenario || !freshTest?.canPass || !explain.done) return;
+    const stars = starsWithPriority(explain.stars, freshTest.priorityOutcome);
     const out = submitBuilderResult(
       scenario,
-      builderXpForStars(pattern?.rewards.builderXp ?? 0, explain.stars),
+      builderXpForStars(pattern?.rewards.builderXp ?? 0, stars),
       true,
       explain.passed ? [] : ["explain"],
       { hintsUsed: takeNewHints(), explainFirstTry: explain.firstTry }
     );
-    setOutcomeStars(explain.stars);
+    setOutcomeStars(stars);
     saveScenarioDesign(scenario.id, "passed", currentDesign());
     saveScenarioDesign(scenario.id, "draft", undefined);
     setOutcome(out);
@@ -533,6 +550,7 @@ function Workspace({ scenario, stats }: { scenario?: BuilderScenario; stats: Use
           scenario={scenario}
           levelNumber={pattern.levelNumber}
           source={initial.source}
+          priority={priority}
           alreadyPassed={alreadyPassed}
           onNextScenario={() => {
             const all = getAllBuilderScenarios();
@@ -595,7 +613,15 @@ function Workspace({ scenario, stats }: { scenario?: BuilderScenario; stats: Use
               </ol>
 
               {outcome ? (
-                <BossResult scenario={scenario} outcome={outcome} stars={outcomeStars} baseline={baseline} evaluation={freshTest} onReset={resetDesign} />
+                <BossResult
+                  scenario={scenario}
+                  outcome={outcome}
+                  stars={outcomeStars}
+                  baseline={baseline}
+                  evaluation={freshTest}
+                  yours={nodes.map((n) => (n.data as unknown as CustomNodeData).type)}
+                  onReset={resetDesign}
+                />
               ) : (
                 <>
                   <EvidencePanel baseline={baseline} evaluation={freshTest} stale={tested !== null && !freshTest} />
@@ -833,12 +859,14 @@ function ScenarioBrief({
   scenario,
   levelNumber,
   source,
+  priority,
   alreadyPassed,
   onNextScenario,
 }: {
   scenario: BuilderScenario;
   levelNumber: number;
   source: InitialDesign["source"];
+  priority: DesignPriority | null;
   alreadyPassed: boolean;
   onNextScenario: () => void;
 }) {
@@ -869,6 +897,12 @@ function ScenarioBrief({
         <span className="block eyebrow">{scenario.title}</span>
         <span className="block text-2xl sm:text-3xl display">{scenario.objective}</span>
       </h1>
+      {priority && (
+        <p className="rounded-lg border border-amber-400/25 bg-amber-400/[0.05] px-3.5 py-2.5 text-[13px] text-amber-100/90">
+          <span className="font-semibold text-amber-200">This attempt&apos;s priority · {PRIORITIES[priority].label}: </span>
+          {PRIORITIES[priority].brief} Missing it costs a star.
+        </p>
+      )}
       <dl className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 rounded-xl overflow-hidden border border-[var(--line)] divide-y sm:divide-y-0 sm:divide-x divide-[var(--line)] bg-black/10">
         {facts.map((f) => (
           <div key={f.label} className="p-3.5">
@@ -1003,6 +1037,7 @@ function BossResult({
   stars,
   baseline,
   evaluation,
+  yours,
   onReset,
 }: {
   scenario: BuilderScenario;
@@ -1010,6 +1045,7 @@ function BossResult({
   stars: 1 | 2 | 3;
   baseline: ScenarioEvaluation | null;
   evaluation: ScenarioEvaluation | null;
+  yours: ArchitectureNodeType[];
   onReset: () => void;
 }) {
   const pattern = getPatternById(scenario.patternId);
@@ -1041,6 +1077,18 @@ function BossResult({
           }}
         />
       )}
+      <DesignComparison
+        yours={yours}
+        references={[
+          { id: "lean", name: "Lean design", components: scenario.requiredComponents },
+          ...(scenario.acceptedArchetypes ?? []).map((a) => ({
+            id: a.id,
+            name: a.name,
+            components: a.requiredComponents,
+            summary: a.tradeoffSummary,
+          })),
+        ]}
+      />
       <div className="flex flex-col gap-2">
         {next ? (
           <Link

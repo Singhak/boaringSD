@@ -24,6 +24,7 @@ import LevelUpModal from "@/components/LevelUpModal";
 import ScenarioTabs from "@/components/run/ScenarioTabs";
 import ArchitectureCanvas, { makeArchNode } from "@/components/builder/ArchitectureCanvas";
 import type { Edge, Node } from "@xyflow/react";
+import type { ArchitectureNodeType } from "@/types";
 import { INTERVIEW_PROBLEMS } from "@/data/interview";
 import InterviewScopeStep from "@/components/interview/InterviewScopeStep";
 import InterviewMathStep from "@/components/interview/InterviewMathStep";
@@ -32,6 +33,7 @@ import { deterministicShuffle } from "@/lib/shuffle";
 import ReasoningCard from "@/components/run/ReasoningCard";
 import { getInterviewReasoningPrompt } from "@/data/reasoningPrompts";
 import { playBlipSound, playErrorSound, playLevelUpSound } from "@/lib/sound";
+import DesignComparison from "@/components/builder/DesignComparison";
 import { designFromGraph, evaluateArchitecture, unwiredNodeIds, type Design } from "@/lib/interviewDesign";
 
 /** Every interview starts from users and a database; the candidate draws the rest. */
@@ -74,7 +76,8 @@ function InterviewPageContent() {
   // The drawn topology survives stage switches; the graded Design is derived from its wiring.
   const [graph, setGraph] = useState(START_GRAPH);
   const design: Design = useMemo(() => designFromGraph(graph.nodes, graph.edges), [graph]);
-  const unwired = useMemo(() => unwiredNodeIds(graph.nodes, graph.edges).length, [graph]);
+  const unwiredIds = useMemo(() => new Set(unwiredNodeIds(graph.nodes, graph.edges)), [graph]);
+  const unwired = unwiredIds.size;
   // Bumped on reset so the canvas remounts from the starting graph.
   const [canvasKey, setCanvasKey] = useState(0);
   const [stage, setStage] = useState<InterviewStage>(
@@ -692,19 +695,21 @@ function InterviewPageContent() {
                 </div>
               </div>
 
-              {/* Canonical Staff Architecture Reference */}
-              <div className="p-5 rounded-xl bg-cyan-950/20 border border-cyan-400/20 space-y-3">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-xs font-semibold text-cyan-200 uppercase tracking-wider flex items-center gap-2">
-                    <Award className="w-4 h-4 text-cyan-400" />
-                    Canonical Staff Benchmark Architecture
-                  </h3>
-                  <span className="text-[11px] text-slate-500">FAANG System Design Standard</span>
-                </div>
-                <p className="text-xs sm:text-[13px] text-slate-300 leading-relaxed">
-                  {problem.benchmarkArchitecture.summary}
-                </p>
-              </div>
+              {/* Your drawn design (wired parts only) vs the benchmark */}
+              <DesignComparison
+                title="Your design vs the staff benchmark"
+                yours={graph.nodes
+                  .filter((n) => !unwiredIds.has(n.id))
+                  .map((n) => (n.data as { type: ArchitectureNodeType }).type)}
+                references={[
+                  {
+                    id: problem.id,
+                    name: "Staff benchmark",
+                    components: problem.benchmarkArchitecture.nodes.map((n) => n.type),
+                    summary: problem.benchmarkArchitecture.summary,
+                  },
+                ]}
+              />
 
               {/* Optional: defend the key tradeoff in your own words (bonus XP, feeds Tradeoff Defense) */}
               {interviewPrompt && !defenseDone && (

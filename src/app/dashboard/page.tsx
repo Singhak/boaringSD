@@ -2,7 +2,7 @@
 
 import React from "react";
 import Link from "next/link";
-import { ArrowRight, Check, Flame, Lock, Play, Trophy } from "lucide-react";
+import { ArrowRight, Check, Flame, Lock, Play, Snowflake, Trophy } from "lucide-react";
 import Navbar from "@/components/Navbar";
 import PatternMap from "@/components/PatternMap";
 import SkillRadarChart from "@/components/dashboard/SkillRadarChart";
@@ -91,9 +91,17 @@ export default function DashboardPage() {
           <div className="surface p-6 flex flex-col gap-5">
             <div className="flex items-center justify-between">
               <h2 className="eyebrow">Today</h2>
-              <span className={`chip ${daily.streak > 0 ? "chip-warn" : ""}`}>
-                <Flame className="w-3 h-3" aria-hidden />
-                <span className="num">{daily.streak}-day streak</span>
+              <span className="flex items-center gap-1.5">
+                {(stats.streakFreezes ?? 0) > 0 && (
+                  <span className="chip chip-accent" title="A freeze covers one missed day. You earn one every 7 streak days (max 2).">
+                    <Snowflake className="w-3 h-3" aria-hidden />
+                    <span className="num">{stats.streakFreezes}</span>
+                  </span>
+                )}
+                <span className={`chip ${daily.streak > 0 ? "chip-warn" : ""}`}>
+                  <Flame className="w-3 h-3" aria-hidden />
+                  <span className="num">{daily.streak}-day streak</span>
+                </span>
               </span>
             </div>
 
@@ -111,8 +119,10 @@ export default function DashboardPage() {
                 </p>
                 <p className="text-[13px] text-slate-500 leading-relaxed">
                   {daily.completedToday
-                    ? "Your streak is safe. Extra runs still add evidence."
-                    : "Clear a level, pass a builder boss, pass an estimate, or finish a due review. Failed attempts or clicking through lessons don't count."}
+                    ? stats.lastFreezeUsed === stats.lastPracticeDate
+                      ? "A streak freeze covered the day you missed. Your streak is safe."
+                      : "Your streak is safe. Extra runs still add evidence."
+                    : "Solve an incident or the daily outage, finish a case study, or pass a builder boss, estimate, review or \"defend your call\" answer. Failed attempts don't count."}
                 </p>
               </div>
             </div>
@@ -256,7 +266,7 @@ export default function DashboardPage() {
                       isUnlocked ? "border-amber-300/40 text-amber-300" : "border-[var(--line-strong)] text-slate-600"
                     }`}
                   >
-                    <Trophy className="w-4 h-4" />
+                    {badge.icon === "Flame" ? <Flame className="w-4 h-4" /> : <Trophy className="w-4 h-4" />}
                   </span>
                   <div className="text-xs font-medium text-white leading-tight">{badge.title}</div>
                   <div className="text-[11px] text-slate-500 leading-snug line-clamp-2">{badge.description}</div>

@@ -52,6 +52,7 @@ import {
   isReviewDue,
 } from "@/lib/progression";
 import { useUserStats } from "@/lib/useUserStats";
+import { track } from "@/lib/events";
 import { playDeploySound, playLevelUpSound } from "@/lib/sound";
 import type { CampaignChapter, PatternQuestion, RunProgress, SystemDesignPattern, UserStats } from "@/types";
 
@@ -267,7 +268,8 @@ function WarRoomLevel({
 
   useEffect(() => {
     saveScenarioRotationState(rotationKey, runIndex);
-  }, [rotationKey, runIndex]);
+    track("run_start", { patternId: pattern.id, mode: "warroom", replay: runIndex > 0 });
+  }, [rotationKey, runIndex, pattern.id]);
 
   const incident = getWarRoomIncident(pattern.id, runIndex);
 

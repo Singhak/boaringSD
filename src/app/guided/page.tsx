@@ -167,8 +167,8 @@ function GuidedThinkingPageContent() {
         subtitle={`You went from raw requirements to a scalable architecture for ${scenario.title}.`}
         xpEarned={scenario.xpReward}
         badgeEarned="Guided Architect"
-        nextLabel="Try Architecture Evolution"
-        onNext={() => router.push("/evolution")}
+        nextLabel="Back to the levels"
+        onNext={() => router.push("/campaign")}
       />
     </div>
   );

@@ -2,11 +2,14 @@
 
 import React, { useState } from "react";
 import Link from "next/link";
-import { ArrowRight, Check, Flame, Play, RotateCcw } from "lucide-react";
+import { ArrowRight, CalendarClock, Check, Flag, Flame, Play, RotateCcw } from "lucide-react";
 import PushpaMissionWarRoom from "@/components/PushpaMissionWarRoom";
-import { getAllRunProgress } from "@/lib/storage";
+import { getAllRunProgress, getFeatureUnlockStatus } from "@/lib/storage";
+import { isoWeekKey, twistForWeek } from "@/data/scaleJourney";
+import { JOURNEY_STAGE_COUNT, journeyStagesCleared } from "@/lib/scaleJourney";
 import { DEFAULT_STATS, getCurrentStreak, hasFinishedOnboarding, selectNextAction } from "@/lib/progression";
 import { useUserStats } from "@/lib/useUserStats";
+import { getDailyDateKey, isDailyCompleted, msUntilNextDaily } from "@/lib/dailyKey";
 
 const INCIDENT_METRICS = [
   { label: "Traffic", value: "100,000", unit: "req/s", tone: "text-white" },
@@ -127,6 +130,9 @@ export default function RootPage() {
           System Design <span className="text-slate-400 font-normal">Quest</span>
         </span>
         <nav className="flex items-center gap-1 text-[13px]">
+          <Link href="/daily" className="btn btn-ghost">
+            Daily
+          </Link>
           <Link href="/campaign" className="btn btn-ghost">
             Levels
           </Link>
@@ -178,9 +184,62 @@ export default function RootPage() {
                 </button>
               </div>
             </article>
+
+            <DailyCard stats={stats} />
+            {getFeatureUnlockStatus(stats).journey.unlocked && <JourneyCard stats={stats} />}
           </div>
         )}
       </main>
     </div>
+  );
+}
+
+/** The daily outage: a second, lighter reason to come back every day. */
+function DailyCard({ stats }: { stats: typeof DEFAULT_STATS }) {
+  const now = new Date();
+  const done = isDailyCompleted(stats, now);
+  const stars = stats.dailyResults?.[getDailyDateKey(now)]?.stars ?? 0;
+  const hours = Math.ceil(msUntilNextDaily(now) / 3_600_000);
+  return (
+    <Link
+      href="/daily"
+      className="surface flex items-center gap-4 p-4 sm:p-5 hover:border-cyan-400/30 transition-colors group"
+    >
+      <span className="w-10 h-10 rounded-lg surface-2 grid place-items-center shrink-0">
+        <CalendarClock className={`w-5 h-5 ${done ? "text-emerald-300" : "text-amber-300"}`} aria-hidden />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-sm font-medium text-white">
+          {done ? `Daily outage resolved ${"⭐".repeat(stars)}` : "Today's daily outage is live"}
+        </span>
+        <span className="block text-xs text-slate-500">
+          {done ? `Share your score · next outage in ${hours}h` : "Same outage for every player · +75 XP bonus"}
+        </span>
+      </span>
+      <ArrowRight className="w-4 h-4 text-slate-500 group-hover:text-white transition-colors" aria-hidden />
+    </Link>
+  );
+}
+
+/** The weekly boss: shown once the Foundation tier is cleared. */
+function JourneyCard({ stats }: { stats: typeof DEFAULT_STATS }) {
+  const week = isoWeekKey(new Date());
+  const cleared = journeyStagesCleared(stats, week);
+  const done = cleared >= JOURNEY_STAGE_COUNT;
+  return (
+    <Link href="/journey" className="surface flex items-center gap-4 p-4 sm:p-5 hover:border-cyan-400/30 transition-colors group">
+      <span className="w-10 h-10 rounded-lg surface-2 grid place-items-center shrink-0">
+        <Flag className={`w-5 h-5 ${done ? "text-emerald-300" : "text-cyan-300"}`} aria-hidden />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-sm font-medium text-white">
+          {done ? "Weekly boss beaten" : `Weekly boss: Scale Journey · ${cleared}/${JOURNEY_STAGE_COUNT} stages`}
+        </span>
+        <span className="block text-xs text-slate-500">
+          {done ? "A new twist arrives on Monday" : `${twistForWeek(week).label} · +150 XP for all five stages`}
+        </span>
+      </span>
+      <ArrowRight className="w-4 h-4 text-slate-500 group-hover:text-white transition-colors" aria-hidden />
+    </Link>
   );
 }
