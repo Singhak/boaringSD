@@ -107,15 +107,15 @@ export default function ArchitecturalDefenseModal({
     !q2Error;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto animate-fadeIn">
+    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-4 animate-fadeIn">
       <div
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="defense-title"
-        className="surface max-w-2xl w-full p-6 sm:p-8 rounded-2xl border border-cyan-400/40 shadow-[0_20px_60px_-15px_rgba(6,182,212,0.3)] space-y-6 my-8">
+        className="surface max-w-2xl w-full max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-2rem)] flex flex-col overflow-hidden rounded-2xl border border-cyan-400/40 shadow-[0_20px_60px_-15px_rgba(6,182,212,0.3)]">
         {/* Header */}
-        <div className="flex items-start justify-between gap-4 border-b border-[var(--line)] pb-5">
+        <div className="flex items-start justify-between gap-4 border-b border-[var(--line)] px-5 sm:px-8 pt-5 sm:pt-8 pb-5 shrink-0">
           <div className="space-y-1">
             <div className="flex items-center gap-2">
               <span className="chip chip-warn text-[11px] flex items-center gap-1 font-semibold">
@@ -140,8 +140,9 @@ export default function ArchitecturalDefenseModal({
           </button>
         </div>
 
+        <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 sm:px-8 py-5 space-y-6">
         {/* Selected Option Capsule */}
-        <div className="p-3.5 rounded-xl bg-cyan-950/30 border border-cyan-400/20 text-xs flex items-center justify-between gap-3">
+        <div className="p-3.5rounded-xl bg-cyan-950/30 border border-cyan-400/20 text-xs flex items-center justify-between gap-3">
           <div>
             <span className="eyebrow !text-[11px] text-cyan-300">Selected Intervention:</span>
             <div className="text-[13px] font-semibold text-white mt-0.5">{deployedLabel}</div>
@@ -249,9 +250,10 @@ export default function ArchitecturalDefenseModal({
             )}
           </div>
         </div>
+        </div>
 
         {/* Footer */}
-        <div className="flex flex-wrap items-center justify-between gap-3 pt-4 border-t border-[var(--line)]">
+        <div className="flex flex-wrap items-center justify-between gap-3 px-5 sm:px-8 py-4 border-t border-[var(--line)] shrink-0">
           <div className="flex items-center gap-2">
             <button type="button" onClick={onClose} className="btn btn-ghost text-xs">
               Cancel
