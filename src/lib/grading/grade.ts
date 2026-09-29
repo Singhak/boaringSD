@@ -1,3 +1,4 @@
+import { redactSecrets } from "@/lib/redact";
 import { MAX_ANSWER_CHARS, rubricScore, type GradeResponse, type GradingProvider, type ReasoningPrompt } from "./types";
 
 export interface GradeDeps {
@@ -32,18 +33,18 @@ export async function gradeAnswer(input: unknown, deps: GradeDeps): Promise<Grad
   }
 
   try {
-    const verdict = await deps.provider.grade(prompt, answer);
+    const { providerName, ...verdict } = await deps.provider.grade(prompt, answer);
     const score = rubricScore(
       prompt.rubric,
       verdict.items.filter((i) => i.met).map((i) => i.id)
     );
     return {
       status: 200,
-      body: { mode: "graded", result: { ...verdict, score, provider: deps.provider.name } },
+      body: { mode: "graded", result: { ...verdict, score, provider: providerName ?? deps.provider.name } },
     };
   } catch (error) {
     // Grader down or returned junk: the learner can still self-assess. Log why, or it is undebuggable.
-    console.error("[grade] provider failed:", error instanceof Error ? error.message : error);
+    console.error("[grade] provider failed:", redactSecrets(error instanceof Error ? error.message : String(error)));
     return { status: 200, body: { mode: "self-assess", reason: "The grader is unavailable right now" } };
   }
 }

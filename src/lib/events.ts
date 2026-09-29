@@ -43,7 +43,7 @@ const MODE_OF: Partial<Record<EventName, string>> = {
   journey_complete: "journey",
 };
 
-const ID_PATTERN = /^[A-Za-z0-9-]{16,64}$/;
+export const ID_PATTERN = /^[A-Za-z0-9-]{16,64}$/;
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 365 * 2;
 
 /** Keep the id from either store when it looks valid, else mint one. Pure so it can be tested. */

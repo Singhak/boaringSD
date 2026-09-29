@@ -113,3 +113,117 @@ test("rate limiter allows the limit per window, then resets", () => {
   assert.equal(allow("b", 20), true);
   assert.equal(allow("a", 1001), true);
 });
+
+// ---------------------------------------------------------------------------
+// Retry and fallback
+// ---------------------------------------------------------------------------
+
+const OK_BODY = geminiBody(JSON.stringify({ items: [{ id: "reads", met: true, note: "" }], feedback: "Good" }));
+const jsonRes = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
+  new Response(JSON.stringify(body), { status, headers });
+
+/** A fetch that answers per call from a script and records which model each call used. */
+function scriptedFetch(script: (call: number, model: string) => Response | Error) {
+  const models: string[] = [];
+  const impl = (async (url: string) => {
+    const model = /models\/([^:]+):/.exec(url)?.[1] ?? "";
+    models.push(model);
+    const out = script(models.length, model);
+    if (out instanceof Error) throw out;
+    return out;
+  }) as unknown as typeof fetch;
+  return { impl, models };
+}
+const noWait = { sleep: async () => {} };
+
+test("a transient failure is retried on the same model", async () => {
+  const { impl, models } = scriptedFetch((n) => (n === 1 ? jsonRes({ error: "busy" }, 503) : jsonRes(OK_BODY)));
+  const provider = createGeminiProvider("k", "primary", impl, noWait);
+  const verdict = await provider.grade(PROMPT, "Reads dominate");
+  assert.deepEqual(models, ["primary", "primary"]);
+  assert.equal(verdict.providerName, "gemini:primary");
+});
+
+test("a missing model falls straight back to the stable model", async () => {
+  const { impl, models } = scriptedFetch((_n, model) =>
+    model === "gemini-3.8-flash" ? jsonRes({ error: "not found" }, 404) : jsonRes(OK_BODY)
+  );
+  const provider = createGeminiProvider("k", "gemini-3.8-flash", impl, noWait);
+  const verdict = await provider.grade(PROMPT, "Reads dominate");
+  assert.deepEqual(models, ["gemini-3.8-flash", "gemini-2.5-flash"], "no retries on a 404");
+  assert.equal(verdict.providerName, "gemini:gemini-2.5-flash");
+});
+
+test("a model that keeps failing hands over to the fallback after its retries", async () => {
+  const { impl, models } = scriptedFetch((_n, model) => (model === "primary" ? jsonRes({}, 500) : jsonRes(OK_BODY)));
+  const provider = createGeminiProvider("k", "primary", impl, { ...noWait, fallbackModel: "backup" });
+  await provider.grade(PROMPT, "Reads dominate");
+  assert.deepEqual(models, ["primary", "primary", "backup"]);
+});
+
+test("network errors and malformed JSON are treated as transient", async () => {
+  const { impl, models } = scriptedFetch((n) =>
+    n === 1 ? new TypeError("fetch failed") : n === 2 ? jsonRes(geminiBody("not json")) : jsonRes(OK_BODY)
+  );
+  const provider = createGeminiProvider("k", "primary", impl, { ...noWait, maxAttemptsPerModel: 3 });
+  await provider.grade(PROMPT, "Reads dominate");
+  assert.equal(models.length, 3);
+});
+
+test("a bad key fails fast without retries or a fallback", async () => {
+  const { impl, models } = scriptedFetch(() => jsonRes({ error: "API key not valid" }, 403));
+  const provider = createGeminiProvider("k", "primary", impl, noWait);
+  await assert.rejects(provider.grade(PROMPT, "x"), /not retryable/);
+  assert.equal(models.length, 1);
+});
+
+test("when every model fails the error lists each attempt and the learner can self-assess", async () => {
+  const { impl } = scriptedFetch(() => jsonRes({}, 500));
+  const provider = createGeminiProvider("k", "primary", impl, { ...noWait, fallbackModel: "backup" });
+  await assert.rejects(provider.grade(PROMPT, "x"), /primary#1[\s\S]*primary#2[\s\S]*backup#1[\s\S]*backup#2/);
+  const outcome = await gradeAnswer({ promptId: PROMPT.id, answer: "x" }, { provider, lookupPrompt: lookup });
+  assert.equal("mode" in outcome.body && outcome.body.mode, "self-assess");
+});
+
+test("429 Retry-After is honoured and the total time is capped by a deadline", async () => {
+  let clock = 0;
+  const waits: number[] = [];
+  const first = scriptedFetch((n) => (n === 1 ? jsonRes({}, 429, { "retry-after": "1" }) : jsonRes(OK_BODY)));
+  const provider = createGeminiProvider("k", "primary", first.impl, {
+    sleep: async (ms) => {
+      waits.push(ms);
+      clock += ms;
+    },
+    now: () => clock,
+  });
+  await provider.grade(PROMPT, "x");
+  assert.deepEqual(waits, [1000]);
+  assert.equal(first.models.length, 2);
+
+  clock = 0;
+  const slow = scriptedFetch(() => {
+    clock += 10_000;
+    return jsonRes({}, 500);
+  });
+  const capped = createGeminiProvider("k", "primary", slow.impl, { sleep: async () => {}, now: () => clock, deadlineMs: 15_000 });
+  await assert.rejects(capped.grade(PROMPT, "x"), /gave up/);
+  assert.ok(slow.models.length <= 2);
+});
+
+test("the fallback model comes from LLM_FALLBACK_MODEL and can be switched off", async () => {
+  const seen = async (env: Record<string, string>) => {
+    const { impl, models } = scriptedFetch(() => jsonRes({}, 404));
+    const original = globalThis.fetch;
+    globalThis.fetch = impl;
+    try {
+      const provider = getGradingProvider({ LLM_PROVIDER: "gemini", LLM_API_KEY: "k", LLM_MODEL: "primary", ...env });
+      await provider!.grade(PROMPT, "x").catch(() => {});
+    } finally {
+      globalThis.fetch = original;
+    }
+    return models;
+  };
+  assert.deepEqual(await seen({}), ["primary", "gemini-2.5-flash"]);
+  assert.deepEqual(await seen({ LLM_FALLBACK_MODEL: "custom" }), ["primary", "custom"]);
+  assert.deepEqual(await seen({ LLM_FALLBACK_MODEL: "off" }), ["primary"]);
+});

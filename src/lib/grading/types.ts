@@ -46,7 +46,10 @@ export interface GradeResult {
 /** A grading backend (Gemini today; any LLM provider can implement this). */
 export interface GradingProvider {
   name: string;
-  grade(prompt: ReasoningPrompt, answer: string): Promise<Omit<GradeResult, "score" | "provider">>;
+  grade(
+    prompt: ReasoningPrompt,
+    answer: string
+  ): Promise<Omit<GradeResult, "score" | "provider"> & { providerName?: string }>;
 }
 
 /** POST /api/grade response. "self-assess" means no grader is available. */
