@@ -70,6 +70,20 @@
           }
         ]
       },
+      "logs": {
+        "users": [
+          "p95 220 ms at edge, 15,000 req/s offered",
+          "HTTP 503 from origin: connect timeout after 3000 ms",
+          "5,000 errors in last 60 s, all origin us-east",
+          "Global status: only one origin configured"
+        ],
+        "us": [
+          "AZ health: us-east-1a/b/c all UNREACHABLE",
+          "CPU 10%: no traffic reaching instances",
+          "Health check failed 12/12, last OK 4 min ago",
+          "DB primary unreachable; last replicated write 4 min ago"
+        ]
+      },
       "choices": [
         {
           "id": "second-region",
@@ -6042,6 +6056,587 @@
         "You can change what the replicated stream will contain before you resume it.",
         "A column can come back as easily as it left."
       ]
+    },
+    {
+      "id": "mr-pr-01",
+      "incidentCode": "INC-012-PR1",
+      "level": 12,
+      "patternId": "multi-region",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 130,
+      "format": "bad-pr",
+      "title": "EU cart pages crawl after the 09:40 deploy",
+      "brief": "Shopwave EU p95 jumped from 180 ms to 1.4 s at 09:40. Replication lag is a healthy 0.4 s, the local replica sits at 12% CPU, and each cart view now makes 3 calls to us-east (about 95 ms each).",
+      "constraint": "Revert exactly one PR; the other two must stay in.",
+      "question": "Which PR do you revert?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "EU cart views",
+          "value": 3200,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "p95",
+          "label": "EU p95 latency",
+          "value": 1400,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "rtt",
+          "label": "Cross-region calls per view",
+          "value": 3,
+          "unit": "calls",
+          "tone": "bad"
+        },
+        {
+          "key": "lag",
+          "label": "Replication lag",
+          "value": 0.4,
+          "unit": "s",
+          "tone": "good"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "EU shoppers",
+            "tone": "warn"
+          },
+          {
+            "id": "eu",
+            "kind": "server",
+            "label": "eu-west app x20",
+            "tone": "warn",
+            "cpu": 41
+          },
+          {
+            "id": "rep",
+            "kind": "replica",
+            "label": "eu-west cart replica",
+            "tone": "good",
+            "cpu": 12,
+            "sub": "lag 0.4 s"
+          },
+          {
+            "id": "us",
+            "kind": "db",
+            "label": "us-east cart primary",
+            "tone": "bad",
+            "cpu": 63,
+            "sub": "EU reads landing here"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "eu"
+          },
+          {
+            "from": "eu",
+            "to": "rep"
+          },
+          {
+            "from": "eu",
+            "to": "us"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "dns",
+          "label": "Revert PR #7705: DNS TTL for the API hostname from 300 s to 60 s",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "diff": "infra/dns/api.tf\n   name = \"api.shopwave.example\"\n-  ttl  = 300\n+  ttl  = 60",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "p95",
+              "label": "EU p95 latency",
+              "value": 1390,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "rtt",
+              "label": "Cross-region calls per view",
+              "value": 3,
+              "unit": "calls",
+              "tone": "bad"
+            },
+            {
+              "key": "lag",
+              "label": "Replication lag",
+              "value": 0.4,
+              "unit": "s",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Latency unchanged",
+          "resultBody": "A shorter TTL only speeds up failover routing; it does not add a per-request hop. EU p95 stays near 1.4 s and cart views keep calling us-east.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "us",
+                "tone": "bad",
+                "sub": "EU reads still landing here"
+              }
+            ]
+          }
+        },
+        {
+          "id": "primary",
+          "label": "Revert PR #7712: cart reads from local replica to home primary",
+          "correct": true,
+          "approach": "optimal",
+          "diff": "services/cart/read.go\n func cartDB(ctx Context) *DB {\n-  return replicas.Local(ctx)\n+  return primary.Home(ctx)\n }",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "tradeoffSummary": "Reads may trail the primary by the replication lag."
+          },
+          "metricsAfter": [
+            {
+              "key": "p95",
+              "label": "EU p95 latency",
+              "value": 190,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "rtt",
+              "label": "Cross-region calls per view",
+              "value": 0,
+              "unit": "calls",
+              "tone": "good"
+            },
+            {
+              "key": "lag",
+              "label": "Replication lag",
+              "value": 0.4,
+              "unit": "s",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "EU shoppers",
+                "tone": "good"
+              },
+              {
+                "id": "eu",
+                "kind": "server",
+                "label": "eu-west app x20",
+                "tone": "good",
+                "cpu": 38
+              },
+              {
+                "id": "rep",
+                "kind": "replica",
+                "label": "eu-west cart replica",
+                "tone": "good",
+                "cpu": 12,
+                "sub": "lag 0.4 s"
+              },
+              {
+                "id": "us",
+                "kind": "db",
+                "label": "us-east cart primary",
+                "tone": "good",
+                "cpu": 22,
+                "sub": "writes only"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "eu"
+              },
+              {
+                "from": "eu",
+                "to": "rep"
+              },
+              {
+                "from": "eu",
+                "to": "us"
+              }
+            ]
+          },
+          "resultTitle": "EU pages fast again",
+          "resultBody": "Reads had been sent to the single us-east primary, so each of the 3 cart lookups paid roughly 95 ms cross-region. Going back to the local replica cuts EU p95 to 190 ms; carts may lag by up to a second, which this page tolerates."
+        },
+        {
+          "id": "batch",
+          "label": "Revert PR #7719: replication batch size from 100 to 500 rows",
+          "correct": false,
+          "approach": "anti_pattern",
+          "diff": "replication/config.yaml\n   mode: async\n-  batch_rows: 100\n+  batch_rows: 500\n   max_lag_alert_s: 5",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "p95",
+              "label": "EU p95 latency",
+              "value": 1400,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "rtt",
+              "label": "Cross-region calls per view",
+              "value": 3,
+              "unit": "calls",
+              "tone": "bad"
+            },
+            {
+              "key": "lag",
+              "label": "Replication lag",
+              "value": 0.4,
+              "unit": "s",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Not the cause",
+          "resultBody": "Bigger batches slightly raise lag variance, but lag is a healthy 0.4 s and the slowness is per-request cross-region calls. Reverting costs a deploy and EU p95 stays at 1.4 s.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "rep",
+                "tone": "warn",
+                "sub": "batch revert, no change"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Replication lag is healthy, so the replica is not the slow part.",
+        "Count the cross-region hops: 3 calls at about 95 ms is the whole regression.",
+        "One diff changes which database a read is sent to."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "mr-cut-01",
+      "incidentCode": "INC-012-CT1",
+      "level": 12,
+      "patternId": "multi-region",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P2",
+      "xp": 120,
+      "format": "budget-cut",
+      "title": "Cloud bill up 30%, all three regions green",
+      "brief": "Three active regions run at 34% CPU with 140 ms p99. Losing one region pushes the other two to 52%. An always-on shadow-traffic replay cluster in eu-west idles at 3% CPU. Finance wants cuts.",
+      "constraint": "SLO: survive the loss of any one region with p99 under 300 ms.",
+      "question": "What do you cut?",
+      "metricsBefore": [
+        {
+          "key": "cost",
+          "label": "Monthly cost",
+          "value": 212000,
+          "unit": "$/mo",
+          "tone": "warn"
+        },
+        {
+          "key": "p99",
+          "label": "p99 latency",
+          "value": 140,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "cpu",
+          "label": "Region CPU",
+          "value": 34,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "avail",
+          "label": "Loss-of-one-region peak",
+          "value": 52,
+          "unit": "% CPU",
+          "tone": "good"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "lb",
+            "kind": "lb",
+            "label": "Global load balancer",
+            "tone": "good"
+          },
+          {
+            "id": "use",
+            "kind": "server",
+            "label": "us-east x30",
+            "tone": "good",
+            "cpu": 34
+          },
+          {
+            "id": "euw",
+            "kind": "server",
+            "label": "eu-west x30",
+            "tone": "good",
+            "cpu": 34
+          },
+          {
+            "id": "aps",
+            "kind": "server",
+            "label": "ap-south x30",
+            "tone": "good",
+            "cpu": 34
+          },
+          {
+            "id": "shadow",
+            "kind": "worker",
+            "label": "Shadow-traffic replay cluster",
+            "tone": "good",
+            "cpu": 3,
+            "sub": "eu-west, always on"
+          }
+        ],
+        "edges": [
+          {
+            "from": "lb",
+            "to": "use"
+          },
+          {
+            "from": "lb",
+            "to": "euw"
+          },
+          {
+            "from": "lb",
+            "to": "aps"
+          },
+          {
+            "from": "lb",
+            "to": "shadow"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "shrink",
+          "label": "Shrink every region by 40% to run each at 57% CPU",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": -47000
+          },
+          "metricsAfter": [
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 165000,
+              "unit": "$/mo",
+              "tone": "warn"
+            },
+            {
+              "key": "p99",
+              "label": "p99 latency",
+              "value": 140,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "avail",
+              "label": "Loss-of-one-region peak",
+              "value": 86,
+              "unit": "% CPU",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Failover melts down",
+          "resultBody": "At 57% each region looks fine until one fails: the survivors absorb 1.5x load and reach about 86% CPU, queues build, and p99 climbs to 780 ms, breaking the 300 ms SLO during any regional outage.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "use",
+                "tone": "warn",
+                "cpu": 57
+              },
+              {
+                "id": "euw",
+                "tone": "warn",
+                "cpu": 57
+              },
+              {
+                "id": "aps",
+                "tone": "bad",
+                "cpu": 57,
+                "sub": "86% if a peer fails"
+              }
+            ]
+          }
+        },
+        {
+          "id": "shadow",
+          "label": "Retire the always-on eu-west shadow-traffic replay cluster",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": -19000,
+            "tradeoffSummary": "Replay tests must be scheduled instead of always on."
+          },
+          "metricsAfter": [
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 193000,
+              "unit": "$/mo",
+              "tone": "good"
+            },
+            {
+              "key": "p99",
+              "label": "p99 latency",
+              "value": 140,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "avail",
+              "label": "Loss-of-one-region peak",
+              "value": 52,
+              "unit": "% CPU",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Global load balancer",
+                "tone": "good"
+              },
+              {
+                "id": "use",
+                "kind": "server",
+                "label": "us-east x30",
+                "tone": "good",
+                "cpu": 34
+              },
+              {
+                "id": "euw",
+                "kind": "server",
+                "label": "eu-west x30",
+                "tone": "good",
+                "cpu": 34
+              },
+              {
+                "id": "aps",
+                "kind": "server",
+                "label": "ap-south x30",
+                "tone": "good",
+                "cpu": 34
+              },
+              {
+                "id": "shadow",
+                "kind": "worker",
+                "label": "Shadow-traffic replay cluster",
+                "tone": "good",
+                "cpu": 3,
+                "sub": "eu-west, always on"
+              }
+            ],
+            "edges": [
+              {
+                "from": "lb",
+                "to": "use"
+              },
+              {
+                "from": "lb",
+                "to": "euw"
+              },
+              {
+                "from": "lb",
+                "to": "aps"
+              },
+              {
+                "from": "lb",
+                "to": "shadow"
+              }
+            ]
+          },
+          "resultTitle": "Savings, no user impact",
+          "resultBody": "The replay cluster serves no user traffic and sits at 3% CPU, and the three active regions keep their 52% loss-of-one-region peak. p99 stays at 140 ms. Saves about $19,000 a month; replay jobs can run on demand when someone needs them."
+        },
+        {
+          "id": "third",
+          "label": "Drop ap-south and route its users to the two other regions",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "tradeoffs": {
+            "costMonthlyDelta": -69000
+          },
+          "metricsAfter": [
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 143000,
+              "unit": "$/mo",
+              "tone": "warn"
+            },
+            {
+              "key": "p99",
+              "label": "p99 latency",
+              "value": 270,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "avail",
+              "label": "Loss-of-one-region peak",
+              "value": 102,
+              "unit": "% CPU",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "One region left fragile",
+          "resultBody": "ap-south users now travel to Europe or the US, adding about 130 ms RTT, so their p99 rises to 270 ms. With only two regions, losing one leaves a single region at 68% CPU carrying everything and no room for a second fault.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "aps",
+                "tone": "bad",
+                "cpu": 0,
+                "sub": "removed; users cross-region"
+              },
+              {
+                "id": "use",
+                "cpu": 51,
+                "tone": "warn"
+              },
+              {
+                "id": "euw",
+                "cpu": 51,
+                "tone": "warn"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Nothing is red: the pressure is only the bill.",
+        "Load stays balanced only while headroom covers a region loss.",
+        "Find the box that serves no user and holds no safety margin."
+      ],
+      "nextId": null
     }
   ]
 }

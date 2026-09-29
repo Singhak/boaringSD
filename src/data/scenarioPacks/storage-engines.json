@@ -72,6 +72,19 @@
           }
         ]
       },
+      "logs": {
+        "ingest": [
+          "90,000 rows/s inbound, CPU 45%",
+          "insert p95 400 ms, 700 timeouts in last 60 s",
+          "batch size 1 row, 8 KB page touched per insert"
+        ],
+        "db": [
+          "disk util 95%, iowait 60%, mostly random 8 KB writes",
+          "checkpoint took 38 s, dirty pages 2.4M",
+          "CPU 95%, write amplification ~12x",
+          "reads: recent time ranges, index hit rate 99%"
+        ]
+      },
       "choices": [
         {
           "id": "lsm",
@@ -3756,6 +3769,893 @@
       ],
       "nextId": null,
       "reviewed": true
+    },
+    {
+      "id": "se-pr-01",
+      "incidentCode": "INC-018-PR1",
+      "level": 18,
+      "patternId": "storage-engines",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 120,
+      "title": "Write p99 jumps from 8 ms to 900 ms after Tuesday's deploy",
+      "brief": "RocksDB event store at 18k writes/s: write p99 900 ms, L0 file count 48 and climbing, stall warnings in the log. Disk is only 35% busy and CPU 38%. Three PRs shipped Tuesday.",
+      "constraint": "The change freeze allows one revert; a wrong revert burns a 20-minute deploy.",
+      "question": "Which PR do you revert to stop the write stalls?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Writes",
+          "value": 18000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "p95",
+          "label": "Write p99",
+          "value": 900,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "l0",
+          "label": "L0 files",
+          "value": 48,
+          "unit": "files",
+          "tone": "bad"
+        },
+        {
+          "key": "disk",
+          "label": "Disk busy",
+          "value": 35,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 38,
+          "unit": "%",
+          "tone": "good"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Ingest API",
+            "tone": "good",
+            "cpu": 30
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Event store (RocksDB)",
+            "tone": "bad",
+            "cpu": 38,
+            "sub": "L0 files 48, write stall"
+          },
+          {
+            "id": "cmp",
+            "kind": "worker",
+            "label": "Compaction threads",
+            "tone": "warn",
+            "cpu": 25,
+            "sub": "2 jobs, backlog growing"
+          }
+        ],
+        "edges": [
+          {
+            "from": "api",
+            "to": "db"
+          },
+          {
+            "from": "db",
+            "to": "cmp"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "pr-cache",
+          "label": "Revert PR #2291: block cache from 8 GB to 12 GB",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "diff": "conf/rocksdb.ini\n-block_cache_size=8G\n+block_cache_size=12G\n # host has 64 GB, 39 GB free",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "sub": "L0 files 51, stalls continue"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "p95",
+              "label": "Write p99",
+              "value": 890,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "l0",
+              "label": "L0 files",
+              "value": 51,
+              "unit": "files",
+              "tone": "bad"
+            },
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 38,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "disk",
+              "label": "Disk busy",
+              "value": 35,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Bigger cache, same stalls",
+          "resultBody": "Reverting the cache to 8 GB frees 4 GB of RAM, but the stall is in the write path: L0 is now 51 files and p99 stays near 900 ms. Block cache only serves reads."
+        },
+        {
+          "id": "pr-jobs",
+          "label": "Revert PR #2304: background jobs from 8 down to 2",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "diff": "conf/rocksdb.ini\n # PR #2304 tidy-up: leave CPU for the query tier\n-max_background_jobs=8\n+max_background_jobs=2\n level0_stop_writes_trigger=36",
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Ingest API",
+                "tone": "good",
+                "cpu": 30
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Event store (RocksDB)",
+                "tone": "good",
+                "cpu": 61,
+                "sub": "L0 files 6"
+              },
+              {
+                "id": "cmp",
+                "kind": "worker",
+                "label": "Compaction threads",
+                "tone": "good",
+                "cpu": 60,
+                "sub": "8 jobs"
+              }
+            ],
+            "edges": [
+              {
+                "from": "api",
+                "to": "db"
+              },
+              {
+                "from": "db",
+                "to": "cmp"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "p95",
+              "label": "Write p99",
+              "value": 9,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "l0",
+              "label": "L0 files",
+              "value": 6,
+              "unit": "files",
+              "tone": "good"
+            },
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 61,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "disk",
+              "label": "Disk busy",
+              "value": 58,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Compaction gets its threads back",
+          "resultBody": "With 2 background jobs compaction could not keep pace with 18k writes/s, so L0 crossed the slowdown trigger. Restoring 8 jobs drains the 48 files in about 6 minutes and p99 returns to 9 ms. Cost: merges can now use six more cores, so the query tier sees brief CPU bumps."
+        },
+        {
+          "id": "pr-bloom",
+          "label": "Revert PR #2310: bloom filter from 10 to 14 bits per key",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "diff": "conf/rocksdb.ini\n-bloom_bits_per_key=10\n+bloom_bits_per_key=14",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cmp",
+                "sub": "still 2 jobs, backlog 52 files"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "p95",
+              "label": "Write p99",
+              "value": 880,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "l0",
+              "label": "L0 files",
+              "value": 52,
+              "unit": "files",
+              "tone": "bad"
+            },
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 38,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "disk",
+              "label": "Disk busy",
+              "value": 35,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Read-side filter was never the problem",
+          "resultBody": "Bloom filters only speed up point reads. Reverting to 10 bits saves a little memory but L0 grows to 52 files and write p99 stays at 880 ms, because compaction is still capped at 2 jobs."
+        }
+      ],
+      "hints": [
+        "Look at the resources first: disk is 35% busy and CPU 38% while L0 keeps growing.",
+        "Writes stall when L0 files pile up faster than merges remove them.",
+        "Which diff changes how much compaction work can run at once?"
+      ],
+      "nextId": null,
+      "format": "bad-pr"
+    },
+    {
+      "id": "se-cut-01",
+      "incidentCode": "INC-018-CT1",
+      "level": 18,
+      "patternId": "storage-engines",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P2",
+      "xp": 110,
+      "title": "Storage bill hits $14,800 a month with every graph green",
+      "brief": "Postgres primary plus three read replicas serve 22k reads/s at p95 6 ms. Primary CPU 41%, replica 3 sits at 8%, peak IOPS is 14k of 30k provisioned. Finance wants the bill down.",
+      "constraint": "Read p95 must stay under 20 ms and writes must survive a primary failure.",
+      "question": "Which cut saves money without breaking the SLO?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Reads",
+          "value": 22000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "Primary CPU",
+          "value": 41,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "p95",
+          "label": "Read p95",
+          "value": 6,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "iops",
+          "label": "Peak IOPS used",
+          "value": 47,
+          "unit": "% of 30k",
+          "tone": "good"
+        },
+        {
+          "key": "cost",
+          "label": "Monthly cost",
+          "value": 14800,
+          "unit": "$/mo",
+          "tone": "warn"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Reader services",
+            "tone": "good",
+            "cpu": 40
+          },
+          {
+            "id": "pri",
+            "kind": "db",
+            "label": "Postgres primary (32 vCPU)",
+            "tone": "good",
+            "cpu": 41,
+            "sub": "14k of 30k IOPS peak"
+          },
+          {
+            "id": "r1",
+            "kind": "replica",
+            "label": "Read replica 1",
+            "tone": "good",
+            "cpu": 55
+          },
+          {
+            "id": "r2",
+            "kind": "replica",
+            "label": "Read replica 2",
+            "tone": "good",
+            "cpu": 55
+          },
+          {
+            "id": "r3",
+            "kind": "replica",
+            "label": "Read replica 3",
+            "tone": "good",
+            "cpu": 8,
+            "sub": "1.2k reads/s"
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "pri"
+          },
+          {
+            "from": "pri",
+            "to": "r1"
+          },
+          {
+            "from": "pri",
+            "to": "r2"
+          },
+          {
+            "from": "pri",
+            "to": "r3"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "cut-pri",
+          "label": "Downsize the primary from 32 to 8 vCPUs, same volume",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": -2400
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "pri",
+                "tone": "bad",
+                "cpu": 100,
+                "label": "Postgres primary (8 vCPU)",
+                "sub": "needs ~13 vCPU"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "Primary CPU",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "Read p95",
+              "value": 700,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 12400,
+              "unit": "$/mo",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Primary saturates on writes",
+          "resultBody": "The primary is using about 13 of its 32 vCPUs at 41%. On 8 vCPUs that demand is 160% of capacity: CPU pins at 100%, write p95 climbs to 700 ms and replication lags. The 20 ms SLO breaks within minutes."
+        },
+        {
+          "id": "cut-iops",
+          "label": "Cut provisioned IOPS on the primary volume from 30k to 6k",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": -1900
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "pri",
+                "tone": "bad",
+                "sub": "IOPS capped at 6k, peak 14k"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "Primary CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "Read p95",
+              "value": 180,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "iops",
+              "label": "Peak IOPS used",
+              "value": 100,
+              "unit": "% of 6k",
+              "tone": "bad"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 12900,
+              "unit": "$/mo",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "WAL fsyncs queue behind a 6k cap",
+          "resultBody": "Peak demand is 14k IOPS (47% of 30k), so a 6k cap throttles commits: fsync latency rises and p95 hits 180 ms, nine times the 20 ms SLO. Provisioned IOPS are only wasted when the peak stays under the new cap."
+        },
+        {
+          "id": "cut-r3",
+          "label": "Retire read replica 3, which serves 1.2k reads/s at 8% CPU",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": -1850
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Reader services",
+                "tone": "good",
+                "cpu": 40
+              },
+              {
+                "id": "pri",
+                "kind": "db",
+                "label": "Postgres primary (32 vCPU)",
+                "tone": "good",
+                "cpu": 41
+              },
+              {
+                "id": "r1",
+                "kind": "replica",
+                "label": "Read replica 1",
+                "tone": "good",
+                "cpu": 58
+              },
+              {
+                "id": "r2",
+                "kind": "replica",
+                "label": "Read replica 2",
+                "tone": "good",
+                "cpu": 58
+              }
+            ],
+            "edges": [
+              {
+                "from": "app",
+                "to": "pri"
+              },
+              {
+                "from": "pri",
+                "to": "r1"
+              },
+              {
+                "from": "pri",
+                "to": "r2"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "Primary CPU",
+              "value": 41,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "Read p95",
+              "value": 7,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 12950,
+              "unit": "$/mo",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Two replicas absorb the rest",
+          "resultBody": "Replica 3 carries 1.2k of 22k reads/s. Spreading it over the other two adds about 600 reads/s each, taking CPU from 55% to 58% and p95 from 6 to 7 ms, well inside 20 ms. The primary and the IOPS headroom stay untouched, and the bill drops by roughly $1,850. Cost: one fewer replica to fail over to."
+        }
+      ],
+      "hints": [
+        "Every component is green; the bill is the only problem, so compare each one's utilisation to what you would remove.",
+        "A cut is safe when the remaining capacity still covers today's peak with margin.",
+        "Which component is mostly idle and not the one that protects writes?"
+      ],
+      "nextId": null,
+      "format": "budget-cut"
+    },
+    {
+      "id": "se-model-01",
+      "incidentCode": "INC-018-DM1",
+      "level": 18,
+      "patternId": "storage-engines",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 130,
+      "title": "One Cassandra node melts while its three peers idle",
+      "brief": "Messages are keyed by channel_id: one partition per channel. #general takes 71% of 40k writes/s, so its shard is at 98% CPU with 1.4 s write p99 while the other three run at about 22%.",
+      "constraint": "The reads stay 'latest 50 messages in a channel' and the partition key must remain in the schema.",
+      "question": "How do you remodel the table so writes spread across the cluster?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Message writes",
+          "value": 40000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "Hottest shard CPU",
+          "value": 98,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "Write p99",
+          "value": 1400,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Timeouts",
+          "value": 2.5,
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Chat API",
+            "tone": "warn",
+            "cpu": 60
+          },
+          {
+            "id": "p1",
+            "kind": "db",
+            "label": "Shard 1",
+            "tone": "good",
+            "cpu": 22
+          },
+          {
+            "id": "p2",
+            "kind": "db",
+            "label": "Shard 2",
+            "tone": "good",
+            "cpu": 25
+          },
+          {
+            "id": "p3",
+            "kind": "db",
+            "label": "Shard 3 (channel #general)",
+            "tone": "bad",
+            "cpu": 98,
+            "sub": "1 partition, 71% of writes"
+          },
+          {
+            "id": "p4",
+            "kind": "db",
+            "label": "Shard 4",
+            "tone": "good",
+            "cpu": 20
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "p1"
+          },
+          {
+            "from": "app",
+            "to": "p2"
+          },
+          {
+            "from": "app",
+            "to": "p3"
+          },
+          {
+            "from": "app",
+            "to": "p4"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "model-bucket",
+          "label": "Partition by (channel_id, day) and cluster by time",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "tradeoffSummary": "Bounded partitions; multi-day reads fan out"
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Chat API",
+                "tone": "good",
+                "cpu": 45
+              },
+              {
+                "id": "p1",
+                "kind": "db",
+                "label": "Shard 1",
+                "tone": "good",
+                "cpu": 38
+              },
+              {
+                "id": "p2",
+                "kind": "db",
+                "label": "Shard 2",
+                "tone": "good",
+                "cpu": 40
+              },
+              {
+                "id": "p3",
+                "kind": "db",
+                "label": "Shard 3 (channel #general)",
+                "tone": "good",
+                "cpu": 41,
+                "sub": "partition per channel-day"
+              },
+              {
+                "id": "p4",
+                "kind": "db",
+                "label": "Shard 4",
+                "tone": "good",
+                "cpu": 37
+              }
+            ],
+            "edges": [
+              {
+                "from": "app",
+                "to": "p1"
+              },
+              {
+                "from": "app",
+                "to": "p2"
+              },
+              {
+                "from": "app",
+                "to": "p3"
+              },
+              {
+                "from": "app",
+                "to": "p4"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "Hottest shard CPU",
+              "value": 41,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "Write p99",
+              "value": 22,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Timeouts",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Hot channel splits into daily partitions",
+          "resultBody": "Adding a time bucket to the partition key caps each partition at one channel-day and moves newly written data to a fresh partition, spreading load across shards. Reads fetch the newest bucket, plus the previous one at midnight. Cost: history queries touch one partition per day."
+        },
+        {
+          "id": "model-index",
+          "label": "Add a secondary index on channel_id to every shard node",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "p3",
+                "cpu": 100,
+                "sub": "extra index write per insert"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "Hottest shard CPU",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "Write p99",
+              "value": 2100,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Timeouts",
+              "value": 4.1,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Index on the hot key adds more writes",
+          "resultBody": "The rows already live by channel_id, so the index does nothing for placement. It adds an index write to every insert and the hottest shard climbs to 100% CPU with p99 at 2.1 s."
+        },
+        {
+          "id": "model-nodes",
+          "label": "Add two nodes and rebalance the token ranges evenly",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "tradeoffs": {
+            "costMonthlyDelta": 1800
+          },
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "p5",
+                "kind": "db",
+                "label": "Shard 5 (new)",
+                "tone": "good",
+                "cpu": 12,
+                "sub": "idle"
+              },
+              {
+                "id": "p6",
+                "kind": "db",
+                "label": "Shard 6 (new)",
+                "tone": "good",
+                "cpu": 11,
+                "sub": "idle"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "p5"
+              },
+              {
+                "from": "app",
+                "to": "p6"
+              }
+            ],
+            "nodes": [
+              {
+                "id": "p3",
+                "cpu": 97,
+                "sub": "still one partition"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "Hottest shard CPU",
+              "value": 97,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "Write p99",
+              "value": 1350,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Timeouts",
+              "value": 2.4,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "New nodes cannot share one partition",
+          "resultBody": "Rebalancing moves whole partitions, and #general is a single partition owned by one replica set. Nothing new can take its writes, so the hot shard stays at 97% and you paid $1,800 a month for nodes that stay idle."
+        }
+      ],
+      "hints": [
+        "The other three shards idle, so total capacity is fine and placement is not.",
+        "A partition lives on one replica set no matter how big the cluster is.",
+        "Change what makes up the partition key so one channel spreads over many partitions."
+      ],
+      "nextId": null
     }
   ]
 }

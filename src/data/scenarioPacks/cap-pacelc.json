@@ -86,6 +86,24 @@
           }
         ]
       },
+      "logs": {
+        "users": [
+          "35,000 req/s across US and EU",
+          "gift-card redeem approved in EU while link down",
+          "480 errors in last 60 s"
+        ],
+        "us": [
+          "replication link to EU: DOWN for 90 s",
+          "CPU 70%, p95 140 ms",
+          "gift card gc_3391 balance 0 after $50 debit at 12:04:11"
+        ],
+        "eu": [
+          "replica lag: unknown, last sync 90 s ago",
+          "local read gc_3391 balance $50, approved debit $50 at 12:04:13",
+          "accepting writes locally, CPU 40%",
+          "no quorum check on debit path"
+        ]
+      },
       "choices": [
         {
           "id": "quorum-spend",
@@ -3722,6 +3740,505 @@
       ],
       "nextId": null,
       "reviewed": true
+    },
+    {
+      "id": "cap-pr-01",
+      "incidentCode": "INC-016-PR1",
+      "level": 16,
+      "patternId": "cap-pacelc",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 130,
+      "format": "bad-pr",
+      "title": "Wallet balances show old values after payments",
+      "brief": "Since the 16:20 deploy, 6.2% of balance reads return the value from before the last payment and support gets 140 tickets/h. Read p99 improved to 8 ms and every node is up.",
+      "constraint": "Payments are written at QUORUM; revert only the PR that broke reads.",
+      "question": "Which PR do you revert?",
+      "metricsBefore": [
+        {
+          "key": "stale",
+          "label": "Stale balance reads",
+          "value": 6.2,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p99",
+          "label": "Read p99",
+          "value": 8,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "cpu",
+          "label": "Cluster CPU",
+          "value": 40,
+          "unit": "%",
+          "tone": "neutral"
+        },
+        {
+          "key": "tickets",
+          "label": "Support tickets",
+          "value": 140,
+          "unit": "/h",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "users",
+            "label": "Wallet app",
+            "tone": "warn",
+            "sub": "reads balance after payment"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Ledger API x10",
+            "tone": "warn",
+            "cpu": 33
+          },
+          {
+            "id": "c",
+            "kind": "db",
+            "label": "Cassandra, 3 replicas per key",
+            "tone": "bad",
+            "cpu": 40,
+            "sub": "reads served by 1 replica"
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "c"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "lcs",
+          "label": "Revert PR #4410: compaction strategy from SizeTiered to Leveled",
+          "correct": false,
+          "approach": "anti_pattern",
+          "diff": "cassandra/tables/ledger.cql\n ALTER TABLE ledger.balances WITH\n-  compaction = {'class': 'SizeTieredCompactionStrategy'}\n+  compaction = {'class': 'LeveledCompactionStrategy'}",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "stale",
+              "label": "Stale balance reads",
+              "value": 6.1,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p99",
+              "label": "Read p99",
+              "value": 9,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "cpu",
+              "label": "Cluster CPU",
+              "value": 40,
+              "unit": "%",
+              "tone": "neutral"
+            }
+          ],
+          "resultTitle": "Compaction back, stale reads stay",
+          "resultBody": "Leveled compaction changes disk layout and read amplification, not which replicas answer a read. Stale balances continue at about 6% and you have triggered another heavy compaction cycle.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "c",
+                "tone": "bad",
+                "sub": "compaction rewritten, still stale"
+              }
+            ]
+          }
+        },
+        {
+          "id": "hint",
+          "label": "Revert PR #4416: hinted handoff window from 3 h to 6 h",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "diff": "cassandra/cassandra.yaml\n-max_hint_window_in_ms: 10800000\n+max_hint_window_in_ms: 21600000",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "stale",
+              "label": "Stale balance reads",
+              "value": 6.3,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p99",
+              "label": "Read p99",
+              "value": 8,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "cpu",
+              "label": "Cluster CPU",
+              "value": 40,
+              "unit": "%",
+              "tone": "neutral"
+            }
+          ],
+          "resultTitle": "Longer hints, same staleness",
+          "resultBody": "A longer hint window only changes how long a down node collects missed writes. Reads are still served by one replica that may not have the latest write, so stale balances stay near 6%.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "c",
+                "tone": "bad",
+                "sub": "hints kept longer, reads still stale"
+              }
+            ]
+          }
+        },
+        {
+          "id": "one",
+          "label": "Revert PR #4423: balance reads from LOCAL_QUORUM to LOCAL_ONE",
+          "correct": true,
+          "approach": "optimal",
+          "diff": "ledger-service/db/session.yaml\n   keyspace: ledger\n   table: balances\n-  read_consistency: LOCAL_QUORUM\n+  read_consistency: LOCAL_ONE\n   write_consistency: LOCAL_QUORUM",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "tradeoffSummary": "Slightly higher read latency for read-your-writes."
+          },
+          "metricsAfter": [
+            {
+              "key": "stale",
+              "label": "Stale balance reads",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p99",
+              "label": "Read p99",
+              "value": 14,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "cpu",
+              "label": "Cluster CPU",
+              "value": 40,
+              "unit": "%",
+              "tone": "neutral"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "app",
+                "kind": "users",
+                "label": "Wallet app",
+                "tone": "good",
+                "sub": "sees latest balance"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Ledger API x10",
+                "tone": "good",
+                "cpu": 33
+              },
+              {
+                "id": "c",
+                "kind": "db",
+                "label": "Cassandra, 3 replicas per key",
+                "tone": "good",
+                "cpu": 40,
+                "sub": "read overlaps write quorum"
+              }
+            ],
+            "edges": [
+              {
+                "from": "app",
+                "to": "api"
+              },
+              {
+                "from": "api",
+                "to": "c"
+              }
+            ]
+          },
+          "resultTitle": "Reads see the last payment",
+          "resultBody": "With reads at ONE, any single replica answers, and a replica that missed the write returns the old balance. LOCAL_QUORUM reads overlap the QUORUM writes (2 + 2 > 3), so they always include one up-to-date replica. Cost: p99 rises from 8 ms to 14 ms."
+        }
+      ],
+      "hints": [
+        "The metric that improved is the clue: 8 ms means fewer replicas were asked.",
+        "Writes use QUORUM; check whether reads overlap them.",
+        "One diff lowers how many replicas must agree on a read."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "cap-cut-01",
+      "incidentCode": "INC-016-CT1",
+      "level": 16,
+      "patternId": "cap-pacelc",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P2",
+      "xp": 120,
+      "format": "budget-cut",
+      "title": "The Cassandra bill is 40% of infra",
+      "brief": "A three-datacenter Cassandra ring is healthy: 9 ms serving p99, 99.99% availability. The analytics DC of 12 nodes sits at 9% CPU because nightly Spark jobs run for only 2 hours. Finance wants savings.",
+      "constraint": "SLOs: serving read p99 under 50 ms and availability above 99.95% with a node down.",
+      "question": "What do you cut?",
+      "metricsBefore": [
+        {
+          "key": "cost",
+          "label": "Monthly cost",
+          "value": 96000,
+          "unit": "$/mo",
+          "tone": "warn"
+        },
+        {
+          "key": "p99",
+          "label": "Serving read p99",
+          "value": 9,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "cpu",
+          "label": "Serving CPU",
+          "value": 34,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "avail",
+          "label": "Availability",
+          "value": 99.99,
+          "unit": "%",
+          "tone": "good"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "us",
+            "kind": "db",
+            "label": "US DC (serving)",
+            "tone": "good",
+            "cpu": 34,
+            "sub": "RF 3, 12 nodes"
+          },
+          {
+            "id": "eu",
+            "kind": "db",
+            "label": "EU DC (serving)",
+            "tone": "good",
+            "cpu": 31,
+            "sub": "RF 3, 9 nodes"
+          },
+          {
+            "id": "an",
+            "kind": "worker",
+            "label": "Analytics DC (Spark reads)",
+            "tone": "good",
+            "cpu": 9,
+            "sub": "RF 3, 12 nodes"
+          }
+        ],
+        "edges": [
+          {
+            "from": "us",
+            "to": "eu"
+          },
+          {
+            "from": "us",
+            "to": "an"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "rf",
+          "label": "Lower replication factor from 3 to 2 in the US serving DC",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": -8000
+          },
+          "metricsAfter": [
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 88000,
+              "unit": "$/mo",
+              "tone": "warn"
+            },
+            {
+              "key": "p99",
+              "label": "Serving read p99",
+              "value": 9,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "avail",
+              "label": "Availability",
+              "value": 99.5,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "One node down blocks writes",
+          "resultBody": "With RF 2, LOCAL_QUORUM needs both replicas: a single node restart makes its token ranges unavailable for reads and writes at that consistency, and availability drops toward 99.5%, breaking the 99.95% SLO.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "us",
+                "tone": "bad",
+                "sub": "RF 2: quorum needs both"
+              }
+            ]
+          }
+        },
+        {
+          "id": "analytics",
+          "label": "Shrink the analytics DC from 12 nodes to 5 (about 21% CPU)",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": -11000,
+            "tradeoffSummary": "Analytics jobs run longer overnight."
+          },
+          "metricsAfter": [
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 85000,
+              "unit": "$/mo",
+              "tone": "good"
+            },
+            {
+              "key": "p99",
+              "label": "Serving read p99",
+              "value": 9,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "avail",
+              "label": "Availability",
+              "value": 99.99,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "us",
+                "kind": "db",
+                "label": "US DC (serving)",
+                "tone": "good",
+                "cpu": 34,
+                "sub": "RF 3, 12 nodes"
+              },
+              {
+                "id": "eu",
+                "kind": "db",
+                "label": "EU DC (serving)",
+                "tone": "good",
+                "cpu": 31,
+                "sub": "RF 3, 9 nodes"
+              },
+              {
+                "id": "an",
+                "kind": "worker",
+                "label": "Analytics DC (Spark reads)",
+                "tone": "good",
+                "cpu": 21,
+                "sub": "RF 3, 5 nodes"
+              }
+            ],
+            "edges": [
+              {
+                "from": "us",
+                "to": "eu"
+              },
+              {
+                "from": "us",
+                "to": "an"
+              }
+            ]
+          },
+          "resultTitle": "Same SLOs, smaller bill",
+          "resultBody": "The analytics ring serves no user reads, so shrinking it does not touch the serving path. Five nodes run near 21% CPU and still hold RF 3; the nightly job just takes 3 hours instead of 2. Saves about $11,000 a month."
+        },
+        {
+          "id": "eu",
+          "label": "Drop the EU DC and serve European users from the US DC",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "tradeoffs": {
+            "costMonthlyDelta": -24000
+          },
+          "metricsAfter": [
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 72000,
+              "unit": "$/mo",
+              "tone": "warn"
+            },
+            {
+              "key": "p99",
+              "label": "Serving read p99",
+              "value": 105,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "avail",
+              "label": "Availability",
+              "value": 99.99,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "EU latency breaks the SLO",
+          "resultBody": "Removing EU replicas saves the most, but every European read now crosses the Atlantic at about 90 ms RTT. EU read p99 rises from 9 ms to 105 ms, over the 50 ms SLO, and a US outage leaves EU with nothing.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "eu",
+                "tone": "bad",
+                "sub": "removed; EU reads cross ocean"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Serving DCs earn their keep; find the ring that does not serve users.",
+        "Compare RF and quorum size before dropping replicas.",
+        "Cut the DC whose CPU shows it is mostly idle."
+      ],
+      "nextId": null
     }
   ]
 }

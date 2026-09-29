@@ -5463,6 +5463,570 @@
         "Undo the band-aid and keep heap from ever reaching 95%."
       ],
       "nextId": "pool-01"
+    },
+    {
+      "id": "cb-pr-01",
+      "incidentCode": "INC-010-PR1",
+      "level": 10,
+      "patternId": "circuit-breaker",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 125,
+      "format": "bad-pr",
+      "title": "Checkout stalls, breaker never opens",
+      "brief": "Checkout p99 is 6 s and 200 of 200 worker threads are busy. Recommendations answers in 7.8 s from 2 of 8 pods while error rate is only 2%. Inventory p95 is 30 ms, payments 90 ms.",
+      "constraint": "You can revert one PR before the next flash sale.",
+      "question": "Which PR do you revert to get checkout threads back?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Checkout traffic",
+          "value": 4200,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "p95",
+          "label": "Checkout p99",
+          "value": 6000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 2,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "threads",
+          "label": "Threads in use",
+          "value": 100,
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Shoppers"
+          },
+          {
+            "id": "co",
+            "kind": "server",
+            "label": "Checkout (200 threads)",
+            "tone": "bad",
+            "cpu": 35,
+            "sub": "threads 200/200"
+          },
+          {
+            "id": "recs",
+            "kind": "server",
+            "label": "Recommendations",
+            "tone": "warn",
+            "cpu": 60,
+            "sub": "p95 7.8 s"
+          },
+          {
+            "id": "inv",
+            "kind": "server",
+            "label": "Inventory",
+            "tone": "good",
+            "cpu": 20
+          },
+          {
+            "id": "pay",
+            "kind": "server",
+            "label": "Payments",
+            "tone": "good",
+            "cpu": 25
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "co"
+          },
+          {
+            "from": "co",
+            "to": "recs"
+          },
+          {
+            "from": "co",
+            "to": "inv"
+          },
+          {
+            "from": "co",
+            "to": "pay"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "revert-probes",
+          "label": "Revert PR #5510: allow 5 half-open probes instead of 1",
+          "correct": false,
+          "diff": "resilience/breaker.yaml\n-  halfOpenProbes: 1\n+  halfOpenProbes: 5",
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "p95",
+              "label": "Checkout p99",
+              "value": 6100,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "threads",
+              "label": "Threads in use",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Probe count was not the problem",
+          "resultBody": "The breaker is not even in half-open state; it never opened, since slow calls are not counted as failures. Reverting probes changes nothing and threads stay at 200 of 200.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "co",
+                "sub": "breaker still closed"
+              }
+            ]
+          }
+        },
+        {
+          "id": "revert-timeout",
+          "label": "Revert PR #5514: raise recs timeout from 300 ms to 8 s",
+          "correct": true,
+          "diff": "clients/recs.yaml\n-  timeout_ms: 300\n+  timeout_ms: 8000\n   breaker:\n     failureRateThreshold: 50",
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "p95",
+              "label": "Checkout p99",
+              "value": 250,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "threads",
+              "label": "Threads in use",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Slow calls fail fast again",
+          "resultBody": "With an 8 s timeout each slow recommendation call held a thread for up to 8 s, and only errors count towards the breaker, so a 300 ms timeout turns those calls into failures that trip it. Threads drain to about 30% and checkout p99 falls to 250 ms. Cost: some pages render without recommendations.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "tradeoffSummary": "Fast failure; recommendations sometimes missing."
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Shoppers",
+                "tone": "good"
+              },
+              {
+                "id": "co",
+                "kind": "server",
+                "label": "Checkout (200 threads)",
+                "tone": "good",
+                "cpu": 35
+              },
+              {
+                "id": "recs",
+                "kind": "server",
+                "label": "Recommendations",
+                "tone": "good",
+                "cpu": 40
+              },
+              {
+                "id": "inv",
+                "kind": "server",
+                "label": "Inventory",
+                "tone": "good",
+                "cpu": 20
+              },
+              {
+                "id": "pay",
+                "kind": "server",
+                "label": "Payments",
+                "tone": "good",
+                "cpu": 25
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "co"
+              },
+              {
+                "from": "co",
+                "to": "recs"
+              },
+              {
+                "from": "co",
+                "to": "inv"
+              },
+              {
+                "from": "co",
+                "to": "pay"
+              }
+            ]
+          }
+        },
+        {
+          "id": "revert-inv-retry",
+          "label": "Revert PR #5507: retry inventory reads twice with jitter",
+          "correct": false,
+          "diff": "clients/inventory.yaml\n-  retries: 0\n+  retries: 2\n+  backoff: jitter",
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "p95",
+              "label": "Checkout p99",
+              "value": 5900,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "threads",
+              "label": "Threads in use",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Inventory retries were harmless",
+          "resultBody": "Inventory is healthy at 30 ms p95, so retries almost never fire. The revert does not touch recommendations, the only slow dependency, and threads stay saturated.",
+          "tradeoffs": {
+            "costMonthlyDelta": -10
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "inv",
+                "tone": "warn",
+                "sub": "innocent, retries rarely fire"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Threads are exhausted while errors are only 2%. Which calls are not errors yet?",
+        "Find the change that lets a slow dependency hold a thread for seconds.",
+        "A breaker only reacts to failures; a long timeout delays them."
+      ],
+      "reviewed": true
+    },
+    {
+      "id": "cb-cut-01",
+      "incidentCode": "INC-010-CT1",
+      "level": 10,
+      "patternId": "circuit-breaker",
+      "canonical": false,
+      "severity": "P2",
+      "xp": 110,
+      "format": "budget-cut",
+      "title": "Recommendations fleet costs $38k for 11% CPU",
+      "brief": "Checkout is green: p99 180 ms, 0.02% errors against a 0.1% budget. The recs fleet runs at 11% CPU, the fallback cache serves 0.4% of calls, inventory sits at 41%. Cut at least $8k.",
+      "constraint": "SLO is checkout errors under 0.1% even when a dependency is degraded.",
+      "question": "Which cut keeps checkout inside its SLO?",
+      "metricsBefore": [
+        {
+          "key": "cost",
+          "label": "Monthly cost",
+          "value": 38000,
+          "unit": "$/mo",
+          "tone": "warn"
+        },
+        {
+          "key": "recscpu",
+          "label": "Recs CPU",
+          "value": 11,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "p95",
+          "label": "Checkout p99",
+          "value": 180,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 0.02,
+          "unit": "%",
+          "tone": "good"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Shoppers"
+          },
+          {
+            "id": "co",
+            "kind": "server",
+            "label": "Checkout (30 pods)",
+            "tone": "good",
+            "cpu": 22
+          },
+          {
+            "id": "recs",
+            "kind": "server",
+            "label": "Recommendations (24 pods)",
+            "tone": "good",
+            "cpu": 11
+          },
+          {
+            "id": "fb",
+            "kind": "cache",
+            "label": "Last-known-good fallback",
+            "tone": "good",
+            "cpu": 0,
+            "sub": "0.4% hit"
+          },
+          {
+            "id": "inv",
+            "kind": "server",
+            "label": "Inventory (12 pods)",
+            "tone": "good",
+            "cpu": 41
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "co"
+          },
+          {
+            "from": "co",
+            "to": "recs"
+          },
+          {
+            "from": "co",
+            "to": "fb"
+          },
+          {
+            "from": "co",
+            "to": "inv"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "cut-fallback",
+          "label": "Remove the last-known-good fallback cache (0.4% of calls)",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 30000,
+              "unit": "$/mo",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 2.1,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "Checkout p99",
+              "value": 180,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "The next recs blip hits checkout errors",
+          "resultBody": "Saves $8k, but that 0.4% is the fallback answering when the breaker is open. Last month it served 1.1M responses across 3 recs incidents. Without it, the next blip returns errors, taking checkout to about 2.1% against the 0.1% budget.",
+          "tradeoffs": {
+            "costMonthlyDelta": -8000
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "fb",
+                "tone": "bad",
+                "sub": "removed: open breaker now returns errors"
+              }
+            ]
+          }
+        },
+        {
+          "id": "cut-inventory",
+          "label": "Cut the inventory fleet from 12 pods down to 4 pods",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 28000,
+              "unit": "$/mo",
+              "tone": "good"
+            },
+            {
+              "key": "invcpu",
+              "label": "Inventory CPU",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "Checkout p99",
+              "value": 2400,
+              "unit": "ms",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Inventory saturates and trips the breaker",
+          "resultBody": "Saves $10k, but inventory is already at 41% of 12 pods; on 4 pods that is about 123% demand. Its p99 goes from 60 ms to 2.4 s and the breaker opens on a dependency that cannot be skipped.",
+          "tradeoffs": {
+            "costMonthlyDelta": -10000
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "inv",
+                "tone": "bad",
+                "cpu": 100,
+                "sub": "4 pods carry 123% of prior load"
+              }
+            ]
+          }
+        },
+        {
+          "id": "cut-recs",
+          "label": "Halve the recommendations fleet from 24 pods to 12",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 29000,
+              "unit": "$/mo",
+              "tone": "good"
+            },
+            {
+              "key": "recscpu",
+              "label": "Recs CPU",
+              "value": 22,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "Checkout p99",
+              "value": 182,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Half the pods, breaker unchanged",
+          "resultBody": "Recs runs at 11% CPU, so 12 pods carry it at about 22%, peak 40%. Timeouts and breaker settings are untouched and the fallback still covers blips. Saves $9k; checkout p99 stays at 180 ms.",
+          "tradeoffs": {
+            "costMonthlyDelta": -9000,
+            "tradeoffSummary": "Less headroom on a non-critical dependency."
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Shoppers",
+                "tone": "good"
+              },
+              {
+                "id": "co",
+                "kind": "server",
+                "label": "Checkout (30 pods)",
+                "tone": "good",
+                "cpu": 22
+              },
+              {
+                "id": "recs",
+                "kind": "server",
+                "label": "Recommendations (24 pods)",
+                "tone": "good",
+                "cpu": 11
+              },
+              {
+                "id": "fb",
+                "kind": "cache",
+                "label": "Last-known-good fallback",
+                "tone": "good",
+                "cpu": 0
+              },
+              {
+                "id": "inv",
+                "kind": "server",
+                "label": "Inventory (12 pods)",
+                "tone": "good",
+                "cpu": 40
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "co"
+              },
+              {
+                "from": "co",
+                "to": "recs"
+              },
+              {
+                "from": "co",
+                "to": "fb"
+              },
+              {
+                "from": "co",
+                "to": "inv"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Ask which component only looks idle because it protects you during incidents.",
+        "Compare each fleet's CPU after the cut, not before.",
+        "Utilisation of the fallback is low by design."
+      ],
+      "reviewed": true
     }
   ]
 }

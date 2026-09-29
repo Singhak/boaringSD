@@ -92,6 +92,27 @@
           }
         ]
       },
+      "logs": {
+        "users": [
+          "28k req/s; 1,900 refund tickets/day 'charged wrong order'",
+          "support: refund on #88213007 hit a different customer"
+        ],
+        "api": [
+          "CPU 58%; order create p95 180 ms",
+          "order #88213007 returned by shard 1 and shard 3 lookup",
+          "refund lookup by order_id fans out, 2 rows matched"
+        ],
+        "s1": [
+          "CPU 72%; INSERT orders next AUTO_INCREMENT=88213007",
+          "auto_increment_increment=1, offset=1",
+          "no cross-shard uniqueness check on orders.id"
+        ],
+        "s2": [
+          "CPU 69%; INSERT orders next AUTO_INCREMENT=88213004",
+          "auto_increment_increment=1, offset=1",
+          "dup id 88213007 seen on shard 1 during reconciliation"
+        ]
+      },
       "choices": [
         {
           "id": "snowflake",
@@ -3468,6 +3489,497 @@
       ],
       "nextId": null,
       "reviewed": true
+    },
+    {
+      "id": "idg-pr-01",
+      "incidentCode": "INC-019-PR1",
+      "level": 19,
+      "patternId": "id-generation",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 120,
+      "title": "Orders fail with duplicate primary keys since the 14:10 deploy",
+      "brief": "INSERT on orders.id violates the unique constraint 340 times a minute. IDs are 64-bit Snowflake values. Clock offset is 3 ms, and the order service went from 24 to 64 pods in the same window.",
+      "constraint": "Only one revert can ship before the evening peak.",
+      "question": "Which PR do you revert to stop the duplicate IDs?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Orders",
+          "value": 6000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "errors",
+          "label": "Duplicate-key errors",
+          "value": 340,
+          "unit": "/min",
+          "tone": "bad"
+        },
+        {
+          "key": "skew",
+          "label": "Clock offset",
+          "value": 3,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "pods",
+          "label": "Order pods",
+          "value": 64,
+          "unit": "pods",
+          "tone": "neutral"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Order service (64 pods)",
+            "tone": "warn",
+            "cpu": 48
+          },
+          {
+            "id": "idg",
+            "kind": "server",
+            "label": "Snowflake ID library",
+            "tone": "warn",
+            "sub": "worker_id = hash(hostname) % 1024"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Orders DB",
+            "tone": "bad",
+            "cpu": 52,
+            "sub": "340 unique violations/min"
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "idg"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "pr-ntp",
+          "label": "Revert PR #5810: chrony poll interval from 16 s to 64 s",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "diff": "ops/chrony.conf\n-server ntp.internal poll 4\n+server ntp.internal poll 6\n # 2^4 = 16 s, 2^6 = 64 s",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "idg",
+                "sub": "worker_id collisions continue"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "errors",
+              "label": "Duplicate-key errors",
+              "value": 335,
+              "unit": "/min",
+              "tone": "bad"
+            },
+            {
+              "key": "skew",
+              "label": "Clock offset",
+              "value": 3,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Clock was never drifting",
+          "resultBody": "Polling NTP less often could add a few ms of drift, but offset is 3 ms and the library refuses to move backwards. Duplicates continue at 335 a minute because pods still share worker IDs."
+        },
+        {
+          "id": "pr-batch",
+          "label": "Revert PR #5822: fetch 100 IDs per SDK call instead of 1",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "diff": "sdk/ids.go\n-const idBlockSize = 1\n+const idBlockSize = 100\n // one call reserves a block of sequence numbers",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "tone": "bad",
+                "sub": "extra ID calls, same duplicates"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "errors",
+              "label": "Duplicate-key errors",
+              "value": 340,
+              "unit": "/min",
+              "tone": "bad"
+            },
+            {
+              "key": "skew",
+              "label": "Clock offset",
+              "value": 3,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Batching only saves round trips",
+          "resultBody": "Allocating 100 IDs at a time changes call count, not uniqueness: each block is still stamped with its pod's worker ID. Reverting it leaves 340 duplicates a minute and adds 5,900 extra calls a second."
+        },
+        {
+          "id": "pr-worker",
+          "label": "Revert PR #5834: worker_id from hostname hash, not a lease",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "diff": "idgen/config.go\n # PR #5834: drop the lease service call at boot\n-workerID = registry.Lease(podName)\n+workerID = hash(hostname) % 1024\n bits: 41 time | 10 worker | 12 seq",
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Order service (64 pods)",
+                "tone": "good",
+                "cpu": 42
+              },
+              {
+                "id": "idg",
+                "kind": "server",
+                "label": "Snowflake ID library",
+                "tone": "good",
+                "sub": "leased worker_id"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Orders DB",
+                "tone": "good",
+                "cpu": 40,
+                "sub": "no violations"
+              }
+            ],
+            "edges": [
+              {
+                "from": "app",
+                "to": "idg"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "errors",
+              "label": "Duplicate-key errors",
+              "value": 0,
+              "unit": "/min",
+              "tone": "good"
+            },
+            {
+              "key": "skew",
+              "label": "Clock offset",
+              "value": 3,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Each pod holds its own worker ID again",
+          "resultBody": "Hashing hostnames into 1,024 slots collides once 64 pods are running: the birthday odds of a shared slot are about 87%. Two pods with one worker ID and the same millisecond emit the same ID. The lease hands out unique IDs, so duplicates drop to 0. Cost: a lease call at pod start-up."
+        }
+      ],
+      "hints": [
+        "Clock offset is fine, so look at what makes two IDs the same.",
+        "Snowflake IDs collide only when time, worker and sequence all match.",
+        "Which diff lets two pods end up with the same worker bits?"
+      ],
+      "nextId": null,
+      "format": "bad-pr"
+    },
+    {
+      "id": "idg-cut-01",
+      "incidentCode": "INC-019-CT1",
+      "level": 19,
+      "patternId": "id-generation",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P2",
+      "xp": 110,
+      "title": "ID service costs $7,200 a month to hand out 9k IDs a second",
+      "brief": "Nine ID pods across three zones each run 4% CPU at 1k IDs/s of a 40k/s capacity. The lease registry uses 6%. Finance asks for a cut; the service has never emitted a duplicate.",
+      "constraint": "IDs must stay unique and generation must survive the loss of one zone.",
+      "question": "Which cut saves money without breaking the SLO?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "IDs issued",
+          "value": 9000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "idcpu",
+          "label": "ID pod CPU",
+          "value": 4,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "p95",
+          "label": "ID call p95",
+          "value": 1.2,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "cost",
+          "label": "Monthly cost",
+          "value": 7200,
+          "unit": "$/mo",
+          "tone": "warn"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Order services",
+            "tone": "good",
+            "cpu": 35
+          },
+          {
+            "id": "ids",
+            "kind": "server",
+            "label": "9 ID pods (3 AZs)",
+            "tone": "good",
+            "cpu": 4,
+            "sub": "9k IDs/s, 40k each"
+          },
+          {
+            "id": "lease",
+            "kind": "db",
+            "label": "Worker-ID lease registry",
+            "tone": "good",
+            "cpu": 6
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Orders DB",
+            "tone": "good",
+            "cpu": 44
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "ids"
+          },
+          {
+            "from": "ids",
+            "to": "lease"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "cut-lease",
+          "label": "Delete the lease registry and hardcode worker IDs in config",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": -1100
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "lease",
+                "tone": "bad",
+                "sub": "removed"
+              },
+              {
+                "id": "ids",
+                "tone": "bad",
+                "sub": "cloned worker IDs"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "errors",
+              "label": "Duplicate IDs",
+              "value": 90,
+              "unit": "/min",
+              "tone": "bad"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 6100,
+              "unit": "$/mo",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Autoscaled pods reuse worker IDs",
+          "resultBody": "The registry is at 6% CPU, but it is what stops two pods sharing a worker ID. With static config a scale-out clones an ID, and the first shared millisecond emits duplicate keys: 90 collisions a minute in the first hour."
+        },
+        {
+          "id": "cut-pods",
+          "label": "Cut ID pods from 9 to 4 and keep them spread over 3 zones",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": -2100
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Order services",
+                "tone": "good",
+                "cpu": 35
+              },
+              {
+                "id": "ids",
+                "kind": "server",
+                "label": "4 ID pods (3 AZs)",
+                "tone": "good",
+                "cpu": 9,
+                "sub": "9k IDs/s, 40k each"
+              },
+              {
+                "id": "lease",
+                "kind": "db",
+                "label": "Worker-ID lease registry",
+                "tone": "good",
+                "cpu": 6
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Orders DB",
+                "tone": "good",
+                "cpu": 44
+              }
+            ],
+            "edges": [
+              {
+                "from": "app",
+                "to": "ids"
+              },
+              {
+                "from": "ids",
+                "to": "lease"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "idcpu",
+              "label": "ID pod CPU",
+              "value": 9,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "ID call p95",
+              "value": 1.3,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 5100,
+              "unit": "$/mo",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Four pods still idle at 9%",
+          "resultBody": "Load is 9k IDs/s against 40k per pod. Four pods share 2.25k IDs/s each, about 6% of capacity, and losing one zone leaves at least 2 pods handling 4.5k IDs/s each, still 11% CPU. The bill falls by roughly $2,100. Cost: less headroom for a 10x launch spike."
+        },
+        {
+          "id": "cut-az",
+          "label": "Consolidate all ID pods into one zone to drop cross-zone traffic",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": -900
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "ids",
+                "tone": "bad",
+                "sub": "single zone, no failover"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "p95",
+              "label": "ID call p95",
+              "value": 1.0,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "ID errors during AZ loss",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 6300,
+              "unit": "$/mo",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "One zone outage stops every order",
+          "resultBody": "Cross-zone traffic is small at 9k IDs/s, but the zone loss is not: with all pods in one zone an outage means no IDs issued, so checkout fails until pods restart elsewhere, about 6 minutes against a 99.95% budget of 22 minutes a month."
+        }
+      ],
+      "hints": [
+        "Everything is green, so ask what each part protects and what it costs to lose it.",
+        "Utilisation says how much you can remove; the failure it prevents says what you cannot.",
+        "Which part is mostly idle but not the one that keeps IDs unique or zone-proof?"
+      ],
+      "nextId": null,
+      "format": "budget-cut"
     }
   ]
 }

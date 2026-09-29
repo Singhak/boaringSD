@@ -3704,6 +3704,524 @@
           ]
         }
       ]
+    },
+    {
+      "id": "auth-pr-01",
+      "incidentCode": "INC-023-PR1",
+      "level": 23,
+      "patternId": "auth-at-scale",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 125,
+      "title": "Login p99 goes from 90 ms to 3.4 s and the auth DB is at 96% CPU",
+      "brief": "The session DB now takes 41k lookups a second, up from 3k, while API traffic is flat at 41k req/s. Auth service CPU is only 45%. Three PRs shipped at 09:40; login failures are rising.",
+      "constraint": "Users are locked out; one revert must fit in the next deploy.",
+      "question": "Which PR do you revert to bring the auth DB back down?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "API traffic",
+          "value": 41000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "p95",
+          "label": "Login p99",
+          "value": 3400,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "dbcpu",
+          "label": "Auth DB CPU",
+          "value": 96,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "authcpu",
+          "label": "Auth service CPU",
+          "value": 45,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "lookups",
+          "label": "DB lookups",
+          "value": 41000,
+          "unit": "/s",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "gw",
+            "kind": "lb",
+            "label": "API gateway",
+            "tone": "warn",
+            "cpu": 50,
+            "sub": "introspect_remote"
+          },
+          {
+            "id": "auth",
+            "kind": "server",
+            "label": "Auth service",
+            "tone": "warn",
+            "cpu": 45
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Session and token DB",
+            "tone": "bad",
+            "cpu": 96,
+            "sub": "41k lookups/s"
+          }
+        ],
+        "edges": [
+          {
+            "from": "gw",
+            "to": "auth"
+          },
+          {
+            "from": "auth",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "pr-introspect",
+          "label": "Revert PR #6120: gateway JWT verify to remote introspection",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "diff": "gateway/authz.yaml\n-  mode: jwt_local_verify\n+  mode: introspect_remote\n+  introspection_cache_ttl: 0s\n   jwks_refresh: 10m",
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "gw",
+                "kind": "lb",
+                "label": "API gateway",
+                "tone": "good",
+                "cpu": 40,
+                "sub": "jwt_local_verify"
+              },
+              {
+                "id": "auth",
+                "kind": "server",
+                "label": "Auth service",
+                "tone": "good",
+                "cpu": 45
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Session and token DB",
+                "tone": "good",
+                "cpu": 12,
+                "sub": "3k lookups/s"
+              }
+            ],
+            "edges": [
+              {
+                "from": "gw",
+                "to": "auth"
+              },
+              {
+                "from": "auth",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "p95",
+              "label": "Login p99",
+              "value": 85,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "dbcpu",
+              "label": "Auth DB CPU",
+              "value": 12,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "lookups",
+              "label": "DB lookups",
+              "value": 3000,
+              "unit": "/s",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Signatures verified in the gateway again",
+          "resultBody": "Remote introspection sends every API request to the auth DB: 41k lookups a second, up 14x from the 3k that logins and refreshes cause. Verifying JWT signatures locally with cached keys removes those lookups; DB CPU falls to 12% and login p99 to 85 ms. Cost: a revoked token stays valid until it expires."
+        },
+        {
+          "id": "pr-bcrypt",
+          "label": "Revert PR #6133: bcrypt cost from 10 to 12 on password login",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "diff": "auth/password.go\n-const bcryptCost = 12\n+const bcryptCost = 10\n // constant applies to new hashes",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "auth",
+                "cpu": 38,
+                "sub": "hash cost lowered, DB unchanged"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "p95",
+              "label": "Login p99",
+              "value": 3300,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "dbcpu",
+              "label": "Auth DB CPU",
+              "value": 95,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "lookups",
+              "label": "DB lookups",
+              "value": 40500,
+              "unit": "/s",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Login hashing is not the bottleneck",
+          "resultBody": "Cost 12 makes each hash about 4x slower (roughly 250 ms), but logins are only 300 a second and that CPU lives on the auth pods, which are at 45%. The DB stays at 95% with 41k lookups a second and p99 hardly moves."
+        },
+        {
+          "id": "pr-ttl",
+          "label": "Revert PR #6141: access token lifetime from 5 minutes to 15",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "diff": "config/tokens.yaml\n-access_token_ttl: 15m\n+access_token_ttl: 5m",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "sub": "39k lookups/s, refresh saved 2k"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "p95",
+              "label": "Login p99",
+              "value": 3100,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "dbcpu",
+              "label": "Auth DB CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "lookups",
+              "label": "DB lookups",
+              "value": 39000,
+              "unit": "/s",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Refresh traffic was never the load",
+          "resultBody": "Token lifetime changes how often clients refresh: at 5 minutes that is well under 1k refreshes a second. Restoring 15 minutes cuts them a little but the 41k per-request lookups remain; DB CPU stays 94% and p99 is 3.1 s."
+        }
+      ],
+      "hints": [
+        "API traffic is flat but DB lookups grew 14x.",
+        "Something now hits the DB on every request instead of every login.",
+        "Which diff changes how a token is validated at the gateway?"
+      ],
+      "nextId": null,
+      "format": "bad-pr"
+    },
+    {
+      "id": "auth-cut-01",
+      "incidentCode": "INC-023-CT1",
+      "level": 23,
+      "patternId": "auth-at-scale",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P2",
+      "xp": 115,
+      "title": "Auth stack costs $26,000 a month while running at 15% CPU",
+      "brief": "Twelve auth pods handle 9k req/s at 15% CPU and p95 45 ms. A Redis revocation list uses 22% of memory, and a standby cluster in region B takes 0% traffic. Finance asks for a cut.",
+      "constraint": "Revoked tokens must stop working within 60 s and a region loss must recover in under 5 minutes.",
+      "question": "Which cut saves money without breaking the SLO?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Auth traffic",
+          "value": 9000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "Auth pod CPU",
+          "value": 15,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "p95",
+          "label": "Auth p95",
+          "value": 45,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "cost",
+          "label": "Monthly cost",
+          "value": 26000,
+          "unit": "$/mo",
+          "tone": "warn"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "gw",
+            "kind": "lb",
+            "label": "API gateway",
+            "tone": "good",
+            "cpu": 30
+          },
+          {
+            "id": "auth",
+            "kind": "server",
+            "label": "12 auth pods (region A)",
+            "tone": "good",
+            "cpu": 15
+          },
+          {
+            "id": "redis",
+            "kind": "cache",
+            "label": "Revocation list (Redis)",
+            "tone": "good",
+            "cpu": 10,
+            "sub": "22% memory"
+          },
+          {
+            "id": "stand",
+            "kind": "server",
+            "label": "Standby auth cluster (region B)",
+            "tone": "good",
+            "cpu": 0,
+            "sub": "0% traffic"
+          }
+        ],
+        "edges": [
+          {
+            "from": "gw",
+            "to": "auth"
+          },
+          {
+            "from": "auth",
+            "to": "redis"
+          },
+          {
+            "from": "auth",
+            "to": "stand"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "cut-standby",
+          "label": "Remove the standby cluster in region B that takes no traffic",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": -5400
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "stand",
+                "tone": "bad",
+                "label": "Standby removed",
+                "sub": "no failover target"
+              },
+              {
+                "id": "auth",
+                "tone": "warn",
+                "sub": "single region"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "rto",
+              "label": "Region-loss recovery",
+              "value": 40,
+              "unit": "min",
+              "tone": "bad"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 20600,
+              "unit": "$/mo",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "No region to fail over to",
+          "resultBody": "The standby's 0% utilisation is exactly what a warm spare looks like. Without it a region A outage means logins are down until a cluster is rebuilt, around 40 minutes, against the 5 minute recovery objective."
+        },
+        {
+          "id": "cut-redis",
+          "label": "Drop the revocation list and rely on 15-minute token expiry",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": -900
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "redis",
+                "tone": "bad",
+                "label": "No revocation list",
+                "sub": "tokens valid up to 15 min"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "revoke",
+              "label": "Revocation delay",
+              "value": 900,
+              "unit": "s",
+              "tone": "bad"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 25100,
+              "unit": "$/mo",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Revoked tokens live for 15 minutes",
+          "resultBody": "The list is small and cheap, but it is how a stolen or logged-out token dies quickly. Without it a revoked token keeps working until it expires, up to 15 minutes, against the 60 second requirement."
+        },
+        {
+          "id": "cut-pods",
+          "label": "Cut auth pods in region A from 12 to 6, about 30% CPU each",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": -2600
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "gw",
+                "kind": "lb",
+                "label": "API gateway",
+                "tone": "good",
+                "cpu": 30
+              },
+              {
+                "id": "auth",
+                "kind": "server",
+                "label": "6 auth pods (region A)",
+                "tone": "good",
+                "cpu": 30
+              },
+              {
+                "id": "redis",
+                "kind": "cache",
+                "label": "Revocation list (Redis)",
+                "tone": "good",
+                "cpu": 10,
+                "sub": "22% memory"
+              },
+              {
+                "id": "stand",
+                "kind": "server",
+                "label": "Standby auth cluster (region B)",
+                "tone": "good",
+                "cpu": 0,
+                "sub": "0% traffic"
+              }
+            ],
+            "edges": [
+              {
+                "from": "gw",
+                "to": "auth"
+              },
+              {
+                "from": "auth",
+                "to": "redis"
+              },
+              {
+                "from": "auth",
+                "to": "stand"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "Auth pod CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "Auth p95",
+              "value": 52,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 23400,
+              "unit": "$/mo",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Half the pods carry the same traffic",
+          "resultBody": "At 15% CPU, twelve pods do 1.8 pods' worth of work. On six that is 30% CPU, and losing one pod leaves 36%. p95 goes from 45 to 52 ms, far inside SLO. The bill falls by roughly $2,600. Cost: less headroom for a 3x login spike before autoscaling reacts."
+        }
+      ],
+      "hints": [
+        "Low utilisation is only a saving when nothing depends on the idle part.",
+        "Match each idle component to the requirement it protects.",
+        "Which capacity is over-provisioned without backing a revocation or recovery promise?"
+      ],
+      "nextId": null,
+      "format": "budget-cut"
     }
   ]
 }

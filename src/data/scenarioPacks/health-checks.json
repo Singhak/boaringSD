@@ -5542,6 +5542,501 @@
         "A restart cannot fix a dependency that is down.",
         "Liveness should fail only when restarting this process would help."
       ]
+    },
+    {
+      "id": "hc-pr-01",
+      "incidentCode": "INC-015-PR1",
+      "level": 15,
+      "patternId": "health-checks",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 130,
+      "format": "bad-pr",
+      "title": "A 1.2 s database blip takes the whole API down",
+      "brief": "Orders API returned 94% 503s at 13:10 for 4 minutes: Postgres p99 blipped to 1.2 s, and 380 of 400 pods dropped out of the load balancer. Pod CPU was only 20%. Three PRs shipped at 12:50.",
+      "constraint": "Revert exactly one PR; the other two stay in.",
+      "question": "Which PR do you revert?",
+      "metricsBefore": [
+        {
+          "key": "ready",
+          "label": "Ready pods",
+          "value": 20,
+          "unit": "of 400",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "503 rate",
+          "value": 94,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "dbp99",
+          "label": "DB p99",
+          "value": 1200,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "pcpu",
+          "label": "Pod CPU",
+          "value": 20,
+          "unit": "%",
+          "tone": "neutral"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "lb",
+            "kind": "lb",
+            "label": "Load balancer",
+            "tone": "bad",
+            "sub": "380 of 400 pods ejected"
+          },
+          {
+            "id": "pods",
+            "kind": "server",
+            "label": "400 API pods",
+            "tone": "bad",
+            "cpu": 20,
+            "sub": "readiness failing"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Orders primary",
+            "tone": "warn",
+            "cpu": 58,
+            "sub": "p99 1.2 s blip"
+          }
+        ],
+        "edges": [
+          {
+            "from": "lb",
+            "to": "pods"
+          },
+          {
+            "from": "pods",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "grace",
+          "label": "Revert PR #915: pod terminationGracePeriod from 30 s to 60 s on deploys",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "diff": "k8s/api-deployment.yaml\n-  terminationGracePeriodSeconds: 30\n+  terminationGracePeriodSeconds: 60",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "ready",
+              "label": "Ready pods",
+              "value": 20,
+              "unit": "of 400",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "503 rate",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "dbp99",
+              "label": "DB p99",
+              "value": 1200,
+              "unit": "ms",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Rollouts slower, outage same",
+          "resultBody": "A longer grace period only delays pod shutdown during deploys. It has nothing to do with why healthy pods left rotation, so the next DB blip still ejects 380 pods.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "pods",
+                "tone": "bad",
+                "sub": "still ejected on DB blip"
+              }
+            ]
+          }
+        },
+        {
+          "id": "surge",
+          "label": "Revert PR #918: rollout maxSurge from 25% to 50% of replicas",
+          "correct": false,
+          "approach": "anti_pattern",
+          "diff": "k8s/api-deployment.yaml\n   strategy:\n     rollingUpdate:\n-      maxSurge: 25%\n+      maxSurge: 50%",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "ready",
+              "label": "Ready pods",
+              "value": 20,
+              "unit": "of 400",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "503 rate",
+              "value": 93,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "dbp99",
+              "label": "DB p99",
+              "value": 1200,
+              "unit": "ms",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Wrong PR, still down",
+          "resultBody": "A higher surge only briefly adds pods during a rollout; it did not touch readiness. The next database slowdown still ejects the fleet, and you have added a pointless redeploy.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "lb",
+                "tone": "bad",
+                "sub": "still ejecting healthy pods"
+              }
+            ]
+          }
+        },
+        {
+          "id": "deep",
+          "label": "Revert PR #921: readiness probe from /healthz to /health/db (1 s)",
+          "correct": true,
+          "approach": "optimal",
+          "diff": "k8s/api-deployment.yaml\n   readinessProbe:\n     httpGet:\n-      path: /healthz\n+      path: /health/db\n-    timeoutSeconds: 3\n+    timeoutSeconds: 1",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "tradeoffSummary": "Shallow probes miss a broken dependency."
+          },
+          "metricsAfter": [
+            {
+              "key": "ready",
+              "label": "Ready pods",
+              "value": 398,
+              "unit": "of 400",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "503 rate",
+              "value": 0.3,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "dbp99",
+              "label": "DB p99",
+              "value": 240,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer",
+                "tone": "good",
+                "sub": "398 of 400 in rotation"
+              },
+              {
+                "id": "pods",
+                "kind": "server",
+                "label": "400 API pods",
+                "tone": "good",
+                "cpu": 20,
+                "sub": "shallow /healthz"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Orders primary",
+                "tone": "good",
+                "cpu": 58,
+                "sub": "p99 1.2 s blip"
+              }
+            ],
+            "edges": [
+              {
+                "from": "lb",
+                "to": "pods"
+              },
+              {
+                "from": "pods",
+                "to": "db"
+              }
+            ]
+          },
+          "resultTitle": "Pods stay in rotation",
+          "resultBody": "The new readiness probe ran a database query with a 1 s timeout, so one 1.2 s blip failed every pod at once and the balancer had nothing left to send to. Going back to a shallow /healthz keeps pods ready while the DB recovers, at the cost of not detecting a dead DB connection at the probe."
+        }
+      ],
+      "hints": [
+        "A shared dependency slowed down and every pod failed together.",
+        "Look for a probe that checks something outside the pod itself.",
+        "One diff makes readiness depend on the database."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "hc-cut-01",
+      "incidentCode": "INC-015-CT1",
+      "level": 15,
+      "patternId": "health-checks",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P2",
+      "xp": 110,
+      "format": "budget-cut",
+      "title": "Fleet averages 22% CPU and the bill is rising",
+      "brief": "The API runs 400 pods at 22% CPU across three availability zones behind three load balancers, p99 110 ms. If an AZ dies, health checks pull it out and survivors reach 33% CPU. Finance wants savings.",
+      "constraint": "SLO: p99 under 250 ms and 99.95% availability through the loss of one AZ.",
+      "question": "What do you cut?",
+      "metricsBefore": [
+        {
+          "key": "cost",
+          "label": "Monthly cost",
+          "value": 61000,
+          "unit": "$/mo",
+          "tone": "warn"
+        },
+        {
+          "key": "p99",
+          "label": "p99 latency",
+          "value": 110,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "cpu",
+          "label": "Pod CPU",
+          "value": 22,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "az",
+          "label": "CPU if one AZ is lost",
+          "value": 33,
+          "unit": "%",
+          "tone": "good"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "lb",
+            "kind": "lb",
+            "label": "Load balancers x3",
+            "tone": "good",
+            "cpu": 10
+          },
+          {
+            "id": "pods",
+            "kind": "server",
+            "label": "400 API pods across 3 AZs",
+            "tone": "good",
+            "cpu": 22
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Orders primary + replicas",
+            "tone": "good",
+            "cpu": 35
+          }
+        ],
+        "edges": [
+          {
+            "from": "lb",
+            "to": "pods"
+          },
+          {
+            "from": "pods",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "single",
+          "label": "Run all pods in one AZ to stop paying cross-AZ traffic charges",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": -4500
+          },
+          "metricsAfter": [
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 56500,
+              "unit": "$/mo",
+              "tone": "warn"
+            },
+            {
+              "key": "p99",
+              "label": "p99 latency",
+              "value": 108,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "az",
+              "label": "CPU if one AZ is lost",
+              "value": 100,
+              "unit": "% down",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "AZ outage takes everything",
+          "resultBody": "Cross-AZ transfer savings are real, but with every pod in one zone a single AZ event fails health checks fleet-wide. Nothing is left to route to, and 99.95% availability (about 22 minutes a month) is gone in one incident.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "pods",
+                "tone": "bad",
+                "sub": "single AZ, no failover"
+              }
+            ]
+          }
+        },
+        {
+          "id": "lbs",
+          "label": "Keep one load balancer and drop the other two at 10% CPU",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "tradeoffs": {
+            "costMonthlyDelta": -2200
+          },
+          "metricsAfter": [
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 58800,
+              "unit": "$/mo",
+              "tone": "warn"
+            },
+            {
+              "key": "p99",
+              "label": "p99 latency",
+              "value": 111,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "az",
+              "label": "CPU if one AZ is lost",
+              "value": 33,
+              "unit": "% CPU",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Single point of failure",
+          "resultBody": "Each balancer idles at 10% CPU, but the two extras are the failover: one balancer now carries all traffic at 30% CPU with no standby, and its first restart or hardware fault drops the API entirely.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "lb",
+                "tone": "bad",
+                "sub": "no standby balancer"
+              }
+            ]
+          }
+        },
+        {
+          "id": "pods",
+          "label": "Cut 400 pods to 270: 33% CPU now, 50% after losing an AZ",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": -10000,
+            "tradeoffSummary": "Less burst headroom, AZ-loss safety intact."
+          },
+          "metricsAfter": [
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 51000,
+              "unit": "$/mo",
+              "tone": "good"
+            },
+            {
+              "key": "p99",
+              "label": "p99 latency",
+              "value": 118,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "az",
+              "label": "CPU if one AZ is lost",
+              "value": 50,
+              "unit": "% CPU",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancers x3",
+                "tone": "good",
+                "cpu": 10
+              },
+              {
+                "id": "pods",
+                "kind": "server",
+                "label": "270 API pods across 3 AZs",
+                "tone": "good",
+                "cpu": 33
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Orders primary + replicas",
+                "tone": "good",
+                "cpu": 35
+              }
+            ],
+            "edges": [
+              {
+                "from": "lb",
+                "to": "pods"
+              },
+              {
+                "from": "pods",
+                "to": "db"
+              }
+            ]
+          },
+          "resultTitle": "Safe savings",
+          "resultBody": "Normal load goes to 33% and, after losing one AZ, survivors run near 50%, still under the 70% ceiling where p99 holds around 130 ms. Saves about $10,000 a month; health checks keep ejecting a failed AZ the same way."
+        }
+      ],
+      "hints": [
+        "Every metric is green; the cost line is the only warning.",
+        "Compute the CPU with one AZ gone before deleting anything.",
+        "Cut what stays under the ceiling even during a zone loss."
+      ],
+      "nextId": null
     }
   ]
 }

@@ -81,6 +81,23 @@
           }
         ]
       },
+      "logs": {
+        "users": [
+          "POST /checkout 2,000 req/s",
+          "client timeout after 8 s, 15 errors/s"
+        ],
+        "app": [
+          "threads 800/800 busy, 780 in HTTP wait",
+          "POST /checkout p95 8.0 s, CPU 90%",
+          "502/504 from upstream: 15/s",
+          "handler holds thread until vendor responds"
+        ],
+        "pay": [
+          "POST /v1/charges p50 6.2 s, p95 8 s",
+          "status 200, no 5xx from vendor",
+          "rate 2,000 calls/s from single client"
+        ]
+      },
       "choices": [
         {
           "id": "use-queue",
@@ -6155,6 +6172,583 @@
         "A fixed timeout can't be both longer than a job and shorter than a crash window.",
         "Replay the work from your own records, and let live workers renew their claim."
       ]
+    },
+    {
+      "id": "queue-pr-01",
+      "incidentCode": "INC-006-PR1",
+      "level": 6,
+      "patternId": "async-queues",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 130,
+      "format": "bad-pr",
+      "title": "Order emails arrive 45 minutes late",
+      "brief": "Order-confirmation emails are 45 min late. The queue holds 1.4M messages, 4,000 msg/s in, and 62% of deliveries are redeliveries. Workers idle at 34% CPU; jobs take 48 s p95.",
+      "constraint": "You can revert exactly one PR before the next traffic peak.",
+      "question": "Which PR do you revert?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Publish rate",
+          "value": 4000,
+          "unit": "msg/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "depth",
+          "label": "Queue depth",
+          "value": 1400000,
+          "unit": "msgs",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Redelivery rate",
+          "value": 62,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "cpu",
+          "label": "Worker CPU",
+          "value": 34,
+          "unit": "%",
+          "tone": "good"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Order API",
+            "tone": "good",
+            "cpu": 30
+          },
+          {
+            "id": "q",
+            "kind": "queue",
+            "label": "Email queue",
+            "tone": "bad",
+            "sub": "1.4M deep"
+          },
+          {
+            "id": "w",
+            "kind": "worker",
+            "label": "Workers",
+            "tone": "warn",
+            "cpu": 34,
+            "sub": "jobs take 48 s"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "q"
+          },
+          {
+            "from": "q",
+            "to": "w"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "pr-vt",
+          "label": "Revert PR #3306: cut visibility timeout from 300s to 30s",
+          "correct": true,
+          "diff": "config/sqs.yaml\n queues:\n   email:\n-    visibility_timeout: 300\n+    visibility_timeout: 30\n     max_receive_count: 5",
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Order API",
+                "tone": "good",
+                "cpu": 30
+              },
+              {
+                "id": "q",
+                "kind": "queue",
+                "label": "Email queue",
+                "tone": "good",
+                "sub": "draining"
+              },
+              {
+                "id": "w",
+                "kind": "worker",
+                "label": "Workers",
+                "tone": "good",
+                "cpu": 71
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "api"
+              },
+              {
+                "from": "api",
+                "to": "q"
+              },
+              {
+                "from": "q",
+                "to": "w"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "depth",
+              "label": "Queue depth",
+              "value": 90000,
+              "unit": "msgs",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Redelivery rate",
+              "value": 2,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "cpu",
+              "label": "Worker CPU",
+              "value": 71,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Jobs take 48 s but the message reappeared after 30 s, so a second worker started the same email while the first was still working, and the queue never drained. With 300 s, redeliveries drop to 2% and the backlog drains; a crashed worker's job now waits up to 5 min to retry.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "pr-conc",
+          "label": "Revert PR #3309: lower worker concurrency from 32 to 24",
+          "correct": false,
+          "diff": "worker/settings.py\n-CONCURRENCY = 32\n+CONCURRENCY = 24",
+          "metricsAfter": [
+            {
+              "key": "depth",
+              "label": "Queue depth",
+              "value": 1500000,
+              "unit": "msgs",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Redelivery rate",
+              "value": 61,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "cpu",
+              "label": "Worker CPU",
+              "value": 36,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Workers were not the limit",
+          "resultBody": "Workers sit at 34% CPU waiting on the mail provider, so 24 vs 32 slots did not matter. Restoring 32 gives more slots to the same duplicate jobs: redeliveries stay at 61% and the backlog keeps growing.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "q",
+                "tone": "bad",
+                "sub": "1.5M deep, growing"
+              }
+            ]
+          }
+        },
+        {
+          "id": "pr-batch",
+          "label": "Revert PR #3312: raise producer publish batch from 10 to 50",
+          "correct": false,
+          "diff": "producer/publisher.py\n-  BATCH_SIZE = 10\n+  BATCH_SIZE = 50",
+          "metricsAfter": [
+            {
+              "key": "depth",
+              "label": "Queue depth",
+              "value": 1450000,
+              "unit": "msgs",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Redelivery rate",
+              "value": 62,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "cpu",
+              "label": "Worker CPU",
+              "value": 34,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Batching is not the backlog",
+          "resultBody": "The publish rate is 4,000 msg/s either way; batch size only changes API calls to the broker. The queue is still growing because 62% of deliveries are redelivered duplicates.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "q",
+                "tone": "bad",
+                "sub": "still growing"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Workers are mostly idle, yet the queue grows.",
+        "The redelivery rate is the clue: messages are coming back before they finish.",
+        "Compare job time (48 s) with the timeout in each diff."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "queue-cut-01",
+      "incidentCode": "INC-006-CT1",
+      "level": 6,
+      "patternId": "async-queues",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P2",
+      "xp": 110,
+      "format": "budget-cut",
+      "title": "Queue tier costs more than the product it serves",
+      "brief": "All green: 4,000 msg/s, queue wait p95 0.9 s, 12 workers at 14% CPU, broker at 8%, dead-letter queue empty. $9,600/mo. SLO: wait p95 under 30 s, 99.9% availability.",
+      "constraint": "Bursts of 3x last about 4 minutes.",
+      "question": "What do you cut?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 4000,
+          "unit": "msg/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "Worker CPU",
+          "value": 14,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "p95",
+          "label": "Queue wait p95",
+          "value": 900,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "cost",
+          "label": "Monthly cost",
+          "value": 9600,
+          "unit": "$/mo",
+          "tone": "warn"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Order API",
+            "tone": "good",
+            "cpu": 22
+          },
+          {
+            "id": "broker",
+            "kind": "queue",
+            "label": "3-node broker",
+            "tone": "good",
+            "cpu": 8
+          },
+          {
+            "id": "w",
+            "kind": "worker",
+            "label": "12 workers",
+            "tone": "good",
+            "cpu": 14
+          },
+          {
+            "id": "dlq",
+            "kind": "queue",
+            "label": "Dead-letter queue",
+            "tone": "good",
+            "cpu": 0,
+            "sub": "0 messages"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "broker"
+          },
+          {
+            "from": "broker",
+            "to": "w"
+          },
+          {
+            "from": "broker",
+            "to": "dlq"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "cut-dlq",
+          "label": "Delete the empty dead-letter queue that has held 0 messages for weeks",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "rps",
+              "label": "Traffic",
+              "value": 4000,
+              "unit": "msg/s",
+              "tone": "neutral"
+            },
+            {
+              "key": "cpu",
+              "label": "Worker CPU",
+              "value": 36,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "Queue wait p95",
+              "value": 180000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 9510,
+              "unit": "$/mo",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Poison messages loop forever",
+          "resultBody": "The DLQ is empty because it catches the ~0.3% poison messages after 5 tries. Without it they redeliver endlessly: after two hours 340 poison messages hold 22% of worker slots and queue wait p95 climbs to 3 minutes, far above the 30 s SLO.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": -90
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "dlq",
+                "tone": "bad",
+                "cpu": 0,
+                "sub": "deleted"
+              },
+              {
+                "id": "w",
+                "tone": "bad",
+                "cpu": 36,
+                "sub": "poison messages looping"
+              }
+            ]
+          }
+        },
+        {
+          "id": "cut-workers",
+          "label": "Cut the worker fleet from 12 workers to 6 and keep the broker",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Order API",
+                "tone": "good",
+                "cpu": 22
+              },
+              {
+                "id": "broker",
+                "kind": "queue",
+                "label": "3-node broker",
+                "tone": "good",
+                "cpu": 8
+              },
+              {
+                "id": "w",
+                "kind": "worker",
+                "label": "6 workers",
+                "tone": "good",
+                "cpu": 28
+              },
+              {
+                "id": "dlq",
+                "kind": "queue",
+                "label": "Dead-letter queue",
+                "tone": "good",
+                "cpu": 0,
+                "sub": "0 messages"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "api"
+              },
+              {
+                "from": "api",
+                "to": "broker"
+              },
+              {
+                "from": "broker",
+                "to": "w"
+              },
+              {
+                "from": "broker",
+                "to": "dlq"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "rps",
+              "label": "Traffic",
+              "value": 4000,
+              "unit": "msg/s",
+              "tone": "neutral"
+            },
+            {
+              "key": "cpu",
+              "label": "Worker CPU",
+              "value": 28,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "Queue wait p95",
+              "value": 1200,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 8300,
+              "unit": "$/mo",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Bill down, SLO intact",
+          "resultBody": "Six workers run at 28%; a 3x burst takes them to 84% CPU for 4 minutes and queue wait p95 peaks near 12 s, under the 30 s SLO. The broker and the dead-letter queue stay, so durability is unchanged. Saves $1,300/mo.",
+          "tradeoffs": {
+            "costMonthlyDelta": -1300
+          }
+        },
+        {
+          "id": "cut-broker",
+          "label": "Shrink the broker from 3 nodes to 1 since it idles at 8% CPU",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "rps",
+              "label": "Traffic",
+              "value": 4000,
+              "unit": "msg/s",
+              "tone": "neutral"
+            },
+            {
+              "key": "cpu",
+              "label": "Worker CPU",
+              "value": 14,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "Queue wait p95",
+              "value": 900,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 8550,
+              "unit": "$/mo",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Single broker, single failure",
+          "resultBody": "One node handles 4,000 msg/s easily, but every patch or reboot takes the queue down for ~90 s: 360,000 publishes fail each time, blowing the 99.9% availability SLO, and unreplicated messages can be lost.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": -1050
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "broker",
+                "tone": "bad",
+                "cpu": 8,
+                "sub": "single node, no replicas"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Nothing is red, so evaluate each cut against a burst and a failure.",
+        "A component that sits at zero may be there for the rare case.",
+        "Estimate worker CPU during a 3x burst after halving the fleet."
+      ],
+      "nextId": null
     }
   ]
 }

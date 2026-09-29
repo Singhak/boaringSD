@@ -3655,6 +3655,758 @@
       ],
       "nextId": null,
       "reviewed": true
+    },
+    {
+      "id": "srch-pr-01",
+      "incidentCode": "INC-020-PR1",
+      "level": 20,
+      "patternId": "search-indexing",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 125,
+      "title": "Search p99 climbs from 120 ms to 4.8 s and nodes keep dropping",
+      "brief": "Elasticsearch data nodes sit at 95% JVM heap with 3 s old-generation GC pauses, and nodes leave the cluster. Disk is 58% used. Query rate is flat at 4.5k/s; three PRs merged this morning.",
+      "constraint": "You can revert one PR now; re-mapping an index later means a full reindex.",
+      "question": "Which PR do you revert to stop the heap exhaustion?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Queries",
+          "value": 4500,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "p95",
+          "label": "Search p99",
+          "value": 4800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "heap",
+          "label": "JVM heap used",
+          "value": 95,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "gc",
+          "label": "Old-gen GC pause",
+          "value": 3100,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "disk",
+          "label": "Disk used",
+          "value": 58,
+          "unit": "%",
+          "tone": "good"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Search API",
+            "tone": "warn",
+            "cpu": 55
+          },
+          {
+            "id": "es1",
+            "kind": "db",
+            "label": "ES data node 1",
+            "tone": "bad",
+            "cpu": 70,
+            "sub": "heap 95%, old GC 3.1 s"
+          },
+          {
+            "id": "es2",
+            "kind": "db",
+            "label": "ES data node 2",
+            "tone": "bad",
+            "cpu": 68,
+            "sub": "heap 94%"
+          },
+          {
+            "id": "es3",
+            "kind": "db",
+            "label": "ES data node 3",
+            "tone": "warn",
+            "cpu": 61,
+            "sub": "heap 91%"
+          }
+        ],
+        "edges": [
+          {
+            "from": "api",
+            "to": "es1"
+          },
+          {
+            "from": "api",
+            "to": "es2"
+          },
+          {
+            "from": "api",
+            "to": "es3"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "pr-fielddata",
+          "label": "Revert PR #7702: enable fielddata on the title text field",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "diff": "mappings/products.json\n \"title\": {\n-  \"type\": \"keyword\"\n+  \"type\": \"text\",\n+  \"fielddata\": true\n }",
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Search API",
+                "tone": "good",
+                "cpu": 40
+              },
+              {
+                "id": "es1",
+                "kind": "db",
+                "label": "ES data node 1",
+                "tone": "good",
+                "cpu": 40,
+                "sub": "heap 52%"
+              },
+              {
+                "id": "es2",
+                "kind": "db",
+                "label": "ES data node 2",
+                "tone": "good",
+                "cpu": 38,
+                "sub": "heap 50%"
+              },
+              {
+                "id": "es3",
+                "kind": "db",
+                "label": "ES data node 3",
+                "tone": "good",
+                "cpu": 37,
+                "sub": "heap 49%"
+              }
+            ],
+            "edges": [
+              {
+                "from": "api",
+                "to": "es1"
+              },
+              {
+                "from": "api",
+                "to": "es2"
+              },
+              {
+                "from": "api",
+                "to": "es3"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "p95",
+              "label": "Search p99",
+              "value": 130,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "heap",
+              "label": "JVM heap used",
+              "value": 52,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Title sorting stops loading the heap",
+          "resultBody": "Fielddata on an analysed text field builds an in-heap structure of every distinct term for 180M documents, filling the 30 GB heap. Reverting frees it: heap drops to 52% and p99 to 130 ms. Cost: sort by title needs a keyword sub-field, so a reindex is needed to bring it back."
+        },
+        {
+          "id": "pr-refresh",
+          "label": "Revert PR #7715: refresh_interval from 1s to 30s on products",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "diff": "settings/products.json\n-\"refresh_interval\": \"1s\"\n+\"refresh_interval\": \"30s\"",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "es1",
+                "cpu": 78,
+                "sub": "heap 96%, more segments"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "p95",
+              "label": "Search p99",
+              "value": 4900,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "heap",
+              "label": "JVM heap used",
+              "value": 96,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "The change lowered load",
+          "resultBody": "A 30 s refresh interval creates fewer, larger segments, which reduces indexing cost. Reverting it to 1 s adds segment churn and heap stays at 96% with 4.9 s p99, since the heap is being eaten by fielddata, not segments."
+        },
+        {
+          "id": "pr-replicas",
+          "label": "Revert PR #7719: index replicas from 1 to 2",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "tradeoffs": {
+            "costMonthlyDelta": -900
+          },
+          "diff": "settings/products.json\n-\"number_of_replicas\": 1\n+\"number_of_replicas\": 2\n # survives two node losses",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "es3",
+                "tone": "bad",
+                "sub": "heap 95%, one replica fewer"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "p95",
+              "label": "Search p99",
+              "value": 4700,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "heap",
+              "label": "JVM heap used",
+              "value": 95,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "One replica fewer, same heap pressure",
+          "resultBody": "The extra replica costs disk and indexing I/O, but it does not create the heap growth that started this morning. Dropping it saves about $900 a month, yet nodes still hit 95% heap and p99 stays at 4.7 s."
+        }
+      ],
+      "hints": [
+        "Query rate is flat, so something changed how much each query holds in memory.",
+        "Heap, not disk, is the resource that ran out.",
+        "Which mapping change loads a whole field's terms into the JVM?"
+      ],
+      "nextId": null,
+      "format": "bad-pr"
+    },
+    {
+      "id": "srch-cut-01",
+      "incidentCode": "INC-020-CT1",
+      "level": 20,
+      "patternId": "search-indexing",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P2",
+      "xp": 115,
+      "title": "Search cluster costs $18,600 a month while barely working",
+      "brief": "Twelve data nodes sit at 22% CPU and 48% heap serving 4.5k queries/s at p99 110 ms. The three master nodes idle at 5%. Every shard has one replica.",
+      "constraint": "Search p99 must stay under 300 ms and one node loss must not lose data.",
+      "question": "Which cut saves money without breaking the SLO?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Queries",
+          "value": 4500,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "Data node CPU",
+          "value": 22,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "p95",
+          "label": "Search p99",
+          "value": 110,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "cost",
+          "label": "Monthly cost",
+          "value": 18600,
+          "unit": "$/mo",
+          "tone": "warn"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Search API + 2 coordinators",
+            "tone": "good",
+            "cpu": 30
+          },
+          {
+            "id": "dm",
+            "kind": "db",
+            "label": "3 dedicated masters",
+            "tone": "good",
+            "cpu": 5
+          },
+          {
+            "id": "dn",
+            "kind": "db",
+            "label": "12 data nodes",
+            "tone": "good",
+            "cpu": 22,
+            "sub": "heap 48%, 1 replica"
+          },
+          {
+            "id": "ix",
+            "kind": "queue",
+            "label": "Ingest pipeline",
+            "tone": "good",
+            "cpu": 20
+          }
+        ],
+        "edges": [
+          {
+            "from": "api",
+            "to": "dn"
+          },
+          {
+            "from": "dm",
+            "to": "dn"
+          },
+          {
+            "from": "ix",
+            "to": "dn"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "cut-masters",
+          "label": "Remove the dedicated masters and elect them from data nodes",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": -1500
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "dm",
+                "tone": "bad",
+                "label": "Masters on data nodes",
+                "sub": "re-elections during GC"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "p95",
+              "label": "Search p99",
+              "value": 900,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 17100,
+              "unit": "$/mo",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Election flaps under GC pauses",
+          "resultBody": "Masters idle at 5% because they only hold cluster state, which is what keeps the cluster consistent. On data nodes a 2 s GC pause makes the elected master miss heartbeats, triggering re-elections and red status several times a day."
+        },
+        {
+          "id": "cut-replicas",
+          "label": "Set replicas to 0 on every index to halve the disk bill",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "tradeoffs": {
+            "costMonthlyDelta": -4100
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "dn",
+                "tone": "bad",
+                "sub": "0 replicas, node loss = lost shards"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "p95",
+              "label": "Search p99",
+              "value": 100,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "avail",
+              "label": "Shards available after node loss",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 14500,
+              "unit": "$/mo",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "First node loss loses shards",
+          "resultBody": "Disk falls by half, but each shard now has one copy. When a data node fails, roughly 1/12 of the index is unavailable until restored from snapshots, breaking the no-data-loss constraint and turning the cluster red."
+        },
+        {
+          "id": "cut-data",
+          "label": "Shrink the data tier from 12 to 9 nodes at about 29% CPU each",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": -3900
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Search API + 2 coordinators",
+                "tone": "good",
+                "cpu": 30
+              },
+              {
+                "id": "dm",
+                "kind": "db",
+                "label": "3 dedicated masters",
+                "tone": "good",
+                "cpu": 5
+              },
+              {
+                "id": "dn",
+                "kind": "db",
+                "label": "9 data nodes",
+                "tone": "good",
+                "cpu": 29,
+                "sub": "heap 60%, 1 replica"
+              },
+              {
+                "id": "ix",
+                "kind": "queue",
+                "label": "Ingest pipeline",
+                "tone": "good",
+                "cpu": 20
+              }
+            ],
+            "edges": [
+              {
+                "from": "api",
+                "to": "dn"
+              },
+              {
+                "from": "dm",
+                "to": "dn"
+              },
+              {
+                "from": "ix",
+                "to": "dn"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "Data node CPU",
+              "value": 29,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "Search p99",
+              "value": 140,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 14700,
+              "unit": "$/mo",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Nine nodes carry the same load",
+          "resultBody": "Twelve nodes at 22% is 2.64 nodes of work. On nine that is 29% CPU, heap about 60%, and p99 rises from 110 to 140 ms, far under 300 ms. With one node down the other eight run near 33%. The bill drops by about $3,900. Cost: shards rebalance for an hour."
+        }
+      ],
+      "hints": [
+        "Compare each tier's utilisation with the failure it guards against.",
+        "Idle does not mean spare: cluster state and copies are there for the bad day.",
+        "Which resource is genuinely underused and not tied to durability or elections?"
+      ],
+      "nextId": null,
+      "format": "budget-cut"
+    },
+    {
+      "id": "srch-geo-01",
+      "incidentCode": "INC-020-GEO1",
+      "level": 20,
+      "patternId": "search-indexing",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 130,
+      "title": "Nearby-driver search takes 2.3 s and times out",
+      "brief": "The ride app finds drivers within 2 km using lat BETWEEN and lon BETWEEN filters on a B-tree over 1.8M live rows. At 6k queries/s the DB is at 92% CPU and p95 is 2.3 s.",
+      "constraint": "Driver positions update every 4 seconds and results must be no more than 5 seconds stale.",
+      "question": "How do you make the nearby lookup touch only nearby drivers?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Nearby queries",
+          "value": 6000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "DB CPU",
+          "value": 92,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "Query p95",
+          "value": 2300,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Timeouts",
+          "value": 4,
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Nearby-drivers API",
+            "tone": "bad",
+            "cpu": 88
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres drivers table",
+            "tone": "bad",
+            "cpu": 92,
+            "sub": "1.8M rows, scans 90k per query"
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "geo-cell",
+          "label": "Index by S2 cell and query the cell plus its 8 neighbours",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 300,
+            "tradeoffSummary": "Equality lookups on cell IDs, distance post-filter"
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Nearby-drivers API",
+                "tone": "good",
+                "cpu": 40
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres drivers table",
+                "tone": "good",
+                "cpu": 34,
+                "sub": "cell_id index, ~300 rows/query"
+              }
+            ],
+            "edges": [
+              {
+                "from": "app",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "DB CPU",
+              "value": 34,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "Query p95",
+              "value": 18,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Timeouts",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Space becomes a key you can look up",
+          "resultBody": "An S2 or geohash cell at about 1 km turns 2D proximity into an equality lookup on a single key. Each query reads 9 cells with a few hundred drivers, then filters by exact distance to remove corner cases. p95 falls to 18 ms. Cost: updates must move a driver between cells, and edges need the neighbour cells."
+        },
+        {
+          "id": "geo-btree",
+          "label": "Add a composite B-tree index on (lat, lon) to drivers",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "cpu": 78,
+                "sub": "scans ~25k rows per query"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "DB CPU",
+              "value": 78,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "Query p95",
+              "value": 900,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Timeouts",
+              "value": 3.2,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Range on lat, scan on lon",
+          "resultBody": "The B-tree narrows by latitude only: a 4 km band still spans the whole city width, roughly 25k rows, and lon is filtered row by row. p95 improves to 900 ms but 3.2% of queries still time out and 6k updates a second now maintain the wider index."
+        },
+        {
+          "id": "geo-cache",
+          "label": "Cache results in Redis keyed by exact lat and lon",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 400
+          },
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "rd",
+                "kind": "cache",
+                "label": "Redis (exact lat/lon keys)",
+                "tone": "warn",
+                "sub": "hit rate 2%"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "app",
+                "to": "rd"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "DB CPU",
+              "value": 91,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "Query p95",
+              "value": 2350,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Timeouts",
+              "value": 4,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Continuous coordinates never repeat",
+          "resultBody": "Riders' GPS coordinates carry 6 decimals, so two requests almost never share a key and the hit rate stays under 2%. The DB still sees 5,900 queries a second, while Redis now adds a hop and 900 MB of dead entries."
+        }
+      ],
+      "hints": [
+        "The query reads far more rows than it returns.",
+        "A B-tree orders a single dimension; a bounding box has two.",
+        "Turn a location into a value that nearby points share."
+      ],
+      "nextId": null
     }
   ]
 }

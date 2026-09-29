@@ -7377,6 +7377,602 @@
       ],
       "nextId": null,
       "reviewed": true
+    },
+    {
+      "id": "rr-pr-01",
+      "incidentCode": "INC-003-PR1",
+      "level": 3,
+      "patternId": "read-replicas",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 120,
+      "format": "bad-pr",
+      "title": "Saved profile shows the old value",
+      "brief": "After the 10:20 deploy users edit a profile and reload to see the old value: 340 tickets/hr. Replica lag is a steady 0.8 s, primary CPU fell from 71% to 38%. 15,000 req/s.",
+      "constraint": "You can revert exactly one PR before the next traffic peak.",
+      "question": "Which PR do you revert?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 15000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "Primary CPU",
+          "value": 38,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "errors",
+          "label": "Stale-read tickets",
+          "value": 340,
+          "unit": "/hr",
+          "tone": "bad"
+        },
+        {
+          "key": "lag",
+          "label": "Replica lag",
+          "value": 800,
+          "unit": "ms",
+          "tone": "good"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App tier",
+            "tone": "good",
+            "cpu": 44
+          },
+          {
+            "id": "primary",
+            "kind": "db",
+            "label": "Primary",
+            "tone": "good",
+            "cpu": 38
+          },
+          {
+            "id": "reps",
+            "kind": "replica",
+            "label": "Read replicas",
+            "tone": "good",
+            "cpu": 41,
+            "sub": "0.8 s lag"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "primary"
+          },
+          {
+            "from": "app",
+            "to": "reps"
+          },
+          {
+            "from": "primary",
+            "to": "reps"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "pr-ryw",
+          "label": "Revert PR #7712: drop read-your-writes routing to primary",
+          "correct": true,
+          "diff": "app/db_router.py\n def db_for_read(request):\n-    if request.session.get('wrote_at', 0) > now() - 5:\n-        return 'primary'\n     return 'replica'",
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App tier",
+                "tone": "good",
+                "cpu": 44
+              },
+              {
+                "id": "primary",
+                "kind": "db",
+                "label": "Primary",
+                "tone": "good",
+                "cpu": 66
+              },
+              {
+                "id": "reps",
+                "kind": "replica",
+                "label": "Read replicas",
+                "tone": "good",
+                "cpu": 30,
+                "sub": "0.8 s lag"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "primary"
+              },
+              {
+                "from": "app",
+                "to": "reps"
+              },
+              {
+                "from": "primary",
+                "to": "reps"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "Primary CPU",
+              "value": 66,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Stale-read tickets",
+              "value": 4,
+              "unit": "/hr",
+              "tone": "good"
+            },
+            {
+              "key": "lag",
+              "label": "Replica lag",
+              "value": 800,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "The diff sent every read to a replica, including the reload right after a save, which lands inside the 0.8 s lag window. Reads within 5 s of a write go to the primary again, so stale reads vanish; primary CPU rises to 66% for it.",
+          "tradeoffs": {
+            "costMonthlyDelta": 130
+          }
+        },
+        {
+          "id": "pr-pool",
+          "label": "Revert PR #7709: shrink replica pool from 200 to 120 conns",
+          "correct": false,
+          "diff": "config/db.yaml\n replica:\n-  max_connections: 200\n+  max_connections: 120",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "Primary CPU",
+              "value": 38,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Stale-read tickets",
+              "value": 335,
+              "unit": "/hr",
+              "tone": "bad"
+            },
+            {
+              "key": "lag",
+              "label": "Replica lag",
+              "value": 800,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Pool size is not staleness",
+          "resultBody": "Replica connections peak at 45 of 120, so no request ever waited on the pool. Restoring 200 changes nothing: tickets stay at 335/hr because the reads still go to a replica that lags behind the write.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "reps",
+                "tone": "bad",
+                "cpu": 41,
+                "sub": "stale reads continue"
+              }
+            ]
+          }
+        },
+        {
+          "id": "pr-standby",
+          "label": "Revert PR #7716: cut standby streaming delay from 30s to 5s",
+          "correct": false,
+          "diff": "db/replica.conf\n-max_standby_streaming_delay = 30s\n+max_standby_streaming_delay = 5s",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "Primary CPU",
+              "value": 38,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Stale-read tickets",
+              "value": 340,
+              "unit": "/hr",
+              "tone": "bad"
+            },
+            {
+              "key": "lag",
+              "label": "Replica lag",
+              "value": 800,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Replica settings, same staleness",
+          "resultBody": "max_standby_streaming_delay only governs query cancellation on the replica, and cancelled queries are at 0. Data is no fresher after the revert; tickets stay at 340/hr.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "reps",
+                "tone": "bad",
+                "cpu": 41,
+                "sub": "stale reads continue"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Lag and connection errors look normal, yet the data is stale.",
+        "Primary CPU dropped: some read traffic moved to the replicas at the deploy.",
+        "Find the diff that deleted a rule about reads shortly after a write."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "rr-cut-01",
+      "incidentCode": "INC-003-CT1",
+      "level": 3,
+      "patternId": "read-replicas",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P2",
+      "xp": 110,
+      "format": "budget-cut",
+      "title": "Database bill up 40% in a quarter",
+      "brief": "All green: primary at 38% CPU, three read replicas at 14%, an idle AZ-b failover replica at 3%. Write p99 is 25 ms; the SLO is 120 ms with a 5-minute recovery time. $5,300/mo.",
+      "constraint": "Promoting a replica must stay possible within 5 minutes.",
+      "question": "What do you cut?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 12000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "Primary CPU",
+          "value": 38,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "p95",
+          "label": "Write p99",
+          "value": 25,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "cost",
+          "label": "Monthly cost",
+          "value": 5300,
+          "unit": "$/mo",
+          "tone": "warn"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App tier",
+            "tone": "good",
+            "cpu": 30
+          },
+          {
+            "id": "primary",
+            "kind": "db",
+            "label": "Primary 2xl",
+            "tone": "good",
+            "cpu": 38
+          },
+          {
+            "id": "reads",
+            "kind": "replica",
+            "label": "3 read replicas",
+            "tone": "good",
+            "cpu": 14
+          },
+          {
+            "id": "standby",
+            "kind": "replica",
+            "label": "AZ-b failover replica",
+            "tone": "good",
+            "cpu": 3,
+            "sub": "idle"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "primary"
+          },
+          {
+            "from": "app",
+            "to": "reads"
+          },
+          {
+            "from": "primary",
+            "to": "reads"
+          },
+          {
+            "from": "primary",
+            "to": "standby"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "cut-standby",
+          "label": "Delete the failover replica that only sits at 3%",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "rps",
+              "label": "Traffic",
+              "value": 12000,
+              "unit": "req/s",
+              "tone": "neutral"
+            },
+            {
+              "key": "cpu",
+              "label": "Primary CPU",
+              "value": 38,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "Write p99",
+              "value": 25,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 4690,
+              "unit": "$/mo",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "No promotion target",
+          "resultBody": "It idled because it exists for the day the primary dies. Without it recovery means a snapshot restore, ~45 min against the 5-minute recovery SLO the first time the primary fails.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": -610
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "standby",
+                "tone": "bad",
+                "cpu": 0,
+                "sub": "deleted"
+              },
+              {
+                "id": "primary",
+                "tone": "warn",
+                "cpu": 38,
+                "sub": "no failover target"
+              }
+            ]
+          }
+        },
+        {
+          "id": "cut-primary",
+          "label": "Downsize the primary from 2xl to large",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "rps",
+              "label": "Traffic",
+              "value": 12000,
+              "unit": "req/s",
+              "tone": "neutral"
+            },
+            {
+              "key": "cpu",
+              "label": "Primary CPU",
+              "value": 96,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "Write p99",
+              "value": 480,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 4600,
+              "unit": "$/mo",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Writer starved",
+          "resultBody": "Halving the primary doubles its CPU: 76% steady and over 100% at the evening peak of 1.4x. Write p99 balloons to 480 ms, four times the 120 ms SLO.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": -700
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "primary",
+                "tone": "bad",
+                "cpu": 96,
+                "sub": "large: saturated at peak"
+              }
+            ]
+          }
+        },
+        {
+          "id": "cut-one",
+          "label": "Remove one of the three same-AZ read replicas",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App tier",
+                "tone": "good",
+                "cpu": 30
+              },
+              {
+                "id": "primary",
+                "kind": "db",
+                "label": "Primary 2xl",
+                "tone": "good",
+                "cpu": 38
+              },
+              {
+                "id": "reads",
+                "kind": "replica",
+                "label": "2 read replicas",
+                "tone": "good",
+                "cpu": 21
+              },
+              {
+                "id": "standby",
+                "kind": "replica",
+                "label": "AZ-b failover replica",
+                "tone": "good",
+                "cpu": 3,
+                "sub": "idle"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "primary"
+              },
+              {
+                "from": "app",
+                "to": "reads"
+              },
+              {
+                "from": "primary",
+                "to": "reads"
+              },
+              {
+                "from": "primary",
+                "to": "standby"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "rps",
+              "label": "Traffic",
+              "value": 12000,
+              "unit": "req/s",
+              "tone": "neutral"
+            },
+            {
+              "key": "cpu",
+              "label": "Primary CPU",
+              "value": 38,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "Write p99",
+              "value": 25,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 4690,
+              "unit": "$/mo",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Bill down, SLO intact",
+          "resultBody": "Reads spread over two replicas instead of three: 14% becomes 21% each, far from saturation, and lag stays under 1 s. The writer and the failover replica are untouched, so write p99 stays 25 ms and recovery stays 5 minutes. Saves $610/mo.",
+          "tradeoffs": {
+            "costMonthlyDelta": -610
+          }
+        }
+      ],
+      "hints": [
+        "Nothing is red, so ask which box is doing work and which is insurance.",
+        "A replica at 3% is not waste if it is the only promotion target.",
+        "Reads are the cheap part to shrink: estimate CPU after removing one reader."
+      ],
+      "nextId": null
     }
   ]
 }

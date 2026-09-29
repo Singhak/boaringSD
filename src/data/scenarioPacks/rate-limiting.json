@@ -72,6 +72,18 @@
           }
         ]
       },
+      "logs": {
+        "bot": [
+          "api_key k_9f21 sends 20,000 req/s, steady",
+          "other 3,000 req/s spread across 400 keys"
+        ],
+        "api": [
+          "CPU 99%, run queue 64",
+          "p99 4 s (baseline 80 ms) for all keys",
+          "k_9f21 = 87% of accepted requests",
+          "no per-key limit configured, 0 rejected"
+        ]
+      },
       "choices": [
         {
           "id": "rate-limit",
@@ -6152,6 +6164,539 @@
         "The window key is built from each gateway's own clock.",
         "Let the one shared store decide when a window ends."
       ]
+    },
+    {
+      "id": "rl-pr-01",
+      "incidentCode": "INC-009-PR1",
+      "level": 9,
+      "patternId": "rate-limiting",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 120,
+      "format": "bad-pr",
+      "title": "Partners get 429 while well under their quota",
+      "brief": "Partner API returns 429 to 18% of requests, yet average traffic is 9k req/s against a 12k/s quota. Batch clients send about 4k requests in 200 ms once a second.",
+      "constraint": "You cannot raise quotas; they are contractual.",
+      "question": "Which PR do you revert to stop rejecting in-quota partners?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Avg traffic",
+          "value": 9000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "errors",
+          "label": "429 responses",
+          "value": 1600,
+          "unit": "errors",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 40,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "lcpu",
+          "label": "Limiter CPU",
+          "value": 12,
+          "unit": "%",
+          "tone": "good"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Partner clients"
+          },
+          {
+            "id": "gw",
+            "kind": "lb",
+            "label": "API gateway",
+            "tone": "warn",
+            "cpu": 22
+          },
+          {
+            "id": "redis",
+            "kind": "cache",
+            "label": "Limiter Redis",
+            "tone": "good",
+            "cpu": 12
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Partner API",
+            "tone": "good",
+            "cpu": 28
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "gw"
+          },
+          {
+            "from": "gw",
+            "to": "redis"
+          },
+          {
+            "from": "gw",
+            "to": "api"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "revert-burst",
+          "label": "Revert PR #3341: cut token bucket burst from 6000 to 500",
+          "correct": true,
+          "diff": "gateway/limits.yaml\n-  burst: 6000\n+  burst: 500\n   refill_per_sec: 12000",
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "errors",
+              "label": "429 responses",
+              "value": 50,
+              "unit": "errors",
+              "tone": "good"
+            },
+            {
+              "key": "rps",
+              "label": "Avg traffic",
+              "value": 9000,
+              "unit": "req/s",
+              "tone": "neutral"
+            }
+          ],
+          "resultTitle": "Bursts fit in the bucket again",
+          "resultBody": "A 500-token bucket empties in about 40 ms of a 4k/200 ms batch, so requests were rejected while the 12k/s refill was barely used. Restoring burst to 6000 absorbs the batch; 429s drop under 1%. Cost: a partner can briefly exceed the average rate.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "tradeoffSummary": "Allows short bursts; average stays capped."
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Partner clients",
+                "tone": "good"
+              },
+              {
+                "id": "gw",
+                "kind": "lb",
+                "label": "API gateway",
+                "tone": "good",
+                "cpu": 22
+              },
+              {
+                "id": "redis",
+                "kind": "cache",
+                "label": "Limiter Redis",
+                "tone": "good",
+                "cpu": 12
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Partner API",
+                "tone": "good",
+                "cpu": 28
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "gw"
+              },
+              {
+                "from": "gw",
+                "to": "redis"
+              },
+              {
+                "from": "gw",
+                "to": "api"
+              }
+            ]
+          }
+        },
+        {
+          "id": "revert-ttl",
+          "label": "Revert PR #3337: expire idle limiter keys after 10 s instead of 60 s",
+          "correct": false,
+          "diff": "gateway/redis_keys.go\n-const bucketTTL = 60 * time.Second\n+const bucketTTL = 10 * time.Second",
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "errors",
+              "label": "429 responses",
+              "value": 1580,
+              "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "lcpu",
+              "label": "Limiter CPU",
+              "value": 13,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Key expiry was not the cause",
+          "resultBody": "A key that has been idle for 10 s simply restarts with a full bucket, which never causes extra rejections. 429s stay near 18% and the revert adds Redis memory.",
+          "tradeoffs": {
+            "costMonthlyDelta": -5
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gw",
+                "tone": "bad",
+                "sub": "still rejecting bursts"
+              }
+            ]
+          }
+        },
+        {
+          "id": "revert-retries",
+          "label": "Revert PR #3344: retry failed calls twice with jittered backoff",
+          "correct": false,
+          "diff": "sdk/client.go\n-  MaxRetries: 0,\n+  MaxRetries: 2,\n+  Backoff:    JitteredExponential(100 * time.Millisecond),",
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "errors",
+              "label": "429 responses",
+              "value": 1650,
+              "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "rps",
+              "label": "Avg traffic",
+              "value": 8700,
+              "unit": "req/s",
+              "tone": "neutral"
+            }
+          ],
+          "resultTitle": "Retries were innocent here",
+          "resultBody": "Client retries add a few requests after a 429; they do not create the first rejection. Removing them makes partners give up sooner while 429s stay near 18%.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "tone": "warn",
+                "sub": "partners drop retries"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Average traffic is under quota, but the batch arrives in 200 ms.",
+        "Which limiter parameter decides how much can arrive at once?",
+        "A bucket smaller than a normal batch rejects it even at a low average rate."
+      ],
+      "reviewed": true
+    },
+    {
+      "id": "rl-cut-01",
+      "incidentCode": "INC-009-CT1",
+      "level": 9,
+      "patternId": "rate-limiting",
+      "canonical": false,
+      "severity": "P2",
+      "xp": 110,
+      "format": "budget-cut",
+      "title": "API gateway spend is $44k a month, mostly idle",
+      "brief": "At 12k req/s the gateway is healthy: p99 30 ms, 40 pods at 18% CPU (peak 25%), limiter Redis at 9%. Nightly scrapers, 22k req/s, are blocked at the edge. Cut at least $8k.",
+      "constraint": "Enforced limits must stay within 5% of the contract and p99 under 50 ms.",
+      "question": "Which cut is safe for the limits and latency?",
+      "metricsBefore": [
+        {
+          "key": "cost",
+          "label": "Monthly cost",
+          "value": 44000,
+          "unit": "$/mo",
+          "tone": "warn"
+        },
+        {
+          "key": "cpu",
+          "label": "Gateway CPU",
+          "value": 18,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "p95",
+          "label": "p99 latency",
+          "value": 30,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "errors",
+          "label": "Limit error",
+          "value": 1,
+          "unit": "%",
+          "tone": "good"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Partners"
+          },
+          {
+            "id": "edge",
+            "kind": "cdn",
+            "label": "Bad-IP filter at edge",
+            "tone": "good",
+            "cpu": 6
+          },
+          {
+            "id": "gw",
+            "kind": "lb",
+            "label": "Gateway (40 pods)",
+            "tone": "good",
+            "cpu": 18
+          },
+          {
+            "id": "redis",
+            "kind": "cache",
+            "label": "Limiter Redis (6 shards)",
+            "tone": "good",
+            "cpu": 9
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Partner API",
+            "tone": "good",
+            "cpu": 30
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "edge"
+          },
+          {
+            "from": "edge",
+            "to": "gw"
+          },
+          {
+            "from": "gw",
+            "to": "redis"
+          },
+          {
+            "from": "gw",
+            "to": "api"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "drop-redis",
+          "label": "Replace the shared Redis limiter with per-pod in-memory counters",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 35000,
+              "unit": "$/mo",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Limit error",
+              "value": 35,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p99 latency",
+              "value": 28,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Per-pod limits drift from the contract",
+          "resultBody": "Saves $9k, but each pod now enforces 300 req/s of a 12k/s quota. With uneven load balancing, a partner is rejected on busy pods while idle pods allow extra, so enforced limits drift about 35%, far beyond the 5% contract.",
+          "tradeoffs": {
+            "costMonthlyDelta": -9000
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gw",
+                "tone": "bad",
+                "sub": "per-pod limits drift 35% from contract"
+              }
+            ]
+          }
+        },
+        {
+          "id": "cut-gateway",
+          "label": "Cut the gateway fleet from 40 pods to 16 (peak CPU 25%)",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 30000,
+              "unit": "$/mo",
+              "tone": "good"
+            },
+            {
+              "key": "cpu",
+              "label": "Gateway CPU",
+              "value": 45,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p99 latency",
+              "value": 36,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Smaller fleet, same limits",
+          "resultBody": "16 pods take the same 12k req/s at about 45% CPU average and 62% at peak, well below saturation. Limits are still enforced in the shared Redis, so accuracy stays within 1%. Saves $14k; p99 rises 30 to 36 ms.",
+          "tradeoffs": {
+            "costMonthlyDelta": -14000,
+            "tradeoffSummary": "Less headroom for surprise traffic."
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Partners",
+                "tone": "good"
+              },
+              {
+                "id": "edge",
+                "kind": "cdn",
+                "label": "Bad-IP filter at edge",
+                "tone": "good",
+                "cpu": 6
+              },
+              {
+                "id": "gw",
+                "kind": "lb",
+                "label": "Gateway (40 pods)",
+                "tone": "good",
+                "cpu": 18
+              },
+              {
+                "id": "redis",
+                "kind": "cache",
+                "label": "Limiter Redis (6 shards)",
+                "tone": "good",
+                "cpu": 9
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Partner API",
+                "tone": "good",
+                "cpu": 30
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "edge"
+              },
+              {
+                "from": "edge",
+                "to": "gw"
+              },
+              {
+                "from": "gw",
+                "to": "redis"
+              },
+              {
+                "from": "gw",
+                "to": "api"
+              }
+            ]
+          }
+        },
+        {
+          "id": "drop-edge",
+          "label": "Remove the bad-IP filter at the edge and let the limiter handle scrapers",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 37000,
+              "unit": "$/mo",
+              "tone": "good"
+            },
+            {
+              "key": "lcpu",
+              "label": "Limiter CPU",
+              "value": 88,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p99 latency",
+              "value": 95,
+              "unit": "ms",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Scrapers now hammer the limiter",
+          "resultBody": "Saves $7k, but 22k req/s of scraper traffic now reaches gateway and Redis. Limiter CPU goes from 9% to about 88% and its p99 from 1 ms to 40 ms, pushing gateway p99 past the 50 ms limit.",
+          "tradeoffs": {
+            "costMonthlyDelta": -7000
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "redis",
+                "tone": "bad",
+                "cpu": 88,
+                "sub": "22k scraper req/s now hit Redis"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Two SLOs: limit accuracy within 5% and p99 under 50 ms.",
+        "Which component gives the limiter its shared, accurate count?",
+        "Compute what each cut does to Redis load or per-pod CPU."
+      ],
+      "reviewed": true
     }
   ]
 }

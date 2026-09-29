@@ -71,6 +71,19 @@
           }
         ]
       },
+      "logs": {
+        "users": [
+          "feed refresh: 100k req/s, 504 on 0.5% of calls",
+          "client retry #2 after 3 s timeout",
+          "p95 client wait 4.2 s"
+        ],
+        "s1": [
+          "CPU 98% (96% user), load avg 41 on 8 cores",
+          "accept queue 1,024/1,024, SYN drops rising",
+          "p95 handler time 4.2 s; 504 upstream timeout x 504",
+          "only host receiving feed traffic"
+        ]
+      },
       "choices": [
         {
           "id": "scale-out",
@@ -6175,6 +6188,599 @@
       ],
       "nextId": null,
       "reviewed": true
+    },
+    {
+      "id": "hs-pr-01",
+      "incidentCode": "INC-001-PR1",
+      "level": 1,
+      "patternId": "horizontal-scaling",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 110,
+      "format": "bad-pr",
+      "title": "Users logged out on every other click",
+      "brief": "After the 14:05 deploy, 67% of API calls return 401 and users bounce to the login page. 3 app servers behind a round-robin LB sit at 38% CPU; 18,000 req/s.",
+      "constraint": "You can revert exactly one PR before the next traffic peak.",
+      "question": "Which PR do you revert?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 18000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "App CPU",
+          "value": 38,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "errors",
+          "label": "Auth failures",
+          "value": 67,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 210,
+          "unit": "ms",
+          "tone": "good"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "lb",
+            "kind": "lb",
+            "label": "Load balancer",
+            "tone": "good"
+          },
+          {
+            "id": "s1",
+            "kind": "server",
+            "label": "App 1",
+            "tone": "warn",
+            "cpu": 38,
+            "sub": "local sessions"
+          },
+          {
+            "id": "s2",
+            "kind": "server",
+            "label": "App 2",
+            "tone": "warn",
+            "cpu": 38,
+            "sub": "local sessions"
+          },
+          {
+            "id": "s3",
+            "kind": "server",
+            "label": "App 3",
+            "tone": "warn",
+            "cpu": 38,
+            "sub": "local sessions"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "lb"
+          },
+          {
+            "from": "lb",
+            "to": "s1"
+          },
+          {
+            "from": "lb",
+            "to": "s2"
+          },
+          {
+            "from": "lb",
+            "to": "s3"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "pr-hpa",
+          "label": "Revert PR #4131: lower HPA max replicas 8 to 4, target CPU 75%",
+          "correct": false,
+          "diff": "deploy/hpa.yaml\n-  maxReplicas: 8\n+  maxReplicas: 4\n-  targetCPUUtilizationPercentage: 60\n+  targetCPUUtilizationPercentage: 75",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "App CPU",
+              "value": 38,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Auth failures",
+              "value": 66,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 210,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Autoscaler was never the issue",
+          "resultBody": "Max replicas is back at 8, but the fleet never scaled: CPU has sat at 38% all day. The 401s stay at 66% because requests still land on nodes that never saw the login.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "s1",
+                "tone": "bad",
+                "cpu": 38,
+                "sub": "still 401 after revert"
+              }
+            ]
+          }
+        },
+        {
+          "id": "pr-session",
+          "label": "Revert PR #4127: move session store from Redis to in-memory",
+          "correct": true,
+          "diff": "config/session.yaml\n-  store: redis://sessions.internal:6379\n+  store: memory\n   ttl: 1800\n   cookie: sid",
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer",
+                "tone": "good"
+              },
+              {
+                "id": "s1",
+                "kind": "server",
+                "label": "App 1",
+                "tone": "good",
+                "cpu": 38
+              },
+              {
+                "id": "s2",
+                "kind": "server",
+                "label": "App 2",
+                "tone": "good",
+                "cpu": 38
+              },
+              {
+                "id": "s3",
+                "kind": "server",
+                "label": "App 3",
+                "tone": "good",
+                "cpu": 38
+              },
+              {
+                "id": "sess",
+                "kind": "cache",
+                "label": "Session store",
+                "tone": "good"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "lb"
+              },
+              {
+                "from": "lb",
+                "to": "s1"
+              },
+              {
+                "from": "lb",
+                "to": "s2"
+              },
+              {
+                "from": "lb",
+                "to": "s3"
+              },
+              {
+                "from": "s1",
+                "to": "sess"
+              },
+              {
+                "from": "s2",
+                "to": "sess"
+              },
+              {
+                "from": "s3",
+                "to": "sess"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "App CPU",
+              "value": 38,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Auth failures",
+              "value": 0.4,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 210,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "The 14:05 diff put each login in one server's memory, so a request routed to another of the 3 nodes found no session (2 in 3 miss). Sessions are back in shared Redis; 401s fall to under 1% at the cost of one Redis lookup, ~0.5 ms, per request.",
+          "tradeoffs": {
+            "costMonthlyDelta": 120
+          }
+        },
+        {
+          "id": "pr-keepalive",
+          "label": "Revert PR #4124: cut keepalive timeout from 65s to 15s",
+          "correct": false,
+          "diff": "nginx/http.conf\n-  keepalive_timeout 65;\n+  keepalive_timeout 15;",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "App CPU",
+              "value": 38,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Auth failures",
+              "value": 67,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 210,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Connections were not the problem",
+          "resultBody": "Idle connections live 65 s again, which changes TCP reuse, not authentication. Latency is unchanged and 401s stay at 67% because the sessions are still node-local.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "s2",
+                "tone": "bad",
+                "cpu": 38,
+                "sub": "still 401 after revert"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "The 401s started exactly at the deploy, yet CPU and latency are normal.",
+        "Ask which diff would make a login on one server unknown to the others.",
+        "Look for the change that moves shared state into a single process."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "hs-cut-01",
+      "incidentCode": "INC-001-CT1",
+      "level": 1,
+      "patternId": "horizontal-scaling",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P2",
+      "xp": 100,
+      "format": "budget-cut",
+      "title": "Finance wants the app bill down",
+      "brief": "Everything is green: 6 app servers at 30% CPU, p95 180 ms at 6,000 req/s, and a Redis session store at 6%. The bill is $1,740/mo and the SLO is p95 under 400 ms.",
+      "constraint": "The SLO must hold through the loss of any single server.",
+      "question": "What do you cut?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 6000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "App CPU",
+          "value": 30,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 180,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "cost",
+          "label": "Monthly cost",
+          "value": 1740,
+          "unit": "$/mo",
+          "tone": "warn"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "lb",
+            "kind": "lb",
+            "label": "Load balancer",
+            "tone": "good"
+          },
+          {
+            "id": "fleet",
+            "kind": "server",
+            "label": "6 app servers",
+            "tone": "good",
+            "cpu": 30
+          },
+          {
+            "id": "sess",
+            "kind": "cache",
+            "label": "Session store",
+            "tone": "good",
+            "cpu": 6
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "lb"
+          },
+          {
+            "from": "lb",
+            "to": "fleet"
+          },
+          {
+            "from": "fleet",
+            "to": "sess"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "cut-two",
+          "label": "Cut the fleet from 6 servers to 2 and run them hot",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "rps",
+              "label": "Traffic",
+              "value": 6000,
+              "unit": "req/s",
+              "tone": "neutral"
+            },
+            {
+              "key": "cpu",
+              "label": "App CPU",
+              "value": 90,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1400,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 780,
+              "unit": "$/mo",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Two servers, no spare",
+          "resultBody": "Two servers at 90% CPU leave no headroom: the first crash or deploy pushes the survivor past 100% and p95 goes to 1,400 ms, far over the 400 ms SLO.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": -960
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "fleet",
+                "tone": "bad",
+                "cpu": 90,
+                "sub": "2 servers, no N-1"
+              }
+            ]
+          }
+        },
+        {
+          "id": "cut-four",
+          "label": "Shrink the fleet from 6 servers to 4 behind the LB",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer",
+                "tone": "good"
+              },
+              {
+                "id": "fleet",
+                "kind": "server",
+                "label": "4 app servers",
+                "tone": "good",
+                "cpu": 45
+              },
+              {
+                "id": "sess",
+                "kind": "cache",
+                "label": "Session store",
+                "tone": "good",
+                "cpu": 6
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "lb"
+              },
+              {
+                "from": "lb",
+                "to": "fleet"
+              },
+              {
+                "from": "fleet",
+                "to": "sess"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "rps",
+              "label": "Traffic",
+              "value": 6000,
+              "unit": "req/s",
+              "tone": "neutral"
+            },
+            {
+              "key": "cpu",
+              "label": "App CPU",
+              "value": 45,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 210,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 1260,
+              "unit": "$/mo",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Bill down, SLO intact",
+          "resultBody": "Four servers run at 45% CPU; losing one leaves three at 60%, still under the ~70% knee where p95 climbs, so p95 stays near 210 ms. Saves $480/mo and keeps N-1 headroom.",
+          "tradeoffs": {
+            "costMonthlyDelta": -480
+          }
+        },
+        {
+          "id": "cut-redis",
+          "label": "Drop the Redis session store and keep sessions in memory",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "rps",
+              "label": "Traffic",
+              "value": 6000,
+              "unit": "req/s",
+              "tone": "neutral"
+            },
+            {
+              "key": "cpu",
+              "label": "App CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 190,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 1600,
+              "unit": "$/mo",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Sessions lost between nodes",
+          "resultBody": "Redis idles at 6% but it is what makes the servers interchangeable. With sessions in memory, 5 in 6 requests miss and 83% of users are logged out; p95 holds but auth failures break the SLO.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": -140
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "sess",
+                "tone": "bad",
+                "cpu": 6,
+                "sub": "removed"
+              },
+              {
+                "id": "fleet",
+                "tone": "bad",
+                "cpu": 30,
+                "sub": "sessions per node"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Nothing is red, so look at headroom rather than symptoms.",
+        "A component at 6% utilisation may be there for correctness, not load.",
+        "Check what the fleet must still absorb after losing one server."
+      ],
+      "nextId": null
     }
   ]
 }

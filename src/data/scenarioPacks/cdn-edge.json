@@ -6543,6 +6543,859 @@
         "What if purged pages were marked old instead of deleted?"
       ],
       "nextId": null
+    },
+    {
+      "id": "cdn-pr-01",
+      "incidentCode": "INC-005-PR1",
+      "level": 5,
+      "patternId": "cdn-edge",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 120,
+      "format": "bad-pr",
+      "title": "Origin is drowning in static asset requests",
+      "brief": "Static asset traffic is 25,000 req/s. CDN hit ratio fell from 97% to 31% and origin CPU hit 92%. The CDN now stores 38 variants of each asset URL.",
+      "constraint": "You can revert exactly one PR before the next traffic peak.",
+      "question": "Which PR do you revert?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 25000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "hit",
+          "label": "CDN hit ratio",
+          "value": 31,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "cpu",
+          "label": "Origin CPU",
+          "value": 92,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "keys",
+          "label": "Cache variants per URL",
+          "value": 38,
+          "unit": "",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 2400,
+          "unit": "ms",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "cdn",
+            "kind": "cdn",
+            "label": "CDN edge",
+            "tone": "bad",
+            "sub": "38 variants per URL, hit 31%"
+          },
+          {
+            "id": "origin",
+            "kind": "server",
+            "label": "Origin",
+            "tone": "bad",
+            "cpu": 92
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "cdn"
+          },
+          {
+            "from": "cdn",
+            "to": "origin"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "pr-ttl",
+          "label": "Revert PR #918: shorten CDN default TTL from 24h to 12h",
+          "correct": false,
+          "diff": "cdn/config.yaml\n-  default_ttl: 86400\n+  default_ttl: 43200",
+          "metricsAfter": [
+            {
+              "key": "hit",
+              "label": "CDN hit ratio",
+              "value": 32,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "cpu",
+              "label": "Origin CPU",
+              "value": 91,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "keys",
+              "label": "Cache variants per URL",
+              "value": 38,
+              "unit": "",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2300,
+              "unit": "ms",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "TTL cannot make 38 variants",
+          "resultBody": "Assets are refetched at most twice a day instead of once, a tiny increase in misses. It cannot produce 38 variants per URL, so hit ratio stays at 32% and the origin stays above 90% CPU.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "origin",
+                "tone": "bad",
+                "cpu": 91,
+                "sub": "still flooded"
+              }
+            ]
+          }
+        },
+        {
+          "id": "pr-vary",
+          "label": "Revert PR #921: add User-Agent and Cookie to the Vary header",
+          "correct": true,
+          "diff": "nginx/assets.conf\n location /static/ {\n-    add_header Vary \"Accept-Encoding\";\n+    add_header Vary \"Accept-Encoding, User-Agent, Cookie\";\n }",
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "cdn",
+                "kind": "cdn",
+                "label": "CDN edge",
+                "tone": "good",
+                "sub": "hit 97%"
+              },
+              {
+                "id": "origin",
+                "kind": "server",
+                "label": "Origin",
+                "tone": "good",
+                "cpu": 18
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "cdn"
+              },
+              {
+                "from": "cdn",
+                "to": "origin"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "hit",
+              "label": "CDN hit ratio",
+              "value": 97,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "cpu",
+              "label": "Origin CPU",
+              "value": 18,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "keys",
+              "label": "Cache variants per URL",
+              "value": 1,
+              "unit": "",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 120,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Vary: User-Agent, Cookie makes the CDN store a separate copy per browser and cookie combination, hence 38 variants of one file. Back to Vary: Accept-Encoding, hit ratio returns to 97% and origin CPU to 18%, at the cost of serving the same bytes to every user agent.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "pr-hash",
+          "label": "Revert PR #915: shorten webpack contenthash from 20 to 8 chars",
+          "correct": false,
+          "diff": "webpack.config.js\n output: {\n-  filename: '[name].[contenthash].js',\n+  filename: '[name].[contenthash:8].js',\n }",
+          "metricsAfter": [
+            {
+              "key": "hit",
+              "label": "CDN hit ratio",
+              "value": 31,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "cpu",
+              "label": "Origin CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "keys",
+              "label": "Cache variants per URL",
+              "value": 38,
+              "unit": "",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2400,
+              "unit": "ms",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Filenames were not fragmenting",
+          "resultBody": "The shorter hash only changes filenames on the next build; existing URLs were untouched. The CDN still holds 38 variants per URL, hit ratio stays at 31% and origin CPU at 92%.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cdn",
+                "tone": "bad",
+                "sub": "still 38 variants"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "The hit ratio collapsed at the deploy while traffic is unchanged.",
+        "Variants per URL is the clue: something splits one file into many cache entries.",
+        "Find the diff that adds request headers to the cache key."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "cdn-cut-01",
+      "incidentCode": "INC-005-CT1",
+      "level": 5,
+      "patternId": "cdn-edge",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P2",
+      "xp": 120,
+      "format": "budget-cut",
+      "title": "CDN egress bill keeps climbing",
+      "brief": "All green: 25,000 req/s, hit ratio 96%, origin at 14% CPU behind a shield at 6%, p95 90 ms. 97% of users are in North America or Europe. $7,400/mo. SLO: p95 under 300 ms.",
+      "constraint": "97% of users are in North America and Europe.",
+      "question": "What do you cut?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 25000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "hit",
+          "label": "CDN hit ratio",
+          "value": 96,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "cpu",
+          "label": "Origin CPU",
+          "value": 14,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 90,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "cost",
+          "label": "Monthly cost",
+          "value": 7400,
+          "unit": "$/mo",
+          "tone": "warn"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "cdn",
+            "kind": "cdn",
+            "label": "CDN, all edge locations",
+            "tone": "good",
+            "sub": "hit 96%"
+          },
+          {
+            "id": "shield",
+            "kind": "cdn",
+            "label": "Origin shield",
+            "tone": "good",
+            "cpu": 6
+          },
+          {
+            "id": "origin",
+            "kind": "server",
+            "label": "3 origin servers",
+            "tone": "good",
+            "cpu": 14
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "cdn"
+          },
+          {
+            "from": "cdn",
+            "to": "shield"
+          },
+          {
+            "from": "shield",
+            "to": "origin"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "cut-shield",
+          "label": "Remove the origin shield that idles at 6% CPU",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "rps",
+              "label": "Traffic",
+              "value": 25000,
+              "unit": "req/s",
+              "tone": "neutral"
+            },
+            {
+              "key": "hit",
+              "label": "CDN hit ratio",
+              "value": 96,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "cpu",
+              "label": "Origin CPU",
+              "value": 71,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 780,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 7000,
+              "unit": "$/mo",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Every edge misses on its own",
+          "resultBody": "The shield collapses misses from all edge locations into one origin request. Without it each location fetches separately: origin request rate is 4x, origin CPU goes from 14% to 71% and p95 for misses reaches 780 ms.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": -400
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "shield",
+                "tone": "bad",
+                "cpu": 0,
+                "sub": "removed"
+              },
+              {
+                "id": "origin",
+                "tone": "bad",
+                "cpu": 71,
+                "sub": "4x origin requests"
+              }
+            ]
+          }
+        },
+        {
+          "id": "cut-class",
+          "label": "Restrict the CDN price class to North America and Europe edges",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "cdn",
+                "kind": "cdn",
+                "label": "CDN, NA and EU edges",
+                "tone": "good",
+                "sub": "hit 96%"
+              },
+              {
+                "id": "shield",
+                "kind": "cdn",
+                "label": "Origin shield",
+                "tone": "good",
+                "cpu": 6
+              },
+              {
+                "id": "origin",
+                "kind": "server",
+                "label": "3 origin servers",
+                "tone": "good",
+                "cpu": 14
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "cdn"
+              },
+              {
+                "from": "cdn",
+                "to": "shield"
+              },
+              {
+                "from": "shield",
+                "to": "origin"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "rps",
+              "label": "Traffic",
+              "value": 25000,
+              "unit": "req/s",
+              "tone": "neutral"
+            },
+            {
+              "key": "hit",
+              "label": "CDN hit ratio",
+              "value": 96,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "cpu",
+              "label": "Origin CPU",
+              "value": 14,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 95,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 5500,
+              "unit": "$/mo",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Bill down, SLO intact",
+          "resultBody": "Only 3% of requests come from other regions and they now reach the nearest included edge: p95 for them rises from 90 to ~240 ms, still under 300 ms, and the overall p95 barely moves. Saves $1,900/mo, at the price of slower APAC users.",
+          "tradeoffs": {
+            "costMonthlyDelta": -1900
+          }
+        },
+        {
+          "id": "cut-origin",
+          "label": "Cut the origin fleet from 3 servers to 1 behind the shield",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "rps",
+              "label": "Traffic",
+              "value": 25000,
+              "unit": "req/s",
+              "tone": "neutral"
+            },
+            {
+              "key": "hit",
+              "label": "CDN hit ratio",
+              "value": 96,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "cpu",
+              "label": "Origin CPU",
+              "value": 42,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 110,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 6780,
+              "unit": "$/mo",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "One origin, no failover",
+          "resultBody": "A single origin runs fine at 42% CPU, but any restart or deploy returns 5xx for every cache miss (4% of requests) for about 90 s. That is far above the 0.1% error budget of the 99.9% availability SLO.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": -620
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "origin",
+                "tone": "bad",
+                "cpu": 42,
+                "sub": "single origin, no N-1"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Nothing is red: the bill is mostly egress, so ask where the bytes go.",
+        "A shield at 6% CPU is protecting origin from something.",
+        "Check the user regions before deciding which edge locations you need."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "cdn-blob-01",
+      "incidentCode": "INC-005-23",
+      "level": 5,
+      "patternId": "cdn-edge",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 130,
+      "title": "Creator uploads fail with 504s at peak",
+      "brief": "1,800 creators upload 300 MB videos at once through the Upload API. The 12 servers (1 Gbps NIC each) take 9.4 Gbps in, CPU is 88%, and 38% of uploads time out after 60 s.",
+      "constraint": "Infra spend may grow by at most $500 per month.",
+      "question": "How do you get the video bytes off the app tier?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Uploads in flight",
+          "value": 1800,
+          "unit": "",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "Upload API CPU",
+          "value": 88,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Failed uploads",
+          "value": 38,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "Upload time p95",
+          "value": 58000,
+          "unit": "ms",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Creators"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Upload API",
+            "tone": "bad",
+            "cpu": 88,
+            "sub": "9.4 Gbps in"
+          },
+          {
+            "id": "s3",
+            "kind": "storage",
+            "label": "Object storage",
+            "tone": "good"
+          },
+          {
+            "id": "proc",
+            "kind": "worker",
+            "label": "Transcoder",
+            "tone": "good",
+            "cpu": 20
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "s3"
+          },
+          {
+            "from": "s3",
+            "to": "proc"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "scale-app",
+          "label": "Scale the app fleet from 12 to 40 servers and raise upload timeout to 10 min",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "Upload API CPU",
+              "value": 52,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Failed uploads",
+              "value": 9,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "Upload time p95",
+              "value": 190000,
+              "unit": "ms",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Bigger tier, same bottleneck",
+          "resultBody": "Forty servers add NIC capacity, but each still proxies every byte and holds a worker for 4+ minutes. Failures fall only to 9% and the bill grows by $4,200/mo, far past the $500 limit.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 4200
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "tone": "warn",
+                "cpu": 52,
+                "sub": "40 servers, +$4,200/mo"
+              }
+            ]
+          }
+        },
+        {
+          "id": "presign",
+          "label": "Hand out presigned multipart URLs so clients PUT straight to object storage",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Creators"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Upload API",
+                "tone": "good",
+                "cpu": 14,
+                "sub": "signs URLs only"
+              },
+              {
+                "id": "s3",
+                "kind": "storage",
+                "label": "Object storage",
+                "tone": "good"
+              },
+              {
+                "id": "proc",
+                "kind": "worker",
+                "label": "Transcoder",
+                "tone": "good",
+                "cpu": 20
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "users",
+                "to": "s3"
+              },
+              {
+                "from": "s3",
+                "to": "proc"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "Upload API CPU",
+              "value": 14,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Failed uploads",
+              "value": 0.4,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "Upload time p95",
+              "value": 9000,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "The API only signs URLs (~2 ms) and the 300 MB bodies go from the client to object storage in parallel parts, so the app tier drops to 14% CPU and failures to 0.4%. You now need an upload-complete event to trigger transcoding, size limits in the signature and an async virus scan; adds about $60/mo in request fees.",
+          "tradeoffs": {
+            "costMonthlyDelta": 60
+          }
+        },
+        {
+          "id": "cdn-put",
+          "label": "Route the upload endpoint through the CDN so edges buffer request bodies",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "Upload API CPU",
+              "value": 86,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Failed uploads",
+              "value": 41,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "Upload time p95",
+              "value": 61000,
+              "unit": "ms",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "CDN still proxies to origin",
+          "resultBody": "The CDN caches downloads, not uploads: every body is still forwarded to the same 12 servers, and its 200 MB request-body cap rejects the 300 MB files with 413. Failures stay around 41%.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 900
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "tone": "bad",
+                "cpu": 86,
+                "sub": "still proxies every byte"
+              },
+              {
+                "id": "users",
+                "tone": "warn",
+                "sub": "413 on files over 200 MB"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "The Upload API is doing network work, not business logic.",
+        "Bytes that pass through app servers cost NIC, CPU and worker time.",
+        "Let the client talk to storage directly, with a short-lived permission from the API."
+      ],
+      "nextId": null
     }
   ]
 }

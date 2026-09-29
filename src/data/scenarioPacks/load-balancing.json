@@ -83,6 +83,29 @@
           }
         ]
       },
+      "logs": {
+        "users": [
+          "12k req/s total across 3 app IPs",
+          "client pinned to cached IP, sticky connections long-lived",
+          "p95 2.8 s; 100 errors (502/504)"
+        ],
+        "s1": [
+          "CPU 90%, active conns 4,300",
+          "receiving ~10.8k of 12k req/s (90%)",
+          "p95 handler 2.8 s, 100 upstream timeouts",
+          "thread pool 200/200 busy"
+        ],
+        "s2": [
+          "CPU 7%, active conns 210",
+          "receiving ~600 req/s",
+          "p95 handler 45 ms, 0 errors"
+        ],
+        "s3": [
+          "CPU 6%, active conns 190",
+          "receiving ~600 req/s",
+          "p95 handler 42 ms, 0 errors"
+        ]
+      },
       "choices": [
         {
           "id": "load-balancer",
@@ -6769,6 +6792,571 @@
       ],
       "nextId": null,
       "reviewed": true
+    },
+    {
+      "id": "lb-pr-01",
+      "incidentCode": "INC-002-PR1",
+      "level": 2,
+      "patternId": "load-balancing",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 120,
+      "format": "bad-pr",
+      "title": "One backend melts while four idle",
+      "brief": "One of 5 backends is at 96% CPU, the other four at 14%. 22,000 req/s, p95 4.1 s, 6% 5xx. A partner gateway sends 45% of load from one NAT IP.",
+      "constraint": "You can revert exactly one PR before the next traffic peak.",
+      "question": "Which PR do you revert?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 22000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "Hottest backend CPU",
+          "value": 96,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 4100,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "5xx",
+          "value": 6,
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "lb",
+            "kind": "lb",
+            "label": "Load balancer",
+            "tone": "good",
+            "cpu": 12
+          },
+          {
+            "id": "hot",
+            "kind": "server",
+            "label": "Backend 3",
+            "tone": "bad",
+            "cpu": 96,
+            "sub": "45% of traffic"
+          },
+          {
+            "id": "pool",
+            "kind": "server",
+            "label": "Backends 1,2,4,5",
+            "tone": "good",
+            "cpu": 14
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "lb"
+          },
+          {
+            "from": "lb",
+            "to": "hot"
+          },
+          {
+            "from": "lb",
+            "to": "pool"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "pr-maxfails",
+          "label": "Revert PR #2291: lower max_fails 3 to 1, fail_timeout 10s to 30s",
+          "correct": false,
+          "diff": "lb/upstream.conf\n-  server 10.0.1.13:8080 max_fails=3 fail_timeout=10s;\n+  server 10.0.1.13:8080 max_fails=1 fail_timeout=30s;",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "Hottest backend CPU",
+              "value": 95,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 4000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "5xx",
+              "value": 6,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Nothing was being ejected",
+          "resultBody": "All five backends pass health checks, so the stricter ejection rule never fired. Backend 3 stays pinned at 96% by the partner's NAT IP and 5xx stays at 6%.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "hot",
+                "tone": "bad",
+                "cpu": 95,
+                "sub": "still pinned"
+              }
+            ]
+          }
+        },
+        {
+          "id": "pr-tls",
+          "label": "Revert PR #2288: shorten TLS session cache timeout 5m to 1m",
+          "correct": false,
+          "diff": "lb/tls.conf\n-  ssl_session_timeout 5m;\n+  ssl_session_timeout 1m;",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "Hottest backend CPU",
+              "value": 96,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 4050,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "5xx",
+              "value": 6,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "TLS lives on the LB",
+          "resultBody": "TLS session resumption is handled at the balancer (12% CPU), not on the backends. Handshake counts fall slightly but backend 3 is still at 96% and p95 stays above 4 s.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "hot",
+                "tone": "bad",
+                "cpu": 96,
+                "sub": "still pinned"
+              }
+            ]
+          }
+        },
+        {
+          "id": "pr-iphash",
+          "label": "Revert PR #2295: switch balancing from least_conn to ip_hash",
+          "correct": true,
+          "diff": "lb/upstream.conf\n upstream api {\n-    least_conn;\n+    ip_hash;\n     server 10.0.1.11:8080;\n }",
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer",
+                "tone": "good",
+                "cpu": 12
+              },
+              {
+                "id": "hot",
+                "kind": "server",
+                "label": "Backend 3",
+                "tone": "good",
+                "cpu": 30
+              },
+              {
+                "id": "pool",
+                "kind": "server",
+                "label": "Backends 1,2,4,5",
+                "tone": "good",
+                "cpu": 30
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "lb"
+              },
+              {
+                "from": "lb",
+                "to": "hot"
+              },
+              {
+                "from": "lb",
+                "to": "pool"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "Hottest backend CPU",
+              "value": 30,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 190,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "5xx",
+              "value": 0.1,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "ip_hash pins every client IP to one backend, and 45% of load comes from a single NAT IP. With least_conn the five backends level out near 30% CPU; the price is losing IP affinity, so any per-node warm cache goes cold.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        }
+      ],
+      "hints": [
+        "The imbalance appeared with Tuesday's deploy and only one backend is hot.",
+        "Health checks pass, so ask what decides which backend a request goes to.",
+        "One source IP carries 45% of the load: which diff keys routing on it?"
+      ],
+      "nextId": null
+    },
+    {
+      "id": "lb-cut-01",
+      "incidentCode": "INC-002-CT1",
+      "level": 2,
+      "patternId": "load-balancing",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P2",
+      "xp": 110,
+      "format": "budget-cut",
+      "title": "Balancer bill is 2x the forecast",
+      "brief": "Everything is green: 8 backends at 22% CPU, an active LB at 20% and a standby LB at 2%. 40,000 req/s, p95 140 ms, $6,200/mo. SLO: p95 under 400 ms, 99.95% availability.",
+      "constraint": "Failover must not need a human.",
+      "question": "What do you cut?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 40000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "Backend CPU",
+          "value": 22,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 140,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "cost",
+          "label": "Monthly cost",
+          "value": 6200,
+          "unit": "$/mo",
+          "tone": "warn"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "lba",
+            "kind": "lb",
+            "label": "LB active",
+            "tone": "good",
+            "cpu": 20
+          },
+          {
+            "id": "lbb",
+            "kind": "lb",
+            "label": "LB standby",
+            "tone": "good",
+            "cpu": 2,
+            "sub": "idle"
+          },
+          {
+            "id": "pool",
+            "kind": "server",
+            "label": "8 backends",
+            "tone": "good",
+            "cpu": 22
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "lba"
+          },
+          {
+            "from": "users",
+            "to": "lbb"
+          },
+          {
+            "from": "lba",
+            "to": "pool"
+          },
+          {
+            "from": "lbb",
+            "to": "pool"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "cut-standby",
+          "label": "Remove the standby LB that has idled at 2% all month",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "rps",
+              "label": "Traffic",
+              "value": 40000,
+              "unit": "req/s",
+              "tone": "neutral"
+            },
+            {
+              "key": "cpu",
+              "label": "Backend CPU",
+              "value": 22,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 140,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 4800,
+              "unit": "$/mo",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "No failover left",
+          "resultBody": "The standby carried no traffic because it exists for the day the active LB dies. When it does, a rebuild takes ~25 min against a 99.95% budget of 21.9 min a month, so the SLO breaks in one incident.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": -1400
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "lbb",
+                "tone": "bad",
+                "cpu": 0,
+                "sub": "removed"
+              },
+              {
+                "id": "lba",
+                "tone": "warn",
+                "cpu": 20,
+                "sub": "single point of failure"
+              }
+            ]
+          }
+        },
+        {
+          "id": "cut-three",
+          "label": "Cut the backend pool from 8 servers down to 3",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "rps",
+              "label": "Traffic",
+              "value": 40000,
+              "unit": "req/s",
+              "tone": "neutral"
+            },
+            {
+              "key": "cpu",
+              "label": "Backend CPU",
+              "value": 59,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2200,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 4100,
+              "unit": "$/mo",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Pool too small for peak",
+          "resultBody": "Three backends run at 59% at the average; the evening peak of 1.5x pushes them to 88% and losing one goes past 100%. p95 climbs to 2.2 s, well over the 400 ms SLO.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": -2100
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "pool",
+                "tone": "bad",
+                "cpu": 88,
+                "sub": "3 backends at peak"
+              }
+            ]
+          }
+        },
+        {
+          "id": "cut-five",
+          "label": "Shrink the backend pool from 8 servers to 5",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "lba",
+                "kind": "lb",
+                "label": "LB active",
+                "tone": "good",
+                "cpu": 20
+              },
+              {
+                "id": "lbb",
+                "kind": "lb",
+                "label": "LB standby",
+                "tone": "good",
+                "cpu": 2,
+                "sub": "idle"
+              },
+              {
+                "id": "pool",
+                "kind": "server",
+                "label": "5 backends",
+                "tone": "good",
+                "cpu": 35
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "lba"
+              },
+              {
+                "from": "users",
+                "to": "lbb"
+              },
+              {
+                "from": "lba",
+                "to": "pool"
+              },
+              {
+                "from": "lbb",
+                "to": "pool"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "rps",
+              "label": "Traffic",
+              "value": 40000,
+              "unit": "req/s",
+              "tone": "neutral"
+            },
+            {
+              "key": "cpu",
+              "label": "Backend CPU",
+              "value": 35,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 160,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 5100,
+              "unit": "$/mo",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Bill down, SLO intact",
+          "resultBody": "Five backends run at 35%; a peak of 1.5x is 53% and losing one backend leaves four at 66%, under the 75% knee. p95 stays near 160 ms, saving $1,100/mo, and the standby LB keeps failover automatic.",
+          "tradeoffs": {
+            "costMonthlyDelta": -1100
+          }
+        }
+      ],
+      "hints": [
+        "Nothing is red: judge each cut by what it does at peak and during a failure.",
+        "Low utilisation is not the same as unused: ask what each idle box is for.",
+        "Compute the CPU per backend after a 1.5x peak and one failure."
+      ],
+      "nextId": null
     }
   ]
 }

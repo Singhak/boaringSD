@@ -113,6 +113,34 @@
           }
         ]
       },
+      "logs": {
+        "drivers": [
+          "90k events/s; 40% (36k/s) keyed city_id=NYC",
+          "location updates delayed ~38 s in dispatch UI"
+        ],
+        "log": [
+          "partition 17: 36k msg/s in, 40% of topic volume",
+          "partitions 0-63 other: ~850 msg/s each, brokers CPU 60%",
+          "partition 17 lag 4.2M msgs and growing",
+          "produce p95 ok; skew ratio p17/median = 42x"
+        ],
+        "c17": [
+          "CPU 98%, poll loop never idle",
+          "lag 4,200,000 on rides-17, +18k/s",
+          "processing 18k msg/s vs 36k/s arriving",
+          "max.poll.interval.ms exceeded, rebalance x 3 in 10 min"
+        ],
+        "cN": [
+          "CPU 12% avg across 63 consumers",
+          "lag 0 on partitions 0-16, 18-63",
+          "poll returns in 2 ms, mostly empty"
+        ],
+        "db": [
+          "CPU 45%; writes 20k/s, p95 8 ms",
+          "driver_location stale for NYC drivers up to 38 s",
+          "1,200 dispatch lookups timed out on stale rows"
+        ]
+      },
       "choices": [
         {
           "id": "key-driver",
@@ -3890,6 +3918,490 @@
       ],
       "nextId": null,
       "reviewed": true
+    },
+    {
+      "id": "strm-pr-01",
+      "incidentCode": "INC-021-PR1",
+      "level": 21,
+      "patternId": "stream-processing",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 125,
+      "title": "Consumer lag jumps from 0 to 8.4M events in 25 minutes",
+      "brief": "The orders-enricher group sits at 20% CPU but throughput is near zero: 30 rebalances an hour, lag at 8.4M and rising. Batch processing p99 is 41 s. Three consumer-config PRs shipped at 10:05.",
+      "constraint": "One revert only; the on-call cannot restart 24 consumers twice.",
+      "question": "Which PR do you revert to stop the rebalance loop?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Inbound",
+          "value": 12000,
+          "unit": "events/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "lag",
+          "label": "Consumer lag",
+          "value": 8.4,
+          "unit": "M events",
+          "tone": "bad"
+        },
+        {
+          "key": "rebal",
+          "label": "Rebalances",
+          "value": 30,
+          "unit": "/hour",
+          "tone": "bad"
+        },
+        {
+          "key": "batch",
+          "label": "Batch processing time p99",
+          "value": 41,
+          "unit": "s",
+          "tone": "warn"
+        },
+        {
+          "key": "cpu",
+          "label": "Consumer CPU",
+          "value": 20,
+          "unit": "%",
+          "tone": "good"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "k",
+            "kind": "queue",
+            "label": "Kafka topic orders (24 partitions)",
+            "tone": "warn",
+            "sub": "lag 8.4M and rising"
+          },
+          {
+            "id": "c",
+            "kind": "worker",
+            "label": "orders-enricher group (24 consumers)",
+            "tone": "bad",
+            "cpu": 20,
+            "sub": "rebalance every ~2 min"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Enrichment store",
+            "tone": "good",
+            "cpu": 30
+          }
+        ],
+        "edges": [
+          {
+            "from": "k",
+            "to": "c"
+          },
+          {
+            "from": "c",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "pr-session",
+          "label": "Revert PR #9014: session.timeout.ms from 10 s to 45 s",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "diff": "consumer.properties\n-session.timeout.ms=10000\n+session.timeout.ms=45000",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "c",
+                "sub": "still evicted for poll gaps"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "lag",
+              "label": "Consumer lag",
+              "value": 9.1,
+              "unit": "M events",
+              "tone": "bad"
+            },
+            {
+              "key": "rebal",
+              "label": "Rebalances",
+              "value": 30,
+              "unit": "/hour",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Faster failure detection was harmless",
+          "resultBody": "The session timeout only governs heartbeats, which a background thread sends even during long batches. Reverting to 10 s changes nothing: consumers are still evicted after 30 s of poll silence and lag reaches 9.1M."
+        },
+        {
+          "id": "pr-poll",
+          "label": "Revert PR #9021: max.poll.interval.ms from 300 s to 30 s",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "diff": "consumer.properties\n # PR #9021: detect stuck consumers faster\n-max.poll.interval.ms=300000\n+max.poll.interval.ms=30000\n max.poll.records=500\n enable.auto.commit=false",
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "k",
+                "kind": "queue",
+                "label": "Kafka topic orders (24 partitions)",
+                "tone": "good",
+                "sub": "lag draining"
+              },
+              {
+                "id": "c",
+                "kind": "worker",
+                "label": "orders-enricher group (24 consumers)",
+                "tone": "good",
+                "cpu": 55,
+                "sub": "stable assignment"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Enrichment store",
+                "tone": "good",
+                "cpu": 30
+              }
+            ],
+            "edges": [
+              {
+                "from": "k",
+                "to": "c"
+              },
+              {
+                "from": "c",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "lag",
+              "label": "Consumer lag",
+              "value": 0.4,
+              "unit": "M events",
+              "tone": "good"
+            },
+            {
+              "key": "rebal",
+              "label": "Rebalances",
+              "value": 0,
+              "unit": "/hour",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Consumers stop being kicked out mid-batch",
+          "resultBody": "Batches take up to 41 s, but the group leaves any member that does not poll within 30 s. Each eviction triggers a rebalance, so no partition makes progress. Restoring 300 s ends the loop and lag drains at 40k events/s in about 5 minutes. Cost: a truly hung consumer is found after 5 minutes."
+        },
+        {
+          "id": "pr-commit",
+          "label": "Revert PR #9027: commit offsets async after each batch",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "diff": "consumer/Loop.java\n-consumer.commitSync(offsetsOf(record));\n+consumer.commitAsync(offsetsOf(batch));",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "k",
+                "tone": "bad",
+                "sub": "lag 8.9M"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "lag",
+              "label": "Consumer lag",
+              "value": 8.9,
+              "unit": "M events",
+              "tone": "bad"
+            },
+            {
+              "key": "rebal",
+              "label": "Rebalances",
+              "value": 29,
+              "unit": "/hour",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Commit style does not evict members",
+          "resultBody": "Committing after each batch instead of every message shifts commit traffic and slightly widens the replay window after a crash, but it never causes a rebalance. Reverting it leaves 30 rebalances an hour and lag near 8.9M."
+        }
+      ],
+      "hints": [
+        "CPU is idle but the group keeps rebalancing, so members are being removed.",
+        "Compare how long a batch takes with how long a member may stay silent.",
+        "Which setting is smaller than the 41 s batch time?"
+      ],
+      "nextId": null,
+      "format": "bad-pr"
+    },
+    {
+      "id": "strm-cut-01",
+      "incidentCode": "INC-021-CT1",
+      "level": 21,
+      "patternId": "stream-processing",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P2",
+      "xp": 115,
+      "title": "Event pipeline costs $21,500 a month and never lags",
+      "brief": "Kafka keeps 14 days on 41 TB of broker disk; the longest replay anyone has run is 26 hours. Flink runs 48 slots at 38% CPU handling 90k events/s, about 5k/s capacity per slot.",
+      "constraint": "End-to-end lag must stay under 30 s and a crash must resume from a checkpoint, not from scratch.",
+      "question": "Which cut saves money without breaking the SLO?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Inbound",
+          "value": 90000,
+          "unit": "events/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "Slot CPU",
+          "value": 38,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "lag",
+          "label": "Consumer lag",
+          "value": 2,
+          "unit": "s",
+          "tone": "good"
+        },
+        {
+          "key": "cost",
+          "label": "Monthly cost",
+          "value": 21500,
+          "unit": "$/mo",
+          "tone": "warn"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "k",
+            "kind": "queue",
+            "label": "Kafka: 6 brokers, 14-day retention",
+            "tone": "good",
+            "cpu": 18,
+            "sub": "41 TB on disk"
+          },
+          {
+            "id": "f",
+            "kind": "worker",
+            "label": "Flink job: 48 slots",
+            "tone": "good",
+            "cpu": 38
+          },
+          {
+            "id": "s3",
+            "kind": "db",
+            "label": "Checkpoints on S3 (every 60 s)",
+            "tone": "good",
+            "cpu": 5
+          }
+        ],
+        "edges": [
+          {
+            "from": "k",
+            "to": "f"
+          },
+          {
+            "from": "f",
+            "to": "s3"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "cut-ckpt",
+          "label": "Turn off Flink checkpoints and restart from earliest offsets",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": -1200
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "s3",
+                "tone": "bad",
+                "label": "No checkpoints",
+                "sub": "crash = full replay"
+              },
+              {
+                "id": "f",
+                "tone": "bad",
+                "sub": "replaying 14 days"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "lag",
+              "label": "Consumer lag after crash",
+              "value": 21600,
+              "unit": "s",
+              "tone": "bad"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 20300,
+              "unit": "$/mo",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Every crash replays 14 days",
+          "resultBody": "The checkpoint store is nearly idle, but it is what makes recovery cheap. Without it, a task crash rebuilds windows from offset zero: replay of 1.2 TB takes about 6 hours and lag blows past the 30 s SLO for the whole time."
+        },
+        {
+          "id": "cut-slots",
+          "label": "Cut Flink parallelism from 48 task slots down to 16",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": -4800
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "f",
+                "tone": "bad",
+                "cpu": 100,
+                "label": "Flink job: 16 slots",
+                "sub": "80k/s of 90k/s"
+              },
+              {
+                "id": "k",
+                "tone": "warn",
+                "sub": "lag growing 10k/s"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "Slot CPU",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "lag",
+              "label": "Consumer lag",
+              "value": 600,
+              "unit": "s",
+              "tone": "bad"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 16700,
+              "unit": "$/mo",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Slots fall behind the event rate",
+          "resultBody": "At 38% CPU, 48 slots use about 18 slots of work, but each slot tops out near 5k events/s. Sixteen slots can absorb 80k events/s against 90k arriving, so lag grows about 10k events a second and passes 30 s in three minutes."
+        },
+        {
+          "id": "cut-retention",
+          "label": "Cut Kafka broker retention from 14 days down to 3 days",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": -3100
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "k",
+                "kind": "queue",
+                "label": "Kafka: 6 brokers, 3-day retention",
+                "tone": "good",
+                "cpu": 18,
+                "sub": "9 TB on disk"
+              },
+              {
+                "id": "f",
+                "kind": "worker",
+                "label": "Flink job: 48 slots",
+                "tone": "good",
+                "cpu": 38
+              },
+              {
+                "id": "s3",
+                "kind": "db",
+                "label": "Checkpoints on S3 (every 60 s)",
+                "tone": "good",
+                "cpu": 5
+              }
+            ],
+            "edges": [
+              {
+                "from": "k",
+                "to": "f"
+              },
+              {
+                "from": "f",
+                "to": "s3"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "Slot CPU",
+              "value": 38,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "lag",
+              "label": "Consumer lag",
+              "value": 2,
+              "unit": "s",
+              "tone": "good"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 18400,
+              "unit": "$/mo",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Broker disk drops by three quarters",
+          "resultBody": "Nobody replays beyond 26 hours and checkpoints cover crash recovery, so 3 days still leaves a 2.8x margin over the longest replay. Broker storage falls from 41 TB to about 9 TB, saving roughly $3,100 a month; lag stays at 2 s. Cost: a bug found on day 4 can no longer be replayed from Kafka."
+        }
+      ],
+      "hints": [
+        "Everything is green; find the resource nobody actually uses at its full size.",
+        "Ask how much of each thing you pay for has been read in practice.",
+        "Which cut leaves capacity above real load and recovery intact?"
+      ],
+      "nextId": null,
+      "format": "budget-cut"
     }
   ]
 }

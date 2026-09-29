@@ -6877,6 +6877,845 @@
         "Disk size says nothing about how busy a shard is.",
         "Give the balancer the metric that is actually saturated."
       ]
+    },
+    {
+      "id": "shard-pr-01",
+      "incidentCode": "INC-007-PR1",
+      "level": 7,
+      "patternId": "sharding",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 120,
+      "format": "bad-pr",
+      "title": "Orders API p99 at 8 s, one shard on fire",
+      "brief": "Orders API p99 is 8 s and 30% of order writes time out at 18k req/s. Shard 3 of 16 sits at 97% CPU while the other 15 idle near 22%. Three PRs shipped this morning.",
+      "constraint": "You can revert exactly one PR without a full rollback.",
+      "question": "Which PR do you revert to stop the pile-up on shard 3?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 18000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "Hottest shard CPU",
+          "value": 97,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 8000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Timeouts",
+          "value": 5400,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Checkout traffic"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Orders API",
+            "tone": "warn",
+            "cpu": 35
+          },
+          {
+            "id": "sh3",
+            "kind": "db",
+            "label": "Shard 3 of 16",
+            "tone": "bad",
+            "cpu": 97
+          },
+          {
+            "id": "sh4",
+            "kind": "db",
+            "label": "Shard 4",
+            "tone": "good",
+            "cpu": 22
+          },
+          {
+            "id": "sh5",
+            "kind": "db",
+            "label": "Shard 5",
+            "tone": "good",
+            "cpu": 21
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "sh3"
+          },
+          {
+            "from": "app",
+            "to": "sh4"
+          },
+          {
+            "from": "app",
+            "to": "sh5"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "revert-conn-cap",
+          "label": "Revert PR #2288: raise per-shard connection cap from 40 to 80",
+          "correct": false,
+          "diff": "config/db.yaml\n-  max_conns_per_shard: 40\n+  max_conns_per_shard: 80",
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "Hottest shard CPU",
+              "value": 97,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 8100,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Timeouts",
+              "value": 5400,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Cap was not the problem",
+          "resultBody": "Connection caps went back to 40, but shard 3 stays at 97% CPU with 15 idle shards beside it. The skew comes from where rows are routed, not how many connections each shard accepts.",
+          "tradeoffs": {
+            "costMonthlyDelta": -40
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "sh3",
+                "sub": "still 97%, cap change was innocent"
+              }
+            ]
+          }
+        },
+        {
+          "id": "revert-routing",
+          "label": "Revert PR #2291: route orders by created_date bucket, not user_id",
+          "correct": true,
+          "diff": "services/router/shard_key.go\n-  shard := hash(order.UserID) % numShards\n+  shard := hash(order.CreatedAt.Format(\"2006-01-02\")) % numShards",
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "Hottest shard CPU",
+              "value": 26,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 70,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Timeouts",
+              "value": 40,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Writes spread across 16 shards again",
+          "resultBody": "Hashing the calendar date sent every order created today to one shard, so 1/16 of the fleet took 100% of writes. Routing by user_id spreads them evenly and shard 3 drops to about 25%. Cost: date-range queries now fan out to all 16 shards.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "tradeoffSummary": "Even write spread; date-range reports fan out to every shard."
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Checkout traffic",
+                "tone": "good"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Orders API",
+                "tone": "good",
+                "cpu": 35
+              },
+              {
+                "id": "sh3",
+                "kind": "db",
+                "label": "Shard 3 of 16",
+                "tone": "good",
+                "cpu": 40
+              },
+              {
+                "id": "sh4",
+                "kind": "db",
+                "label": "Shard 4",
+                "tone": "good",
+                "cpu": 22
+              },
+              {
+                "id": "sh5",
+                "kind": "db",
+                "label": "Shard 5",
+                "tone": "good",
+                "cpu": 21
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "sh3"
+              },
+              {
+                "from": "app",
+                "to": "sh4"
+              },
+              {
+                "from": "app",
+                "to": "sh5"
+              }
+            ]
+          }
+        },
+        {
+          "id": "revert-index",
+          "label": "Revert PR #2294: add covering index on orders(status, updated_at)",
+          "correct": false,
+          "diff": "migrations/0412_orders_idx.sql\n+CREATE INDEX CONCURRENTLY idx_orders_status_upd\n+  ON orders (status, updated_at) INCLUDE (total);",
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "Hottest shard CPU",
+              "value": 96,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 7800,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Timeouts",
+              "value": 5300,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Index was not the culprit",
+          "resultBody": "Dropping the index frees a little write amplification, but every shard had the same index and only shard 3 is hot. CPU stays near 96% and the timeouts continue.",
+          "tradeoffs": {
+            "costMonthlyDelta": -25
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "sh3",
+                "sub": "index dropped, still hot"
+              },
+              {
+                "id": "app",
+                "tone": "bad"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Fifteen shards are idle. What decides which shard a row lands on?",
+        "Look for the PR that touches the routing key, not capacity or indexes.",
+        "A key that changes slowly over time sends all of today's writes to one shard."
+      ],
+      "reviewed": true
+    },
+    {
+      "id": "shard-chash-01",
+      "incidentCode": "INC-007-CH1",
+      "level": 7,
+      "patternId": "sharding",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 130,
+      "title": "Adding one cache node dropped the hit rate to 11%",
+      "brief": "Black Friday: you add cache node 9 to an 8-node cluster routed by hash(key) % 8. Hit rate falls from 94% to 11% and the catalog DB jumps from 3k to 41k reads/s.",
+      "constraint": "Nodes will be added again next week, and the DB cannot take another spike.",
+      "question": "How do you add nodes without remapping nearly every key?",
+      "metricsBefore": [
+        {
+          "key": "hit",
+          "label": "Cache hit rate",
+          "value": 11,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "rps",
+          "label": "DB reads",
+          "value": 41000,
+          "unit": "req/s",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 1900,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 3100,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Product page traffic"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Storefront",
+            "tone": "warn",
+            "cpu": 40
+          },
+          {
+            "id": "cache",
+            "kind": "cache",
+            "label": "Cache tier (8 nodes, mod 8)",
+            "tone": "bad",
+            "cpu": 90
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Catalog database",
+            "tone": "bad",
+            "cpu": 96
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "cache"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "double-nodes",
+          "label": "Double the cluster to 16 nodes so only half the keys move",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "hit",
+              "label": "Cache hit rate",
+              "value": 47,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "rps",
+              "label": "DB reads",
+              "value": 20000,
+              "unit": "req/s",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 900,
+              "unit": "ms",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Half the cache still goes cold",
+          "resultBody": "Going from mod 8 to mod 16 still remaps 50% of keys, so the DB sees a 20k reads/s wave, and you now pay for 8 more nodes. Any later change to N reshuffles most keys again.",
+          "tradeoffs": {
+            "costMonthlyDelta": 1800
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "sub": "20k reads/s after 16-node reshuffle"
+              }
+            ]
+          }
+        },
+        {
+          "id": "ring-vnodes",
+          "label": "Consistent hash ring with 200 virtual nodes per server",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "hit",
+              "label": "Cache hit rate",
+              "value": 84,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "rps",
+              "label": "DB reads",
+              "value": 6000,
+              "unit": "req/s",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 65,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Only 1/9 of keys move",
+          "resultBody": "On a ring, node 9 claims only the arcs its virtual nodes land on, about 11% of keys, so hit rate stays near 84% and the DB sees roughly 6k reads/s. 200 virtual nodes per server keep load within a few percent of even. Cost: a ring lookup in every client and slightly harder debugging.",
+          "tradeoffs": {
+            "costMonthlyDelta": 150,
+            "tradeoffSummary": "~K/N keys move per node change; clients need the ring map."
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Product page traffic",
+                "tone": "good"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Storefront",
+                "tone": "good",
+                "cpu": 40
+              },
+              {
+                "id": "cache",
+                "kind": "cache",
+                "label": "Cache tier (8 nodes, mod 8)",
+                "tone": "good",
+                "cpu": 40
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Catalog database",
+                "tone": "good",
+                "cpu": 40
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "cache"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              }
+            ]
+          }
+        },
+        {
+          "id": "raise-ttl",
+          "label": "Raise the cache TTL from 5 minutes to 1 hour on every key",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "hit",
+              "label": "Cache hit rate",
+              "value": 13,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "rps",
+              "label": "DB reads",
+              "value": 39000,
+              "unit": "req/s",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1800,
+              "unit": "ms",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Longer TTL does not undo remapping",
+          "resultBody": "Entries were not expiring; they moved to a node the new modulus never asks. The higher TTL only makes the misses that do get cached last longer, and stale prices now live an hour. The DB stays near 39k reads/s.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cache",
+                "sub": "keys live on wrong nodes"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Hit rate collapsed the moment N changed from 8 to 9. What does % N do to key placement?",
+        "With hash % N, changing N moves about N/(N+1) of all keys.",
+        "Place servers and keys on the same hash ring so a new server only takes neighbouring arcs."
+      ],
+      "reviewed": true
+    },
+    {
+      "id": "shard-cut-01",
+      "incidentCode": "INC-007-CT1",
+      "level": 7,
+      "patternId": "sharding",
+      "canonical": false,
+      "severity": "P2",
+      "xp": 110,
+      "format": "budget-cut",
+      "title": "Finance wants the shard bill cut by $30k",
+      "brief": "The sharded orders cluster is healthy: p99 45 ms against a 200 ms SLO, average shard CPU 28% and peak 41%. The bill is $96k a month. You must cut at least $10k.",
+      "constraint": "SLO is p99 under 200 ms with primary-loss recovery under 2 minutes.",
+      "question": "Which cut saves money without breaking the SLO?",
+      "metricsBefore": [
+        {
+          "key": "cost",
+          "label": "Monthly cost",
+          "value": 96000,
+          "unit": "$/mo",
+          "tone": "warn"
+        },
+        {
+          "key": "cpu",
+          "label": "Avg shard CPU",
+          "value": 28,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "p95",
+          "label": "p99 latency",
+          "value": 45,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 12,
+          "unit": "errors",
+          "tone": "good"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Traffic"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Orders API",
+            "tone": "good",
+            "cpu": 34
+          },
+          {
+            "id": "sh",
+            "kind": "db",
+            "label": "16 primary shards",
+            "tone": "good",
+            "cpu": 28
+          },
+          {
+            "id": "sb",
+            "kind": "replica",
+            "label": "Sync standbys (16)",
+            "tone": "good",
+            "cpu": 6
+          },
+          {
+            "id": "rep",
+            "kind": "replica",
+            "label": "Nightly report replicas",
+            "tone": "good",
+            "cpu": 8
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "sh"
+          },
+          {
+            "from": "sh",
+            "to": "sb"
+          },
+          {
+            "from": "sh",
+            "to": "rep"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "drop-standbys",
+          "label": "Drop the synchronous standby on every shard and rely on nightly backups",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 65000,
+              "unit": "$/mo",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p99 latency",
+              "value": 46,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Recovery time",
+              "value": 720,
+              "unit": "s",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Primary loss is now a 12-minute outage",
+          "resultBody": "Saves $31k, but the first primary crash restores from backup instead of promoting a standby. Recovery goes from 90 s to about 12 min, well past the 2-minute target, and up to a day of writes are lost.",
+          "tradeoffs": {
+            "costMonthlyDelta": -31000
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "sb",
+                "tone": "bad",
+                "sub": "removed: recovery 12 min vs 2 min SLO"
+              }
+            ]
+          }
+        },
+        {
+          "id": "halve-shards",
+          "label": "Merge shards in pairs, from 16 primaries down to 8",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 72000,
+              "unit": "$/mo",
+              "tone": "good"
+            },
+            {
+              "key": "cpu",
+              "label": "Avg shard CPU",
+              "value": 82,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p99 latency",
+              "value": 310,
+              "unit": "ms",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Merged shards run hot at peak",
+          "resultBody": "Peak 41% CPU doubles to about 82% on average, and tenants that were already the busiest pairs cross 95%. p99 climbs from 45 ms to about 310 ms, over the 200 ms SLO, and the merge itself needs a long resharding window.",
+          "tradeoffs": {
+            "costMonthlyDelta": -24000
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "sh",
+                "tone": "bad",
+                "cpu": 92,
+                "sub": "8 shards at 82% avg, 95%+ on hot pairs"
+              }
+            ]
+          }
+        },
+        {
+          "id": "shrink-reports",
+          "label": "Downsize the report replicas from 8xlarge to 2xlarge (8% CPU)",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 84000,
+              "unit": "$/mo",
+              "tone": "good"
+            },
+            {
+              "key": "cpu",
+              "label": "Avg shard CPU",
+              "value": 28,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p99 latency",
+              "value": 45,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Same reports, quarter of the price",
+          "resultBody": "The replicas serve only the 02:00 report job at 8% CPU. On 2xlarge boxes the 40-minute job stretches to about 2 hours, still inside its window, and no user traffic touches them. Saves $12k; p99 stays 45 ms and recovery time is unchanged.",
+          "tradeoffs": {
+            "costMonthlyDelta": -12000,
+            "tradeoffSummary": "Reports run slower but off the user path."
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Traffic",
+                "tone": "good"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Orders API",
+                "tone": "good",
+                "cpu": 34
+              },
+              {
+                "id": "sh",
+                "kind": "db",
+                "label": "16 primary shards",
+                "tone": "good",
+                "cpu": 28
+              },
+              {
+                "id": "sb",
+                "kind": "replica",
+                "label": "Sync standbys (16)",
+                "tone": "good",
+                "cpu": 6
+              },
+              {
+                "id": "rep",
+                "kind": "replica",
+                "label": "Nightly report replicas",
+                "tone": "good",
+                "cpu": 8
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "sh"
+              },
+              {
+                "from": "sh",
+                "to": "sb"
+              },
+              {
+                "from": "sh",
+                "to": "rep"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Which components serve user traffic, and which only serve a nightly job?",
+        "A component that is almost idle is not automatically safe to delete; ask what it protects.",
+        "Check what each cut does to the two SLO numbers: p99 under 200 ms and recovery under 2 min."
+      ],
+      "reviewed": true
     }
   ]
 }

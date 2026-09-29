@@ -80,6 +80,24 @@
           }
         ]
       },
+      "logs": {
+        "user": [
+          "POST /checkout sent at t=0 ms and t=180 ms",
+          "same cart id 8841, same payload, no request id header",
+          "first response not yet received when second sent"
+        ],
+        "api": [
+          "POST /checkout 201 order=A-5521",
+          "POST /checkout 201 order=A-5522 (cart 8841)",
+          "p95 400 ms, CPU 20%",
+          "2 errors: duplicate-order alerts, last 60 s"
+        ],
+        "pay": [
+          "charge ch_7f2 $49.00 card ****4242",
+          "charge ch_7f3 $49.00 card ****4242, 180 ms later",
+          "2 charges for 1 cart, no dedupe field on request"
+        ]
+      },
       "choices": [
         {
           "id": "idempotency-key",
@@ -5784,6 +5802,807 @@
         "Anything held only in memory is gone after the next restart.",
         "Make the promise durable before you make it, and let the event ID absorb redeliveries."
       ]
+    },
+    {
+      "id": "idemp-pr-01",
+      "incidentCode": "INC-014-PR1",
+      "level": 14,
+      "patternId": "idempotency",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 120,
+      "format": "bad-pr",
+      "title": "Duplicate charges since the 14:05 deploy",
+      "brief": "PayLane pages at 14:11: 310 duplicate charges/h, all on retried payments. Mobile clients retry timed-out charges with the same key for up to 15 minutes. Three PRs shipped at 14:05.",
+      "constraint": "Exactly one PR caused this; revert only that one.",
+      "question": "Which PR do you revert?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Payments",
+          "value": 420,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 38,
+          "unit": "%",
+          "tone": "neutral"
+        },
+        {
+          "key": "hit",
+          "label": "Retries served from stored key",
+          "value": 4,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Duplicate charges",
+          "value": 310,
+          "unit": "/h",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "users",
+            "label": "Mobile app",
+            "tone": "warn",
+            "sub": "retries same key up to 15 min"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Payments API x6",
+            "tone": "warn",
+            "cpu": 38
+          },
+          {
+            "id": "keys",
+            "kind": "cache",
+            "label": "Redis key store",
+            "tone": "bad",
+            "sub": "keys live 60 s"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Charges DB",
+            "tone": "bad",
+            "sub": "duplicate rows"
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "keys"
+          },
+          {
+            "from": "api",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "ttl",
+          "label": "Revert PR #2291: idempotency key TTL from 24 h to 60 s",
+          "correct": true,
+          "approach": "optimal",
+          "diff": "config/idempotency.yaml\n   store: redis\n-  key_ttl_seconds: 86400\n+  key_ttl_seconds: 60",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "tradeoffSummary": "Longer retention costs Redis memory, not correctness."
+          },
+          "metricsAfter": [
+            {
+              "key": "hit",
+              "label": "Retries served from stored key",
+              "value": 97,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Duplicate charges",
+              "value": 0,
+              "unit": "/h",
+              "tone": "good"
+            },
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 38,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "app",
+                "kind": "users",
+                "label": "Mobile app",
+                "tone": "good",
+                "sub": "retries same key up to 15 min"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Payments API x6",
+                "tone": "good",
+                "cpu": 38
+              },
+              {
+                "id": "keys",
+                "kind": "cache",
+                "label": "Redis key store",
+                "tone": "good",
+                "sub": "keys live 24 h"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Charges DB",
+                "tone": "good",
+                "sub": "one row per key"
+              }
+            ],
+            "edges": [
+              {
+                "from": "app",
+                "to": "api"
+              },
+              {
+                "from": "api",
+                "to": "keys"
+              },
+              {
+                "from": "api",
+                "to": "db"
+              }
+            ]
+          },
+          "resultTitle": "Duplicates stop",
+          "resultBody": "Keys were expiring after 60 s, but retries arrive up to 15 minutes later, so every late retry looked like a new charge. Restoring the 24 h TTL brings stored-key hits back to 97% at the cost of about 6 GB more Redis memory."
+        },
+        {
+          "id": "retries",
+          "label": "Revert PR #2288: client retries from 2 to 3 attempts",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "diff": "sdk/payments.ts\n   backoffMs: 400\n-  maxRetries: 2\n+  maxRetries: 3",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "hit",
+              "label": "Retries served from stored key",
+              "value": 4,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Duplicate charges",
+              "value": 305,
+              "unit": "/h",
+              "tone": "bad"
+            },
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 38,
+              "unit": "%",
+              "tone": "neutral"
+            }
+          ],
+          "resultTitle": "Still duplicating",
+          "resultBody": "More attempts are safe when every attempt carries the same key. The outage kept going because the key store forgets keys after 60 s, so late retries still charge again.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "3 attempts, same key"
+              },
+              {
+                "id": "db",
+                "tone": "bad",
+                "sub": "305 duplicates/h continue"
+              }
+            ]
+          }
+        },
+        {
+          "id": "index",
+          "label": "Revert PR #2296: widen charges index to (order_ref, currency)",
+          "correct": false,
+          "approach": "anti_pattern",
+          "diff": "db/migrations/0412_charges_index.sql\n-CREATE INDEX idx_charges_ref\n-  ON charges (order_ref);\n+CREATE INDEX idx_charges_ref\n+  ON charges (order_ref, currency);",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "hit",
+              "label": "Retries served from stored key",
+              "value": 4,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Duplicate charges",
+              "value": 312,
+              "unit": "/h",
+              "tone": "bad"
+            },
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 38,
+              "unit": "%",
+              "tone": "neutral"
+            }
+          ],
+          "resultTitle": "Wrong revert, same pager",
+          "resultBody": "The wider index adds a little write cost but does not change which requests are deduplicated. Duplicate rows keep appearing at about 300 an hour, and the revert only cost you another deploy.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "sub": "index reverted, dupes continue"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Look at the metric that fell, not only the one that rose.",
+        "Riders retry for 15 minutes; check which diff decides how long a key survives.",
+        "One diff changes how long the server remembers a key."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "idemp-cut-01",
+      "incidentCode": "INC-014-CT1",
+      "level": 14,
+      "patternId": "idempotency",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P2",
+      "xp": 110,
+      "format": "budget-cut",
+      "title": "Finance wants 20% off the payments bill",
+      "brief": "The payments stack is healthy at 95 ms p99 with zero duplicate charges, but finance wants savings. Retry workers sit at 8% CPU; the key store holds 38 GB of 24 h keys and idles at 9% CPU.",
+      "constraint": "SLOs: p99 under 300 ms, no duplicate charge, key window stays 24 h.",
+      "question": "What do you cut?",
+      "metricsBefore": [
+        {
+          "key": "cost",
+          "label": "Monthly cost",
+          "value": 18400,
+          "unit": "$/mo",
+          "tone": "warn"
+        },
+        {
+          "key": "p99",
+          "label": "p99 latency",
+          "value": 95,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "wcpu",
+          "label": "Worker CPU",
+          "value": 8,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "mem",
+          "label": "Key store memory",
+          "value": 38,
+          "unit": "GB of 64",
+          "tone": "neutral"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Payments API x12",
+            "tone": "good",
+            "cpu": 31
+          },
+          {
+            "id": "keys",
+            "kind": "cache",
+            "label": "Redis key store (64 GB)",
+            "tone": "good",
+            "cpu": 9,
+            "sub": "38 GB of keys live"
+          },
+          {
+            "id": "wk",
+            "kind": "worker",
+            "label": "Retry workers x12",
+            "tone": "good",
+            "cpu": 8
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Ledger + 3 read replicas",
+            "tone": "good",
+            "cpu": 30
+          }
+        ],
+        "edges": [
+          {
+            "from": "api",
+            "to": "keys"
+          },
+          {
+            "from": "api",
+            "to": "db"
+          },
+          {
+            "from": "wk",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "halve",
+          "label": "Halve key-store memory from 64 GB to 32 GB, since CPU is 9%",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": -1500
+          },
+          "metricsAfter": [
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 16900,
+              "unit": "$/mo",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Duplicate charges",
+              "value": 90,
+              "unit": "/h",
+              "tone": "bad"
+            },
+            {
+              "key": "mem",
+              "label": "Key store memory",
+              "value": 32,
+              "unit": "GB of 32",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Keys evicted early",
+          "resultBody": "CPU is low but the store is memory-bound: 38 GB of 24 h keys no longer fit in 32 GB, so Redis evicts the oldest keys and late retries charge twice. Duplicates return at roughly 90 an hour.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "keys",
+                "tone": "bad",
+                "sub": "evicting live keys"
+              }
+            ]
+          }
+        },
+        {
+          "id": "workers",
+          "label": "Shrink the retry workers from 12 pods to 4, so 8% CPU becomes 24%",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": -3700,
+            "tradeoffSummary": "Less burst headroom for retries, still about 3x today."
+          },
+          "metricsAfter": [
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 14700,
+              "unit": "$/mo",
+              "tone": "good"
+            },
+            {
+              "key": "p99",
+              "label": "p99 latency",
+              "value": 96,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "wcpu",
+              "label": "Worker CPU",
+              "value": 24,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Payments API x12",
+                "tone": "good",
+                "cpu": 31
+              },
+              {
+                "id": "keys",
+                "kind": "cache",
+                "label": "Redis key store (64 GB)",
+                "tone": "good",
+                "cpu": 9,
+                "sub": "38 GB of keys live"
+              },
+              {
+                "id": "wk",
+                "kind": "worker",
+                "label": "Retry workers x4",
+                "tone": "good",
+                "cpu": 24
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Ledger + 3 read replicas",
+                "tone": "good",
+                "cpu": 30
+              }
+            ],
+            "edges": [
+              {
+                "from": "api",
+                "to": "keys"
+              },
+              {
+                "from": "api",
+                "to": "db"
+              },
+              {
+                "from": "wk",
+                "to": "db"
+              }
+            ]
+          },
+          "resultTitle": "Bill drops, SLO holds",
+          "resultBody": "Work is spread across 12 pods but needs about one pod of CPU. Four pods run near 24%, still absorbing a 3x burst, and p99 stays at 95 ms with the 24 h key window intact. Saves about $3,700 a month."
+        },
+        {
+          "id": "replicas",
+          "label": "Drop the ledger read replicas from 3 to 1, the biggest saving",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "tradeoffs": {
+            "costMonthlyDelta": -4500
+          },
+          "metricsAfter": [
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 13900,
+              "unit": "$/mo",
+              "tone": "warn"
+            },
+            {
+              "key": "p99",
+              "label": "p99 latency",
+              "value": 620,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "wcpu",
+              "label": "Worker CPU",
+              "value": 8,
+              "unit": "%",
+              "tone": "neutral"
+            }
+          ],
+          "resultTitle": "Reads pile up",
+          "resultBody": "Each replica serves about 30% of reads. One replica now takes all of them and reaches 90% CPU, so p99 climbs from 95 ms to 620 ms at peak, breaking the 300 ms SLO.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "sub": "1 replica at 90% CPU"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "The bill is the only red flag; the dashboard is green.",
+        "A low CPU number does not mean spare capacity on every axis.",
+        "Cut what sits idle on the resource that actually limits it."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "idemp-api-01",
+      "incidentCode": "INC-014-API",
+      "level": 14,
+      "patternId": "idempotency",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P2",
+      "xp": 100,
+      "title": "Users see the same post twice while scrolling",
+      "brief": "Snapfeed paginates with page=N&limit=50 over a table taking 800 new posts a minute. Deep scrolls repeat or skip posts (12% of sessions) and page 40 takes 420 ms.",
+      "constraint": "The public API is v1 and clients must keep scrolling through a stable list.",
+      "question": "How should page 2 know where page 1 ended?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Feed reads",
+          "value": 6000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "DB CPU",
+          "value": 71,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Repeated or skipped posts",
+          "value": 12,
+          "unit": "% of scrolls",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 420,
+          "unit": "ms",
+          "tone": "warn"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "users",
+            "label": "Feed app",
+            "tone": "warn",
+            "sub": "page=N&limit=50"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Feed API x8",
+            "tone": "warn",
+            "cpu": 44
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Posts (Postgres)",
+            "tone": "bad",
+            "cpu": 71,
+            "sub": "OFFSET scans"
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "cache",
+          "label": "Snapshot the whole result set in Redis for 10 minutes per session",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "tradeoffs": {
+            "costMonthlyDelta": 900
+          },
+          "metricsAfter": [
+            {
+              "key": "errors",
+              "label": "Repeated or skipped posts",
+              "value": 1,
+              "unit": "% of scrolls",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 180,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "cpu",
+              "label": "DB CPU",
+              "value": 60,
+              "unit": "%",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Memory bill, still stale",
+          "resultBody": "A snapshot keeps the list stable, but 900k active sessions x 2,000 post IDs is about 14 GB of hot Redis and the feed lags 10 minutes, so new posts vanish from view. Duplicates fall but refresh is broken.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "tone": "warn",
+                "sub": "10 min stale snapshots"
+              }
+            ],
+            "addNodes": [
+              {
+                "id": "redis",
+                "kind": "cache",
+                "label": "Session snapshots",
+                "tone": "warn",
+                "sub": "14 GB and growing"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "api",
+                "to": "redis"
+              }
+            ]
+          }
+        },
+        {
+          "id": "keyset",
+          "label": "Keyset cursor on (created_at, id) as an opaque next_token",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "tradeoffSummary": "No random page jumps; stable, constant-time paging."
+          },
+          "metricsAfter": [
+            {
+              "key": "errors",
+              "label": "Repeated or skipped posts",
+              "value": 0,
+              "unit": "% of scrolls",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 38,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "cpu",
+              "label": "DB CPU",
+              "value": 28,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "app",
+                "kind": "users",
+                "label": "Feed app",
+                "tone": "good",
+                "sub": "next_token"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Feed API x8",
+                "tone": "good",
+                "cpu": 44
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Posts (Postgres)",
+                "tone": "good",
+                "cpu": 71,
+                "sub": "index seek, no OFFSET"
+              }
+            ],
+            "edges": [
+              {
+                "from": "app",
+                "to": "api"
+              },
+              {
+                "from": "api",
+                "to": "db"
+              }
+            ]
+          },
+          "resultTitle": "Stable pages, flat cost",
+          "resultBody": "The token encodes the last post seen, so page 2 asks for rows strictly older than it: new inserts never shift the window and an index seek costs the same at page 1 or 400. Trade-off: no jump-to-page-N, and the token format joins the API contract."
+        },
+        {
+          "id": "cap",
+          "label": "Cap offset at 200 posts and add an index on created_at",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "errors",
+              "label": "Repeated or skipped posts",
+              "value": 11,
+              "unit": "% of scrolls",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 60,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "cpu",
+              "label": "DB CPU",
+              "value": 45,
+              "unit": "%",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Faster, still wrong",
+          "resultBody": "The index and cap fix the slow deep pages (p95 drops to 60 ms), but offsets still shift by up to 800 posts a minute, so users keep seeing repeats and 11% of sessions are still affected.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "tone": "bad",
+                "sub": "still repeating posts"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Two loads of \"page 2\" differ when new rows shift everything.",
+        "Position by page number breaks when the list changes under you.",
+        "Ask for rows after a known row, not row number N."
+      ],
+      "nextId": null
     }
   ]
 }

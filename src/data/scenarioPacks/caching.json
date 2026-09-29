@@ -81,6 +81,23 @@
           }
         ]
       },
+      "logs": {
+        "users": [
+          "GET /post/8841 rate 150k/s, 99% same post id",
+          "client retries 0.4%, timeouts 20/s"
+        ],
+        "app": [
+          "upstream db p95 1.8 s",
+          "worker pool 512/512 busy, waiting on db",
+          "GET /post/8841 -> 200 in 1.7 s, no local cache header"
+        ],
+        "db": [
+          "CPU 92%, buffer hit 99.9%",
+          "SELECT * FROM posts WHERE id=8841 executed 149k/s",
+          "avg exec 0.1 ms, plan+parse dominates CPU",
+          "disk read IOPS 40, idle"
+        ]
+      },
       "choices": [
         {
           "id": "add-cache",
@@ -6804,6 +6821,597 @@
         "Shard 7 isn't broken; count the reads per key.",
         "A timeout or a restart changes how long you wait, not how many requests land on one key.",
         "Where could the SKU be answered before a request reaches Redis at all?"
+      ],
+      "nextId": null
+    },
+    {
+      "id": "cache-pr-01",
+      "incidentCode": "INC-004-PR1",
+      "level": 4,
+      "patternId": "caching",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 130,
+      "format": "bad-pr",
+      "title": "Cache went cold after Monday's release",
+      "brief": "Cache hit ratio fell from 94% to 11% after Monday's release. Postgres CPU is 93%, p95 1.9 s at 40,000 req/s. Redis is up with 2.4 of 8 GB used and zero evictions.",
+      "constraint": "You can revert exactly one PR before the next traffic peak.",
+      "question": "Which PR do you revert?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 40000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "hit",
+          "label": "Cache hit ratio",
+          "value": 11,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "cpu",
+          "label": "DB CPU",
+          "value": 93,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 1900,
+          "unit": "ms",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App tier",
+            "tone": "good",
+            "cpu": 40
+          },
+          {
+            "id": "cache",
+            "kind": "cache",
+            "label": "Redis",
+            "tone": "good",
+            "cpu": 20,
+            "sub": "2.4 of 8 GB, 0 evictions"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres",
+            "tone": "bad",
+            "cpu": 93
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "cache"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "pr-ttl",
+          "label": "Revert PR #5530: cut product TTL from 600s to 120s",
+          "correct": false,
+          "diff": "catalog/cache.py\n-PRODUCT_TTL_SECONDS = 600\n+PRODUCT_TTL_SECONDS = 120",
+          "metricsAfter": [
+            {
+              "key": "hit",
+              "label": "Cache hit ratio",
+              "value": 12,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "cpu",
+              "label": "DB CPU",
+              "value": 92,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1850,
+              "unit": "ms",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "TTL was not the problem",
+          "resultBody": "Hot SKUs are read thousands of times a second, so a 120 s TTL still means only about one miss per key every two minutes. The hit ratio recovers to 12% at best: the keys themselves are still per-session.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 92,
+                "sub": "still cold"
+              }
+            ]
+          }
+        },
+        {
+          "id": "pr-maxmem",
+          "label": "Revert PR #5527: lower Redis maxmemory from 8gb to 6gb",
+          "correct": false,
+          "diff": "redis/redis.conf\n-maxmemory 8gb\n+maxmemory 6gb\n maxmemory-policy allkeys-lru",
+          "metricsAfter": [
+            {
+              "key": "hit",
+              "label": "Cache hit ratio",
+              "value": 11,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "cpu",
+              "label": "DB CPU",
+              "value": 93,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 1900,
+              "unit": "ms",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Memory was never tight",
+          "resultBody": "Redis uses 2.4 GB and reports zero evictions, so the 6 GB cap never evicted anything. Raising it back changes nothing; hit ratio stays 11% and Postgres stays saturated.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 93,
+                "sub": "still cold"
+              }
+            ]
+          }
+        },
+        {
+          "id": "pr-key",
+          "label": "Revert PR #5533: add session_id to the product cache key",
+          "correct": true,
+          "diff": "catalog/cache.py\n def product_key(product_id, session_id):\n-    return f'product:{product_id}'\n+    return f'product:{product_id}:{session_id}'",
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App tier",
+                "tone": "good",
+                "cpu": 40
+              },
+              {
+                "id": "cache",
+                "kind": "cache",
+                "label": "Redis",
+                "tone": "good",
+                "cpu": 30
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres",
+                "tone": "good",
+                "cpu": 24
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "cache"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "hit",
+              "label": "Cache hit ratio",
+              "value": 93,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "cpu",
+              "label": "DB CPU",
+              "value": 24,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 85,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Incident solved",
+          "resultBody": "Every user had their own copy of every product, so 40,000 req/s almost never shared a key. With one key per product, hit ratio returns to 93% and Postgres drops to 24% CPU, at the price of no per-session variation in product pages.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        }
+      ],
+      "hints": [
+        "Redis is healthy and has room, so misses are not from evictions.",
+        "Ask what would make each request look unique to the cache.",
+        "Read the key-building diff: what varies per user?"
+      ],
+      "nextId": null
+    },
+    {
+      "id": "cache-cut-01",
+      "incidentCode": "INC-004-CT1",
+      "level": 4,
+      "patternId": "caching",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P2",
+      "xp": 120,
+      "format": "budget-cut",
+      "title": "Redis is the biggest line on the invoice",
+      "brief": "All green: 30,000 req/s, hit ratio 96%, p95 45 ms. Redis runs 6 shards at 38% memory; Postgres idles at 12% CPU. $8,400/mo. SLO: p95 under 200 ms.",
+      "constraint": "The hit ratio must stay above 90%.",
+      "question": "What do you cut?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 30000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "hit",
+          "label": "Cache hit ratio",
+          "value": 96,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "cpu",
+          "label": "DB CPU",
+          "value": 12,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 45,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "cost",
+          "label": "Monthly cost",
+          "value": 8400,
+          "unit": "$/mo",
+          "tone": "warn"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App tier",
+            "tone": "good",
+            "cpu": 25
+          },
+          {
+            "id": "cache",
+            "kind": "cache",
+            "label": "Redis cluster, 6 shards",
+            "tone": "good",
+            "cpu": 22,
+            "sub": "38% memory"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres",
+            "tone": "good",
+            "cpu": 12
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "cache"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "cut-half",
+          "label": "Halve each Redis node's memory but keep all six shards",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "rps",
+              "label": "Traffic",
+              "value": 30000,
+              "unit": "req/s",
+              "tone": "neutral"
+            },
+            {
+              "key": "hit",
+              "label": "Cache hit ratio",
+              "value": 71,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "cpu",
+              "label": "DB CPU",
+              "value": 84,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 380,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 5600,
+              "unit": "$/mo",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Working set no longer fits",
+          "resultBody": "The cluster held ~38 GB of hot data in 100 GB; at half the memory (50 GB) it is at 76% but hot keys plus overhead push past the eviction line. Hit ratio falls to 71% and Postgres misses rise 7x to 84% CPU. p95 reaches 380 ms over the 200 ms SLO.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": -2800
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cache",
+                "tone": "bad",
+                "cpu": 22,
+                "sub": "evicting"
+              },
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 84,
+                "sub": "7x more misses"
+              }
+            ]
+          }
+        },
+        {
+          "id": "cut-off",
+          "label": "Turn the cache off since Postgres idles at 12% CPU",
+          "correct": false,
+          "metricsAfter": [
+            {
+              "key": "rps",
+              "label": "Traffic",
+              "value": 30000,
+              "unit": "req/s",
+              "tone": "neutral"
+            },
+            {
+              "key": "hit",
+              "label": "Cache hit ratio",
+              "value": 0,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "cpu",
+              "label": "DB CPU",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 4200,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 0,
+              "unit": "$/mo",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "The cache is why the DB idles",
+          "resultBody": "Postgres sits at 12% because 96% of reads never reach it. Without the cache it takes 25x the reads and goes past 100% CPU; p95 jumps to seconds and the site pages out within minutes.",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": -8400
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cache",
+                "tone": "bad",
+                "cpu": 0,
+                "sub": "off"
+              },
+              {
+                "id": "db",
+                "tone": "bad",
+                "cpu": 100,
+                "sub": "25x read load"
+              }
+            ]
+          }
+        },
+        {
+          "id": "cut-shards",
+          "label": "Remove 2 of the 6 Redis shards and rebalance slots",
+          "correct": true,
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App tier",
+                "tone": "good",
+                "cpu": 25
+              },
+              {
+                "id": "cache",
+                "kind": "cache",
+                "label": "Redis cluster, 4 shards",
+                "tone": "good",
+                "cpu": 30,
+                "sub": "57% memory"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres",
+                "tone": "good",
+                "cpu": 12
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "cache"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "rps",
+              "label": "Traffic",
+              "value": 30000,
+              "unit": "req/s",
+              "tone": "neutral"
+            },
+            {
+              "key": "hit",
+              "label": "Cache hit ratio",
+              "value": 96,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "cpu",
+              "label": "DB CPU",
+              "value": 12,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 48,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 5600,
+              "unit": "$/mo",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Bill down, SLO intact",
+          "resultBody": "Four shards hold the same ~38 GB working set at 57% memory, well under the eviction line, so hit ratio stays 96% and Postgres stays near 12% CPU. Saves $2,800/mo; the cost is rebalancing slots and less failover headroom.",
+          "tradeoffs": {
+            "costMonthlyDelta": -2800
+          }
+        }
+      ],
+      "hints": [
+        "The DB is quiet, but ask why before touching anything that shields it.",
+        "Memory at 38% means the working set fits with room to spare.",
+        "Compute memory percent after removing shards versus halving each node."
       ],
       "nextId": null
     }

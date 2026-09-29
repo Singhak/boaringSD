@@ -105,6 +105,28 @@
           }
         ]
       },
+      "logs": {
+        "users": [
+          "checkout failures reported: 'payment error' on ~2% of attempts",
+          "18k req/s steady"
+        ],
+        "lb": [
+          "CPU 20%; 5xx 2.0% of checkout responses (360 errors)",
+          "upstream p95 210 ms",
+          "health checks passing 3/3"
+        ],
+        "api": [
+          "CPU 41%; POST /checkout 500 rate 2.0% for 3 h",
+          "pay-provider call failed: ECONNRESET, retries=2",
+          "SLO 99.9%: 43 min budget, burning at 20x",
+          "no alert fired: CPU alert threshold 80%"
+        ],
+        "db": [
+          "CPU 35%; query p95 12 ms",
+          "no lock waits, replication lag 0.2 s",
+          "connections 140/500"
+        ]
+      },
       "choices": [
         {
           "id": "burn-rate",
@@ -3786,6 +3808,458 @@
       ],
       "nextId": null,
       "reviewed": true
+    },
+    {
+      "id": "obs-pr-01",
+      "incidentCode": "INC-022-PR1",
+      "level": 22,
+      "patternId": "observability",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 125,
+      "title": "Prometheus OOM-kills every 20 minutes and dashboards go blank",
+      "brief": "Active series grew from 4M to 38M in an hour, memory sits at 97% of 96 GB and the pod restarts 3 times an hour. Disk is 41% used. Three observability PRs shipped at noon.",
+      "constraint": "Alerting must be back before the 18:00 traffic peak; only one revert fits.",
+      "question": "Which PR do you revert to stop the series explosion?",
+      "metricsBefore": [
+        {
+          "key": "series",
+          "label": "Active series",
+          "value": 38,
+          "unit": "M",
+          "tone": "bad"
+        },
+        {
+          "key": "mem",
+          "label": "Prometheus memory",
+          "value": 97,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "restarts",
+          "label": "OOM restarts",
+          "value": 3,
+          "unit": "/hour",
+          "tone": "bad"
+        },
+        {
+          "key": "disk",
+          "label": "Disk used",
+          "value": 41,
+          "unit": "%",
+          "tone": "good"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Services (400 pods)",
+            "tone": "good",
+            "cpu": 45
+          },
+          {
+            "id": "prom",
+            "kind": "db",
+            "label": "Prometheus",
+            "tone": "bad",
+            "cpu": 93,
+            "sub": "38M active series, OOM every 20 min"
+          },
+          {
+            "id": "graf",
+            "kind": "server",
+            "label": "Dashboards and alerts",
+            "tone": "bad",
+            "sub": "blank panels"
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "prom"
+          },
+          {
+            "from": "prom",
+            "to": "graf"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "pr-scrape",
+          "label": "Revert PR #3330: scrape interval from 30 s to 15 s",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "diff": "prometheus.yml\n global:\n-  scrape_interval: 30s\n+  scrape_interval: 15s",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "prom",
+                "sub": "38M series, still OOM"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "series",
+              "label": "Active series",
+              "value": 37.5,
+              "unit": "M",
+              "tone": "bad"
+            },
+            {
+              "key": "mem",
+              "label": "Prometheus memory",
+              "value": 96,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Same series, twice the samples",
+          "resultBody": "A shorter scrape interval doubles samples per series but memory is driven by the count of series, which is unchanged at 38M. Reverting to 30 s trims ingest, yet Prometheus still OOMs every 22 minutes."
+        },
+        {
+          "id": "pr-retention",
+          "label": "Revert PR #3341: retention from 15 days to 30 days",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "diff": "prometheus.yml\n-  --storage.tsdb.retention.time=15d\n+  --storage.tsdb.retention.time=30d",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "graf",
+                "sub": "still blank, memory not freed"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "series",
+              "label": "Active series",
+              "value": 38,
+              "unit": "M",
+              "tone": "bad"
+            },
+            {
+              "key": "mem",
+              "label": "Prometheus memory",
+              "value": 97,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Retention is a disk knob",
+          "resultBody": "Older blocks live on disk, not in the head block that holds active series in RAM. Cutting retention frees disk from 41% to 22%, but memory stays at 97% and the OOM loop continues."
+        },
+        {
+          "id": "pr-label",
+          "label": "Revert PR #3355: user_id label on http_requests_total",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "diff": "metrics/http.go\n var reqs = prometheus.NewCounterVec(opts,\n-  []string{\"route\", \"status\"})\n+  []string{\"route\", \"status\", \"user_id\"})\n reqs.WithLabelValues(r, s, uid).Inc()",
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Services (400 pods)",
+                "tone": "good",
+                "cpu": 45
+              },
+              {
+                "id": "prom",
+                "kind": "db",
+                "label": "Prometheus",
+                "tone": "good",
+                "cpu": 35,
+                "sub": "4M series"
+              },
+              {
+                "id": "graf",
+                "kind": "server",
+                "label": "Dashboards and alerts",
+                "tone": "good",
+                "sub": "panels live"
+              }
+            ],
+            "edges": [
+              {
+                "from": "app",
+                "to": "prom"
+              },
+              {
+                "from": "prom",
+                "to": "graf"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "series",
+              "label": "Active series",
+              "value": 4,
+              "unit": "M",
+              "tone": "good"
+            },
+            {
+              "key": "mem",
+              "label": "Prometheus memory",
+              "value": 38,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "One label per user multiplies series",
+          "resultBody": "Each distinct user_id creates a separate time series for every route and status: about 9M users seen this hour across 3 routes and 4 statuses is enough to add 34M series. Reverting returns 4M series and memory falls to 38%. Cost: per-user debugging moves to logs or traces."
+        }
+      ],
+      "hints": [
+        "Memory scales with active series, not with retention or scrape rate.",
+        "Series count grew about 9x, so something multiplied combinations of labels.",
+        "Which diff adds a label with millions of possible values?"
+      ],
+      "nextId": null,
+      "format": "bad-pr"
+    },
+    {
+      "id": "obs-cut-01",
+      "incidentCode": "INC-022-CT1",
+      "level": 22,
+      "patternId": "observability",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P2",
+      "xp": 115,
+      "title": "Observability stack costs $23,800 a month, dashboards all green",
+      "brief": "Prometheus runs as an HA pair at 30% CPU with 15 s scrapes. Logs keep 30 days on hot SSD (62 TB) though the oldest query anyone ran is 2.5 days old. The SLO burn-rate alert uses 5 minute windows.",
+      "constraint": "Alerts must detect a fast SLO burn within 5 minutes and a Prometheus restart must not blind them.",
+      "question": "Which cut saves money without breaking the SLO?",
+      "metricsBefore": [
+        {
+          "key": "series",
+          "label": "Active series",
+          "value": 4,
+          "unit": "M",
+          "tone": "good"
+        },
+        {
+          "key": "cpu",
+          "label": "Log cluster CPU",
+          "value": 20,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "p95",
+          "label": "Log query p95",
+          "value": 1.4,
+          "unit": "s",
+          "tone": "good"
+        },
+        {
+          "key": "cost",
+          "label": "Monthly cost",
+          "value": 23800,
+          "unit": "$/mo",
+          "tone": "warn"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Services (400 pods)",
+            "tone": "good",
+            "cpu": 20
+          },
+          {
+            "id": "prom",
+            "kind": "db",
+            "label": "Prometheus HA pair",
+            "tone": "good",
+            "cpu": 25,
+            "sub": "4M series"
+          },
+          {
+            "id": "logs",
+            "kind": "db",
+            "label": "Log cluster: 30-day hot retention",
+            "tone": "good",
+            "cpu": 20,
+            "sub": "62 TB, oldest query 2.5 days"
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "prom"
+          },
+          {
+            "from": "app",
+            "to": "logs"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "cut-single",
+          "label": "Run a single Prometheus instead of the HA pair",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": -1900
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "prom",
+                "tone": "bad",
+                "label": "Prometheus (single)",
+                "sub": "6 min blind on restart"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "gap",
+              "label": "Alerting gap during restart",
+              "value": 6,
+              "unit": "min",
+              "tone": "bad"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 21900,
+              "unit": "$/mo",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Restarts leave a monitoring gap",
+          "resultBody": "The second replica sits at 30% doing duplicate work, but it is what keeps alerts alive during restarts and compactions. One instance restarting takes about 6 minutes to replay its WAL, longer than the 5 minute detection budget."
+        },
+        {
+          "id": "cut-scrape",
+          "label": "Move scrape interval from 15 s to 5 minutes for all services",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": -3300
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "prom",
+                "tone": "warn",
+                "sub": "1 sample per 5m window"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "detect",
+              "label": "Time to detect fast burn",
+              "value": 12,
+              "unit": "min",
+              "tone": "bad"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 20500,
+              "unit": "$/mo",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Burn-rate alerts see one sample",
+          "resultBody": "Storage and CPU fall about 20x on samples, but a 5 minute alert window now contains one datapoint per series, so rate() returns nothing and fast-burn pages cannot fire inside the 5 minute budget. Detection slips to 10-15 minutes."
+        },
+        {
+          "id": "cut-logs",
+          "label": "Cut hot log retention from 30 to 7 days and archive to S3",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": -4200
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Services (400 pods)",
+                "tone": "good",
+                "cpu": 45
+              },
+              {
+                "id": "prom",
+                "kind": "db",
+                "label": "Prometheus HA pair",
+                "tone": "good",
+                "cpu": 30,
+                "sub": "4M series"
+              },
+              {
+                "id": "logs",
+                "kind": "db",
+                "label": "Log cluster: 7-day hot retention",
+                "tone": "good",
+                "cpu": 20,
+                "sub": "15 TB hot, rest in S3"
+              }
+            ],
+            "edges": [
+              {
+                "from": "app",
+                "to": "prom"
+              },
+              {
+                "from": "app",
+                "to": "logs"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "p95",
+              "label": "Log query p95",
+              "value": 1.4,
+              "unit": "s",
+              "tone": "good"
+            },
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 19600,
+              "unit": "$/mo",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Old logs move to cheap storage",
+          "resultBody": "The 2.5 day oldest query means 7 days of hot storage still has a 2.8x margin. Hot SSD shrinks from 62 TB to about 15 TB, saving roughly $4,200 a month, while older logs stay searchable from S3 in minutes. Metrics, alerts and p95 are untouched. Cost: month-old lookups become slow rehydrations."
+        }
+      ],
+      "hints": [
+        "Read each component's use, not its size.",
+        "Which data is stored but never read, and which data is what pages you?",
+        "Old logs can be cold; the alerting path cannot go blind."
+      ],
+      "nextId": null,
+      "format": "budget-cut"
     }
   ]
 }

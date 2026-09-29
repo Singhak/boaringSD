@@ -89,6 +89,27 @@
           }
         ]
       },
+      "logs": {
+        "user": [
+          "PUT /profile 200 at t=0",
+          "GET /profile at t=+0.4 s returns old display_name"
+        ],
+        "app": [
+          "read routed to r1 (round-robin)",
+          "p95 800 ms, 4,000 req/s, 0 errors",
+          "no session read-after-write marker on request"
+        ],
+        "db": [
+          "CPU 30%, UPDATE users id=77 committed at t=0",
+          "WAL sent to r1, ack async",
+          "connections 60/200"
+        ],
+        "r1": [
+          "replay lag 2.4 s behind primary",
+          "last_replay_lsn 0/5A3F1C0, primary at 0/5A3F9E8",
+          "serving reads, CPU 25%"
+        ]
+      },
       "choices": [
         {
           "id": "fresh-reads",
@@ -6543,6 +6564,568 @@
         "Fanout exists for followers; the post is already in the posts table.",
         "Make the author's view independent of how far fanout has got."
       ]
+    },
+    {
+      "id": "cons-pr-01",
+      "incidentCode": "INC-008-PR1",
+      "level": 8,
+      "patternId": "consistency",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 120,
+      "format": "bad-pr",
+      "title": "Users see their old profile for minutes after saving",
+      "brief": "After editing a profile, 35% of users still see the old value for up to 5 minutes; 1.2k tickets per hour. DB errors are 0, replica lag is 40 ms, cache hit rate rose from 81% to 97%.",
+      "constraint": "Only one PR can be reverted before the evening peak.",
+      "question": "Which PR do you revert to restore read-your-writes?",
+      "metricsBefore": [
+        {
+          "key": "stale",
+          "label": "Stale reads after save",
+          "value": 35,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "hit",
+          "label": "Cache hit rate",
+          "value": 97,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "lag",
+          "label": "Replica lag",
+          "value": 40,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 0,
+          "unit": "errors",
+          "tone": "good"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Profile editors"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Profile API",
+            "tone": "good",
+            "cpu": 38
+          },
+          {
+            "id": "cache",
+            "kind": "cache",
+            "label": "Profile cache",
+            "tone": "warn",
+            "cpu": 30,
+            "sub": "hit rate 97%"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Primary",
+            "tone": "good",
+            "cpu": 30
+          },
+          {
+            "id": "rep",
+            "kind": "replica",
+            "label": "Replicas (lag 40 ms)",
+            "tone": "good",
+            "cpu": 25
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "cache"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          },
+          {
+            "from": "db",
+            "to": "rep"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "revert-replica-reads",
+          "label": "Revert PR #7702: send GET /profile reads to replicas",
+          "correct": false,
+          "diff": "services/profile/reader.py\n-    db = primary\n+    db = replica_pool.pick()",
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "stale",
+              "label": "Stale reads after save",
+              "value": 34,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "hit",
+              "label": "Cache hit rate",
+              "value": 97,
+              "unit": "%",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Replicas were already caught up",
+          "resultBody": "With 40 ms of replica lag the revert changes almost nothing. Users still see stale profiles for minutes because the cache, not a replica, is serving the old row.",
+          "tradeoffs": {
+            "costMonthlyDelta": -15
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cache",
+                "tone": "bad",
+                "sub": "still serving old rows"
+              }
+            ]
+          }
+        },
+        {
+          "id": "revert-isolation",
+          "label": "Revert PR #7699: switch orders DB to READ COMMITTED isolation",
+          "correct": false,
+          "diff": "config/postgres.conf\n-default_transaction_isolation = 'repeatable read'\n+default_transaction_isolation = 'read committed'",
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "stale",
+              "label": "Stale reads after save",
+              "value": 35,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "hit",
+              "label": "Cache hit rate",
+              "value": 97,
+              "unit": "%",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Isolation level was unrelated",
+          "resultBody": "Isolation only affects concurrent transactions inside the database; it cannot make an HTTP cache serve an old value. Stale reads stay at 35% and you have reverted a safe setting.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "warn",
+                "sub": "isolation reverted, no effect"
+              }
+            ]
+          }
+        },
+        {
+          "id": "revert-ttl",
+          "label": "Revert PR #7706: raise profile cache TTL from 5 s to 300 s",
+          "correct": true,
+          "diff": "services/profile/cache.py\n-PROFILE_TTL_SECONDS = 5\n+PROFILE_TTL_SECONDS = 300\n# invalidate-on-write not implemented",
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "stale",
+              "label": "Stale reads after save",
+              "value": 1,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "hit",
+              "label": "Cache hit rate",
+              "value": 81,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "lag",
+              "label": "Replica lag",
+              "value": 40,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Cache stops outliving the write",
+          "resultBody": "A 300 s TTL with no invalidate-on-write let the cache keep the pre-edit row for up to 5 minutes, which is exactly the hit-rate jump from 81% to 97%. At 5 s stale reads fall under 1%. Cost: DB reads rise about 4x on the profile path.",
+          "tradeoffs": {
+            "costMonthlyDelta": 120,
+            "tradeoffSummary": "Fresher reads, more DB load."
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Profile editors",
+                "tone": "good"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Profile API",
+                "tone": "good",
+                "cpu": 38
+              },
+              {
+                "id": "cache",
+                "kind": "cache",
+                "label": "Profile cache",
+                "tone": "good",
+                "cpu": 30
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Primary",
+                "tone": "good",
+                "cpu": 30
+              },
+              {
+                "id": "rep",
+                "kind": "replica",
+                "label": "Replicas (lag 40 ms)",
+                "tone": "good",
+                "cpu": 25
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "cache"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              },
+              {
+                "from": "db",
+                "to": "rep"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Replica lag is 40 ms, so replicas are not serving old data. What else holds a copy?",
+        "The hit rate jump is a clue: something now keeps entries longer.",
+        "Compare each diff against the metric that moved: hit rate."
+      ],
+      "reviewed": true
+    },
+    {
+      "id": "cons-cut-01",
+      "incidentCode": "INC-008-CT1",
+      "level": 8,
+      "patternId": "consistency",
+      "canonical": false,
+      "severity": "P2",
+      "xp": 110,
+      "format": "budget-cut",
+      "title": "The consistent-read stack costs $52k a month",
+      "brief": "Everything is green: p99 90 ms, cache hit rate 94%, 0.02% of reads stale against a 0.1% budget, writes need 2 of 3 replicas. Finance wants at least $9k off the $52k bill.",
+      "constraint": "SLOs are stale reads under 0.1% and writes available through one node loss.",
+      "question": "Which component can you remove or shrink safely?",
+      "metricsBefore": [
+        {
+          "key": "cost",
+          "label": "Monthly cost",
+          "value": 52000,
+          "unit": "$/mo",
+          "tone": "warn"
+        },
+        {
+          "key": "cachecpu",
+          "label": "Cache CPU",
+          "value": 8,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "p95",
+          "label": "p99 latency",
+          "value": 90,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "stale",
+          "label": "Stale reads",
+          "value": 0.02,
+          "unit": "%",
+          "tone": "good"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Traffic"
+          },
+          {
+            "id": "proxy",
+            "kind": "lb",
+            "label": "Session-pinning proxy",
+            "tone": "good",
+            "cpu": 14
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App tier",
+            "tone": "good",
+            "cpu": 30
+          },
+          {
+            "id": "cache",
+            "kind": "cache",
+            "label": "Read cache (6 nodes)",
+            "tone": "good",
+            "cpu": 8
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Primary + 2 replicas",
+            "tone": "good",
+            "cpu": 35
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "proxy"
+          },
+          {
+            "from": "proxy",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "cache"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "cut-third-replica",
+          "label": "Drop the third replica so writes need 2 of 2 nodes",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 38000,
+              "unit": "$/mo",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Write availability",
+              "value": 0,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p99 latency",
+              "value": 90,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "One node loss now blocks all writes",
+          "resultBody": "Saves $14k, but W=2 with N=2 means any single node restart or failure stops writes entirely. Patching night alone would breach the availability SLO.",
+          "tradeoffs": {
+            "costMonthlyDelta": -14000
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "sub": "N=2, W=2: one loss halts writes"
+              }
+            ]
+          }
+        },
+        {
+          "id": "shrink-cache",
+          "label": "Shrink the read cache tier from 6 nodes down to 3",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 42500,
+              "unit": "$/mo",
+              "tone": "good"
+            },
+            {
+              "key": "cachecpu",
+              "label": "Cache CPU",
+              "value": 16,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "stale",
+              "label": "Stale reads",
+              "value": 0.02,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Half the cache, same hit rate",
+          "resultBody": "The hot set is 40 GB and 3 nodes hold 48 GB, so hit rate stays about 93%. CPU goes from 8% to 16%, and stale reads stay at 0.02% because invalidation is unchanged. Saves $9.5k.",
+          "tradeoffs": {
+            "costMonthlyDelta": -9500,
+            "tradeoffSummary": "Less headroom on the cache; DB unchanged."
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Traffic",
+                "tone": "good"
+              },
+              {
+                "id": "proxy",
+                "kind": "lb",
+                "label": "Session-pinning proxy",
+                "tone": "good",
+                "cpu": 14
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App tier",
+                "tone": "good",
+                "cpu": 30
+              },
+              {
+                "id": "cache",
+                "kind": "cache",
+                "label": "Read cache (6 nodes)",
+                "tone": "good",
+                "cpu": 8
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Primary + 2 replicas",
+                "tone": "good",
+                "cpu": 35
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "proxy"
+              },
+              {
+                "from": "proxy",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "cache"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              }
+            ]
+          }
+        },
+        {
+          "id": "cut-proxy",
+          "label": "Remove the session-pinning proxy and read from any node",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 40000,
+              "unit": "$/mo",
+              "tone": "good"
+            },
+            {
+              "key": "stale",
+              "label": "Stale reads",
+              "value": 2.4,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p99 latency",
+              "value": 85,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Read-your-writes breaks for 2.4% of reads",
+          "resultBody": "Saves $12k, but without pinning a user's next read can land on a replica that has not applied their write. Stale reads jump from 0.02% to about 2.4%, 24x over the 0.1% budget.",
+          "tradeoffs": {
+            "costMonthlyDelta": -12000
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "proxy",
+                "tone": "bad",
+                "sub": "removed: stale reads 2.4%"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Two SLOs matter: stale reads and write availability. Which cuts touch them?",
+        "Low CPU alone is not proof that a component is unneeded.",
+        "Work out what each removal does to the quorum and to routing."
+      ],
+      "reviewed": true
     }
   ]
 }

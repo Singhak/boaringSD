@@ -88,6 +88,24 @@
           }
         ]
       },
+      "logs": {
+        "prod": [
+          "enqueue rate 4000 jobs/s, accept latency 1 ms",
+          "enqueue never blocks or errors, 0 rejected",
+          "ack sent to client immediately after push"
+        ],
+        "q": [
+          "depth 2.1M jobs, +1000/s over last 10 min",
+          "heap 96%, GC pause 1.8 s, old-gen not shrinking",
+          "oldest job age 170 s (SLA 15 s)",
+          "no max size configured"
+        ],
+        "w": [
+          "throughput 3000 jobs/s, all threads busy",
+          "idle 0%, CPU 99%",
+          "expired job dropped after 15 s TTL, 25% of jobs"
+        ]
+      },
       "choices": [
         {
           "id": "bound-queue",
@@ -5787,6 +5805,547 @@
         "Guarantee the low tier a small share instead of zero."
       ],
       "nextId": "idemp-01"
+    },
+    {
+      "id": "bp-pr-01",
+      "incidentCode": "INC-013-PR1",
+      "level": 13,
+      "patternId": "backpressure",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 130,
+      "format": "bad-pr",
+      "title": "Ingest pods OOMKilled every 6 minutes",
+      "brief": "Ingest API pods restart 14 times an hour with the heap at 3.8 of 4 GB. Uploads arrive at 12k req/s; the enrichment service behind them answers in 900 ms instead of the usual 120 ms.",
+      "constraint": "Restarts drop in-flight jobs, and there is no budget for larger pods.",
+      "question": "Which PR do you revert to stop the memory growth?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Uploads",
+          "value": 12000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "heap",
+          "label": "Heap used",
+          "value": 96,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "restarts",
+          "label": "Pod restarts",
+          "value": 14,
+          "unit": "/hr",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "Enrichment p95",
+          "value": 900,
+          "unit": "ms",
+          "tone": "warn"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Upload clients"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Ingest API (OOMKilled)",
+            "tone": "bad",
+            "cpu": 70,
+            "sub": "heap 3.8/4 GB"
+          },
+          {
+            "id": "q",
+            "kind": "queue",
+            "label": "In-process job buffer",
+            "tone": "bad",
+            "cpu": 0,
+            "sub": "2.1M jobs"
+          },
+          {
+            "id": "w",
+            "kind": "worker",
+            "label": "Enrichment service",
+            "tone": "warn",
+            "cpu": 55,
+            "sub": "p95 900 ms"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "q"
+          },
+          {
+            "from": "q",
+            "to": "w"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "revert-unbounded",
+          "label": "Revert PR #917: swap bounded job queue (cap 1000) for unbounded",
+          "correct": true,
+          "diff": "services/ingest/buffer.ts\n-  const jobs = new BoundedQueue<Job>({ capacity: 1000, onFull: \"reject\" });\n+  const jobs = new Queue<Job>(); // unbounded",
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "heap",
+              "label": "Heap used",
+              "value": 40,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "restarts",
+              "label": "Pod restarts",
+              "value": 0,
+              "unit": "/hr",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Rejected uploads",
+              "value": 8,
+              "unit": "%",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Full buffer now pushes back",
+          "resultBody": "With no cap, a slow downstream lets the buffer absorb every upload until the heap dies: 12k in, about 1.1k out per second. With capacity 1000 and reject-on-full, the API returns 429 to clients early and heap stays near 40%. Cost: some uploads are refused during slowdowns.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "tradeoffSummary": "Some uploads rejected; memory bounded."
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Upload clients",
+                "tone": "good"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Ingest API (OOMKilled)",
+                "tone": "good",
+                "cpu": 40
+              },
+              {
+                "id": "q",
+                "kind": "queue",
+                "label": "In-process job buffer",
+                "tone": "good",
+                "cpu": 0
+              },
+              {
+                "id": "w",
+                "kind": "worker",
+                "label": "Enrichment service",
+                "tone": "good",
+                "cpu": 40
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "api"
+              },
+              {
+                "from": "api",
+                "to": "q"
+              },
+              {
+                "from": "q",
+                "to": "w"
+              }
+            ]
+          }
+        },
+        {
+          "id": "revert-timeout",
+          "label": "Revert PR #918: cut downstream client timeout from 30 s to 10 s",
+          "correct": false,
+          "diff": "services/ingest/clients.ts\n-  timeoutMs: 30000,\n+  timeoutMs: 10000,",
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "heap",
+              "label": "Heap used",
+              "value": 96,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "restarts",
+              "label": "Pod restarts",
+              "value": 14,
+              "unit": "/hr",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Timeout was not what filled memory",
+          "resultBody": "The enrichment client already answers in 900 ms, far under either timeout, so it never fired. The buffer still grows by about 10k jobs a second and pods keep dying every 6 minutes.",
+          "tradeoffs": {
+            "costMonthlyDelta": -5
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "sub": "still OOM, timeout innocent"
+              }
+            ]
+          }
+        },
+        {
+          "id": "revert-logging",
+          "label": "Revert PR #921: switch job logging to async batched writes",
+          "correct": false,
+          "diff": "services/ingest/logger.ts\n-  const log = pino({ sync: true });\n+  const log = pino(pino.destination({ sync: false, minLength: 4096 }));",
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "heap",
+              "label": "Heap used",
+              "value": 97,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "restarts",
+              "label": "Pod restarts",
+              "value": 15,
+              "unit": "/hr",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Logging change was unrelated",
+          "resultBody": "Async log batching holds a few MB of lines, not gigabytes. Reverting it makes logging slower and heap still sits near 96% because the job buffer keeps growing.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "q",
+                "sub": "buffer still growing"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Memory only grows when work enters faster than it leaves.",
+        "Look for the change that removes a limit on what may wait.",
+        "An unbounded buffer turns a slow consumer into a memory leak."
+      ],
+      "reviewed": true
+    },
+    {
+      "id": "bp-cut-01",
+      "incidentCode": "INC-013-CT1",
+      "level": 13,
+      "patternId": "backpressure",
+      "canonical": false,
+      "severity": "P2",
+      "xp": 115,
+      "format": "budget-cut",
+      "title": "Pipeline costs $47k a month, workers at 12%",
+      "brief": "The pipeline is healthy: end-to-end p99 2 s, queue depth median 200 and peaks at 8k, 48 workers at 12% CPU (peak 31%), 3 brokers at 6%. Finance wants at least $8k off.",
+      "constraint": "SLO is p99 under 5 s and 99.95% availability.",
+      "question": "Which cut keeps the pipeline inside its SLO?",
+      "metricsBefore": [
+        {
+          "key": "cost",
+          "label": "Monthly cost",
+          "value": 47000,
+          "unit": "$/mo",
+          "tone": "warn"
+        },
+        {
+          "key": "wcpu",
+          "label": "Worker CPU",
+          "value": 12,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "p95",
+          "label": "p99 latency",
+          "value": 2000,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 0,
+          "unit": "errors",
+          "tone": "good"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Upload clients"
+          },
+          {
+            "id": "shed",
+            "kind": "lb",
+            "label": "Admission control (load shedder)",
+            "tone": "good",
+            "cpu": 2
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Ingest API",
+            "tone": "good",
+            "cpu": 30
+          },
+          {
+            "id": "q",
+            "kind": "queue",
+            "label": "Broker (3 nodes)",
+            "tone": "good",
+            "cpu": 6,
+            "sub": "disk 20%"
+          },
+          {
+            "id": "w",
+            "kind": "worker",
+            "label": "Worker fleet (48 pods)",
+            "tone": "good",
+            "cpu": 12
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "shed"
+          },
+          {
+            "from": "shed",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "q"
+          },
+          {
+            "from": "q",
+            "to": "w"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "drop-shedder",
+          "label": "Remove the admission-control tier that sheds load at 2% CPU",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 40000,
+              "unit": "$/mo",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p99 latency",
+              "value": 2400000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "The next spike has no gate",
+          "resultBody": "Saves $7k, but the shedder is what keeps a 3x traffic spike from reaching the queue. Without it the next burst pushes queue depth past 400k and drain time to 40 minutes, breaking the 5 s p99.",
+          "tradeoffs": {
+            "costMonthlyDelta": -7000
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "q",
+                "tone": "bad",
+                "sub": "burst: 400k deep, 40 min drain"
+              }
+            ]
+          }
+        },
+        {
+          "id": "single-broker",
+          "label": "Shrink the broker from 3 nodes to 1 (6% CPU, 20% disk)",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 32000,
+              "unit": "$/mo",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Availability",
+              "value": 99.9,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p99 latency",
+              "value": 2000,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "One broker is one outage",
+          "resultBody": "Saves $15k, but with no replicas a monthly kernel patch or crash means minutes with no queue, about 8 minutes a month against a 22-minute budget, plus lost in-flight messages.",
+          "tradeoffs": {
+            "costMonthlyDelta": -15000
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "q",
+                "tone": "bad",
+                "sub": "single broker: patching means outage"
+              }
+            ]
+          }
+        },
+        {
+          "id": "halve-workers",
+          "label": "Cut the worker fleet from 48 pods to 24 (12% CPU, peak 31%)",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 38000,
+              "unit": "$/mo",
+              "tone": "good"
+            },
+            {
+              "key": "wcpu",
+              "label": "Worker CPU",
+              "value": 24,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p99 latency",
+              "value": 3600,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Half the workers, same drain rate",
+          "resultBody": "Peak CPU rises from 31% to about 62%, and an 8k-deep burst drains in roughly 4 s instead of 2 s, inside the 5 s p99. The shedder and replicated brokers are unchanged. Saves $9k.",
+          "tradeoffs": {
+            "costMonthlyDelta": -9000,
+            "tradeoffSummary": "Slower burst drain; safety parts untouched."
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Upload clients",
+                "tone": "good"
+              },
+              {
+                "id": "shed",
+                "kind": "lb",
+                "label": "Admission control (load shedder)",
+                "tone": "good",
+                "cpu": 2
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Ingest API",
+                "tone": "good",
+                "cpu": 30
+              },
+              {
+                "id": "q",
+                "kind": "queue",
+                "label": "Broker (3 nodes)",
+                "tone": "good",
+                "cpu": 6
+              },
+              {
+                "id": "w",
+                "kind": "worker",
+                "label": "Worker fleet (48 pods)",
+                "tone": "good",
+                "cpu": 12
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "shed"
+              },
+              {
+                "from": "shed",
+                "to": "api"
+              },
+              {
+                "from": "api",
+                "to": "q"
+              },
+              {
+                "from": "q",
+                "to": "w"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Find which parts do work and which only protect the system during overload.",
+        "Recompute drain time after the cut using peak, not average.",
+        "Idle by design does not mean useless."
+      ],
+      "reviewed": true
     }
   ]
 }

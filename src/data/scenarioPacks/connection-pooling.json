@@ -72,6 +72,20 @@
           }
         ]
       },
+      "logs": {
+        "app": [
+          "4,000 req/s, connect() per request, 0 reuse",
+          "connect p95 900 ms (TCP+TLS+auth)",
+          "40 pods, each opening ~100 conn/s",
+          "FATAL: sorry, too many clients already: 60/s"
+        ],
+        "db": [
+          "CPU 99%, forking ~4,000 backends/s",
+          "max_connections=200, active 200/200",
+          "log: connection authorized, disconnection after 4 ms",
+          "query exec avg 3 ms, p95 1.5 s end-to-end"
+        ]
+      },
       "choices": [
         {
           "id": "bound-pool",
@@ -5906,6 +5920,530 @@
         "Keep a few connections alive with traffic the NAT can see."
       ],
       "nextId": "mr-01"
+    },
+    {
+      "id": "pool-pr-01",
+      "incidentCode": "INC-011-PR1",
+      "level": 11,
+      "patternId": "connection-pooling",
+      "canonical": false,
+      "severity": "P1",
+      "xp": 125,
+      "format": "bad-pr",
+      "title": "FATAL: too many clients after the 14:05 deploy",
+      "brief": "Since 14:05 the app throws 9k 'too many clients already' errors a minute. Postgres shows 500 of 500 connections, CPU only 18%. The fleet is 40 pods and the DB limit is 500.",
+      "constraint": "The DB restart needed to raise max_connections is not allowed today.",
+      "question": "Which PR do you revert to get connections under the limit?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 7000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "DB CPU",
+          "value": 18,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "conns",
+          "label": "DB connections",
+          "value": 500,
+          "unit": "/500",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 9000,
+          "unit": "err/min",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Traffic"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App fleet (40 pods)",
+            "tone": "bad",
+            "cpu": 30,
+            "sub": "pool max 40 each"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres max_connections 500",
+            "tone": "warn",
+            "cpu": 18,
+            "sub": "connections 500/500"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "revert-idle-timeout",
+          "label": "Revert PR #3310: cut idle-in-transaction timeout from 60 s to 15 s",
+          "correct": false,
+          "diff": "db/postgresql.conf\n-idle_in_transaction_session_timeout = 60000\n+idle_in_transaction_session_timeout = 15000",
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "conns",
+              "label": "DB connections",
+              "value": 500,
+              "unit": "/500",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 8900,
+              "unit": "err/min",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Timeout was not filling the pool",
+          "resultBody": "Idle-in-transaction sessions are a handful, not hundreds. With the timeout back to 60 s, connections stay pinned at 500 of 500 and errors continue at 9k a minute.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "sub": "500/500 still"
+              }
+            ]
+          }
+        },
+        {
+          "id": "revert-prepared",
+          "label": "Revert PR #3318: prepared statement cache from 100 to 500 per connection",
+          "correct": false,
+          "diff": "app/db.js\n-  statementCacheSize: 500,\n+  statementCacheSize: 100,",
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "conns",
+              "label": "DB connections",
+              "value": 500,
+              "unit": "/500",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 9000,
+              "unit": "err/min",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Statement cache does not open connections",
+          "resultBody": "The cache lives inside connections that already exist; it uses memory, not extra sockets. Reverting saves some RAM but the fleet still asks for 1,600 connections against 500.",
+          "tradeoffs": {
+            "costMonthlyDelta": -5
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "sub": "innocent: statement cache only"
+              }
+            ]
+          }
+        },
+        {
+          "id": "revert-pool-max",
+          "label": "Revert PR #3321: raise per-pod pool max from 10 to 40",
+          "correct": true,
+          "diff": "app/config/db.yaml\n-  pool.max: 10\n+  pool.max: 40\n   # replicas: 40, db max_connections: 500",
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "conns",
+              "label": "DB connections",
+              "value": 400,
+              "unit": "/500",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 20,
+              "unit": "err/min",
+              "tone": "good"
+            },
+            {
+              "key": "cpu",
+              "label": "DB CPU",
+              "value": 18,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Fleet demand fits under 500 again",
+          "resultBody": "40 pods x 40 connections asks for up to 1,600 against a 500 limit, while the old 10 gave 400. Reverting drops the fleet to about 400, errors stop, and DB CPU stays 18%. Cost: each pod can run only 10 queries at once, so bursts queue in the app.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "tradeoffSummary": "Per-pod concurrency capped; DB protected."
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Traffic",
+                "tone": "good"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App fleet (40 pods)",
+                "tone": "good",
+                "cpu": 30
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres max_connections 500",
+                "tone": "good",
+                "cpu": 18
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "500 of 500 is a count, not CPU. Who opens connections?",
+        "Multiply pods by the per-pod pool size.",
+        "Find the change that alters connections per pod."
+      ],
+      "reviewed": true
+    },
+    {
+      "id": "pool-cut-01",
+      "incidentCode": "INC-011-CT1",
+      "level": 11,
+      "patternId": "connection-pooling",
+      "canonical": false,
+      "severity": "P2",
+      "xp": 115,
+      "format": "budget-cut",
+      "title": "Postgres bill is $61k and the primary is at 22%",
+      "brief": "Everything is green: p99 35 ms, primary 22% CPU (peak 28%), report replica 58%, 60 active connections behind PgBouncer. 40 app pods would open 1,000 direct connections. Cut at least $9k.",
+      "constraint": "Max connections is 500; p99 SLO is 100 ms.",
+      "question": "Which cut keeps the database inside its SLO?",
+      "metricsBefore": [
+        {
+          "key": "cost",
+          "label": "Monthly cost",
+          "value": 61000,
+          "unit": "$/mo",
+          "tone": "warn"
+        },
+        {
+          "key": "pcpu",
+          "label": "Primary CPU",
+          "value": 22,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "p95",
+          "label": "p99 latency",
+          "value": 35,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 0,
+          "unit": "errors",
+          "tone": "good"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Traffic"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "App fleet (40 pods)",
+            "tone": "good",
+            "cpu": 30
+          },
+          {
+            "id": "pgb",
+            "kind": "lb",
+            "label": "PgBouncer tier",
+            "tone": "good",
+            "cpu": 10,
+            "sub": "pool use 12%"
+          },
+          {
+            "id": "pri",
+            "kind": "db",
+            "label": "Primary 16xlarge",
+            "tone": "good",
+            "cpu": 22
+          },
+          {
+            "id": "rep",
+            "kind": "replica",
+            "label": "Report replica 16xlarge",
+            "tone": "good",
+            "cpu": 58
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "pgb"
+          },
+          {
+            "from": "pgb",
+            "to": "pri"
+          },
+          {
+            "from": "pgb",
+            "to": "rep"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "drop-pgbouncer",
+          "label": "Remove PgBouncer (12% pool use) and connect pods directly",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 55000,
+              "unit": "$/mo",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 40,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p99 latency",
+              "value": 1200,
+              "unit": "ms",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Direct connections blow past the limit",
+          "resultBody": "Saves $6k, but 40 pods each open 25 direct connections: 1,000 against a max_connections of 500. Half the pods get 'too many clients', errors climb past 40%, and the DB spends memory on idle backends.",
+          "tradeoffs": {
+            "costMonthlyDelta": -6000
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "pgb",
+                "tone": "bad",
+                "sub": "removed: 1000 direct conns vs 500 limit"
+              },
+              {
+                "id": "pri",
+                "tone": "bad"
+              }
+            ]
+          }
+        },
+        {
+          "id": "drop-replica",
+          "label": "Drop the report replica and run reports on the primary",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 45000,
+              "unit": "$/mo",
+              "tone": "good"
+            },
+            {
+              "key": "pcpu",
+              "label": "Primary CPU",
+              "value": 104,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p99 latency",
+              "value": 400,
+              "unit": "ms",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Primary takes reports and peaks",
+          "resultBody": "Saves $16k, but the replica's 58% CPU of reads moves to a primary already at 22%: about 80% average and over 100% at peak. p99 climbs from 35 ms to about 400 ms, past the 100 ms SLO.",
+          "tradeoffs": {
+            "costMonthlyDelta": -16000
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "pri",
+                "tone": "bad",
+                "cpu": 100,
+                "sub": "absorbing report reads"
+              }
+            ]
+          }
+        },
+        {
+          "id": "downsize-primary",
+          "label": "Downsize the primary from 16xlarge to 8xlarge (22% CPU)",
+          "correct": true,
+          "approach": "optimal",
+          "metricsAfter": [
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 50000,
+              "unit": "$/mo",
+              "tone": "good"
+            },
+            {
+              "key": "pcpu",
+              "label": "Primary CPU",
+              "value": 44,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p99 latency",
+              "value": 41,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Half the box for the same load",
+          "resultBody": "The primary peaks at 28% CPU, so 8xlarge runs at about 44%, peak 56%. The 90 GB working set fits in 128 GB RAM, and PgBouncer still holds connections at 60. Saves $11k; p99 rises 35 to 41 ms.",
+          "tradeoffs": {
+            "costMonthlyDelta": -11000,
+            "tradeoffSummary": "Less peak headroom; memory still fits."
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Traffic",
+                "tone": "good"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "App fleet (40 pods)",
+                "tone": "good",
+                "cpu": 30
+              },
+              {
+                "id": "pgb",
+                "kind": "lb",
+                "label": "PgBouncer tier",
+                "tone": "good",
+                "cpu": 10
+              },
+              {
+                "id": "pri",
+                "kind": "db",
+                "label": "Primary 16xlarge",
+                "tone": "good",
+                "cpu": 22
+              },
+              {
+                "id": "rep",
+                "kind": "replica",
+                "label": "Report replica 16xlarge",
+                "tone": "good",
+                "cpu": 40
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "pgb"
+              },
+              {
+                "from": "pgb",
+                "to": "pri"
+              },
+              {
+                "from": "pgb",
+                "to": "rep"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Two components look cheap to cut. What does each one protect?",
+        "Add the load of the removed component to the box that absorbs it.",
+        "Check the connection math: pods x connections per pod versus max_connections."
+      ],
+      "reviewed": true
     }
   ]
 }

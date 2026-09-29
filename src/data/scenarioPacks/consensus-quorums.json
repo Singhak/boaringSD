@@ -3780,6 +3780,531 @@
       ],
       "nextId": null,
       "reviewed": true
+    },
+    {
+      "id": "cq-pr-01",
+      "incidentCode": "INC-017-PR1",
+      "level": 17,
+      "patternId": "consensus-quorums",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 130,
+      "format": "bad-pr",
+      "title": "Leader changes 14 times a minute, writes stall",
+      "brief": "A 3-member config store at Quorumly started churning leaders after the 11:00 deploy: 14 elections a minute, write p99 2.4 s. Members are up, cross-AZ RTT is 1.4 ms, and occasional GC pauses reach 210 ms.",
+      "constraint": "Revert exactly one PR; the other two stay in.",
+      "question": "Which PR do you revert?",
+      "metricsBefore": [
+        {
+          "key": "el",
+          "label": "Leader elections",
+          "value": 14,
+          "unit": "/min",
+          "tone": "bad"
+        },
+        {
+          "key": "rtt",
+          "label": "Cross-AZ RTT",
+          "value": 1.4,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "wp99",
+          "label": "Write p99",
+          "value": 2400,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "gc",
+          "label": "Worst GC pause",
+          "value": 210,
+          "unit": "ms",
+          "tone": "neutral"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "cl",
+            "kind": "users",
+            "label": "Config clients",
+            "tone": "bad",
+            "sub": "writes time out"
+          },
+          {
+            "id": "a",
+            "kind": "server",
+            "label": "Member A (leader)",
+            "tone": "warn",
+            "cpu": 30,
+            "sub": "term 4,812"
+          },
+          {
+            "id": "b",
+            "kind": "server",
+            "label": "Member B",
+            "tone": "warn",
+            "cpu": 25
+          },
+          {
+            "id": "c",
+            "kind": "server",
+            "label": "Member C",
+            "tone": "warn",
+            "cpu": 22
+          }
+        ],
+        "edges": [
+          {
+            "from": "cl",
+            "to": "a"
+          },
+          {
+            "from": "a",
+            "to": "b"
+          },
+          {
+            "from": "a",
+            "to": "c"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "timeout",
+          "label": "Revert PR #331: election timeout from 1000 ms to 150 ms",
+          "correct": true,
+          "approach": "optimal",
+          "diff": "etcd/member.conf\n   heartbeat-interval: 100\n-  election-timeout: 1000\n+  election-timeout: 150",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "tradeoffSummary": "Slower detection of a truly dead leader."
+          },
+          "metricsAfter": [
+            {
+              "key": "el",
+              "label": "Leader elections",
+              "value": 0,
+              "unit": "/min",
+              "tone": "good"
+            },
+            {
+              "key": "wp99",
+              "label": "Write p99",
+              "value": 12,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "gc",
+              "label": "Worst GC pause",
+              "value": 210,
+              "unit": "ms",
+              "tone": "neutral"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "cl",
+                "kind": "users",
+                "label": "Config clients",
+                "tone": "good",
+                "sub": "writes succeed"
+              },
+              {
+                "id": "a",
+                "kind": "server",
+                "label": "Member A (leader)",
+                "tone": "good",
+                "cpu": 30,
+                "sub": "term stable"
+              },
+              {
+                "id": "b",
+                "kind": "server",
+                "label": "Member B",
+                "tone": "good",
+                "cpu": 25
+              },
+              {
+                "id": "c",
+                "kind": "server",
+                "label": "Member C",
+                "tone": "good",
+                "cpu": 22
+              }
+            ],
+            "edges": [
+              {
+                "from": "cl",
+                "to": "a"
+              },
+              {
+                "from": "a",
+                "to": "b"
+              },
+              {
+                "from": "a",
+                "to": "c"
+              }
+            ]
+          },
+          "resultTitle": "Leadership settles",
+          "resultBody": "A 150 ms election timeout is shorter than the 210 ms GC pauses, so followers time out on a healthy leader and start new elections. Restoring 1000 ms leaves margin for GC and network jitter; election count drops to zero and write p99 to 12 ms, at the price of ~1 s to detect a real leader crash."
+        },
+        {
+          "id": "snap",
+          "label": "Revert PR #327: snapshot-count from 10,000 to 100,000 entries",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "diff": "etcd/member.conf\n-  snapshot-count: 10000\n+  snapshot-count: 100000",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "el",
+              "label": "Leader elections",
+              "value": 13,
+              "unit": "/min",
+              "tone": "bad"
+            },
+            {
+              "key": "wp99",
+              "label": "Write p99",
+              "value": 2300,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "gc",
+              "label": "Worst GC pause",
+              "value": 210,
+              "unit": "ms",
+              "tone": "neutral"
+            }
+          ],
+          "resultTitle": "Snapshots back, churn stays",
+          "resultBody": "Snapshotting less often trims disk writes but does not change when followers call an election. Leaders keep flipping 13 times a minute because a 210 ms pause still beats the timeout.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "a",
+                "tone": "bad",
+                "sub": "still losing leadership"
+              }
+            ]
+          }
+        },
+        {
+          "id": "five",
+          "label": "Revert PR #335: grow the cluster from 3 members to 5",
+          "correct": false,
+          "approach": "anti_pattern",
+          "diff": "etcd/cluster.yaml\n   initial-cluster:\n     a: https://a:2380\n     b: https://b:2380\n     c: https://c:2380\n+    d: https://d:2380\n+    e: https://e:2380",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "el",
+              "label": "Leader elections",
+              "value": 14,
+              "unit": "/min",
+              "tone": "bad"
+            },
+            {
+              "key": "wp99",
+              "label": "Write p99",
+              "value": 2400,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "gc",
+              "label": "Worst GC pause",
+              "value": 210,
+              "unit": "ms",
+              "tone": "neutral"
+            }
+          ],
+          "resultTitle": "Bigger quorum, same flapping",
+          "resultBody": "Five members raise the quorum to 3 and add a few milliseconds per write, but they do not cause elections. Going back to 3 leaves the 150 ms timeout in place, so elections continue at about 14 a minute.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "b",
+                "tone": "bad",
+                "sub": "still timing out on leader"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Elections start when a follower stops hearing from the leader in time.",
+        "Compare a timeout against the worst pause the leader can have.",
+        "One diff makes the \"leader is dead\" threshold shorter than a GC pause."
+      ],
+      "nextId": null
+    },
+    {
+      "id": "cq-cut-01",
+      "incidentCode": "INC-017-CT1",
+      "level": 17,
+      "patternId": "consensus-quorums",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P2",
+      "xp": 120,
+      "format": "budget-cut",
+      "title": "Coordination cluster costs $24k a month",
+      "brief": "A five-voter coordination cluster spans three AZs, write p99 14 ms, voters at 12% CPU. Six read-only learner replicas idle at 5% CPU serving stale-tolerant reads. Finance wants a smaller bill.",
+      "constraint": "SLO: keep accepting writes with one member in maintenance and one more failing.",
+      "question": "What do you cut?",
+      "metricsBefore": [
+        {
+          "key": "cost",
+          "label": "Monthly cost",
+          "value": 24000,
+          "unit": "$/mo",
+          "tone": "warn"
+        },
+        {
+          "key": "wp99",
+          "label": "Write p99",
+          "value": 14,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "cpu",
+          "label": "Voter CPU",
+          "value": 12,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "lcpu",
+          "label": "Learner CPU",
+          "value": 5,
+          "unit": "%",
+          "tone": "good"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "cl",
+            "kind": "users",
+            "label": "Service clients",
+            "tone": "good"
+          },
+          {
+            "id": "v",
+            "kind": "server",
+            "label": "5 voting members",
+            "tone": "good",
+            "cpu": 12,
+            "sub": "3 AZs, quorum 3"
+          },
+          {
+            "id": "l",
+            "kind": "replica",
+            "label": "6 read-only learners",
+            "tone": "good",
+            "cpu": 5,
+            "sub": "non-voting"
+          }
+        ],
+        "edges": [
+          {
+            "from": "cl",
+            "to": "v"
+          },
+          {
+            "from": "cl",
+            "to": "l"
+          },
+          {
+            "from": "v",
+            "to": "l"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "three",
+          "label": "Shrink from 5 voters to 3 to save two nodes at 12% CPU",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": -4500
+          },
+          "metricsAfter": [
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 19500,
+              "unit": "$/mo",
+              "tone": "warn"
+            },
+            {
+              "key": "wp99",
+              "label": "Write p99",
+              "value": 11,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "avail",
+              "label": "Survives member losses",
+              "value": 1,
+              "unit": "of 2 needed",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Second failure loses quorum",
+          "resultBody": "Three voters need 2 for quorum. With one in maintenance and one crashing, only one member is left, so writes halt entirely. The SLO needs to survive two simultaneous member losses, which takes 5 voters.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "v",
+                "tone": "bad",
+                "sub": "3 voters: 2 losses halt writes"
+              }
+            ]
+          }
+        },
+        {
+          "id": "az",
+          "label": "Move all 5 voters into a single AZ to cut cross-AZ traffic charges",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "tradeoffs": {
+            "costMonthlyDelta": -2200
+          },
+          "metricsAfter": [
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 21800,
+              "unit": "$/mo",
+              "tone": "warn"
+            },
+            {
+              "key": "wp99",
+              "label": "Write p99",
+              "value": 10,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "avail",
+              "label": "Survives member losses",
+              "value": 0,
+              "unit": "of 2 needed",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "One AZ event stops writes",
+          "resultBody": "Cross-AZ transfer falls, but one AZ failure now removes all five voters at once and the cluster cannot form a quorum. Write availability is only as good as that single zone, breaking the SLO.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "v",
+                "tone": "bad",
+                "sub": "one AZ holds every voter"
+              }
+            ]
+          }
+        },
+        {
+          "id": "learners",
+          "label": "Retire 4 of the 6 read-only learners; the other 2 take reads at 15% CPU",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": -6400,
+            "tradeoffSummary": "Read capacity is lower; reads stay stale-tolerant."
+          },
+          "metricsAfter": [
+            {
+              "key": "cost",
+              "label": "Monthly cost",
+              "value": 17600,
+              "unit": "$/mo",
+              "tone": "good"
+            },
+            {
+              "key": "wp99",
+              "label": "Write p99",
+              "value": 14,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "avail",
+              "label": "Survives member losses",
+              "value": 2,
+              "unit": "of 2 needed",
+              "tone": "good"
+            }
+          ],
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "cl",
+                "kind": "users",
+                "label": "Service clients",
+                "tone": "good"
+              },
+              {
+                "id": "v",
+                "kind": "server",
+                "label": "5 voting members",
+                "tone": "good",
+                "cpu": 12,
+                "sub": "3 AZs, quorum 3"
+              },
+              {
+                "id": "l",
+                "kind": "replica",
+                "label": "2 read-only learners",
+                "tone": "good",
+                "cpu": 15,
+                "sub": "non-voting"
+              }
+            ],
+            "edges": [
+              {
+                "from": "cl",
+                "to": "v"
+              },
+              {
+                "from": "cl",
+                "to": "l"
+              },
+              {
+                "from": "v",
+                "to": "l"
+              }
+            ]
+          },
+          "resultTitle": "Savings, quorum untouched",
+          "resultBody": "Learners do not vote, so removing them changes neither quorum size (still 3 of 5) nor write path. Two learners take the stale-tolerant reads at about 15% CPU, and write p99 stays at 14 ms. Saves about $6,400 a month."
+        }
+      ],
+      "hints": [
+        "The dashboard is green; the risk is what you delete.",
+        "Count failures the SLO must survive, then count voters.",
+        "Non-voting nodes never count toward quorum."
+      ],
+      "nextId": null
     }
   ]
 }
