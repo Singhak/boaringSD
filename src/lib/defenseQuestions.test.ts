@@ -34,3 +34,14 @@ test("the ELI5 button only resolves to intel that exists", () => {
   assert.equal(resolveConceptIntelId(undefined, "caching"), "caching");
   assert.equal(resolveConceptIntelId("no-such-intel", "also-missing"), null);
 });
+
+test("every defense question offers at least 3 answers, exactly one of them correct", () => {
+  for (const [patternId, set] of Object.entries(PATTERN_TRADEOFFS)) {
+    for (const option of set.options) {
+      for (const q of [option.tradeoffDefenseQuestion, option.stressTest10xQuestion]) {
+        assert.ok(q.options.length >= 3, `${patternId}/${option.id} has only ${q.options.length} answers`);
+        assert.equal(q.options.filter((o) => o.isCorrect).length, 1, `${patternId}/${option.id} needs exactly one correct answer`);
+      }
+    }
+  }
+});

@@ -117,6 +117,12 @@ export const PATTERN_TRADEOFFS: Record<string, PatternTradeoffSet> = {
               "text": "Replicas must take row locks on the primary while serving each read, so reads still contend with writes.",
               "isCorrect": false,
               "feedback": "Replicas serve reads from their own copy and never take locks on the primary. Their downsides are cost per read and replication lag, not lock contention."
+            },
+            {
+              "id": "tq-rep-3",
+              "text": "Replicas cannot serve SELECTs until the primary is idle, so read capacity only appears during low-write windows.",
+              "isCorrect": false,
+              "feedback": "A hot standby serves reads continuously while it replays the WAL. Its real drawbacks are cost per read and replication lag, not waiting for the primary to go idle."
             }
           ]
         },
@@ -134,6 +140,12 @@ export const PATTERN_TRADEOFFS: Record<string, PatternTradeoffSet> = {
               "text": "The primary's disk fills with WAL segments held back for the three replicas, halting writes.",
               "isCorrect": false,
               "feedback": "WAL retention only balloons when a replica disconnects or a replication slot is abandoned. Under load, connected replicas keep consuming WAL; the first thing to break is replica CPU and connections, then lag."
+            },
+            {
+              "id": "sq-rep-3",
+              "text": "The load balancer in front of the replicas runs out of routing rules, so new reads are rejected.",
+              "isCorrect": false,
+              "feedback": "Read/write splitting is a connection-string or proxy decision, not a finite rule table. What runs out under 10x is replica CPU and connections, followed by growing lag."
             }
           ]
         }
@@ -171,6 +183,12 @@ export const PATTERN_TRADEOFFS: Record<string, PatternTradeoffSet> = {
               "text": "New nodes boot with cold local caches, so every request they serve misses and goes straight to the DB until they warm up.",
               "isCorrect": false,
               "feedback": "Cold caches cause a short warm-up blip, not a lasting slowdown. The lasting harm is connections: the app tier was never the bottleneck, and every extra server adds another pool of connections to the same saturated database."
+            },
+            {
+              "id": "tq-sc-3",
+              "text": "App servers cannot share a load balancer with the database, so extra nodes split the traffic unevenly.",
+              "isCorrect": false,
+              "feedback": "The load balancer only fronts the app tier and the split stays even. The harm is downstream: every new server opens its own pool against the same saturated database."
             }
           ]
         },
@@ -188,6 +206,12 @@ export const PATTERN_TRADEOFFS: Record<string, PatternTradeoffSet> = {
               "text": "App-server CPU, since each node now spends longer waiting on slow queries.",
               "isCorrect": false,
               "feedback": "Waiting on I/O doesn't burn CPU, and each app node now gets a smaller share of traffic, so its CPU falls. The pain shows up downstream, as DB connections and lock waits."
+            },
+            {
+              "id": "sq-sc-3",
+              "text": "Network egress from the app tier, because more nodes multiply the outbound bandwidth bill immediately.",
+              "isCorrect": false,
+              "feedback": "Bandwidth cost grows with traffic, not node count, and it is not what breaks. Watch Postgres connection count and lock waits, which climb as each new node adds a pool."
             }
           ]
         }
@@ -203,7 +227,7 @@ export const PATTERN_TRADEOFFS: Record<string, PatternTradeoffSet> = {
       {
         "id": "opt-l7-lb",
         "title": "Layer 7 Reverse Proxy Load Balancer",
-        "tagline": "Content-aware HTTP/HTTPS reverse proxy with SSL termination and round-robin health checking.",
+        "tagline": "Content-aware HTTP/HTTPS reverse proxy with health checking, least-connections routing and central TLS termination.",
         "patternId": "load-balancing",
         "costEstimateDeltaUsd": 150,
         "latencyProfileMs": -50,
@@ -211,9 +235,9 @@ export const PATTERN_TRADEOFFS: Record<string, PatternTradeoffSet> = {
         "consistencyGuarantee": "Not applicable (stateless)",
         "durabilityTier": "Not applicable (stateless)",
         "pros": [
-          "Evenly distributes traffic across stateless worker instances",
+          "Spreads traffic across stateless backends using live signals such as open connections",
           "Health checks pull dead nodes from rotation after a few failed probes (seconds, depending on interval)",
-          "Terminates TLS/SSL centrally to offload backend CPU"
+          "Terminates TLS centrally to offload backend CPU"
         ],
         "cons": [
           "Adds an extra proxy hop (~0.5-2ms in the same datacenter)",
@@ -221,19 +245,25 @@ export const PATTERN_TRADEOFFS: Record<string, PatternTradeoffSet> = {
         ],
         "isRecommendedForConstraints": true,
         "tradeoffDefenseQuestion": {
-          "question": "Why terminate SSL at the Load Balancer rather than on individual application servers?",
+          "question": "Why does \"Layer 7 Reverse Proxy Load Balancer\" fix a single overloaded endpoint that also takes the whole service down when it crashes?",
           "options": [
             {
               "id": "tq-lb-1",
-              "text": "TLS handshakes are CPU-heavy asymmetric crypto; offloading them frees app CPU and centralizes certificate rotation.",
+              "text": "It fans requests out across several healthy backends and stops routing to a dead one, so no server carries all the load and one crash is no longer an outage.",
               "isCorrect": true,
-              "feedback": "Standard infrastructure architecture practice!"
+              "feedback": "Right. The balancer owns the single entry point, picks a backend per request using live signals, and evicts unhealthy nodes, which removes both the overload and the single point of failure."
             },
             {
               "id": "tq-lb-2",
-              "text": "Terminating at the LB keeps traffic encrypted end-to-end, from the browser all the way into each app server's process.",
+              "text": "It makes every request cheaper to execute, so the same traffic needs fewer CPU cycles in total.",
               "isCorrect": false,
-              "feedback": "The opposite: after termination, the LB-to-backend hop is plaintext unless you re-encrypt it (TLS or mTLS to the backends). The reasons to terminate at the LB are CPU offload and one place to manage certificates."
+              "feedback": "A balancer does not reduce per-request work; it divides the same total work across more servers. Capacity grows because you add backends behind it."
+            },
+            {
+              "id": "tq-lb-3",
+              "text": "It copies application data to every server so any node can answer any database query.",
+              "isCorrect": false,
+              "feedback": "A load balancer never replicates data. It only decides which backend receives each request, which is why the app tier behind it needs to be stateless or share its state."
             }
           ]
         },
@@ -251,6 +281,144 @@ export const PATTERN_TRADEOFFS: Record<string, PatternTradeoffSet> = {
               "text": "Least-connections picking needs a lock over the shared backend table, so selection latency climbs as backends are added.",
               "isCorrect": false,
               "feedback": "Choosing a backend is O(1) for round-robin and cheap for least-connections (per-worker counters or power-of-two-choices avoid a global lock). The per-request cost lives in TLS handshakes and connection handling, not the balancing algorithm."
+            },
+            {
+              "id": "sq-lb-3",
+              "text": "Health probes to the backends, because probing cannot run once traffic passes 100k requests per second.",
+              "isCorrect": false,
+              "feedback": "Probes run on their own low-rate schedule (for example one every few seconds per backend) and do not scale with request volume. Connection and TLS capacity of the proxy is what runs out."
+            }
+          ]
+        }
+      },
+      {
+        "id": "opt-dns-round-robin",
+        "title": "DNS Round-Robin Across Server IPs",
+        "tagline": "Publish every server IP as an A record and let clients pick one.",
+        "patternId": "load-balancing",
+        "costEstimateDeltaUsd": 0,
+        "latencyProfileMs": 0,
+        "operationalComplexity": 1,
+        "consistencyGuarantee": "Not applicable (stateless)",
+        "durabilityTier": "Not applicable (stateless)",
+        "pros": [
+          "No new component to run or pay for",
+          "Spreads new clients roughly evenly across the published IPs"
+        ],
+        "cons": [
+          "DNS cannot see server health, so a dead node keeps receiving traffic until cached records expire",
+          "Clients and resolvers cache answers (TTL), so changes and rebalancing are slow and uneven"
+        ],
+        "isRecommendedForConstraints": false,
+        "tradeoffDefenseQuestion": {
+          "question": "When would \"DNS Round-Robin Across Server IPs\" be an acceptable pick over a load balancer?",
+          "options": [
+            {
+              "id": "tq-dns-1",
+              "text": "When a brief outage is tolerable and traffic is light, since it costs nothing and adds no hop, but it cannot react to a dead server.",
+              "isCorrect": true,
+              "feedback": "Yes. DNS round-robin is a cheap way to spread new clients, but it has no health awareness and caches are slow to expire, so it is only acceptable when failures and imbalance are cheap."
+            },
+            {
+              "id": "tq-dns-2",
+              "text": "When you need a dead server removed within seconds, because DNS updates propagate to every client immediately.",
+              "isCorrect": false,
+              "feedback": "The opposite: resolvers and clients cache records for the TTL and many ignore short TTLs, so a bad IP can keep receiving traffic for minutes or hours."
+            },
+            {
+              "id": "tq-dns-3",
+              "text": "When you need per-request routing on live connection counts, since each DNS answer reflects current server load.",
+              "isCorrect": false,
+              "feedback": "DNS answers rotate without any knowledge of load or health, and they are cached, so routing is per client lookup, not per request."
+            }
+          ]
+        },
+        "stressTest10xQuestion": {
+          "question": "Traffic grows 10x on \"DNS Round-Robin Across Server IPs\". What goes wrong first?",
+          "options": [
+            {
+              "id": "sq-dns-1",
+              "text": "Load skews badly: big resolvers and long-lived clients pin many users to one IP, and you cannot drain or rebalance quickly.",
+              "isCorrect": true,
+              "feedback": "Correct. Caching resolvers hand the same IP to large groups of users, so one server can be hit far harder than the rest, and lowering the TTL does not take effect fast enough to fix it."
+            },
+            {
+              "id": "sq-dns-2",
+              "text": "The DNS servers cannot answer 10x more queries, so name resolution starts failing.",
+              "isCorrect": false,
+              "feedback": "DNS answers are heavily cached and cheap to serve, so a 10x traffic increase barely changes the query rate reaching authoritative servers."
+            },
+            {
+              "id": "sq-dns-3",
+              "text": "Round-robin stops rotating once the record set is queried more than 100k times a second.",
+              "isCorrect": false,
+              "feedback": "Rotation order does not depend on query volume. The real limit is that cached answers bypass the rotation entirely."
+            }
+          ]
+        }
+      },
+      {
+        "id": "opt-hardcoded-ips",
+        "title": "Hardcode Server IPs in Every Client",
+        "tagline": "Ship the server address list inside the mobile or web client and let it pick one.",
+        "patternId": "load-balancing",
+        "costEstimateDeltaUsd": 0,
+        "latencyProfileMs": 20,
+        "operationalComplexity": 1,
+        "consistencyGuarantee": "Not applicable (stateless)",
+        "durabilityTier": "Not applicable (stateless)",
+        "pros": [
+          "Nothing to run in the request path",
+          "Works on day one with no infrastructure change"
+        ],
+        "cons": [
+          "Adding, removing or replacing a server requires a client release",
+          "Every installed client keeps calling a dead IP until users update"
+        ],
+        "isRecommendedForConstraints": false,
+        "tradeoffDefenseQuestion": {
+          "question": "Why is \"Hardcode Server IPs in Every Client\" a poor answer to a single endpoint that can take the service down?",
+          "options": [
+            {
+              "id": "tq-hc-1",
+              "text": "Server changes and failures cannot be hidden from clients, so a dead or replaced IP keeps receiving requests until every user updates the app.",
+              "isCorrect": true,
+              "feedback": "Right. Without a stable entry point, the client list becomes the routing table, and you cannot change it faster than users update."
+            },
+            {
+              "id": "tq-hc-2",
+              "text": "Clients always pick the first IP in the list, so extra servers never receive any traffic at all.",
+              "isCorrect": false,
+              "feedback": "Clients can randomise their pick. The problem is not distribution but that no one can remove a failed server or add capacity without shipping a new client."
+            },
+            {
+              "id": "tq-hc-3",
+              "text": "Hardcoded IPs cannot use HTTPS, so all traffic to the servers is unencrypted.",
+              "isCorrect": false,
+              "feedback": "TLS works fine against a fixed IP or hostname. The weakness is operational: routing changes cannot be made centrally or quickly."
+            }
+          ]
+        },
+        "stressTest10xQuestion": {
+          "question": "Traffic grows 10x on \"Hardcode Server IPs in Every Client\". What breaks first?",
+          "options": [
+            {
+              "id": "sq-hc-1",
+              "text": "You cannot add capacity in time: new servers receive no traffic until a client release reaches users, while the old servers stay overloaded.",
+              "isCorrect": true,
+              "feedback": "Correct. Capacity is tied to the shipped client list, so scaling out requires a release cycle, not a configuration change."
+            },
+            {
+              "id": "sq-hc-2",
+              "text": "The clients run out of memory storing the list of server addresses.",
+              "isCorrect": false,
+              "feedback": "A list of addresses is a few hundred bytes. Memory is never the limit here."
+            },
+            {
+              "id": "sq-hc-3",
+              "text": "The servers reject the extra connections because they detect that the IPs are hardcoded.",
+              "isCorrect": false,
+              "feedback": "Servers cannot tell how a client found their address. The real failure is that clients cannot be redirected when capacity changes."
             }
           ]
         }
