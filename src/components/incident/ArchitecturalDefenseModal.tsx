@@ -29,7 +29,7 @@ export default function ArchitecturalDefenseModal({
 }: ArchitecturalDefenseModalProps) {
   const [q1Selected, setQ1Selected] = useState<string | null>(null);
   const [q2Selected, setQ2Selected] = useState<string | null>(null);
-  const [submitted, setSubmitted] = useState(false);
+  const [approved, setApproved] = useState(false);
   const [q1Error, setQ1Error] = useState<string | null>(null);
   const [q2Error, setQ2Error] = useState<string | null>(null);
   // null until the first submission; the score keeps the first attempt.
@@ -84,12 +84,11 @@ export default function ArchitecturalDefenseModal({
 
     if (hasError) {
       playErrorSound();
-      setSubmitted(true);
       return;
     }
 
     playSuccessSound();
-    setSubmitted(true);
+    setApproved(true);
     setTimeout(() => {
       onSuccess(wasFirstTry);
     }, 700);
@@ -99,12 +98,7 @@ export default function ArchitecturalDefenseModal({
   // the defense just doesn't count as first-try.
   const canContinueAfterFeedback = firstTry === false && !!(q1Error || q2Error);
 
-  const isVerified =
-    submitted &&
-    q1Selected &&
-    q2Selected &&
-    !q1Error &&
-    !q2Error;
+  const isVerified = approved;
 
   return (
     <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-4 animate-fadeIn">
@@ -142,7 +136,7 @@ export default function ArchitecturalDefenseModal({
 
         <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 sm:px-8 py-5 space-y-6">
         {/* Selected Option Capsule */}
-        <div className="p-3.5rounded-xl bg-cyan-950/30 border border-cyan-400/20 text-xs flex items-center justify-between gap-3">
+        <div className="p-3.5 rounded-xl bg-cyan-950/30 border border-cyan-400/20 text-xs flex items-center justify-between gap-3">
           <div>
             <span className="eyebrow !text-[11px] text-cyan-300">Selected Intervention:</span>
             <div className="text-[13px] font-semibold text-white mt-0.5">{deployedLabel}</div>

@@ -356,9 +356,9 @@ export function Topology({ tiers, caption }: { tiers: Tier[]; caption?: React.Re
               </div>
             )}
             <div className="flex md:flex-col gap-2 justify-center flex-wrap md:flex-nowrap shrink-0">
-              {tier.map((box) => (
+              {tier.map((box, bi) => (
                 <div
-                  key={box.label}
+                  key={`${bi}-${box.label}`}
                   className={`px-2.5 py-2 rounded-lg border text-left md:min-w-[96px] transition-all duration-700 animate-fadeIn ${HEALTH_STYLES[box.health]}`}
                 >
                   <div className="flex items-center gap-1.5 text-xs font-medium whitespace-nowrap">

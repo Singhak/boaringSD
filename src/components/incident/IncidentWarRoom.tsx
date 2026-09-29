@@ -261,7 +261,7 @@ export default function IncidentWarRoom({
     setKnobValue(next?.knob?.start ?? 0);
     setKnobMiss(null);
     setIncidentClean(true);
-    setDefenseVerified(false);
+    // Not reset here: the defense gate is once per level, so a cascade or curveball does not re-ask it.
     setDefenseModalOpen(false);
     setPendingSuccessChoice(null);
     setInspectedNodeId(null);

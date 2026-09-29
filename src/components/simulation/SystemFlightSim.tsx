@@ -40,8 +40,13 @@ import { ComponentKind } from "@/types";
 interface SystemFlightSimProps {
   initialIncidentId?: "hs-01" | "lb-01";
   onClose?: () => void;
-  /** firstTry is false if the player used a band-aid, an overkill fix, or let the system go down. */
-  onAllCompleted?: (result: { firstTry: boolean }) => void;
+  /** Fires when the sim moves on to its next incident, so the page header can follow it. */
+  onIncidentChange?: (incidentId: "hs-01" | "lb-01") => void;
+  /**
+   * firstTry is false if the player used a band-aid, an overkill fix, or let the system go down.
+   * completedIncidentIds lists only the incidents actually resolved in this sitting.
+   */
+  onAllCompleted?: (result: { firstTry: boolean; completedIncidentIds: Array<"hs-01" | "lb-01"> }) => void;
 }
 
 interface SimNode {
@@ -124,6 +129,7 @@ interface Explosion {
 export default function SystemFlightSim({
   initialIncidentId = "hs-01",
   onClose,
+  onIncidentChange,
   onAllCompleted,
 }: SystemFlightSimProps) {
   const router = useRouter();
@@ -143,6 +149,7 @@ export default function SystemFlightSim({
   const [stabilizeProgress, setStabilizeProgress] = useState(0); // 0 to 5
   const [isResolved, setIsResolved] = useState(false);
   const [mistakes, setMistakes] = useState(0);
+  const completedIdsRef = useRef<Set<"hs-01" | "lb-01">>(new Set());
 
   const [prevInitialId, setPrevInitialId] = useState(initialIncidentId);
   if (prevInitialId !== initialIncidentId) {
@@ -360,6 +367,7 @@ export default function SystemFlightSim({
         if (next >= 5.0 && appliedFix) {
           setIsResolved(true);
           setResolvedFix(appliedFix);
+          completedIdsRef.current.add(incidentId);
           playSuccessSound();
           confetti({ particleCount: 100, spread: 70, origin: { y: 0.6 } });
           setXpAwarded(recordMissionComplete(incidentId, 150).xpAwarded);
@@ -564,6 +572,7 @@ export default function SystemFlightSim({
   const handleNextIncident = () => {
     if (incidentId === "hs-01") {
       setIncidentId("lb-01");
+      onIncidentChange?.("lb-01");
       resetBudget();
       resetStabilize();
       setIsSystemDown(false);
@@ -572,7 +581,7 @@ export default function SystemFlightSim({
       setIsResolved(false);
     } else {
       if (onAllCompleted) {
-        onAllCompleted({ firstTry: mistakes === 0 });
+        onAllCompleted({ firstTry: mistakes === 0, completedIncidentIds: [...completedIdsRef.current] });
       } else if (onClose) {
         onClose();
       } else {

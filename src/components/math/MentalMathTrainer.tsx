@@ -58,7 +58,12 @@ export default function MentalMathTrainer({
 
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const [sessionSeed, setSessionSeed] = useState(() => Date.now());
+  // Fixed on first render so server and client agree; randomized after mount.
+  const [sessionSeed, setSessionSeed] = useState(0);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSessionSeed(Date.now());
+  }, []);
 
   // Filter and randomize problem order so sprint mode draws randomly and never runs the same order twice
   const filteredProblems = useMemo(() => {
