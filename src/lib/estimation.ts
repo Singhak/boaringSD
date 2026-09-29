@@ -4,6 +4,10 @@
  * so 2x too high and 2x too low score the same.
  */
 
+import { applyEstimationVariant, ESTIMATION_VARIANTS } from "@/data/interviewVariants";
+import { hashSeed } from "@/lib/shuffle";
+import type { InterviewEstimationTarget } from "@/types";
+
 export type EstimateGrade = "perfect" | "acceptable" | "order_of_magnitude" | "incorrect";
 
 export interface EstimateScore {
@@ -61,4 +65,14 @@ export function scoreEstimate(answer: number, target: number, tolerancePercent =
   if (factor <= BALLPARK_FACTOR) return { score: 50, grade: "order_of_magnitude", factor, percentageError };
   if (factor <= MAGNITUDE_FACTOR) return { score: 20, grade: "incorrect", factor, percentageError };
   return { score: 0, grade: "incorrect", factor, percentageError };
+}
+
+/**
+ * The target for this attempt: the base numbers or one of its re-parameterised
+ * variants, chosen by seed, so the same problem asks for different figures on a retry.
+ */
+export function targetForAttempt(target: InterviewEstimationTarget, seed: string): InterviewEstimationTarget {
+  const variants = ESTIMATION_VARIANTS[target.id] ?? [];
+  const pick = Math.abs(hashSeed(`${seed}|${target.id}`)) % (variants.length + 1);
+  return pick === 0 ? target : applyEstimationVariant(target, variants[pick - 1]);
 }

@@ -5,6 +5,7 @@ import { getAllPatterns, getTransferQuestions } from "@/data/patterns";
 import { getAllCampaignChapters } from "@/data/campaign";
 import { INTERVIEW_PROBLEMS } from "@/data/interview";
 import { PATTERN_TRADEOFFS } from "@/data/tradeoffScenarios";
+import { DEFENSE_POOL } from "@/data/defensePool";
 import { getAllScenarioPacks } from "@/data/scenarioPacks";
 import { getPlayableIncidents } from "@/data/incidentQuality";
 import {
@@ -47,6 +48,13 @@ const SOURCES: Record<string, () => LintQuestion[]> = {
       set.options.flatMap((o) => [
         fromTextOptions(`${o.id}.defense`, o.tradeoffDefenseQuestion.options),
         fromTextOptions(`${o.id}.stress10x`, o.stressTest10xQuestion.options),
+      ])
+    ),
+  defensePool: () =>
+    Object.entries(DEFENSE_POOL).flatMap(([optionId, pairs]) =>
+      pairs.flatMap((p, i) => [
+        fromTextOptions(`${optionId}.alt${i}.defense`, p.tradeoffDefenseQuestion.options),
+        fromTextOptions(`${optionId}.alt${i}.stress10x`, p.stressTest10xQuestion.options),
       ])
     ),
   interview: () =>

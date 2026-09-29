@@ -1,9 +1,9 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import { ArrowLeft, ArrowRight, Calculator, CheckCircle2, ChevronDown, ChevronUp, HelpCircle, Lightbulb, Sparkles, XCircle } from "lucide-react";
 import { playBlipSound, playErrorSound, playSuccessSound } from "@/lib/sound";
-import { parseEstimate, scoreEstimate } from "@/lib/estimation";
+import { parseEstimate, scoreEstimate, targetForAttempt } from "@/lib/estimation";
 import type { InterviewEstimationTarget, InterviewProblem } from "@/types";
 
 interface InterviewMathStepProps {
@@ -22,7 +22,12 @@ interface EvaluatedAnswer {
 }
 
 export default function InterviewMathStep({ problem, onBack, onComplete }: InterviewMathStepProps) {
-  const targets = problem.estimationTargets ?? [];
+  // Fixed for the life of this stage, so the figures don't change under the learner mid-attempt.
+  const [attemptSeed] = useState(() => String(Date.now()));
+  const targets = useMemo(
+    () => (problem.estimationTargets ?? []).map((t) => targetForAttempt(t, attemptSeed)),
+    [problem, attemptSeed]
+  );
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [evaluated, setEvaluated] = useState<Record<string, EvaluatedAnswer>>({});
   const [showDerivations, setShowDerivations] = useState<Record<string, boolean>>({});

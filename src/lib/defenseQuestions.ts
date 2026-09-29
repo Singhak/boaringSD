@@ -1,4 +1,5 @@
-import { deterministicShuffle } from "@/lib/shuffle";
+import { deterministicShuffle, hashSeed } from "@/lib/shuffle";
+import { getDefenseAlternates } from "@/data/defensePool";
 import type { PatternTradeoffSet } from "@/data/tradeoffScenarios";
 import type { TradeoffCardOption } from "@/types";
 
@@ -42,8 +43,14 @@ export function pickDefenseOption(set: PatternTradeoffSet, deployedLabel: string
 
 /** Defense questions framed around the player's own deploy, with options in a per-attempt order. */
 export function buildDefenseQuestions(option: TradeoffCardOption, deployedLabel: string, seed: string): DefenseQuestions {
-  const q1 = option.tradeoffDefenseQuestion;
-  const q2 = option.stressTest10xQuestion;
+  // Each attempt draws one pair from the base questions plus the option's alternates.
+  const pairs = [
+    { tradeoffDefenseQuestion: option.tradeoffDefenseQuestion, stressTest10xQuestion: option.stressTest10xQuestion },
+    ...getDefenseAlternates(option.id),
+  ];
+  const pair = pairs[Math.abs(hashSeed(`${seed}|pair`)) % pairs.length];
+  const q1 = pair.tradeoffDefenseQuestion;
+  const q2 = pair.stressTest10xQuestion;
   return {
     q1: {
       question: `You deployed “${deployedLabel}”. ${q1.question}`,
