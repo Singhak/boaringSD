@@ -257,7 +257,7 @@ test("boss-observability requires observability pipeline", () => {
   assert.equal(result.canPass, true, JSON.stringify(result.checks));
 });
 
-test("boss-idempotency starts over-budget and passes when pruned with a cache", () => {
+test("boss-idempotency starts over-budget and passes when pruned with a cache and an outbox queue", () => {
   const s = scenario("boss-idempotency");
   const d = startingDesign(s);
   const start = evaluateScenario(d.nodes, d.edges, s);
@@ -268,6 +268,10 @@ test("boss-idempotency starts over-budget and passes when pruned with a cache", 
   d.nodes = d.nodes.filter((n) => !n.id.startsWith("replica") && n.id !== "server-4" && n.id !== "server-5");
   d.edges = d.edges.filter((e) => !e.source.startsWith("replica") && !e.target.startsWith("replica") && e.target !== "server-4" && e.target !== "server-5" && e.source !== "server-4" && e.source !== "server-5");
   add(d, "cache", "cache", ["server-1"]);
+  const cacheOnly = evaluateScenario(d.nodes, d.edges, s);
+  assert.equal(cacheOnly.canPass, false, "a key cache alone is not the whole pattern");
+  assert.ok(cacheOnly.failureReasons.includes("require-queue"), JSON.stringify(cacheOnly.failureReasons));
+  add(d, "outbox", "queue", ["server-1"]);
   const fixed = evaluateScenario(d.nodes, d.edges, s);
   assert.equal(fixed.canPass, true, JSON.stringify(fixed.checks));
 });

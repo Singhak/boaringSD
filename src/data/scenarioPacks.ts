@@ -24,7 +24,7 @@ import authAtScalePack from "@/data/scenarioPacks/auth-at-scale.json";
 import indexData from "@/data/scenarioPacks/index.json";
 import type { IncidentGraph, IncidentNode, IncidentPackV2, IncidentV2 } from "@/types";
 import type { Health, Tier } from "@/components/run/RunVisuals";
-import { getPlayableIncidents } from "@/data/incidentQuality";
+import { getPlayableIncidents, isPlayableIncident } from "@/data/incidentQuality";
 
 // Backward compatibility interfaces
 export interface ScenarioVariant {
@@ -142,7 +142,9 @@ export function getCanonicalIncident(levelOrPatternId: number | string): Inciden
       : getScenarioPackByPatternId(levelOrPatternId);
 
   if (!pack) return undefined;
-  return pack.incidents.find((i) => i.canonical || i.id === pack.canonicalId) || pack.incidents[0];
+  // Only incidents that pass the content gate are ever served, canonical ones included.
+  const playable = getPlayableIncidents(pack);
+  return playable.find((i) => i.canonical || i.id === pack.canonicalId) || playable[0];
 }
 
 /**
@@ -169,7 +171,7 @@ export function getWarRoomIncident(patternId: string, runIndex: number): Inciden
 export function getIncidentById(incidentId: string): IncidentV2 | undefined {
   for (const pack of Object.values(PACKS_BY_PATTERN)) {
     const found = pack.incidents.find((i) => i.id === incidentId);
-    if (found) return found;
+    if (found) return isPlayableIncident(found, pack) ? found : undefined;
   }
   return undefined;
 }

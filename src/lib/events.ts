@@ -5,6 +5,7 @@
 export type EventName =
   | "session_start"
   | "daily_start"
+  | "reminder_added"
   | "daily_complete"
   | "run_start"
   | "run_complete"

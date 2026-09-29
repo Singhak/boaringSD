@@ -231,8 +231,6 @@ export interface CustomNodeData {
   requestsHandled?: number;
   cacheHits?: number;
   down?: boolean; // killed by failure injection
-  isIdempotencyStore?: boolean;
-  clusterSize?: number;
   onRemove?: () => void;
 }
 
@@ -453,6 +451,8 @@ export interface PatternEvidence {
   reviewsPassed: number;
   reviewsFailed: number;
   reviewStage: number; // 0..3 → next review at 1, 3, 7 days
+  /** Best run stars (1..3) earned in the War Room for this pattern. */
+  bestStars?: number;
   /** Best "defend your call" score for this pattern (self-assessed counts half). */
   reasoningBest?: number;
   scenariosPassed: string[];
@@ -470,6 +470,10 @@ export interface PatternRunResult {
   transferFirstTry: boolean | null;
   hintsUsed: number;
   failureReasons: string[];
+  /** War Room run stars (0..3); saved as the pattern's best. */
+  stars?: number;
+  /** Combo multiplier (1..3) applied to this run's XP. Defaults to 1. */
+  xpMultiplier?: number;
 }
 
 export interface BuilderScenario {
@@ -581,6 +585,8 @@ export interface IncidentChoice {
   approach?: ApproachKind;
   tradeoffs?: TradeoffVector;
   conceptIntelId?: string;
+  /** "bad-pr" incidents: the short diff (2-8 lines) this choice shows, so the player reads code instead of a label. */
+  diff?: string;
   cascadeIncidentId?: string;
   cascadeDelayMs?: number;
   retry?: boolean;
@@ -606,7 +612,7 @@ export interface GraphPatch {
 }
 
 /** How an incident is played. Missing means "pick". */
-export type IncidentFormat = "pick" | "culprit" | "knob" | "two-step";
+export type IncidentFormat = "pick" | "culprit" | "knob" | "two-step" | "bad-pr" | "budget-cut";
 
 /** Find the culprit: flag the failing node on the topology before the choices appear. */
 export interface CulpritSpec {

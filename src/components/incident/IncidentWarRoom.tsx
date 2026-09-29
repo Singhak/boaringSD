@@ -574,6 +574,8 @@ export default function IncidentWarRoom({
       transferFirstTry,
       hintsUsed: hintsUsedTotal,
       failureReasons: [...(firstTryFix ? [] : ["intervention"]), ...(transferFirstTry ? [] : ["transfer"])],
+      stars: runStars(economy),
+      xpMultiplier: comboMultiplier(combo),
     });
     setRunXp(outcome.xpAwarded);
     setIsAftershock(false);
@@ -923,6 +925,10 @@ export default function IncidentWarRoom({
                     ? "Step 2 · Fix the root cause"
                     : format === "knob"
                     ? "Tune the knob"
+                    : format === "bad-pr"
+                    ? "Spot the bad PR · revert the one that broke prod"
+                    : format === "budget-cut"
+                    ? "Budget cut · save money without breaking the SLO"
                     : "Your Move"}
                 </span>
                 <h3 className="text-sm sm:text-base font-semibold text-white leading-snug">{question}</h3>
@@ -970,6 +976,7 @@ export default function IncidentWarRoom({
                   submitted={isSubmitted}
                   locked={isSolved || isHolding}
                   holding={isHolding}
+                  actionLabel={format === "bad-pr" ? "Revert" : format === "budget-cut" ? "Cut it" : "Deploy"}
                   onDeploy={handleDeployChoice}
                 />
               )}

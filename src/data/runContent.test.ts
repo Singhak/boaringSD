@@ -86,3 +86,13 @@ test("levels rotate formats on the first run, and every pack has replays in anot
     .map((pack) => pack.patternId);
   assert.deepEqual(thin, [], "each pack needs at least 2 startable incidents in a non-pick format");
 });
+
+test("every pack has a Spot-the-bad-PR and a Budget-cut incident that are valid in their format", () => {
+  for (const pack of getAllScenarioPacks()) {
+    for (const format of ["bad-pr", "budget-cut"] as const) {
+      const incidents = pack.incidents.filter((i) => formatOf(i) === format);
+      assert.ok(incidents.length >= 1, `${pack.patternId} has no ${format} incident`);
+      for (const inc of incidents) assert.deepEqual(formatProblems(inc), [], `${inc.id}: ${formatProblems(inc).join("; ")}`);
+    }
+  }
+});

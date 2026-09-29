@@ -79,6 +79,17 @@ test("every pattern includes 1-line tradeoff lessons for the debrief", () => {
   }
 });
 
+test("every pack's canonical incident has 2-4 authored log lines for every node", () => {
+  for (const pack of getAllScenarioPacks()) {
+    const canonical = pack.incidents.find((i) => i.canonical || i.id === pack.canonicalId) ?? pack.incidents[0];
+    assert.ok(canonical.logs, `${canonical.id} missing authored logs`);
+    for (const node of canonical.graphBefore.nodes) {
+      const lines = canonical.logs[node.id];
+      assert.ok(lines && lines.length >= 2 && lines.length <= 4, `${canonical.id} node ${node.id} needs 2-4 log lines`);
+    }
+  }
+});
+
 test("every Find the Culprit incident has authored logs for its nodes", () => {
   const packs = getAllScenarioPacks();
   let culpritCount = 0;

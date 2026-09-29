@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { INTERVIEW_PROBLEMS } from "@/data/interview";
-import { EMPTY_DESIGN, designFromGraph, evaluateArchitecture, unwiredNodeIds, type Design } from "@/lib/interviewDesign";
+import { EMPTY_DESIGN, designFromGraph, evaluateArchitecture, unwiredNodeIds, wiredNodeTypes, type Design } from "@/lib/interviewDesign";
 import type { InterviewProblem } from "@/types";
 
 /** The design an interviewer expects: exactly the required components, one spare server. */
@@ -124,6 +124,15 @@ test("an unwired cache earns nothing", () => {
     ["db", "c"],
   ]);
   assert.equal(designFromGraph(offDb.nodes, offDb.edges).hasCache, false);
+});
+
+test("wiredNodeTypes lists only wired core types, plus reachable non-core types", () => {
+  const g = graph({ u: "client", s: "server", db: "database", c: "cache", x: "search_index", y: "search_index" }, [
+    ["u", "s"],
+    ["s", "db"],
+    ["s", "x"],
+  ]);
+  assert.deepEqual(wiredNodeTypes(g.nodes, g.edges).sort(), ["client", "database", "search_index", "server"]);
 });
 
 test("a load balancer with no servers behind it does not count", () => {

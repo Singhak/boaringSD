@@ -464,11 +464,12 @@ export function recordPatternRun(
   now: Date
 ): ProgressionOutcome {
   const e = getEvidence(stats, pattern.id);
+  const mult = Math.max(1, result.xpMultiplier ?? 1);
   const award = awardFirstOrReplay(
     stats,
     `pattern-run:${pattern.id}`,
-    pattern.rewards.firstClearXp,
-    pattern.rewards.replayXp,
+    Math.round(pattern.rewards.firstClearXp * mult),
+    Math.round(pattern.rewards.replayXp * mult),
     now
   );
   let next = award.stats;
@@ -490,6 +491,7 @@ export function recordPatternRun(
       firstClearedAt: e.firstClearedAt ?? now.toISOString(),
       lastPracticedAt: now.toISOString(),
       reviewDueAt: e.reviewDueAt ?? addDays(now, REVIEW_INTERVAL_DAYS[0]).toISOString(),
+      bestStars: result.stars ? Math.max(e.bestStars ?? 0, result.stars) : e.bestStars,
     };
     next = withEvidence(next, pattern.id, updated);
     if (award.firstClear && cleanRun) {
@@ -609,6 +611,8 @@ export interface BuilderResultDetails {
   hintsUsed?: number;
   /** False if the explain question needed a retry; such a pass doesn't count toward Reliable. */
   explainFirstTry?: boolean;
+  /** False if both explain tries missed: the design still works and pays XP, but the boss isn't marked passed. */
+  explainPassed?: boolean;
 }
 
 /** Records a builder submission. Rewards only on pass; failures are kept as evidence. */
@@ -629,7 +633,9 @@ export function recordBuilderResult(
     builderPasses: e.builderPasses + (reliablePass ? 1 : 0),
     hintsUsed: e.hintsUsed + (details.hintsUsed ?? 0),
     scenariosPassed:
-      passed && !e.scenariosPassed.includes(scenario.id) ? [...e.scenariosPassed, scenario.id] : e.scenariosPassed,
+      passed && details.explainPassed !== false && !e.scenariosPassed.includes(scenario.id)
+        ? [...e.scenariosPassed, scenario.id]
+        : e.scenariosPassed,
     failureReasons: passed ? e.failureReasons : addFailureReasons(e.failureReasons, failureReasons),
     lastPracticedAt: now.toISOString(),
   });

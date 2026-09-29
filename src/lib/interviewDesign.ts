@@ -200,6 +200,24 @@ export function designFromGraph(nodes: BuilderNodeLike[], edges: BuilderEdgeLike
   };
 }
 
+const CORE_TYPES = new Set(["client", "server", "database", "load_balancer", "cdn", "cache", "queue", "replica"]);
+
+/**
+ * Component types that count in a drawn topology: wired core components, plus any
+ * other type reachable from a client (so over-building with them is still visible).
+ * A box floating off the request path counts for nothing.
+ */
+export function wiredNodeTypes(nodes: BuilderNodeLike[], edges: BuilderEdgeLike[]): string[] {
+  const g = indexGraph(nodes, edges);
+  const counted = countedIds(g);
+  const types = new Set<string>();
+  for (const [id, type] of g.typeOf) {
+    if (!type) continue;
+    if (counted.has(id) || (!CORE_TYPES.has(type) && g.reachable.has(id))) types.add(type);
+  }
+  return [...types];
+}
+
 /** Ids of drawn components that earn nothing because they are not wired into the request path. */
 export function unwiredNodeIds(nodes: BuilderNodeLike[], edges: BuilderEdgeLike[]): string[] {
   const g = indexGraph(nodes, edges);

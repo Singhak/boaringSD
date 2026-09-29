@@ -494,7 +494,7 @@ function Workspace({ scenario, stats }: { scenario?: BuilderScenario; stats: Use
       builderXpForStars(pattern?.rewards.builderXp ?? 0, stars),
       true,
       explain.passed ? [] : ["explain"],
-      { hintsUsed: takeNewHints(), explainFirstTry: explain.firstTry }
+      { hintsUsed: takeNewHints(), explainFirstTry: explain.firstTry, explainPassed: explain.passed }
     );
     setOutcomeStars(stars);
     saveScenarioDesign(scenario.id, "passed", currentDesign());

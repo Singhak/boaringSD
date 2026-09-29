@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import confetti from "canvas-confetti";
 import {
-  MATH_PROBLEMS,
+  generateAllMathProblems,
   MathProblem,
   MathCategory,
   evaluateMathAnswer,
@@ -66,12 +66,22 @@ export default function MentalMathTrainer({
   }, []);
 
   // Filter and randomize problem order so sprint mode draws randomly and never runs the same order twice
+  // Numbers are regenerated from the session seed, so each visit gets fresh figures (3 sets, duplicates dropped).
+  const sessionProblems = useMemo(() => {
+    const base = sessionSeed || 2026;
+    const byId = new Map<string, MathProblem>();
+    for (let set = 0; set < 3; set++) {
+      for (const p of generateAllMathProblems(base + set * 977)) byId.set(p.id, p);
+    }
+    return [...byId.values()];
+  }, [sessionSeed]);
+
   const filteredProblems = useMemo(() => {
-    const list = MATH_PROBLEMS.filter(
+    const list = sessionProblems.filter(
       (p) => selectedCategory === "all" || p.category === selectedCategory
     );
     return deterministicShuffle(list, `math-sprint-${sessionSeed}`);
-  }, [selectedCategory, sessionSeed]);
+  }, [selectedCategory, sessionSeed, sessionProblems]);
   const currentProblem: MathProblem = filteredProblems[problemIndex % filteredProblems.length];
 
   // Timer tick for Blitz Mode; the round ends inside the tick that reaches 0

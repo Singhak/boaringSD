@@ -2,7 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { ArrowRight, CalendarClock, Check, Flame, Share2, Star } from "lucide-react";
+import { ArrowRight, Bell, CalendarClock, Check, Flame, Share2, Star } from "lucide-react";
 import Navbar from "@/components/Navbar";
 import IncidentWarRoom, { type WarRoomRunSummary } from "@/components/incident/IncidentWarRoom";
 import {
@@ -16,6 +16,7 @@ import { getCurrentStreak, hasFinishedOnboarding } from "@/lib/progression";
 import { getUserStats, saveUserStats } from "@/lib/storage";
 import { useUserStats } from "@/lib/useUserStats";
 import { track } from "@/lib/events";
+import { buildDailyReminderIcs } from "@/lib/reminder";
 import type { DailyResult, UserStats } from "@/types";
 
 function formatCountdown(ms: number): string {
@@ -197,6 +198,7 @@ function DailyResultCard({
   xpAwarded: number | null;
 }) {
   const [copied, setCopied] = useState(false);
+  const [reminderHour, setReminderHour] = useState(9);
   const streak = getCurrentStreak(stats, new Date());
   const card = generateDailyShareCard({
     dateKey: daily.dateKey,
@@ -220,6 +222,17 @@ function DailyResultCard({
     } catch {
       // The user closed the share sheet, or the clipboard is blocked: nothing to do.
     }
+  };
+
+  /** Downloads a repeating daily calendar alert; the learner's own calendar app does the reminding. */
+  const remind = () => {
+    const ics = buildDailyReminderIcs({ hour: reminderHour, url: `${window.location.origin}/daily` });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(new Blob([ics], { type: "text/calendar" }));
+    link.download = "daily-outage.ics";
+    link.click();
+    URL.revokeObjectURL(link.href);
+    track("reminder_added", { hour: reminderHour });
   };
 
   return (
@@ -268,6 +281,26 @@ function DailyResultCard({
         <Link href="/" className="btn btn-ghost">
           Back to your next mission <ArrowRight className="w-4 h-4" />
         </Link>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 border-t border-[var(--line)] pt-4 text-sm text-slate-400">
+        <Bell className="w-4 h-4 text-cyan-300" aria-hidden />
+        <span>Keep the streak: remind me daily at</span>
+        <select
+          value={reminderHour}
+          onChange={(e) => setReminderHour(Number(e.target.value))}
+          aria-label="Reminder time"
+          className="bg-black/40 border border-[var(--line-strong)] rounded-md px-2 py-1 text-slate-200"
+        >
+          {[8, 9, 12, 18, 21].map((h) => (
+            <option key={h} value={h}>
+              {String(h).padStart(2, "0")}:00
+            </option>
+          ))}
+        </select>
+        <button type="button" onClick={remind} className="btn btn-ghost">
+          Add to calendar
+        </button>
       </div>
     </article>
   );

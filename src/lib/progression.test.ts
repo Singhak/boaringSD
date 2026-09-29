@@ -72,6 +72,18 @@ test("first clear pays full XP once; same-day replays pay replay XP once", () =>
   assert.equal(tomorrow.xpAwarded, p.rewards.replayXp);
 });
 
+test("run stars are saved as a best, and the combo multiplier scales run XP", () => {
+  const p = pattern("horizontal-scaling");
+  const first = recordPatternRun(onboarded(), p, { ...cleanRun(p.id), hintsUsed: 1, stars: 2, xpMultiplier: 2 }, T0);
+  assert.equal(first.xpAwarded, p.rewards.firstClearXp * 2);
+  assert.equal(getEvidence(first.stats, p.id).bestStars, 2);
+
+  const worse = recordPatternRun(first.stats, p, { ...cleanRun(p.id), stars: 1 }, at(1));
+  assert.equal(getEvidence(worse.stats, p.id).bestStars, 2, "a worse run does not lower the best");
+  const better = recordPatternRun(worse.stats, p, { ...cleanRun(p.id), stars: 3 }, at(2));
+  assert.equal(getEvidence(better.stats, p.id).bestStars, 3);
+});
+
 test("hint usage removes the clean-run bonus", () => {
   const p = pattern("horizontal-scaling");
   const out = recordPatternRun(onboarded(), p, { ...cleanRun(p.id), hintsUsed: 1 }, T0);
@@ -415,6 +427,16 @@ test("builder: hints are recorded, and only a first-try explanation counts as a 
   assert.ok(e.scenariosPassed.includes(s.id), "the scenario still reads as cleared");
   const clean = recordBuilderResult(onboarded(), s, 60, true, [], T0, { explainFirstTry: true });
   assert.equal(getEvidence(clean.stats, s.patternId).builderPasses, 1);
+});
+
+test("builder: a working design whose explanation missed twice is not marked passed", () => {
+  const s = getBuilderScenarioById("boss-scale");
+  assert.ok(s);
+  const out = recordBuilderResult(onboarded(), s, 20, true, ["explain"], T0, { explainFirstTry: false, explainPassed: false });
+  const e = getEvidence(out.stats, s.patternId);
+  assert.equal(e.builderPasses, 0);
+  assert.ok(!e.scenariosPassed.includes(s.id));
+  assert.ok(out.xpAwarded > 0, "the working design still pays reduced XP");
 });
 
 test("XP levels grow progressively (150, 300, 500, 750...)", () => {

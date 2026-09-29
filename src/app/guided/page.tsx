@@ -16,8 +16,9 @@ import type { Node, Edge } from "@xyflow/react";
 import { GUIDED_SCENARIOS } from "@/data/guided";
 import { completeGuided, nextShuffleSeed } from "@/lib/storage";
 import { checkPicks, orderPicks, type PickResult } from "@/lib/guidedPicks";
+import { unwiredNodeIds, wiredNodeTypes } from "@/lib/interviewDesign";
 import { playBlipSound, playErrorSound, playLevelUpSound, playSuccessSound } from "@/lib/sound";
-import type { ArchitectureNodeType, GuidedScenario } from "@/types";
+import type { GuidedScenario } from "@/types";
 
 const STEPS = [
   { id: "requirements", label: "Requirements" },
@@ -360,7 +361,7 @@ function ArchitectureStep({
   );
 
   const [nodes, setNodes] = useState<Node[]>(initialNodes);
-  const [, setEdges] = useState<Edge[]>([]);
+  const [edges, setEdges] = useState<Edge[]>([]);
   const [checkResult, setCheckResult] = useState<PickResult | null>(null);
 
   const handleGraphChange = useCallback((nextNodes: Node[], nextEdges: Edge[]) => {
@@ -369,14 +370,12 @@ function ArchitectureStep({
     setCheckResult(null);
   }, []);
 
+  // Only components wired into the request path from the users count.
+  const wiredTypes = wiredNodeTypes(nodes, edges).filter((t) => t !== "client");
+  const unwiredCount = unwiredNodeIds(nodes, edges).length;
+
   const handleSubmit = () => {
-    const placedTypes = Array.from(
-      new Set(
-        nodes
-          .map((n) => (n.data as { type?: ArchitectureNodeType })?.type)
-          .filter((t): t is ArchitectureNodeType => Boolean(t) && t !== "client")
-      )
-    );
+    const placedTypes = wiredTypes;
 
     const result = checkPicks(placedTypes, a.requiredComponents, true);
     setCheckResult(result);
@@ -389,13 +388,7 @@ function ArchitectureStep({
     }
   };
 
-  const currentTypes = Array.from(
-    new Set(
-      nodes
-        .map((n) => (n.data as { type?: ArchitectureNodeType })?.type)
-        .filter((t): t is ArchitectureNodeType => Boolean(t) && t !== "client")
-    )
-  );
+  const currentTypes = wiredTypes;
 
   return (
     <div className="surface p-6 sm:p-7 space-y-6">
@@ -423,7 +416,7 @@ function ArchitectureStep({
       {/* Readout & Submit */}
       <div className="flex flex-wrap items-center justify-between gap-4 pt-2">
         <div className="flex flex-wrap items-center gap-2 text-xs">
-          <span className="eyebrow">Placed components ({currentTypes.length}):</span>
+          <span className="eyebrow">Wired components ({currentTypes.length}):</span>
           {currentTypes.length === 0 ? (
             <span className="text-slate-500 italic">None added yet</span>
           ) : (
@@ -434,6 +427,12 @@ function ArchitectureStep({
             ))
           )}
         </div>
+
+        {unwiredCount > 0 && (
+          <span className="text-[11px] text-amber-300/90">
+            {unwiredCount} box{unwiredCount === 1 ? " isn't" : "es aren't"} wired into the request path yet, so {unwiredCount === 1 ? "it doesn't" : "they don't"} count.
+          </span>
+        )}
 
         {!done && (
           <button type="button" onClick={handleSubmit} className="btn btn-primary">

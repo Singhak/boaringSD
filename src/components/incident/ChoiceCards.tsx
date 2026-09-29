@@ -23,6 +23,7 @@ export default function ChoiceCards({
   submitted,
   locked,
   holding = false,
+  actionLabel = "Deploy",
   onDeploy,
 }: {
   choices: IncidentChoice[];
@@ -31,6 +32,8 @@ export default function ChoiceCards({
   /** Disables every card (solved, or a band-aid is holding). */
   locked: boolean;
   holding?: boolean;
+  /** The button word: "Deploy", or "Revert" / "Cut it" for the PR and budget formats. */
+  actionLabel?: string;
   onDeploy: (choice: IncidentChoice) => void;
 }) {
   return (
@@ -80,9 +83,22 @@ export default function ChoiceCards({
                 </span>
               </div>
               <span className="text-[11px] text-slate-500 group-hover:text-cyan-300 transition-colors shrink-0 mt-0.5">
-                Deploy
+                {actionLabel}
               </span>
             </div>
+
+            {choice.diff && (
+              <pre className="ml-7 overflow-x-auto rounded-lg border border-[var(--line)] bg-black/40 p-2 text-[11px] leading-snug font-mono text-slate-300">
+                {choice.diff.split(/\r?\n/).map((line, i) => (
+                  <span
+                    key={i}
+                    className={`block ${line.startsWith("+") ? "text-emerald-300" : line.startsWith("-") ? "text-rose-300" : ""}`}
+                  >
+                    {line || " "}
+                  </span>
+                ))}
+              </pre>
+            )}
 
             {chips.length > 0 && (
               <div className="flex flex-wrap items-center gap-1.5 pl-7 text-[11px]">

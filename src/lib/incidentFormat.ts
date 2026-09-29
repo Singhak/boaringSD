@@ -2,7 +2,7 @@ import type { IncidentChoice, IncidentFormat, IncidentV2 } from "@/types";
 import { knobSpecProblems } from "@/lib/knob";
 import { answerIsLongest, lengthSpreadTooWide } from "@/data/incidentQuality";
 
-export const FORMATS: IncidentFormat[] = ["pick", "culprit", "knob", "two-step"];
+export const FORMATS: IncidentFormat[] = ["pick", "culprit", "knob", "two-step", "bad-pr", "budget-cut"];
 
 /** Levels must rotate formats: at least this many distinct, and no format more than this many levels in a row. */
 export const MIN_FORMATS_ACROSS_LEVELS = 4;
@@ -57,6 +57,24 @@ export function formatProblems(incident: IncidentV2): string[] {
     problems.push(...knobSpecProblems(incident.knob, incident.metricsBefore.map((m) => m.key)));
     for (const k of ["low", "high", "good"] as const) {
       if ((incident.knob[k]?.body?.trim().split(/\s+/).length ?? 0) < 8) problems.push(`knob ${k} result too thin`);
+    }
+  }
+
+  if (format === "bad-pr") {
+    for (const c of incident.choices) {
+      const lines = c.diff?.split(/\r?\n/).filter((l) => l.trim()).length ?? 0;
+      if (lines < 2 || lines > 8) problems.push(`bad-pr choice ${c.id} needs a diff of 2-8 lines`);
+    }
+    // The diffs are what the player reads; the outage must be traceable to exactly one of them.
+    if (incident.choices.some((c) => !c.diff)) problems.push("bad-pr: every choice needs a diff");
+  }
+
+  if (format === "budget-cut") {
+    // The system is healthy: nothing on the dashboard is red, the pressure is the bill.
+    if (incident.metricsBefore.some((m) => m.tone === "bad")) problems.push("budget-cut: no metric may start red");
+    if (!incident.metricsBefore.some((m) => m.key === "cost")) problems.push("budget-cut: needs a cost metric");
+    for (const c of incident.choices) {
+      if ((c.tradeoffs?.costMonthlyDelta ?? 0) >= 0) problems.push(`budget-cut choice ${c.id} must save money (negative costMonthlyDelta)`);
     }
   }
 
