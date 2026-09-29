@@ -2,13 +2,25 @@ import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { createRateLimiter } from "@/lib/grading/grade";
 import { prisma } from "@/lib/prisma";
+import { logLine, sanitizeEvent } from "@/lib/eventSanitize";
+import { redactSecrets } from "@/lib/redact";
 
 // Collector for the anonymous events sent by src/lib/events.ts (sendBeacon posts text/plain).
-// Each accepted event goes to the AnalyticsEvent table when DATABASE_URL is set, and always to
-// stdout plus .data/events.jsonl. Every sink is best-effort: a failing one never fails the beacon.
+// Every event is sanitised first (allowlisted name, valid id and time, primitive props only, no
+// free text or secrets). Accepted events go to the AnalyticsEvent table when DATABASE_URL is set
+// and to .data/events.jsonl; stdout only gets the event name and a shortened id, never props.
+// Every sink is best-effort: a failing one never fails the beacon.
 const allow = createRateLimiter(120, 60_000);
 const EVENTS_FILE = path.join(process.cwd(), ".data", "events.jsonl");
 const MAX_BODY = 4_000;
+
+/** A database error reduced to something safe to log: Prisma errors can embed query parameters. */
+function describeDbError(error: unknown): string {
+  const code = (error as { code?: unknown })?.code;
+  const name = error instanceof Error ? error.name : "Error";
+  const firstLine = error instanceof Error ? error.message.trim().split("\n").pop() ?? "" : "";
+  return redactSecrets(`${name}${typeof code === "string" ? ` ${code}` : ""}: ${firstLine}`).slice(0, 200);
+}
 
 export async function POST(request: Request) {
   const client = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "local";
@@ -17,32 +29,30 @@ export async function POST(request: Request) {
   const text = await request.text();
   if (text.length > MAX_BODY) return new Response(null, { status: 413 });
 
-  let body: { anonId?: unknown; name?: unknown; ts?: unknown; props?: unknown };
+  let raw: unknown;
   try {
-    body = JSON.parse(text);
+    raw = JSON.parse(text);
   } catch {
     return new Response(null, { status: 400 });
   }
-  if (typeof body.anonId !== "string" || typeof body.name !== "string" || typeof body.ts !== "string") {
-    return new Response(null, { status: 400 });
-  }
 
-  const ts = new Date(body.ts);
-  if (Number.isNaN(ts.getTime())) return new Response(null, { status: 400 });
+  const result = sanitizeEvent(raw);
+  if (!result.ok) return new Response(null, { status: 400 });
+  const { event } = result;
 
-  const line = JSON.stringify({ anonId: body.anonId, name: body.name, ts: body.ts, props: body.props ?? null });
-  console.log(`[event] ${line}`);
+  console.log(logLine(event));
   if (process.env.DATABASE_URL) {
     try {
       await prisma.analyticsEvent.create({
-        data: { anonId: body.anonId, name: body.name, ts, props: (body.props as object | null) ?? undefined },
+        data: { anonId: event.anonId, name: event.name, ts: event.ts, props: event.props ?? undefined },
       });
     } catch (error) {
-      console.error("[event] database write failed", error);
+      console.error("[event] database write failed:", describeDbError(error));
     }
   }
   try {
     await mkdir(path.dirname(EVENTS_FILE), { recursive: true });
+    const line = JSON.stringify({ anonId: event.anonId, name: event.name, ts: event.ts.toISOString(), props: event.props });
     await appendFile(EVENTS_FILE, `${line}\n`);
   } catch {
     // Read-only filesystem: the log line above is the record.
