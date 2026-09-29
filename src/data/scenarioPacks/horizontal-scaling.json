@@ -267,7 +267,87 @@
         "Identical copies can share load.",
         "Add more stateless app servers."
       ],
-      "nextId": "lb-01"
+      "nextId": "lb-01",
+      "variants": [
+        {
+          "id": "var-hs-01-promo-sessions",
+          "constraint": "The spike is a 3-hour promo on a 4-vCPU box, and the app keeps sessions in process memory, so splitting traffic across servers logs users out.",
+          "correctChoiceId": "bigger-box",
+          "resultOverrides": {
+            "bigger-box": {
+              "approach": "optimal",
+              "resultTitle": "A bigger box carries the 3-hour promo",
+              "resultBody": "Resizing from 4 to 32 vCPUs takes about 3 minutes; CPU settles at 40% and p95 at 220 ms, with sessions intact. Cost: a few dollars an hour until you downsize after the promo, and still one server's blast radius.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "App server CPU",
+                  "value": 40,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 220,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "User impact",
+                  "value": 0,
+                  "unit": "errors",
+                  "tone": "good"
+                }
+              ]
+            },
+            "scale-out": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "More servers, logged-out users",
+              "resultBody": "CPU drops to 40%, but each request can land on a server that never saw the user's session. Users are logged out mid-scroll, and the retry storm keeps errors near 380 for the whole 3-hour promo.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "App server CPU",
+                  "value": 40,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 300,
+                  "unit": "ms",
+                  "tone": "warn"
+                },
+                {
+                  "key": "errors",
+                  "label": "User impact",
+                  "value": 380,
+                  "unit": "errors",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "s1",
+                    "tone": "warn",
+                    "cpu": 40,
+                    "sub": "sessions split"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Check how long the spike lasts and how big the box is.",
+            "Where sessions live decides whether a second server can help.",
+            "A short burst on a small box can be absorbed without splitting traffic."
+          ]
+        }
+      ]
     },
     {
       "id": "hs-02",
@@ -494,26 +574,7 @@
         "Copies cannot join until state is external.",
         "Scale out stateless workers."
       ],
-      "nextId": null,
-      "variants": [
-        {
-          "id": "var-hs-flash",
-          "constraint": "Traffic is a 10-minute short-lived burst on a 2-core box; container cold starts take 4 minutes, but live instance upsize takes 30 seconds.",
-          "correctChoiceId": "bigger-vm",
-          "resultOverrides": {
-            "hs-02-vertical": {
-              "approach": "optimal",
-              "resultTitle": "Fast vertical resize absorbed the 10-minute burst",
-              "resultBody": "Because container spin-up takes 4 minutes, immediate vertical upsizing stabilized the 10-minute surge before customers bounced."
-            },
-            "hs-02-scale-out": {
-              "approach": "anti_pattern",
-              "resultTitle": "Container cold boot missed the flash burst",
-              "resultBody": "New pods took 4 minutes to pull images and pass probes; by the time they entered service, the 10-minute burst had already peaked."
-            }
-          }
-        }
-      ]
+      "nextId": null
     },
     {
       "id": "hs-03",
@@ -2595,7 +2656,103 @@
         "One instance cannot flex.",
         "Scale out before the event."
       ],
-      "nextId": null
+      "nextId": null,
+      "variants": [
+        {
+          "id": "var-hs-10-licensed-db",
+          "constraint": "Every request runs one query on a results database licensed for 5,000 queries/s, which no app-tier change can raise, and the count lasts three hours.",
+          "correctChoiceId": "browser-queue",
+          "resultOverrides": {
+            "browser-queue": {
+              "approach": "optimal",
+              "resultTitle": "Waiting room admits what the database handles",
+              "resultBody": "Visitors queue in the browser and are admitted at about 4,500 req/s, just under the 5,000 queries/s license. The instance settles at 60% CPU and admitted users get 250 ms pages. Cost: everyone else waits a minute or two at peak.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 60,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 250,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 0,
+                  "unit": "errors",
+                  "tone": "good"
+                }
+              ]
+            },
+            "pre-scale": {
+              "approach": "anti_pattern",
+              "resultTitle": "The fleet overwhelms the licensed database",
+              "resultBody": "Ten instances happily accept 40,000 req/s and send 40,000 queries/s at a database licensed for 5,000. It throttles, every instance blocks on it, and errors climb past 1,500 while the app CPU sits idle.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 30,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 9000,
+                  "unit": "ms",
+                  "tone": "bad"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 1500,
+                  "unit": "errors",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "s1",
+                    "tone": "warn",
+                    "cpu": 30,
+                    "sub": "blocked on DB"
+                  }
+                ],
+                "addNodes": [
+                  {
+                    "id": "db",
+                    "kind": "db",
+                    "label": "Results DB",
+                    "tone": "bad",
+                    "cpu": 100,
+                    "sub": "license cap 5k q/s"
+                  }
+                ],
+                "addEdges": [
+                  {
+                    "from": "s1",
+                    "to": "db"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Follow each request past the app server.",
+            "Something behind the app has a hard ceiling that more instances can't lift.",
+            "Control how many users enter, not how many servers answer them."
+          ]
+        }
+      ]
     },
     {
       "id": "hs-11",
@@ -3061,7 +3218,77 @@
         "Web and render need different scale.",
         "Offload to workers."
       ],
-      "nextId": null
+      "nextId": null,
+      "variants": [
+        {
+          "id": "var-hs-12-repeat-downloads",
+          "constraint": "At month-end 95% of downloads are repeats of the same 2,000 invoices, rendered on first view, and this month's budget covers only $50 of new infrastructure.",
+          "correctChoiceId": "pdfs-in-db",
+          "resultOverrides": {
+            "pdfs-in-db": {
+              "approach": "optimal",
+              "resultTitle": "Each invoice renders once, then streams",
+              "resultBody": "The first download renders and stores the PDF; the other 95% stream the stored copy in milliseconds. Web CPU falls to 35% and p95 to 250 ms for about $30 a month. Cost: first views still render in the request.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 35,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 250,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 0,
+                  "unit": "errors",
+                  "tone": "good"
+                }
+              ]
+            },
+            "pdf-workers": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "Workers re-render the same invoices",
+              "resultBody": "The web tier recovers, but the $150 pool triples the $50 budget and re-renders the same 2,000 invoices on every download. 95% of its CPU goes to work already done once.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 40,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 450,
+                  "unit": "ms",
+                  "tone": "warn"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 0,
+                  "unit": "errors",
+                  "tone": "good"
+                }
+              ]
+            }
+          },
+          "hints": [
+            "Look at how many month-end downloads ask for a PDF that was already produced.",
+            "The same 2,000 documents are rendered again and again.",
+            "Output that never changes only needs to be computed once."
+          ]
+        }
+      ]
     },
     {
       "id": "hs-13",

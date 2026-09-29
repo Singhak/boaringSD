@@ -819,21 +819,80 @@
       "reviewed": true,
       "variants": [
         {
-          "id": "var-rr-write-heavy",
-          "constraint": "The workload shifted to 85% writes and 15% reads during a massive account registration drive.",
+          "id": "var-rr-02-no-new-instances",
+          "constraint": "No new database instances are approved this fiscal year, and EXPLAIN shows the report reading 40 million rows to return 90,000 because its two filter columns aren't indexed.",
           "correctChoiceId": "covering-index",
           "resultOverrides": {
-            "rr-02-scale-primary": {
+            "covering-index": {
               "approach": "optimal",
-              "resultTitle": "Primary upsizing absorbs the write surge",
-              "resultBody": "When writes are 85% of traffic, adding read replicas does not help write IOPS; increasing primary CPU and disk bandwidth handles the load."
+              "resultTitle": "The 25-minute scan becomes 40 seconds",
+              "resultBody": "With both filter columns and the summed fields in one index, the report reads 90,000 index entries in about 40 seconds. A 40-second snapshot barely delays purge, and checkout p95 returns to 70 ms. Cost: each checkout insert maintains one more index.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 50,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 70,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Checkout timeouts",
+                  "value": 0,
+                  "unit": "%",
+                  "tone": "good"
+                }
+              ]
             },
-            "rr-02-add-replicas": {
+            "report-replica": {
               "approach": "anti_pattern",
-              "resultTitle": "Replicas added replication overhead without absorbing writes",
-              "resultBody": "Replicas only serve SELECT queries; streaming the write-heavy WAL to more replicas actually added replication overhead to the struggling primary."
+              "resultTitle": "The replica request hits the freeze",
+              "resultBody": "The $900-a-month replica is refused under the instance freeze. Meanwhile the unindexed report keeps scanning 40 million rows every hour on the primary, and checkout p95 stays at 900 ms.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 88,
+                  "unit": "%",
+                  "tone": "bad"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 900,
+                  "unit": "ms",
+                  "tone": "bad"
+                },
+                {
+                  "key": "errors",
+                  "label": "Checkout timeouts",
+                  "value": 3,
+                  "unit": "%",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "report",
+                    "sub": "still on primary"
+                  }
+                ]
+              }
             }
-          }
+          },
+          "hints": [
+            "Compare how many rows the report reads with how many it returns.",
+            "A shorter snapshot holds back purge for less time.",
+            "Let the report find its rows without walking the whole table."
+          ]
         }
       ]
     },
@@ -4568,7 +4627,77 @@
         "Reads that tolerate a little lag don't need the node that takes writes."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-rr-14-push-badge",
+          "constraint": "New messages now arrive by push notification; the poll only refreshes the unread badge, which may lag several minutes, and no new database spend is approved.",
+          "correctChoiceId": "slow-poll",
+          "resultOverrides": {
+            "slow-poll": {
+              "approach": "optimal",
+              "resultTitle": "Tenfold fewer polls, nothing arrives late",
+              "resultBody": "Polls fall from 66,000 to about 6,600 queries/s, the primary drops to 35% CPU, and writes return to 15 ms. Messages still arrive instantly by push. Cost: the badge can trail by up to 5 minutes, which product accepted.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 35,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 20,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Poll timeouts",
+                  "value": 0,
+                  "unit": "%",
+                  "tone": "good"
+                }
+              ]
+            },
+            "poll-replicas": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "$2,800 a month to refresh a badge",
+              "resultBody": "Four replicas absorb the 66,000 polls/s and the primary recovers, but the spend was never approved, and it serves a badge that may lag minutes anyway. One config change would have removed 90% of the load.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 60,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 20,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Poll timeouts",
+                  "value": 0,
+                  "unit": "%",
+                  "tone": "good"
+                }
+              ]
+            }
+          },
+          "hints": [
+            "Check what the poll still delivers now that messages arrive by push.",
+            "How often each device asks is a product choice, not a law of physics.",
+            "Cutting the request rate at the source is cheaper than serving it."
+          ]
+        }
+      ]
     },
     {
       "id": "rr-15",
@@ -4853,7 +4982,77 @@
         "Asynchronous copies can take reads while the synchronous one waits for a failure."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-rr-15-accepted-downtime",
+          "constraint": "No new instances fit the budget, and the business has signed off on up to 15 minutes of downtime and 5 seconds of lost submissions if the primary's zone fails.",
+          "correctChoiceId": "convert-standby",
+          "resultOverrides": {
+            "convert-standby": {
+              "approach": "optimal",
+              "resultTitle": "Idle standby now serves lookups",
+              "resultBody": "The former standby takes the 18,000 lookups/s at 55% CPU and the primary drops to 40%, for no new spend. Cost: a zone failure now means promoting an async replica, minutes of downtime and seconds of loss, which the business accepted.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 55,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 45,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Lookup timeouts",
+                  "value": 0,
+                  "unit": "%",
+                  "tone": "good"
+                }
+              ]
+            },
+            "add-readers": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "Right design, $6,000 over budget",
+              "resultBody": "Two new replicas carry the lookups and keep zero-loss failover, but they add $6,000 a month the budget doesn't have, to protect against a loss the business already agreed to accept.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 55,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 45,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Lookup timeouts",
+                  "value": 0,
+                  "unit": "%",
+                  "tone": "good"
+                }
+              ]
+            }
+          },
+          "hints": [
+            "Weigh what a zone failure would actually cost against the budget.",
+            "An idle synchronous copy is capacity you already pay for.",
+            "The business traded slower recovery for read capacity it doesn't have to buy."
+          ]
+        }
+      ]
     },
     {
       "id": "rr-16",

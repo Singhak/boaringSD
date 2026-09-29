@@ -397,21 +397,86 @@
       "reviewed": true,
       "variants": [
         {
-          "id": "var-se-btree",
-          "constraint": "Workload is 97% point lookups and range scans on user_id; write throughput is under 50 ops/sec.",
+          "id": "var-se-02-small-keyspace",
+          "constraint": "The store holds 40 million 16-byte keys, about 2 GB of index, on 64 GB nodes, and every query is a point lookup with no range scans.",
           "correctChoiceId": "hash-index",
           "resultOverrides": {
-            "se-02-btree": {
+            "hash-index": {
               "approach": "optimal",
-              "resultTitle": "B+ Tree engine delivers sub-ms point lookups and scans",
-              "resultBody": "With mostly read lookups and rare writes, B+ Trees avoid LSM compaction overhead and provide predictable single-seek reads."
+              "resultTitle": "Every key answered from RAM",
+              "resultBody": "A Bitcask-style in-memory hash of all 40 million keys answers an absent key with no disk read and a present key with one seek; p95 falls to about 2 ms. Cost: 2 GB of RAM per node, a rebuild scan on restart, no range queries.",
+              "metricsAfter": [
+                {
+                  "key": "rps",
+                  "label": "Traffic",
+                  "value": 40000,
+                  "unit": "req/s",
+                  "tone": "neutral"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 40,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 2,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 0,
+                  "unit": "errors",
+                  "tone": "good"
+                }
+              ]
             },
-            "se-02-lsm": {
-              "approach": "anti_pattern",
-              "resultTitle": "LSM engine added bloom filter and multi-SSTable read amplification",
-              "resultBody": "Point reads in LSM trees checked multiple SSTable levels, doubling read latencies compared to a direct B+ Tree lookup."
+            "bloom": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "Good, but still probabilistic",
+              "resultBody": "Filters skip most files, but at 1% false positives across dozens of SSTables an absent key still costs about 0.3 disk reads, and present keys probe several levels; p95 settles near 21 ms where an exact in-memory index gives 2 ms.",
+              "metricsAfter": [
+                {
+                  "key": "rps",
+                  "label": "Traffic",
+                  "value": 40000,
+                  "unit": "req/s",
+                  "tone": "neutral"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 49,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 21,
+                  "unit": "ms",
+                  "tone": "warn"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 0,
+                  "unit": "errors",
+                  "tone": "good"
+                }
+              ]
             }
-          }
+          },
+          "hints": [
+            "Absent keys are the costly case; now look at how many keys there are.",
+            "All the keys, with their file offsets, fit comfortably in each node's memory.",
+            "With no range scans, sort order buys nothing, and an exact answer from memory beats a probable one."
+          ]
         }
       ]
     },
@@ -1260,7 +1325,99 @@
         "Remove what nobody reads."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-se-05-audit-hold",
+          "constraint": "An active audit requires all nine indexes for the next 60 days, since auditors query any column ad hoc. The table's network disk sits at its 3,000-IOPS limit.",
+          "correctChoiceId": "bigger-disk",
+          "resultOverrides": {
+            "bigger-disk": {
+              "approach": "optimal",
+              "resultTitle": "IOPS headroom for all nine indexes",
+              "resultBody": "NVMe lifts the 3,000-IOPS ceiling, so nine index updates per insert stop queuing on the disk; insert p95 falls from 25 ms to 14 ms and ingest catches up within the hour. Cost: a bigger storage bill, and CPU stays high.",
+              "metricsAfter": [
+                {
+                  "key": "rps",
+                  "label": "Traffic",
+                  "value": 20000,
+                  "unit": "req/s",
+                  "tone": "neutral"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 84,
+                  "unit": "%",
+                  "tone": "warn"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 14,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 5,
+                  "unit": "errors",
+                  "tone": "good"
+                }
+              ]
+            },
+            "drop-unused": {
+              "approach": "anti_pattern",
+              "resultTitle": "Audit queries become full scans",
+              "resultBody": "Inserts speed up, but auditors query those seven columns ad hoc; each query now full-scans the events table for minutes, competing with ingest, and dropping indexes the audit requires for 60 days is a compliance breach.",
+              "metricsAfter": [
+                {
+                  "key": "rps",
+                  "label": "Traffic",
+                  "value": 20000,
+                  "unit": "req/s",
+                  "tone": "neutral"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 90,
+                  "unit": "%",
+                  "tone": "bad"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 30,
+                  "unit": "ms",
+                  "tone": "bad"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 150,
+                  "unit": "errors",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "db",
+                    "sub": "audit queries full-scanning"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Every index is updated on every insert, and none can go for 60 days.",
+            "Nine index updates per insert become random writes the disk must absorb.",
+            "When the write amplification is fixed, look at the ceiling it keeps hitting."
+          ]
+        }
+      ]
     },
     {
       "id": "se-06",
@@ -1455,7 +1612,101 @@
         "Put the range you read next to itself."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-se-06-fleet-view",
+          "constraint": "Dashboards show the last 15 minutes across all 400 devices at once, never one device, and ingest is only 2,000 rows a second, far below one partition's write limit.",
+          "correctChoiceId": "time-only",
+          "resultOverrides": {
+            "time-only": {
+              "approach": "optimal",
+              "resultTitle": "Recent rows sit in one range",
+              "resultBody": "Keyed by time, the last 15 minutes of all 400 devices form one contiguous range, so a dashboard is one scan instead of a 64-partition fan-out. At 2,000 rows a second the newest partition copes easily. Cost: much faster ingest would make it hot.",
+              "metricsAfter": [
+                {
+                  "key": "rps",
+                  "label": "Traffic",
+                  "value": 25000,
+                  "unit": "req/s",
+                  "tone": "neutral"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 48,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 600,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 0,
+                  "unit": "errors",
+                  "tone": "good"
+                }
+              ]
+            },
+            "composite-key": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "400 range scans per dashboard",
+              "resultBody": "Device-then-time keeps each device's rows together, but a fleet-wide view now needs 400 separate range scans, one per device; the fan-out moves from partitions to devices and p95 only falls to 1.4 s.",
+              "metricsAfter": [
+                {
+                  "key": "rps",
+                  "label": "Traffic",
+                  "value": 25000,
+                  "unit": "req/s",
+                  "tone": "neutral"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 80,
+                  "unit": "%",
+                  "tone": "bad"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 1400,
+                  "unit": "ms",
+                  "tone": "bad"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 250,
+                  "unit": "errors",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "db",
+                    "tone": "warn",
+                    "cpu": 80,
+                    "sub": "400 range scans per load"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Look at what one dashboard actually asks for.",
+            "Every dashboard reads all devices together, and writes are light.",
+            "Keep the range you read contiguous; with light writes, a busy tail is affordable."
+          ]
+        }
+      ]
     },
     {
       "id": "se-upsize-01",

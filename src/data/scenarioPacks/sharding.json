@@ -596,26 +596,7 @@
         "A single row can only take one write at a time.",
         "Turn one hot key into many keys and add them up on read."
       ],
-      "reviewed": true,
-      "variants": [
-        {
-          "id": "var-shard-range",
-          "constraint": "99% of queries are range scans over sequential invoice date windows (e.g. 'all March invoices').",
-          "correctChoiceId": "replica-counter",
-          "resultOverrides": {
-            "sh2-range": {
-              "approach": "optimal",
-              "resultTitle": "Range sharding keeps date scans local to single shards",
-              "resultBody": "Partitioning by date allows monthly audit reports to scan a single shard instead of broadcasting scatter-gather queries."
-            },
-            "sh2-hash": {
-              "approach": "anti_pattern",
-              "resultTitle": "Hash sharding forced scatter-gather across all shards",
-              "resultBody": "Hashing invoice IDs scattered March records across all nodes, turning every reporting query into an expensive global fanout."
-            }
-          }
-        }
-      ]
+      "reviewed": true
     },
     {
       "id": "shard-03",
@@ -2583,7 +2564,101 @@
         "A directory lets you place a single tenant anywhere you like."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-shard-09-short-retention",
+          "constraint": "Acme's contract keeps only 90 days of history online; older records may sit in cold storage if retrievable within 24 hours. Any new shard needs budget approval, which takes a quarter.",
+          "correctChoiceId": "archive",
+          "resultOverrides": {
+            "archive": {
+              "approach": "optimal",
+              "resultTitle": "Cold storage frees shard 3 today",
+              "resultBody": "Rows older than 90 days, about 2.3 TB of Acme's 3.1 TB, move to compressed object storage with a 24-hour restore path. Shard 3 drops to about 40% disk and its 70 neighbours recover. Cost: roughly $20 a month plus a nightly archive job.",
+              "metricsAfter": [
+                {
+                  "key": "disk",
+                  "label": "Shard 3 disk",
+                  "value": 40,
+                  "unit": "%",
+                  "tone": "bad"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 45,
+                  "unit": "%",
+                  "tone": "warn"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 180,
+                  "unit": "ms",
+                  "tone": "warn"
+                },
+                {
+                  "key": "errors",
+                  "label": "Vacuum stalls",
+                  "value": 0,
+                  "unit": "per h",
+                  "tone": "warn"
+                }
+              ]
+            },
+            "dedicated": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "Stuck waiting a quarter for approval",
+              "resultBody": "A dedicated shard is the right long-term home, but its budget approval takes a quarter. At 60 GB a week the last 8% of shard 3's disk, about 320 GB, fills in five weeks, and writes for all 71 tenants stop.",
+              "metricsAfter": [
+                {
+                  "key": "disk",
+                  "label": "Shard 3 disk",
+                  "value": 99,
+                  "unit": "%",
+                  "tone": "bad"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 80,
+                  "unit": "%",
+                  "tone": "warn"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 900,
+                  "unit": "ms",
+                  "tone": "warn"
+                },
+                {
+                  "key": "errors",
+                  "label": "Vacuum stalls",
+                  "value": 40,
+                  "unit": "per h",
+                  "tone": "warn"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "s1",
+                    "tone": "bad",
+                    "cpu": 80,
+                    "sub": "disk 99%, awaiting approval"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Read the contract again: how much history must actually stay online?",
+            "Most of Acme's 3.1 TB is older than the window the contract now requires.",
+            "Data that only has to be retrievable within a day doesn't need a hot database disk."
+          ]
+        }
+      ]
     },
     {
       "id": "shard-10",
@@ -2886,7 +2961,87 @@
         "Add a second, well-distributed component under the region prefix."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-shard-10-holiday-surge",
+          "constraint": "This is a 10-day holiday surge: afterwards NA falls back to 3k writes/s. A sub-shard dual-write migration takes six weeks, and bookings must stay in their legal region.",
+          "correctChoiceId": "bigger-na",
+          "resultOverrides": {
+            "bigger-na": {
+              "approach": "optimal",
+              "resultTitle": "Bigger box carries the 10-day surge",
+              "resultBody": "The 3x instance takes NA to 60% CPU and p95 to 220 ms after a one-minute failover, rows stay in-region, and the surge ends long before any migration could. Cost: about $1,200 this month, then downsize when NA returns to normal.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 60,
+                  "unit": "%",
+                  "tone": "bad"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 220,
+                  "unit": "ms",
+                  "tone": "bad"
+                },
+                {
+                  "key": "errors",
+                  "label": "Write timeouts",
+                  "value": 1,
+                  "unit": "errors/s",
+                  "tone": "bad"
+                }
+              ]
+            },
+            "sub-shard": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "Migration lands after the surge ends",
+              "resultBody": "Dual-writing into four NA sub-shards needs six weeks of backfill and verification, so the holiday surge runs on the same NA node at 95% CPU and 2.1 s p95. By cutover, NA traffic has dropped and four shards sit mostly idle.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 95,
+                  "unit": "%",
+                  "tone": "bad"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 2100,
+                  "unit": "ms",
+                  "tone": "bad"
+                },
+                {
+                  "key": "errors",
+                  "label": "Write timeouts",
+                  "value": 30,
+                  "unit": "errors/s",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "na",
+                    "tone": "bad",
+                    "cpu": 95,
+                    "sub": "migration week 1 of 6"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Ask how long this load will last before deciding how much to build.",
+            "Compare the length of the surge with the length of the migration.",
+            "A fix that is ready in minutes and reversible beats a better one that arrives after the peak."
+          ]
+        }
+      ]
     },
     {
       "id": "shard-11",
@@ -4092,7 +4247,91 @@
         "Give the analytics a copy of the data in a store built for scans."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-shard-15-one-timezone",
+          "constraint": "All CRMly tenants are UK and Irish firms working 08:00-19:00 local time. Finance needs the daily report by 09:00, and there is no budget for new infrastructure this year.",
+          "correctChoiceId": "nightly",
+          "resultOverrides": {
+            "nightly": {
+              "approach": "optimal",
+              "resultTitle": "The scan runs while nobody works",
+              "resultBody": "At 02:00 UTC every tenant is asleep, so the 3-hour scatter-gather finishes by 05:00 and shards are back under 40% CPU before the first login. Cost: no new spend, but the report is a night old and a longer scan could reach office hours.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 38,
+                  "unit": "%",
+                  "tone": "bad"
+                },
+                {
+                  "key": "p95",
+                  "label": "Dashboard p95",
+                  "value": 180,
+                  "unit": "ms",
+                  "tone": "bad"
+                },
+                {
+                  "key": "errors",
+                  "label": "Dashboard timeouts",
+                  "value": 0,
+                  "unit": "errors/s",
+                  "tone": "bad"
+                }
+              ]
+            },
+            "warehouse": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "$900 a month the budget can't pay",
+              "resultBody": "The CDC pipeline and columnar warehouse would work, but they add about $900 a month against a zero infrastructure budget, and building the pipeline takes weeks. Meanwhile the report keeps running in office hours, holding dashboards at 4 s p95.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 92,
+                  "unit": "%",
+                  "tone": "bad"
+                },
+                {
+                  "key": "p95",
+                  "label": "Dashboard p95",
+                  "value": 4000,
+                  "unit": "ms",
+                  "tone": "bad"
+                },
+                {
+                  "key": "errors",
+                  "label": "Dashboard timeouts",
+                  "value": 80,
+                  "unit": "errors/s",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "report",
+                    "tone": "bad",
+                    "sub": "still runs at 10:00"
+                  },
+                  {
+                    "id": "s1",
+                    "tone": "bad",
+                    "cpu": 92
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Ask when the tenants actually use their dashboards.",
+            "If every customer shares one time zone, the cluster has a long daily quiet period.",
+            "A heavy read-only job only hurts when it overlaps interactive traffic."
+          ]
+        }
+      ]
     },
     {
       "id": "shard-16",

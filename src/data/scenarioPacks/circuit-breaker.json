@@ -533,26 +533,7 @@
         "Pick one place allowed to retry, and fail fast everywhere else."
       ],
       "nextId": null,
-      "reviewed": true,
-      "variants": [
-        {
-          "id": "var-cb-fallback",
-          "constraint": "Downstream catalog prices are down, but shoppers can safely complete purchases using yesterday's cached price list.",
-          "correctChoiceId": "scale-inventory",
-          "resultOverrides": {
-            "cb2-fallback": {
-              "approach": "optimal",
-              "resultTitle": "Cached price fallback preserved checkout revenue",
-              "resultBody": "Serving cached catalog prices kept checkouts flowing while the pricing service recovered, avoiding lost sales."
-            },
-            "cb2-fail-fast": {
-              "approach": "anti_pattern",
-              "resultTitle": "Failing fast halted all store checkouts",
-              "resultBody": "Returning immediate HTTP 503 errors blocked shoppers from completing purchases, wiping out sales."
-            }
-          }
-        }
-      ]
+      "reviewed": true
     },
     {
       "id": "cb-03",
@@ -1031,7 +1012,86 @@
         "Let a small amount of traffic test the water before fully closing."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-cb-04-stale-snapshot",
+          "constraint": "The cluster was restored from a 6-hour-old snapshot: it answers queries but returns stale results until the data team re-indexes and signs off. It is pre-warmed for the full 9k req/s.",
+          "correctChoiceId": "manual-reset",
+          "resultOverrides": {
+            "manual-reset": {
+              "approach": "optimal",
+              "resultTitle": "A human closes it after sign-off",
+              "resultBody": "The breaker stays open until the data team confirms the re-index, then on-call closes it and the warm cluster takes all 9k req/s at 55% CPU. Searches fail fast meanwhile. Cost: recovery waits on a person, not a timer.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 55,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 60,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "failfast",
+                  "label": "Searches failing fast",
+                  "value": 0,
+                  "unit": "%",
+                  "tone": "bad"
+                }
+              ]
+            },
+            "half-open-probes": {
+              "approach": "anti_pattern",
+              "resultTitle": "Probes pass, stale results ship",
+              "resultBody": "The 5 half-open probes succeed because the cluster answers, so the breaker closes after 30 s. Users get results six hours old: new listings are missing and deleted ones reappear, before anyone signed off the re-index.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 52,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 60,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "failfast",
+                  "label": "Searches failing fast",
+                  "value": 0,
+                  "unit": "%",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "search",
+                    "tone": "warn",
+                    "sub": "serving a 6-hour-old index"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "The cluster is up; ask whether its answers are correct yet.",
+            "A health probe checks that a service responds, not that its data is current.",
+            "Only someone who knows the re-index status can say when traffic should return."
+          ]
+        }
+      ]
     },
     {
       "id": "cb-05",
@@ -3344,7 +3404,101 @@
         "Retries and timeouts are in http-kit; the breaker is missing there.",
         "Fix the default that every service inherits."
       ],
-      "nextId": null
+      "nextId": null,
+      "variants": [
+        {
+          "id": "var-cb-13-code-freeze",
+          "constraint": "At normal load geo-lookup answers in 60 ms; only the 3x retry traffic browns it out. This week is a code freeze: http-kit may change only through its existing config flags.",
+          "correctChoiceId": "drop-retries",
+          "resultOverrides": {
+            "drop-retries": {
+              "approach": "optimal",
+              "resultTitle": "Retries off, geo-lookup recovers",
+              "resultBody": "Setting http-kit's retry flag to zero cuts geo-lookup from 36k to 12k req/s, its normal load, so it answers in 60 ms again and calls stop hanging on the 10 s timeout. Cost: transient blips now surface as errors until a breaker ships.",
+              "metricsAfter": [
+                {
+                  "key": "rps",
+                  "label": "Traffic",
+                  "value": 12000,
+                  "unit": "req/s",
+                  "tone": "bad"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 50,
+                  "unit": "%",
+                  "tone": "bad"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 150,
+                  "unit": "ms",
+                  "tone": "bad"
+                },
+                {
+                  "key": "errors",
+                  "label": "Failed requests",
+                  "value": 1,
+                  "unit": "%",
+                  "tone": "bad"
+                }
+              ]
+            },
+            "default-breaker": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "Frozen library can't ship code",
+              "resultBody": "The per-host breaker is new code in http-kit, and the freeze blocks every library release this week. The change waits for Monday while 40 services keep making 3 attempts per call and geo-lookup stays at 98% CPU.",
+              "metricsAfter": [
+                {
+                  "key": "rps",
+                  "label": "Traffic",
+                  "value": 36000,
+                  "unit": "req/s",
+                  "tone": "bad"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 98,
+                  "unit": "%",
+                  "tone": "bad"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 10000,
+                  "unit": "ms",
+                  "tone": "bad"
+                },
+                {
+                  "key": "errors",
+                  "label": "Failed requests",
+                  "value": 47,
+                  "unit": "%",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "geo",
+                    "tone": "bad",
+                    "cpu": 98,
+                    "sub": "release blocked by freeze"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Work out how much of geo-lookup's load is real demand.",
+            "Two of every three calls reaching geo-lookup are repeats.",
+            "Under a freeze, look for a switch that already exists and removes the multiplier."
+          ]
+        }
+      ]
     },
     {
       "id": "cb-14",
@@ -4094,7 +4248,105 @@
         "At 4 req/s, two timeouts in five calls is bad luck, not an outage.",
         "Require enough samples before a failure rate means anything."
       ],
-      "nextId": null
+      "nextId": null,
+      "variants": [
+        {
+          "id": "var-cb-new-01-all-or-nothing",
+          "constraint": "RiskCheck fails all at once, never partially: it is one process that is either up or down. Night traffic drops to 1 req/s, and outages must trip within 10 s at any hour.",
+          "correctChoiceId": "five-in-a-row",
+          "resultOverrides": {
+            "five-in-a-row": {
+              "approach": "optimal",
+              "resultTitle": "Five straight failures means it's down",
+              "resultBody": "With 0.5% random timeouts, five in a row almost never happen, so night flapping stops. A real outage fails every call, so the breaker trips within 5 s at 1 req/s and instantly by day. Cost: a partial failure would go unnoticed.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 21,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 240,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "trips",
+                  "label": "Breaker trips per hour",
+                  "value": 0,
+                  "unit": "trips",
+                  "tone": "bad"
+                },
+                {
+                  "key": "errors",
+                  "label": "Payments failed",
+                  "value": 0.3,
+                  "unit": "%",
+                  "tone": "bad"
+                }
+              ]
+            },
+            "rate-window-min-volume": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "Night outages never reach 50 calls",
+              "resultBody": "At 1 req/s a 30 s window holds only 30 calls, below the 50-call minimum, so a real overnight outage never trips the breaker. Payments hang on fraud-check timeouts for as long as RiskCheck stays down.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 40,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 2500,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "trips",
+                  "label": "Breaker trips per hour",
+                  "value": 0,
+                  "unit": "trips",
+                  "tone": "bad"
+                },
+                {
+                  "key": "errors",
+                  "label": "Payments failed",
+                  "value": 60,
+                  "unit": "%",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "fraud",
+                    "tone": "bad",
+                    "sub": "down, breaker never trips"
+                  },
+                  {
+                    "id": "app",
+                    "tone": "bad",
+                    "sub": "waiting on timeouts"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Consider how RiskCheck actually fails, and how quiet the night gets.",
+            "A minimum call count can't be reached when traffic is one call per second.",
+            "When failures are all-or-nothing, a short unbroken streak is strong evidence."
+          ]
+        }
+      ]
     },
     {
       "id": "cb-restart-01",

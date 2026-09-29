@@ -520,26 +520,7 @@
         "What if the session remembered where its last write landed in the WAL?"
       ],
       "nextId": null,
-      "reviewed": true,
-      "variants": [
-        {
-          "id": "var-cons-latency",
-          "constraint": "Contractual SLA requires P99 read latency under 5ms globally; slight inventory count lag is acceptable.",
-          "correctChoiceId": "primary-60s",
-          "resultOverrides": {
-            "cons-02-eventual": {
-              "approach": "optimal",
-              "resultTitle": "Local eventual reads meet the 5ms global SLA",
-              "resultBody": "Reading from local regional replicas fulfills the tight 5ms latency guarantee without blocking on cross-region sync."
-            },
-            "cons-02-sync": {
-              "approach": "anti_pattern",
-              "resultTitle": "Synchronous cross-region consensus blew the latency budget",
-              "resultBody": "Cross-region round trips took 180ms, violating the strict 5ms P99 latency SLA."
-            }
-          }
-        }
-      ]
+      "reviewed": true
     },
     {
       "id": "cons-03",
@@ -636,7 +617,7 @@
             "tradeoffSummary": "Zero loss for in-region failures; a full-region loss can still drop the async tail."
           },
           "resultTitle": "Failover keeps every confirmed booking",
-          "resultBody": "Each commit waits for an in-region standby (~1 ms away) to persist the WAL before acknowledging. Note: if the standby stalls and reaches the timeout threshold, semi-sync falls back to asynchronous mode, risking data loss on subsequent failure. Otherwise, a clean crash loses nothing confirmed, promoting the standby. The us-west replica stays async for regional disasters. Cost: +2 ms write p99 and one more database server.",
+          "resultBody": "Each commit waits for an in-region standby (~1 ms away) to persist the WAL before acknowledging, so a primary crash is recovered by promoting the standby. Caveat: if the standby stalls past the timeout, semi-sync silently falls back to async, and commits acknowledged in that window can be lost. The us-west replica stays async for regional disasters. Cost: +2 ms write p99 and one more database server.",
           "metricsAfter": [
             {
               "key": "lost",
@@ -760,7 +741,86 @@
         "Some copy close enough to wait on cheaply must hold the log before the ack."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-cons-03-region-loss",
+          "constraint": "Regulators now require zero lost bookings even if all of us-east is lost. Booking writes may take up to 300 ms p99, and us-west is 70 ms away.",
+          "correctChoiceId": "sync-west",
+          "resultOverrides": {
+            "sync-west": {
+              "approach": "optimal",
+              "resultTitle": "Every booking waits for us-west",
+              "resultBody": "Each commit is acknowledged only after the us-west replica has the WAL, so even a full us-east loss keeps every confirmed booking. Write p99 rises from 12 ms to about 150 ms, inside the 300 ms budget; a WAN blip stalls writes, never loses them.",
+              "metricsAfter": [
+                {
+                  "key": "lost",
+                  "label": "Confirmed bookings lost",
+                  "value": 0,
+                  "unit": "bookings",
+                  "tone": "bad"
+                },
+                {
+                  "key": "rpo",
+                  "label": "Data-loss window",
+                  "value": 0,
+                  "unit": "s",
+                  "tone": "bad"
+                },
+                {
+                  "key": "p99",
+                  "label": "Write p99",
+                  "value": 150,
+                  "unit": "ms",
+                  "tone": "good"
+                }
+              ]
+            },
+            "semi-sync": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "Standby dies with its region",
+              "resultBody": "The semi-sync standby sits in us-east, so losing one server loses nothing, but a regional outage takes primary and standby together. Promotion falls back to the async us-west copy, and its 6 s tail, about 1,900 bookings, is gone again.",
+              "metricsAfter": [
+                {
+                  "key": "lost",
+                  "label": "Confirmed bookings lost",
+                  "value": 1900,
+                  "unit": "bookings",
+                  "tone": "bad"
+                },
+                {
+                  "key": "rpo",
+                  "label": "Data-loss window",
+                  "value": 6,
+                  "unit": "s",
+                  "tone": "bad"
+                },
+                {
+                  "key": "p99",
+                  "label": "Write p99",
+                  "value": 14,
+                  "unit": "ms",
+                  "tone": "good"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "db",
+                    "tone": "bad",
+                    "sub": "primary + standby lost with us-east"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Decide which failure you must survive: one server, or a whole region?",
+            "Any copy inside us-east disappears in the same disaster as the primary.",
+            "The latency budget is now wide enough to wait on a copy far away."
+          ]
+        }
+      ]
     },
     {
       "id": "cons-04",
@@ -1223,7 +1283,86 @@
         "Could the write itself tell the CDN to drop that one page?"
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-cons-05-purge-quota",
+          "constraint": "Only 4% of readers are logged in, and origin was just scaled to 20k req/s. The CDN plan allows 100 purges an hour, far fewer than the 600 comments posted each minute.",
+          "correctChoiceId": "bypass-logged-in",
+          "resultOverrides": {
+            "bypass-logged-in": {
+              "approach": "optimal",
+              "resultTitle": "Logged-in readers skip the cache",
+              "resultBody": "Logged-in readers, 4% of traffic, now bypass the CDN: about 3,800 req/s on an origin sized for 20k. Commenters see their reply instantly, anonymous readers keep the 60 s cache, and the hit ratio stays near 93%. Cost: origin work for every signed-in view.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 55,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "hit",
+                  "label": "CDN hit ratio",
+                  "value": 93,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "dup",
+                  "label": "Duplicate comments",
+                  "value": 0.5,
+                  "unit": "%",
+                  "tone": "bad"
+                }
+              ]
+            },
+            "purge-key": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "Purge quota runs out in seconds",
+              "resultBody": "Each comment fires a surrogate-key purge, but 600 comments a minute exhaust the 100-per-hour quota in ten seconds. The CDN rejects the rest, threads keep their 60 s copies, and duplicate comments stay near 8%.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 60,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "hit",
+                  "label": "CDN hit ratio",
+                  "value": 97,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "dup",
+                  "label": "Duplicate comments",
+                  "value": 8,
+                  "unit": "%",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "cdn",
+                    "tone": "warn",
+                    "sub": "purge quota exhausted"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Count who actually needs a fresh page right after posting.",
+            "The CDN's purge budget is far smaller than the comment rate.",
+            "A small slice of readers could skip the shared copy without hurting origin."
+          ]
+        }
+      ]
     },
     {
       "id": "cons-06",
@@ -5349,7 +5488,87 @@
         "A burstable instance with no CPU credits cannot keep up with WAL replay."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-cons-upsize-01-no-spend",
+          "constraint": "Finance vetoed restoring the $300/month instance, and Replica C is retired at month end. An LSN-aware read router is already built behind a feature flag; Replicas A and B run at 30% CPU.",
+          "correctChoiceId": "lsn-routing",
+          "resultOverrides": {
+            "lsn-routing": {
+              "approach": "optimal",
+              "resultTitle": "Reads route around the lagging replica",
+              "resultBody": "Flipping the flag makes each session read only from replicas past its last commit LSN, so traffic drains off C and A and B absorb it at about 45% CPU. Stale reads fall to 0.2%. Cost: nothing new, but C idles until retired.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 45,
+                  "unit": "%",
+                  "tone": "bad"
+                },
+                {
+                  "key": "lag",
+                  "label": "Worst replica lag",
+                  "value": 0.3,
+                  "unit": "s",
+                  "tone": "bad"
+                },
+                {
+                  "key": "stale",
+                  "label": "Stale reads",
+                  "value": 0.2,
+                  "unit": "%",
+                  "tone": "bad"
+                }
+              ]
+            },
+            "upsize-replica": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "Upsize vetoed by finance",
+              "resultBody": "The 8-vCPU class would drain the backlog in minutes, but finance refuses $300 a month for a replica retiring in weeks. The change request stalls while C stays out of credits and 9% of reads keep coming back stale.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 98,
+                  "unit": "%",
+                  "tone": "bad"
+                },
+                {
+                  "key": "lag",
+                  "label": "Worst replica lag",
+                  "value": 40,
+                  "unit": "s",
+                  "tone": "bad"
+                },
+                {
+                  "key": "stale",
+                  "label": "Stale reads",
+                  "value": 9,
+                  "unit": "%",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "r3",
+                    "tone": "bad",
+                    "cpu": 98,
+                    "sub": "upsize request rejected"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "The box can't change this month, but the read path can.",
+            "Replicas A and B have plenty of room and are only a fraction of a second behind.",
+            "Let each session read only from a copy that has already seen its writes."
+          ]
+        }
+      ]
     },
     {
       "id": "cons-casc-01",

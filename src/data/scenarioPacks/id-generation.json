@@ -551,21 +551,59 @@
       "nextId": null,
       "variants": [
         {
-          "id": "var-idg-uuid7",
-          "constraint": "System must output standard RFC-compliant 128-bit UUID strings required by partner banking APIs.",
+          "id": "var-idg-02-rolling-ledger",
+          "constraint": "Partner contracts pin keys to random UUIDv4 until a 2027 recertification. The ledger keeps only 30 days of rows, so its primary-key index stays flat at 90 GB.",
           "correctChoiceId": "more-ram",
           "resultOverrides": {
-            "idg-02-uuid7": {
+            "more-ram": {
               "approach": "optimal",
-              "resultTitle": "UUIDv7 provides time-ordered clustering in standard UUID format",
-              "resultBody": "UUIDv7 satisfies the 128-bit RFC standard format while keeping timestamp bits first to prevent B-tree page fragmentation."
+              "resultTitle": "The whole index fits in memory",
+              "resultBody": "At 128 GB the pool holds the entire 90 GB primary-key index, so random inserts hit cached pages again: hit rate back to 99%, p95 near 7 ms. It costs $900 a month and holds because the 30-day window stops growth.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 50,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 7,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 0,
+                  "unit": "errors",
+                  "tone": "good"
+                }
+              ]
             },
-            "idg-02-snowflake": {
+            "uuid-v7": {
               "approach": "anti_pattern",
-              "resultTitle": "64-bit integer IDs were rejected by banking partner schemas",
-              "resultBody": "Partner systems strictly validated UUID regexes; 64-bit integers failed API schema validation checks."
+              "resultTitle": "Partners reject the new keys",
+              "resultBody": "UUIDv7 would restore locality, but partner validators accept only version-4 UUIDs until 2027. Every transaction carrying a v7 key bounces at settlement, and the 90 GB index would have fit in RAM anyway.",
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "api",
+                    "tone": "bad",
+                    "cpu": 60,
+                    "sub": "partners reject v7 keys"
+                  }
+                ]
+              }
             }
-          }
+          },
+          "hints": [
+            "Is the index still growing, or has it stopped at a fixed size?",
+            "Random inserts only hurt when the pages they touch are not in memory.",
+            "Compare the index size with how much memory the database can cache."
+          ]
         }
       ]
     },
@@ -1034,7 +1072,31 @@
         "Uniqueness needs one authority, not a local guess.",
         "Think of a claim that expires if its owner dies."
       ],
-      "nextId": null
+      "nextId": null,
+      "variants": [
+        {
+          "id": "var-idg-04-one-subnet",
+          "constraint": "All 220 pods share one /24 subnet, so the network plugin never gives two live pods the same address. The cluster has no etcd, and a new quorum means another system to run.",
+          "correctChoiceId": "ip-octet",
+          "resultOverrides": {
+            "ip-octet": {
+              "approach": "optimal",
+              "resultTitle": "The subnet already guarantees uniqueness",
+              "resultBody": "In a single /24, IPAM hands each live pod a distinct address, so the last octet is a unique worker ID with no extra system. The cost: the group is capped at 254 pods, and a second subnet would break it."
+            },
+            "lease-ids": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "Correct, but a new quorum to babysit",
+              "resultBody": "Leases end the duplicates, but this cluster has no etcd, so the team now runs a 3-node quorum for $120 a month and pages on its health. The subnet already gave every live pod a unique octet for free."
+            }
+          },
+          "hints": [
+            "Hashing 220 names into 1,024 slots collides. What is already unique per live pod?",
+            "Something in this cluster already refuses to give two live pods the same value.",
+            "Within one /24 subnet, the address allocator already enforces uniqueness."
+          ]
+        }
+      ]
     },
     {
       "id": "idg-05",
@@ -1717,7 +1779,64 @@
         "Burstable VMs and gp2 volumes both throttle once their credits run out."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-idg-upsize-01-spend-freeze",
+          "constraint": "Spend is frozen at $0 until new hardware lands in 3 weeks. Only 220 of 1,024 worker IDs are in use, so a dead pod's ID can sit leased for minutes.",
+          "correctChoiceId": "long-ttl",
+          "resultOverrides": {
+            "long-ttl": {
+              "approach": "optimal",
+              "resultTitle": "Five-minute leases outlast every fsync stall",
+              "resultBody": "Renewing every 10 seconds, a 5-minute lease survives 30 missed heartbeats, so 180 ms fsync spikes no longer lapse it. Pauses drop to under 1 an hour for $0; a crashed pod's ID stays reserved 5 minutes, harmless with 800 spare.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 84,
+                  "unit": "%",
+                  "tone": "warn"
+                },
+                {
+                  "key": "fsync",
+                  "label": "WAL fsync p99",
+                  "value": 170,
+                  "unit": "ms",
+                  "tone": "warn"
+                },
+                {
+                  "key": "stalls",
+                  "label": "Minting pauses",
+                  "value": 1,
+                  "unit": "per hour",
+                  "tone": "good"
+                }
+              ]
+            },
+            "upsize": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "Blocked by the spending freeze",
+              "resultBody": "Provisioned-IOPS instances would fix fsync, but they add $350 a month during a $0 freeze, and the hardware arriving in 3 weeks replaces them anyway. While the request waits, leases keep lapsing 14 times an hour.",
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "etcd",
+                    "tone": "bad",
+                    "cpu": 88,
+                    "sub": "purchase blocked, fsync 180 ms"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "The disk stays slow for 3 weeks. What decides how long a hiccup can last before a lease is lost?",
+            "A lease only lapses when renewals fail for its whole lifetime.",
+            "With 800 spare worker IDs, holding a dead pod's ID longer costs almost nothing."
+          ]
+        }
+      ]
     },
     {
       "canonical": false,

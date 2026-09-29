@@ -733,26 +733,7 @@
         "An unbounded backlog turns a fast failure into a slow, invisible one.",
         "HTTP status codes can carry a 'come back later' time."
       ],
-      "nextId": null,
-      "variants": [
-        {
-          "id": "var-bp-drop",
-          "constraint": "Real-time car telemetry streams cannot pause upstream vehicle sensors; recent data is far more valuable than old data.",
-          "correctChoiceId": "scale-api",
-          "resultOverrides": {
-            "bp2-drop-old": {
-              "approach": "optimal",
-              "resultTitle": "Dropping stale metrics prioritized fresh sensor telemetry",
-              "resultBody": "Shedding outdated sensor frames kept processing latencies near real-time without blowing memory buffers."
-            },
-            "bp2-pause": {
-              "approach": "anti_pattern",
-              "resultTitle": "Pausing vehicle sensors caused vehicle hardware buffer overflows",
-              "resultBody": "Physical IoT sensors had no disk buffers; telling them to pause caused telemetry drops at the device firmware level."
-            }
-          }
-        }
-      ]
+      "nextId": null
     },
     {
       "id": "bp-03",
@@ -1288,7 +1269,106 @@
         "The slow step's rate is fixed, so the buffer in front of it must be bounded.",
         "The consumer API can stop fetching from partitions without leaving the group."
       ],
-      "nextId": null
+      "nextId": null,
+      "variants": [
+        {
+          "id": "var-bp-04-partner-lifted",
+          "constraint": "The partner lifted its cap to 30,000 calls a second for this account. Enrichment is CPU-bound at 500 records a second per pod, and orders must be enriched within a minute of arrival.",
+          "correctChoiceId": "more-consumers",
+          "resultOverrides": {
+            "more-consumers": {
+              "approach": "optimal",
+              "resultTitle": "Forty pods keep pace with the topic",
+              "resultBody": "With 40 partitions and 40 pods, each pod pulls about 500 records a second, exactly what its CPU can enrich, so buffers stay small and the partner's 30,000 cap has headroom. Cost: 39 extra pods, roughly $2,300 a month.",
+              "metricsAfter": [
+                {
+                  "key": "rps",
+                  "label": "Fetch rate",
+                  "value": 20000,
+                  "unit": "rec/s",
+                  "tone": "neutral"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 65,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "heap",
+                  "label": "Heap used",
+                  "value": 0.6,
+                  "unit": "GB",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 0,
+                  "unit": "err/s",
+                  "tone": "good"
+                }
+              ]
+            },
+            "pause-partitions": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "Heap is safe, orders fall hours behind",
+              "resultBody": "Pausing bounds the heap at 700 MB, but one pod still enriches only 500 of 20,000 records a second; lag grows by 19,500 a second, about 70 million an hour, and orders arrive hours past the one-minute target.",
+              "metricsAfter": [
+                {
+                  "key": "rps",
+                  "label": "Fetch rate",
+                  "value": 500,
+                  "unit": "rec/s",
+                  "tone": "bad"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 95,
+                  "unit": "%",
+                  "tone": "bad"
+                },
+                {
+                  "key": "heap",
+                  "label": "Heap used",
+                  "value": 0.7,
+                  "unit": "GB",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 0,
+                  "unit": "err/s",
+                  "tone": "good"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "topic",
+                    "tone": "bad",
+                    "sub": "lag +19,500 rec/s"
+                  },
+                  {
+                    "id": "c",
+                    "tone": "warn",
+                    "cpu": 95,
+                    "sub": "500 rec/s, partitions paused"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "The partner is no longer the limit. What is?",
+            "One pod can enrich 500 records a second; the topic produces 40 times that.",
+            "Kafka spreads a topic's partitions across the members of a consumer group."
+          ]
+        }
+      ]
     },
     {
       "id": "bp-05",
@@ -3462,7 +3542,106 @@
         "Nothing limits how many calls a single request can have in flight.",
         "Fewer, bigger calls, with a cap on how many run at once."
       ],
-      "nextId": null
+      "nextId": null,
+      "variants": [
+        {
+          "id": "var-bp-12-shared-dashboard",
+          "constraint": "The widget service has no batch endpoint and its team can't add one this quarter. 95% of loads are the same company status dashboard, identical for every viewer.",
+          "correctChoiceId": "widget-cache",
+          "resultOverrides": {
+            "widget-cache": {
+              "approach": "optimal",
+              "resultTitle": "Shared widgets served from cache",
+              "resultBody": "With nearly everyone viewing one dashboard, a 10-second cache answers 95% of widget calls, so each load sends about 20 RPCs instead of 400 and mesh queues drain. Errors fall below 1%. Cost: widgets can be up to 10 s stale.",
+              "metricsAfter": [
+                {
+                  "key": "rps",
+                  "label": "Internal RPCs",
+                  "value": 40000,
+                  "unit": "req/s",
+                  "tone": "good"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 38,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "Dashboard p95",
+                  "value": 500,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Dashboard errors",
+                  "value": 0.5,
+                  "unit": "%",
+                  "tone": "good"
+                }
+              ]
+            },
+            "batch-bounded": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "No batch endpoint to call",
+              "resultBody": "The multi-get endpoint doesn't exist and won't this quarter. The semaphore alone, 4 in flight over 400 single calls, turns each load into 100 sequential round trips: the mesh calms down, but dashboard p95 climbs to 6 s.",
+              "metricsAfter": [
+                {
+                  "key": "rps",
+                  "label": "Internal RPCs",
+                  "value": 800000,
+                  "unit": "req/s",
+                  "tone": "warn"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 70,
+                  "unit": "%",
+                  "tone": "warn"
+                },
+                {
+                  "key": "p95",
+                  "label": "Dashboard p95",
+                  "value": 6000,
+                  "unit": "ms",
+                  "tone": "bad"
+                },
+                {
+                  "key": "errors",
+                  "label": "Dashboard errors",
+                  "value": 4,
+                  "unit": "%",
+                  "tone": "warn"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "dash",
+                    "tone": "bad",
+                    "cpu": 70,
+                    "sub": "400 calls, 4 at a time"
+                  },
+                  {
+                    "id": "mesh",
+                    "tone": "warn",
+                    "cpu": 70
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Count the calls behind one page view, then count how many are unique.",
+            "Almost every viewer asks for exactly the same 400 widgets.",
+            "An answer computed for one viewer could serve the next thousand for a few seconds."
+          ]
+        }
+      ]
     },
     {
       "id": "bp-13",
@@ -4178,7 +4357,104 @@
         "Hedges fire more exactly when the origin is slowest.",
         "Hedging needs a budget that shrinks as the origin struggles."
       ],
-      "nextId": null
+      "nextId": null,
+      "variants": [
+        {
+          "id": "var-bp-15-frozen-sdk",
+          "constraint": "The SDK ships inside partner apps that won't update for 3 months, so only the origin can change. The feed team has budget for extra nodes this quarter.",
+          "correctChoiceId": "triple-origin",
+          "resultOverrides": {
+            "triple-origin": {
+              "approach": "optimal",
+              "resultTitle": "Origin outruns the hedge trigger",
+              "resultBody": "Three times the nodes absorb 90k req/s, so responses return under 300 ms and hedges stop firing; load falls back toward 33k req/s, leaving headroom for the next slowdown. Cost: the bill triples until partner apps ship a hedge budget.",
+              "metricsAfter": [
+                {
+                  "key": "rps",
+                  "label": "Origin load",
+                  "value": 33000,
+                  "unit": "req/s",
+                  "tone": "good"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 25,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 190,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Timeouts",
+                  "value": 0.3,
+                  "unit": "%",
+                  "tone": "good"
+                }
+              ]
+            },
+            "hedge-budget": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "The fix reaches almost no phones",
+              "resultBody": "The hedge budget is the right design, but it ships only in the SDK and partner apps won't update for 3 months; about 5% of installs get it, so origin load stays near 87k req/s and p95 near 2.4 s.",
+              "metricsAfter": [
+                {
+                  "key": "rps",
+                  "label": "Origin load",
+                  "value": 87000,
+                  "unit": "req/s",
+                  "tone": "bad"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 98,
+                  "unit": "%",
+                  "tone": "bad"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 2400,
+                  "unit": "ms",
+                  "tone": "bad"
+                },
+                {
+                  "key": "errors",
+                  "label": "Timeouts",
+                  "value": 15,
+                  "unit": "%",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "users",
+                    "tone": "bad",
+                    "sub": "95% still on the old SDK"
+                  },
+                  {
+                    "id": "api",
+                    "sub": "87k req/s, 3 copies each"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Users didn't triple; copies did, and you can't touch the code that makes them.",
+            "The SDK only sends a copy when the origin takes longer than 300 ms.",
+            "If the origin stays fast even while absorbing the copies, the copies stop being sent."
+          ]
+        }
+      ]
     },
     {
       "id": "bp-new-01",

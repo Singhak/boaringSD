@@ -630,26 +630,7 @@
         "Any fix that relies on clients re-resolving inherits every cache between you and them.",
         "Keep the IP the same and change what's behind it."
       ],
-      "nextId": null,
-      "variants": [
-        {
-          "id": "var-mr-passive",
-          "constraint": "Monthly infrastructure budget is capped at $400/month; active-active multi-region licensing costs $2,500/month.",
-          "correctChoiceId": "ttl-5s",
-          "resultOverrides": {
-            "mr2-pilot-light": {
-              "approach": "optimal",
-              "resultTitle": "Pilot-light standby stays within the $400/mo budget",
-              "resultBody": "A minimal pilot-light deployment replicates data continuously at low cost and scales up only during disaster failover."
-            },
-            "mr2-active-active": {
-              "approach": "anti_pattern",
-              "resultTitle": "Active-active deployment blew the monthly budget by 6x",
-              "resultBody": "Running twin active clusters in both regions cost over $2,500/mo, violating the hard $400/mo constraint."
-            }
-          }
-        }
-      ]
+      "nextId": null
     },
     {
       "id": "mr-03",
@@ -1332,7 +1313,86 @@
         "For these users the asker is thousands of kilometres away from the user.",
         "Make the routing decision at a point that sees the user's own connection."
       ],
-      "nextId": null
+      "nextId": null,
+      "variants": [
+        {
+          "id": "var-mr-04-public-articles",
+          "constraint": "Deskly's Singapore users mostly browse the shared knowledge base: 90% of API calls are identical, public article fetches. The edge budget is $300 a month.",
+          "correctChoiceId": "cdn-api",
+          "resultOverrides": {
+            "cdn-api": {
+              "approach": "optimal",
+              "resultTitle": "Articles served from the Singapore edge",
+              "resultBody": "Public article responses cache at the Singapore PoP with a 5-minute TTL, so 90% of calls skip the 240 ms trip to Virginia and page loads fall to about 0.8 s. Cost: about $300 a month, and edits take up to five minutes to appear.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 30,
+                  "unit": "%",
+                  "tone": "neutral"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 page load",
+                  "value": 800,
+                  "unit": "ms",
+                  "tone": "bad"
+                },
+                {
+                  "key": "errors",
+                  "label": "Misrouted APAC users",
+                  "value": 5,
+                  "unit": "%",
+                  "tone": "bad"
+                }
+              ]
+            },
+            "edge-l7-routing": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "Edge routing costs triple the budget",
+              "resultBody": "Anycast L7 routing would reach ap-southeast-1 properly, but at about $900 a month it is three times the $300 edge budget and stays unapproved. Singapore users keep the Virginia path and 2.8 s page loads.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 52,
+                  "unit": "%",
+                  "tone": "neutral"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 page load",
+                  "value": 2800,
+                  "unit": "ms",
+                  "tone": "bad"
+                },
+                {
+                  "key": "errors",
+                  "label": "Misrouted APAC users",
+                  "value": 63,
+                  "unit": "%",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "east",
+                    "tone": "warn",
+                    "sub": "still serving Singapore"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Look at what these users are actually requesting.",
+            "Identical public responses don't need a round trip to any region.",
+            "Answer the repeated requests close to the user, within the budget."
+          ]
+        }
+      ]
     },
     {
       "id": "mr-05",
@@ -3028,7 +3088,86 @@
         "With async replication, 'check the database first' sees only your own region's writes.",
         "Give each unit of work exactly one owner, and make handing it over explicit."
       ],
-      "nextId": null
+      "nextId": null,
+      "variants": [
+        {
+          "id": "var-mr-10-late-billing-ok",
+          "constraint": "Finance accepts billing up to three days late if the billing region is down on the 1st, and will trigger it by hand. Customers have no home region; adding one is a quarter-long schema project.",
+          "correctChoiceId": "disable-eu-cron",
+          "resultOverrides": {
+            "disable-eu-cron": {
+              "approach": "optimal",
+              "resultTitle": "One billing region, manual fallback",
+              "resultBody": "Only us-east runs the cron, so each of the 48k customers gets exactly one invoice. If us-east is down on the 1st, finance triggers the job from eu-west once, well inside its three-day tolerance. Cost: billing depends on one region plus a runbook.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 34,
+                  "unit": "%",
+                  "tone": "warn"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 420,
+                  "unit": "ms",
+                  "tone": "neutral"
+                },
+                {
+                  "key": "errors",
+                  "label": "Duplicate invoices",
+                  "value": 0,
+                  "unit": "invoices",
+                  "tone": "bad"
+                }
+              ]
+            },
+            "home-region-owner": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "Needs a column that doesn't exist",
+              "resultBody": "Region ownership needs a home_region on every customer row, a quarter-long schema project. Next month's billing runs before it lands, so both crons still bill all 48k customers and 96k invoices go out again.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 61,
+                  "unit": "%",
+                  "tone": "warn"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 450,
+                  "unit": "ms",
+                  "tone": "neutral"
+                },
+                {
+                  "key": "errors",
+                  "label": "Duplicate invoices",
+                  "value": 48000,
+                  "unit": "invoices",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "mail",
+                    "tone": "bad",
+                    "sub": "96k sent again"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Check how quickly billing actually has to recover after a regional outage.",
+            "A job that may run three days late doesn't need automatic failover.",
+            "The simplest way to run something once is to run it in one place."
+          ]
+        }
+      ]
     },
     {
       "id": "mr-11",
@@ -4680,7 +4819,86 @@
         "Picking one winner by time always throws the other edit away.",
         "Use a data type whose merge is commutative, so both regions converge on the union."
       ],
-      "nextId": null
+      "nextId": null,
+      "variants": [
+        {
+          "id": "var-mr-new-01-recalls",
+          "constraint": "Cart writes may take up to 300 ms, but a removed item must never come back: a remove racing an add re-shipped recalled products and drew a regulator fine.",
+          "correctChoiceId": "home-region",
+          "resultOverrides": {
+            "home-region": {
+              "approach": "optimal",
+              "resultTitle": "One writer per cart, in order",
+              "resultBody": "Each cart's writes go to its home region, so edits apply in one order and a remove is never undone by a racing add. Lost items drop to 0; shoppers homed across the Pacific wait about 210 ms per write, inside the 300 ms budget.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 46,
+                  "unit": "%",
+                  "tone": "neutral"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 210,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Carts losing items",
+                  "value": 0,
+                  "unit": "%",
+                  "tone": "bad"
+                }
+              ]
+            },
+            "or-set": {
+              "approach": "anti_pattern",
+              "resultTitle": "Add-wins brings recalled items back",
+              "resultBody": "The OR-Set keeps both regions' adds, and its add-wins rule means a remove racing a concurrent add loses. Recalled items removed in us-east reappear when a phone in ap-south re-adds them, and 0.4% of carts still ship something removed.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 53,
+                  "unit": "%",
+                  "tone": "neutral"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 62,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Carts losing items",
+                  "value": 0.4,
+                  "unit": "%",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "apdb",
+                    "tone": "warn",
+                    "sub": "add beat a concurrent remove"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Read what the business now fears more: slow writes or resurrected items.",
+            "Any merge that keeps concurrent adds will sometimes keep an item someone removed.",
+            "With 300 ms to spare, each cart can afford one place where its edits are ordered."
+          ]
+        }
+      ]
     },
     {
       "id": "mr-upsize-01",

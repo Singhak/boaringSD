@@ -554,26 +554,7 @@
         "Keep strictness where divergence costs money."
       ],
       "nextId": null,
-      "reviewed": true,
-      "variants": [
-        {
-          "id": "var-cap-ap",
-          "constraint": "Product is an ephemeral live chat room where showing recent messages immediately is critical, while dropped rooms during split are acceptable.",
-          "correctChoiceId": "longer-timeout",
-          "resultOverrides": {
-            "cap-02-ap": {
-              "approach": "optimal",
-              "resultTitle": "AP posture keeps live chat rooms active across partitions",
-              "resultBody": "Prioritizing availability allows users to continue chatting within their partition without room freezes."
-            },
-            "cap-02-cp": {
-              "approach": "anti_pattern",
-              "resultTitle": "CP posture locked chat rooms during the network split",
-              "resultBody": "Refusing writes locked out 60% of chat users, freezing active discussions during a live sporting event."
-            }
-          }
-        }
-      ]
+      "reviewed": true
     },
     {
       "id": "cap-casc-02",
@@ -994,7 +975,100 @@
         "Who actually needs the freshest copy?"
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-cap-03-takedowns",
+          "constraint": "Feeds carry legal takedowns that must vanish in Singapore the moment they commit. Writes are 0.5% of traffic, and a 180 ms slower write is acceptable.",
+          "correctChoiceId": "sync-all",
+          "resultOverrides": {
+            "sync-all": {
+              "approach": "optimal",
+              "resultTitle": "Fresh local reads, slower writes",
+              "resultBody": "The leader waits for Singapore's ack before committing, so a takedown reaches the local replica before anyone can read it; feed reads stay local at about 150 ms p95. Cost: writes pay the 180 ms round trip, and a Singapore outage stalls them.",
+              "metricsAfter": [
+                {
+                  "key": "rps",
+                  "label": "Traffic",
+                  "value": 60000,
+                  "unit": "req/s",
+                  "tone": "neutral"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 40,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 150,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 0,
+                  "unit": "errors",
+                  "tone": "good"
+                }
+              ]
+            },
+            "local-follower": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "Takedowns linger for seconds",
+              "resultBody": "Reads are fast, but async replication leaves the Singapore follower 1-3 s behind, so a taken-down post stays visible to local readers after it commits, which the legal rule forbids.",
+              "metricsAfter": [
+                {
+                  "key": "rps",
+                  "label": "Traffic",
+                  "value": 60000,
+                  "unit": "req/s",
+                  "tone": "neutral"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 37,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 147,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 45,
+                  "unit": "errors",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "sg",
+                    "tone": "warn",
+                    "sub": "1-3 s behind, takedowns visible"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "There's no partition, but the freshness rule has changed.",
+            "Writes are rare; reads are 200 times more common.",
+            "Pay the ocean round trip on the operation that happens least often."
+          ]
+        }
+      ]
     },
     {
       "id": "cap-casc-01",
@@ -1691,7 +1765,91 @@
         "Tune consistency per query, not per cluster."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-cap-05-badge-only",
+          "constraint": "Stock now shows only as an 'in stock' badge, and checkout re-verifies every item with the reservation service before charging. Replica CPU is the budget to protect.",
+          "correctChoiceId": "all-one",
+          "resultOverrides": {
+            "all-one": {
+              "approach": "optimal",
+              "resultTitle": "One nearby replica per read",
+              "resultBody": "Every page read, badge included, hits one nearby replica, so p95 drops to about 290 ms and replica work shrinks. A stale badge is harmless because checkout re-verifies stock. Cost: a sold-out item can show 'in stock' for a second or two.",
+              "metricsAfter": [
+                {
+                  "key": "rps",
+                  "label": "Traffic",
+                  "value": 75000,
+                  "unit": "req/s",
+                  "tone": "neutral"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 38,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 290,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 0,
+                  "unit": "errors",
+                  "tone": "good"
+                }
+              ]
+            },
+            "tune-per-query": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "Quorum reads guarding a badge",
+              "resultBody": "It works, but each LOCAL_QUORUM stock read touches two replicas to protect a badge nobody relies on, since checkout re-verifies anyway; replica CPU sits at 44% instead of 38%, and badge reads stall when a local replica is slow.",
+              "metricsAfter": [
+                {
+                  "key": "rps",
+                  "label": "Traffic",
+                  "value": 75000,
+                  "unit": "req/s",
+                  "tone": "neutral"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 44,
+                  "unit": "%",
+                  "tone": "warn"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 315,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 0,
+                  "unit": "errors",
+                  "tone": "good"
+                }
+              ]
+            }
+          },
+          "hints": [
+            "Ask which reads on this page still need any guarantee at all.",
+            "Checkout checks stock again with its own service before charging.",
+            "If a stale answer is caught downstream, how many replicas must agree on this read?"
+          ]
+        }
+      ]
     },
     {
       "id": "cap-06",
@@ -3259,7 +3417,106 @@
         "Failing fast when hint thresholds are breached preserves node stability."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-cap-10-quorum-acked",
+          "constraint": "Every write is acknowledged by a quorum of 3 replicas before any hint is stored, and a full anti-entropy repair runs as soon as a partition heals.",
+          "correctChoiceId": "cap-10-silent-drop",
+          "resultOverrides": {
+            "cap-10-silent-drop": {
+              "approach": "optimal",
+              "resultTitle": "Hints dropped, writes still durable",
+              "resultBody": "Once the hint window fills, coordinators stop storing hints but keep acking writes that already reached 2 of 3 replicas; disk stops growing, and repair rebuilds the isolated peer after heal. Cost: that replica lags until repair, so reads must use QUORUM.",
+              "metricsAfter": [
+                {
+                  "key": "rps",
+                  "label": "Traffic",
+                  "value": 31000,
+                  "unit": "req/s",
+                  "tone": "neutral"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 46,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 48,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 5,
+                  "unit": "errors",
+                  "tone": "good"
+                }
+              ]
+            },
+            "cap-10-cap-hints": {
+              "approach": "anti_pattern",
+              "resultTitle": "Durable writes rejected for nothing",
+              "resultBody": "After the 1-hour hint store fills, coordinators return consistency errors for writes that already reached 2 of 3 replicas. For the partition's last 2 hours durable writes fail, and client retries push errors to 900.",
+              "metricsAfter": [
+                {
+                  "key": "rps",
+                  "label": "Traffic",
+                  "value": 31000,
+                  "unit": "req/s",
+                  "tone": "neutral"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 60,
+                  "unit": "%",
+                  "tone": "warn"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 140,
+                  "unit": "ms",
+                  "tone": "warn"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 900,
+                  "unit": "errors",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "clients",
+                    "tone": "bad",
+                    "sub": "writes rejected after 1 h"
+                  },
+                  {
+                    "id": "coordinator",
+                    "tone": "warn",
+                    "cpu": 60,
+                    "sub": "hint store full, failing writes"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Check how many replicas already hold each write before any hint exists.",
+            "A hint only speeds up catching one replica back up; something else repairs it anyway.",
+            "Writes that already met their consistency level needn't fail when the catch-up buffer does."
+          ]
+        }
+      ]
     },
     {
       "id": "cap-11",

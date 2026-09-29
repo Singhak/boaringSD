@@ -512,26 +512,7 @@
         "Tokens only match if the same rules produced them.",
         "Apply the same analyzer chain to documents and to queries."
       ],
-      "nextId": null,
-      "variants": [
-        {
-          "id": "var-srch-postgres",
-          "constraint": "Document collection is small (10,000 articles) and team has zero operational budget or headcount for managing OpenSearch clusters.",
-          "correctChoiceId": "query-only",
-          "resultOverrides": {
-            "srch-02-postgres": {
-              "approach": "optimal",
-              "resultTitle": "Postgres tsvector full-text index provides zero-cost search",
-              "resultBody": "For 10,000 documents, PostgreSQL GIN/tsvector search executes in <5ms without adding operational cluster complexity."
-            },
-            "srch-02-opensearch": {
-              "approach": "anti_pattern",
-              "resultTitle": "Dedicated OpenSearch cluster added $800/mo in needless overhead",
-              "resultBody": "Provisioning a multi-node cluster for 10k documents introduced synchronization lag and operational toil with no performance gain."
-            }
-          }
-        }
-      ]
+      "nextId": null
     },
     {
       "id": "srch-03",
@@ -1571,7 +1552,61 @@
         "The database already records every committed change in order.",
         "Feed the index from the database's change stream, not the app."
       ],
-      "nextId": null
+      "nextId": null,
+      "variants": [
+        {
+          "id": "var-srch-06-nightly-batch",
+          "constraint": "Prices change only in one nightly repricing batch that finishes by 03:00; nothing is edited during the day. The two-person team can't run a queue or changelog pipeline.",
+          "correctChoiceId": "nightly",
+          "resultOverrides": {
+            "nightly": {
+              "approach": "optimal",
+              "resultTitle": "One rebuild after the only writes",
+              "resultBody": "After the 03:00 batch, a job reindexes all 90M listings from Postgres into a fresh index and swaps the alias by 05:30. Timed-out writes can't leave stale prices; the cost is a 2.5-hour lag at the quietest hour.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 45,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 95,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 0,
+                  "unit": "errors",
+                  "tone": "good"
+                },
+                {
+                  "key": "stale",
+                  "label": "Stale listings",
+                  "value": 0,
+                  "unit": "docs",
+                  "tone": "good"
+                }
+              ]
+            },
+            "cdc": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "Streaming pipeline for one batch a day",
+              "resultBody": "CDC delivers every change, but every write lands in one nightly batch. The team now runs a $120-a-month queue, connectors and lag alerts around the clock to stream changes that arrive once a day."
+            }
+          },
+          "hints": [
+            "When do prices actually change in this catalog?",
+            "If every write lands in one window, the index only needs to catch up once.",
+            "Rebuilding beside the live index and switching over leaves nothing half-updated."
+          ]
+        }
+      ]
     },
     {
       "id": "srch-upsize-01",
@@ -1791,7 +1826,64 @@
         "This index is small and grows slowly; it doesn't need more nodes, it needs room."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-srch-upsize-01-launch",
+          "constraint": "A 40-language launch in 3 weeks grows the index to 60 GB, and the contract then requires surviving a node loss. Docs traffic is internal until launch, so slow search is tolerable.",
+          "correctChoiceId": "new-cluster",
+          "resultOverrides": {
+            "new-cluster": {
+              "approach": "optimal",
+              "resultTitle": "Built once for the launch size",
+              "resultBody": "Six primaries with replicas across three nodes keep the 60 GB index in page cache and survive a node loss. It costs $500 a month and two weeks of work, landing a week before launch.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 30,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 70,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "iops",
+                  "label": "Disk reads",
+                  "value": 60,
+                  "unit": "IOPS",
+                  "tone": "good"
+                }
+              ]
+            },
+            "upsize": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "Fast today, outgrown in three weeks",
+              "resultBody": "32 GB of RAM covers today's 9 GB, but the 60 GB launch index won't fit in page cache, and one node can't survive a failure. The $180 resize gets thrown away in 3 weeks.",
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "idx",
+                    "tone": "warn",
+                    "cpu": 20,
+                    "sub": "60 GB won't fit, no replica"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Size for the index you'll have in 3 weeks, not today's 9 GB.",
+            "A single node can't meet a survive-a-node-loss contract at any size.",
+            "Spread primaries and replicas so the data fits in memory across machines."
+          ]
+        }
+      ]
     },
     {
       "canonical": false,
@@ -3344,7 +3436,31 @@
         "Salting high-cardinality keys spreads traffic across multiple shards while preserving bucketing."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-srch-10-global-search",
+          "constraint": "Every search is global: none filters by country or tenant, so each one already fans out to all shards, and the app never fetches a document by ID.",
+          "correctChoiceId": "srch-10-random-route",
+          "resultOverrides": {
+            "srch-10-random-route": {
+              "approach": "optimal",
+              "resultTitle": "Even shards, same fan-out as before",
+              "resultBody": "Documents now spread evenly, so the US shard drops from 86% CPU to match its peers. Queries fanned out to every shard anyway, so nothing is lost; the cost is that a single-document fetch would have to ask all shards."
+            },
+            "srch-10-composite-route": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "Routing locality nobody queries",
+              "resultBody": "The tenant-plus-salt key balances load, but no query filters by tenant, so the locality it preserves is never used. The team now maintains a salting scheme and a routing value on every write for no read benefit."
+            }
+          },
+          "hints": [
+            "Which shards does a typical search touch today?",
+            "Routing keys only pay off when queries filter on them.",
+            "If every query fans out anyway, the placement rule only needs to be even."
+          ]
+        }
+      ]
     },
     {
       "id": "srch-11",

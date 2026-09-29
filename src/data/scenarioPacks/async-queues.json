@@ -610,26 +610,7 @@
         "Users only need an ack now.",
         "Enqueue and return."
       ],
-      "nextId": null,
-      "variants": [
-        {
-          "id": "var-queue-sync-pos",
-          "constraint": "Payment terminals have a strict 1.5s synchronous checkout timeout and reject deferred confirmations.",
-          "correctChoiceId": "keep-waiting-smtp",
-          "resultOverrides": {
-            "q2-sync": {
-              "approach": "optimal",
-              "resultTitle": "Synchronous payment authorization satisfies terminal SLA",
-              "resultBody": "Direct synchronous processing provides immediate card authorization within the 1.5-second terminal window."
-            },
-            "q2-async": {
-              "approach": "anti_pattern",
-              "resultTitle": "Async queuing timed out POS terminals",
-              "resultBody": "Enqueuing checkout payments caused in-store card readers to time out and display false transaction declines."
-            }
-          }
-        }
-      ]
+      "nextId": null
     },
     {
       "id": "queue-03",
@@ -3343,7 +3324,87 @@
         "A live worker can tell the queue it is still working."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-queue-13-overnight-archive",
+          "constraint": "These are overnight archive transcodes nobody waits on: a crashed job may retry up to 12 hours later, and the team can't ship worker code changes this week.",
+          "correctChoiceId": "long-timeout",
+          "resultOverrides": {
+            "long-timeout": {
+              "approach": "optimal",
+              "resultTitle": "One config change, one transcode per video",
+              "resultBody": "A 12-hour visibility timeout covers the 8-minute job with room to spare, so each video is transcoded once and CPU falls to 32%. Cost: a crashed worker's job stays hidden until morning, which archive work allows.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 32,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 finish time",
+                  "value": 900,
+                  "unit": "s",
+                  "tone": "good"
+                },
+                {
+                  "key": "dupes",
+                  "label": "Workers per job",
+                  "value": 1,
+                  "unit": "x",
+                  "tone": "good"
+                }
+              ]
+            },
+            "heartbeat": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "Good fix stuck in the release queue",
+              "resultBody": "Heartbeats need a worker code change the team can't ship this week. Until then messages keep reappearing after 30 seconds, each video is transcoded about 4 times, and the fleet stays at 96% CPU.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 96,
+                  "unit": "%",
+                  "tone": "bad"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 finish time",
+                  "value": 1900,
+                  "unit": "s",
+                  "tone": "bad"
+                },
+                {
+                  "key": "dupes",
+                  "label": "Workers per job",
+                  "value": 4.2,
+                  "unit": "x",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "worker",
+                    "tone": "bad",
+                    "cpu": 96,
+                    "sub": "still 4x per job"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Compare the job's duration with how long a received message stays hidden.",
+            "Nobody is waiting on a crashed archive job until morning.",
+            "A queue setting can cover the longest job without touching worker code."
+          ]
+        }
+      ]
     },
     {
       "id": "queue-14",
@@ -3805,7 +3866,86 @@
         "Retry delays should grow and be spread randomly."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-queue-15-carrier-silence",
+          "constraint": "The carrier's ops team asks for zero traffic until they confirm recovery, about an hour out, and today's pickup is cancelled; labels are needed for tomorrow's 17:00 pickup.",
+          "correctChoiceId": "dlq-all",
+          "resultOverrides": {
+            "dlq-all": {
+              "approach": "optimal",
+              "resultTitle": "Failures parked, carrier left alone",
+              "resultBody": "All 400,000 failed jobs wait durably in the DLQ and the carrier gets the silence it asked for. Once it confirms recovery, a rate-limited replay at 2,000 req/s clears the backlog in under 4 minutes. Cost: someone must trigger the replay.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 5,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 300,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Failed calls",
+                  "value": 0,
+                  "unit": "%",
+                  "tone": "good"
+                }
+              ]
+            },
+            "backoff-jitter": {
+              "approach": "anti_pattern",
+              "resultTitle": "Jittered retries hit a carrier asking for silence",
+              "resultBody": "Jitter spreads the retries, but 400,000 jobs still send about 3,000 req/s at a carrier that asked for zero. Its ops team blocks your API key during recovery, and every retry fails until the block lifts.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 45,
+                  "unit": "%",
+                  "tone": "warn"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 12000,
+                  "unit": "ms",
+                  "tone": "bad"
+                },
+                {
+                  "key": "errors",
+                  "label": "Failed calls",
+                  "value": 100,
+                  "unit": "%",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "carrier",
+                    "tone": "bad",
+                    "sub": "API key blocked"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Look at what the carrier asked you to do.",
+            "Any retry schedule still sends traffic at a carrier that wants none.",
+            "Keep the failures somewhere durable and replay them at a controlled rate later."
+          ]
+        }
+      ]
     },
     {
       "id": "queue-16",
@@ -4031,7 +4171,86 @@
         "Make the record of what was processed part of the same commit as the effect."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-queue-16-goodwill-points",
+          "constraint": "Points are a goodwill bonus: a missed credit is acceptable but a double credit costs real money, and the vendor-hosted points database allows no new tables or columns.",
+          "correctChoiceId": "commit-first",
+          "resultOverrides": {
+            "commit-first": {
+              "approach": "optimal",
+              "resultTitle": "At-most-once: no double credits",
+              "resultBody": "Offsets are committed before each batch runs, so a rebalance never replays credited events. Double credits drop to 0. Cost: a consumer that dies mid-batch skips those purchases, roughly 11,000 per deploy, which this bonus tolerates.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 38,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 24,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "dupes",
+                  "label": "Double credits",
+                  "value": 0,
+                  "unit": "per deploy",
+                  "tone": "good"
+                }
+              ]
+            },
+            "offset-in-tx": {
+              "approach": "anti_pattern",
+              "resultTitle": "No table to hold the offsets",
+              "resultBody": "Storing offsets beside the points needs a new table, and the vendor-hosted database rejects the migration. Consumers keep auto-committing every 5 seconds, so each deploy still double-credits about 18,000 purchases.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 40,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 25,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "dupes",
+                  "label": "Double credits",
+                  "value": 18000,
+                  "unit": "per deploy",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "db",
+                    "tone": "warn",
+                    "sub": "migration rejected"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Compare what a missed credit costs with what a double credit costs.",
+            "With nowhere to store offsets beside the points, you must choose which failure to accept.",
+            "Record your position before doing the work, not after."
+          ]
+        }
+      ]
     },
     {
       "id": "queue-17",

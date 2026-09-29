@@ -693,26 +693,7 @@
         "The database limit is fixed; the per-pod pool size is a config value.",
         "Work backwards from max_connections to what each pod may hold at maximum scale."
       ],
-      "nextId": null,
-      "variants": [
-        {
-          "id": "var-pool-session",
-          "constraint": "Application queries rely heavily on session-level PostgreSQL advisory locks and temporary tables.",
-          "correctChoiceId": "raise-max-connections",
-          "resultOverrides": {
-            "pool2-session": {
-              "approach": "optimal",
-              "resultTitle": "Session-mode pooling preserves advisory locks and temp tables",
-              "resultBody": "Session pooling keeps connection state intact for applications that rely on session-scoped database constructs."
-            },
-            "pool2-trans": {
-              "approach": "anti_pattern",
-              "resultTitle": "Transaction pooling broke session locks across queries",
-              "resultBody": "Transaction pooling swapped backend connections between statements, dropping advisory locks and temp tables."
-            }
-          }
-        }
-      ]
+      "nextId": null
     },
     {
       "id": "pool-03",
@@ -1548,7 +1529,101 @@
         "A function instance can't share its connections with its neighbours on its own.",
         "Something long-lived has to own the connections on the functions' behalf."
       ],
-      "nextId": null
+      "nextId": null,
+      "variants": [
+        {
+          "id": "var-pool-05-queued-orders",
+          "constraint": "Checkout Lambdas consume orders from an SQS queue after buyers already hold a reservation; orders may complete within 5 minutes. There is no budget for new infrastructure this month.",
+          "correctChoiceId": "reserved-concurrency",
+          "resultOverrides": {
+            "reserved-concurrency": {
+              "approach": "optimal",
+              "resultTitle": "The queue absorbs the burst",
+              "resultBody": "Capping checkout at 300 concurrent functions keeps Postgres under its 400 connections; the other orders wait in SQS and drain within about two minutes. Buyers already hold their reservation, so nobody notices. Cost: confirmations can lag a purchase by a minute or two.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 70,
+                  "unit": "%",
+                  "tone": "bad"
+                },
+                {
+                  "key": "conns",
+                  "label": "DB connections",
+                  "value": 300,
+                  "unit": "conns",
+                  "tone": "bad"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 900,
+                  "unit": "ms",
+                  "tone": "bad"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 0,
+                  "unit": "err/s",
+                  "tone": "bad"
+                }
+              ]
+            },
+            "rds-proxy": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "Proxy works but blows the budget",
+              "resultBody": "RDS Proxy would multiplex the 900 functions onto 300 connections, but it adds about $350 a month the budget doesn't have. It stays unapproved, so the queue keeps spinning up 900 functions and logins keep failing.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 92,
+                  "unit": "%",
+                  "tone": "bad"
+                },
+                {
+                  "key": "conns",
+                  "label": "DB connections",
+                  "value": 400,
+                  "unit": "conns",
+                  "tone": "bad"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 4200,
+                  "unit": "ms",
+                  "tone": "bad"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 2100,
+                  "unit": "err/s",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "db",
+                    "tone": "bad",
+                    "cpu": 92,
+                    "sub": "400/400, proxy not approved"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Ask whether these checkouts must finish in the same second they arrive.",
+            "The work is already buffered; a queue can hold orders for minutes.",
+            "Limit how many consumers run at once, and let the backlog wait its turn."
+          ]
+        }
+      ]
     },
     {
       "id": "pool-06",
@@ -2312,7 +2387,86 @@
         "Pooled sockets remember which host they connected to.",
         "Treat a read-only error as proof the whole pool is out of date."
       ],
-      "nextId": null
+      "nextId": null,
+      "variants": [
+        {
+          "id": "var-pool-08-legacy-driver",
+          "constraint": "Failovers happen only in planned patch windows, and the pipeline can run a staggered pod restart afterwards. The pool is a vendored legacy driver with no error hooks until next quarter's upgrade.",
+          "correctChoiceId": "restart-pods",
+          "resultOverrides": {
+            "restart-pods": {
+              "approach": "optimal",
+              "resultTitle": "Scheduled restart follows every failover",
+              "resultBody": "The patch pipeline now restarts pods 10 at a time right after each planned failover, so fresh pools connect to the new writer and writes recover in about 2 minutes. No human, no login storm. Cost: a 2-minute tail and brief capacity dips.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 42,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 60,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Write errors",
+                  "value": 1,
+                  "unit": "%",
+                  "tone": "bad"
+                }
+              ]
+            },
+            "evict-on-readonly": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "Legacy driver can't evict its pool",
+              "resultBody": "The vendored driver has no hook to catch a read-only error and flush the pool, so the eviction logic can't ship until next quarter's upgrade. Until then stale sockets keep failing writes for 12 minutes after every patch.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 35,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 40,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Write errors",
+                  "value": 64,
+                  "unit": "%",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "app",
+                    "tone": "bad",
+                    "sub": "driver has no eviction hook"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Failovers here are planned events, not surprises.",
+            "The pool can't react by itself, but something already knows when a failover happened.",
+            "Fresh processes always connect to the current writer."
+          ]
+        }
+      ]
     },
     {
       "id": "pool-09",
@@ -2884,7 +3038,86 @@
         "In this mode a server connection belongs to a client for one transaction only.",
         "Make the setting's lifetime match the length of the connection loan."
       ],
-      "nextId": null
+      "nextId": null,
+      "variants": [
+        {
+          "id": "var-pool-10-big-primary",
+          "constraint": "After moving to a 64-core primary, Postgres comfortably runs 1,500 backends. The app also relies on advisory locks and LISTEN/NOTIFY, which break under transaction pooling.",
+          "correctChoiceId": "session-mode",
+          "resultOverrides": {
+            "session-mode": {
+              "approach": "optimal",
+              "resultTitle": "One server connection per client again",
+              "resultBody": "Session mode pins each of the 1,200 clients to its own backend, under the 1,500 the new primary handles, so search_path, advisory locks and LISTEN all behave. Leaks stop. Cost: more backend memory, and idle clients now hold server connections.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 58,
+                  "unit": "%",
+                  "tone": "warn"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 46,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Wrong-tenant queries",
+                  "value": 0,
+                  "unit": "/s",
+                  "tone": "bad"
+                }
+              ]
+            },
+            "set-local": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "search_path fixed, locks still leak",
+              "resultBody": "SET LOCAL stops the schema leak, but session advisory locks taken during one loan stay on the server connection and block other tenants, and LISTEN registrations vanish between transactions. About 90 errors/s remain from stuck locks and missed notifications.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 62,
+                  "unit": "%",
+                  "tone": "warn"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 60,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Wrong-tenant queries",
+                  "value": 90,
+                  "unit": "/s",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "bouncer",
+                    "tone": "warn",
+                    "sub": "advisory locks leak across loans"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Check whether the database can now afford one backend per client.",
+            "The app depends on more session state than search_path.",
+            "If the server can hold every client, the proxy no longer has to share connections per transaction."
+          ]
+        }
+      ]
     },
     {
       "id": "pool-11",

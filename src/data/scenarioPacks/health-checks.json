@@ -541,21 +541,94 @@
       "nextId": null,
       "variants": [
         {
-          "id": "var-hc-shallow",
-          "constraint": "Database CPU is at 95% due to 500 app pods querying heavy SELECT 1 FROM accounts on 1-second health check loops.",
-          "correctChoiceId": "probe-replica",
+          "id": "var-hc-02-config-only",
+          "constraint": "Only config changes can ship until Monday's deploy window, and the SRE lead accepts a pod taking up to 2 minutes to leave rotation after losing the database.",
+          "correctChoiceId": "slower-probes",
           "resultOverrides": {
-            "hc2-shallow": {
+            "slower-probes": {
               "approach": "optimal",
-              "resultTitle": "Shallow liveness probes relieved the database overload",
-              "resultBody": "Switching load balancer probes to shallow memory checks stopped the health check stampede, allowing database CPU to normalize."
+              "resultTitle": "Fewer scans, inside the 2-minute rule",
+              "resultBody": "A 30 s probe period is a config edit that ships today: scans fall from 800 to 53 a second and CPU to 64%. With a failure threshold of 3, dead pods leave in 90 s. Cost: every probe is still a full scan.",
+              "metricsAfter": [
+                {
+                  "key": "rps",
+                  "label": "Probe queries",
+                  "value": 53,
+                  "unit": "req/s",
+                  "tone": "good"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 64,
+                  "unit": "%",
+                  "tone": "warn"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 query latency",
+                  "value": 60,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Checkout timeouts",
+                  "value": 0.6,
+                  "unit": "%",
+                  "tone": "warn"
+                }
+              ]
             },
-            "hc2-deep": {
-              "approach": "anti_pattern",
-              "resultTitle": "Aggressive deep health checks accelerated database collapse",
-              "resultBody": "Thousands of health queries per minute completed the DB CPU saturation, taking the entire platform down."
+            "cached-pool-state": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "Blocked by the deploy freeze",
+              "resultBody": "The cached SELECT 1 handler is new code, and nothing but config ships before Monday; the change waits three days while 800 count(*) scans a second keep the primary at 92% and checkouts timing out.",
+              "metricsAfter": [
+                {
+                  "key": "rps",
+                  "label": "Probe queries",
+                  "value": 800,
+                  "unit": "req/s",
+                  "tone": "bad"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 92,
+                  "unit": "%",
+                  "tone": "bad"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 query latency",
+                  "value": 340,
+                  "unit": "ms",
+                  "tone": "bad"
+                },
+                {
+                  "key": "errors",
+                  "label": "Checkout timeouts",
+                  "value": 1.8,
+                  "unit": "%",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "db",
+                    "sub": "800 scans/s until Monday"
+                  }
+                ]
+              }
             }
-          }
+          },
+          "hints": [
+            "Multiply pods by probers by frequency, then check what you're allowed to ship.",
+            "The removal deadline is looser now: how slowly could probes run and still meet it?",
+            "Probe period times failure threshold is how long a dead pod stays in rotation."
+          ]
         }
       ]
     },
@@ -1271,7 +1344,99 @@
         "Kubernetes has a separate probe that holds off liveness until the first success."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-hc-05-old-kubernetes",
+          "constraint": "LedgerCore's cluster runs Kubernetes 1.15, which has no startupProbe, and the on-call policy allows a hung pod up to 2 minutes before it is restarted.",
+          "correctChoiceId": "long-liveness",
+          "resultOverrides": {
+            "long-liveness": {
+              "approach": "optimal",
+              "resultTitle": "One long window covers the boot",
+              "resultBody": "A 120 s liveness failure window outlasts the 90 s boot, so all 24 pods go ready, and a hung pod is still restarted within 2 minutes, inside policy. Cost: a deadlocked pod can serve errors for up to 120 s.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 58,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "ready",
+                  "label": "Ready pods",
+                  "value": 24,
+                  "unit": "/24",
+                  "tone": "good"
+                },
+                {
+                  "key": "restarts",
+                  "label": "Restarts",
+                  "value": 0,
+                  "unit": "in 10 min",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "5xx",
+                  "value": 10,
+                  "unit": "errors/s",
+                  "tone": "good"
+                }
+              ]
+            },
+            "startup-probe": {
+              "approach": "anti_pattern",
+              "resultTitle": "Kubernetes 1.15 rejects the field",
+              "resultBody": "startupProbe doesn't exist on 1.15, so kubectl rejects the manifest as an unknown field; the old liveness keeps killing pods at 30 s and all 24 stay in a crash loop with 72 restarts every 10 minutes.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 96,
+                  "unit": "%",
+                  "tone": "bad"
+                },
+                {
+                  "key": "ready",
+                  "label": "Ready pods",
+                  "value": 0,
+                  "unit": "/24",
+                  "tone": "bad"
+                },
+                {
+                  "key": "restarts",
+                  "label": "Restarts",
+                  "value": 72,
+                  "unit": "in 10 min",
+                  "tone": "bad"
+                },
+                {
+                  "key": "errors",
+                  "label": "5xx",
+                  "value": 900,
+                  "unit": "errors/s",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "new",
+                    "sub": "startupProbe: unknown field"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "The process is still booting when liveness kills it, and this cluster is older than you'd like.",
+            "Without a separate boot-time probe, one liveness setting must cover both boot and steady state.",
+            "Compare the boot time with how long liveness tolerates failures before it acts."
+          ]
+        }
+      ]
     },
     {
       "id": "hc-06",
@@ -2306,7 +2471,85 @@
         "Starting a process is far more expensive than answering a request.",
         "Let the running app answer the probe itself."
       ],
-      "nextId": null
+      "nextId": null,
+      "variants": [
+        {
+          "id": "var-hc-09-vendor-image",
+          "constraint": "Quillr runs a vendor image with no HTTP health handler until the vendor's release in 6 weeks, and finance approved higher CPU limits until then.",
+          "correctChoiceId": "raise-limit",
+          "resultOverrides": {
+            "raise-limit": {
+              "approach": "optimal",
+              "resultTitle": "Room for the probes, for now",
+              "resultBody": "Two Python start-ups every 2 s use about 0.18 cores: 36% of 500m but only 9% of 2 cores. Throttling stops and p95 falls to 320 ms. Cost: about $6k a month of extra CPU until the vendor ships a handler.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 45,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 320,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Throttled periods",
+                  "value": 1,
+                  "unit": "%",
+                  "tone": "good"
+                }
+              ]
+            },
+            "http-probe": {
+              "approach": "anti_pattern",
+              "resultTitle": "Nothing in the image answers",
+              "resultBody": "The vendor image exposes no HTTP health handler, so httpGet probes get connection refused, liveness fails, and pods restart in a loop; the handler only arrives with the vendor's release in 6 weeks.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 97,
+                  "unit": "%",
+                  "tone": "bad"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 1800,
+                  "unit": "ms",
+                  "tone": "bad"
+                },
+                {
+                  "key": "errors",
+                  "label": "Throttled periods",
+                  "value": 70,
+                  "unit": "%",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "pods",
+                    "sub": "httpGet: connection refused"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Look at what the probe costs, and at what you can't change for 6 weeks.",
+            "Two Python start-ups every 2 s is a fixed CPU tax; ask what it's a share of.",
+            "The same 180 ms is a much smaller fraction of a larger allowance."
+          ]
+        }
+      ]
     },
     {
       "id": "hc-10",

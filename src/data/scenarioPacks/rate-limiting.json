@@ -592,26 +592,7 @@
         "Friction that grows with failures hurts guessers more than owners."
       ],
       "nextId": null,
-      "reviewed": true,
-      "variants": [
-        {
-          "id": "var-rl-local",
-          "constraint": "The application runs as an isolated single-node bastion where external Redis adds unnecessary network latency and failure modes.",
-          "correctChoiceId": "tight-ip",
-          "resultOverrides": {
-            "rl2-memory": {
-              "approach": "optimal",
-              "resultTitle": "In-memory token bucket eliminates network overhead",
-              "resultBody": "For a standalone single-node bastion, an atomic local token bucket is faster, zero-cost, and has no network dependency."
-            },
-            "rl2-redis": {
-              "approach": "anti_pattern",
-              "resultTitle": "External Redis added an unnecessary point of failure",
-              "resultBody": "Provisioning a multi-node Redis cluster for a single server added network round-trips and cluster management cost without benefit."
-            }
-          }
-        }
-      ]
+      "reviewed": true
     },
     {
       "id": "rl-03",
@@ -1302,7 +1283,87 @@
         "The pods need to agree on one count per key."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-rl-05-audit-freeze",
+          "constraint": "Autoscaling is frozen at exactly 24 pods for this month's PCI audit, and no new datastore may join the cardholder network until the audit closes.",
+          "correctChoiceId": "divide-by-pods",
+          "resultOverrides": {
+            "divide-by-pods": {
+              "approach": "optimal",
+              "resultTitle": "Fixed fleet, fixed per-pod share",
+              "resultBody": "With exactly 24 pods, each enforces 4 req/s locally, so the partner tops out near 96 req/s and ledger CPU falls to about 40%. No new datastore enters the audit scope. Cost: busy pods throttle slightly early when balancing is uneven.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 40,
+                  "unit": "%",
+                  "tone": "bad"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 110,
+                  "unit": "ms",
+                  "tone": "bad"
+                },
+                {
+                  "key": "over",
+                  "label": "Over contracted limit",
+                  "value": 1,
+                  "unit": "x",
+                  "tone": "bad"
+                }
+              ]
+            },
+            "shared-redis-counter": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "New datastore fails the audit freeze",
+              "resultBody": "A shared Redis would make the count global, but it is a new datastore inside the cardholder network. The audit freeze blocks the change, so pods keep their local 100 req/s counters and the partner still gets 2,400 req/s through.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 94,
+                  "unit": "%",
+                  "tone": "bad"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 1800,
+                  "unit": "ms",
+                  "tone": "bad"
+                },
+                {
+                  "key": "over",
+                  "label": "Over contracted limit",
+                  "value": 24,
+                  "unit": "x",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "ledger",
+                    "tone": "bad",
+                    "cpu": 94,
+                    "sub": "still 24x over the limit"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Check what can and can't change this month: pods, datastores, config.",
+            "With the pod count fixed, the global limit is simple arithmetic.",
+            "If every pod enforces a slice and the slices add up to the limit, no shared state is needed."
+          ]
+        }
+      ]
     },
     {
       "id": "rl-06",
@@ -2667,7 +2728,86 @@
         "Let the store that holds the counters also decide what time it is."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-rl-11-bare-metal",
+          "constraint": "Gateways moved to bare metal last night, so host migrations are over and the drift was a one-off. The managed Redis proxy blocks EVAL and all scripting commands.",
+          "correctChoiceId": "ntp-alert",
+          "resultOverrides": {
+            "ntp-alert": {
+              "approach": "optimal",
+              "resultTitle": "Resync the clock, watch for drift",
+              "resultBody": "Restarting gateway 6 resyncs its clock, and the drift alert catches any future skew above 5 s. Without host migrations the clocks stay within milliseconds, so the scalper is back near 300 a minute. Cost: a 5 s blind spot before the alert fires.",
+              "metricsAfter": [
+                {
+                  "key": "limit",
+                  "label": "Effective per-key limit",
+                  "value": 305,
+                  "unit": "per min",
+                  "tone": "bad"
+                },
+                {
+                  "key": "skew",
+                  "label": "Worst gateway clock skew",
+                  "value": 0.1,
+                  "unit": "s",
+                  "tone": "bad"
+                },
+                {
+                  "key": "scalped",
+                  "label": "Tickets bought by bots",
+                  "value": 3,
+                  "unit": "%",
+                  "tone": "bad"
+                }
+              ]
+            },
+            "redis-time": {
+              "approach": "anti_pattern",
+              "resultTitle": "Proxy rejects the Lua script",
+              "resultBody": "The managed Redis proxy refuses EVAL, so the new limiter script errors on every call and the gateways fall back to their local-minute keys. Gateway 6 is still 40 s off, and the scalper keeps buying twice the limit.",
+              "metricsAfter": [
+                {
+                  "key": "limit",
+                  "label": "Effective per-key limit",
+                  "value": 600,
+                  "unit": "per min",
+                  "tone": "bad"
+                },
+                {
+                  "key": "skew",
+                  "label": "Worst gateway clock skew",
+                  "value": 40,
+                  "unit": "s",
+                  "tone": "bad"
+                },
+                {
+                  "key": "scalped",
+                  "label": "Tickets bought by bots",
+                  "value": 14,
+                  "unit": "%",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "redis",
+                    "tone": "warn",
+                    "sub": "EVAL rejected by proxy"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Ask whether the drift is a recurring risk or a one-off.",
+            "Six clocks agree again once each is back in sync and watched.",
+            "Fix the one drifted machine and make sure the next drift is noticed quickly."
+          ]
+        }
+      ]
     },
     {
       "id": "rl-12",
@@ -3697,7 +3837,72 @@
         "Limit the identity you actually trust, and keep IP as a backstop."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-rl-16-no-accounts",
+          "constraint": "Studyhub has no sign-in: every visitor is anonymous. The university signed a site licence and rate-limits its own NAT, and the cloud scraper's ASN is being blocked separately.",
+          "correctChoiceId": "allowlist",
+          "resultOverrides": {
+            "allowlist": {
+              "approach": "optimal",
+              "resultTitle": "Trusted campus NAT gets through",
+              "resultBody": "The university's NAT address skips the per-IP limit, and its own egress limiter caps any single dorm script. The 4,000 students stop seeing 429s during exams, while every other IP keeps the 300/min limit. Cost: a manual list to review each term.",
+              "metricsAfter": [
+                {
+                  "key": "errors",
+                  "label": "Campus requests getting 429",
+                  "value": 0.3,
+                  "unit": "%",
+                  "tone": "bad"
+                },
+                {
+                  "key": "scraper",
+                  "label": "Scraper traffic",
+                  "value": 1000,
+                  "unit": "req/s",
+                  "tone": "warn"
+                }
+              ]
+            },
+            "per-account": {
+              "approach": "anti_pattern",
+              "resultTitle": "No accounts to key on",
+              "resultBody": "Studyhub has no sign-in, so every request falls into the anonymous per-IP path. The whole campus shares one 5,000-per-minute bucket while sending about 240,000 a minute, and 98% of students' requests still get 429.",
+              "metricsAfter": [
+                {
+                  "key": "errors",
+                  "label": "Campus requests getting 429",
+                  "value": 98,
+                  "unit": "%",
+                  "tone": "bad"
+                },
+                {
+                  "key": "scraper",
+                  "label": "Scraper traffic",
+                  "value": 1000,
+                  "unit": "req/s",
+                  "tone": "warn"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "gw",
+                    "tone": "bad",
+                    "sub": "all anonymous, per-IP only"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Look at what identity the requests actually carry.",
+            "With no accounts, the only key you have is the address.",
+            "One address you can vouch for is not the same as an unknown one."
+          ]
+        }
+      ]
     },
     {
       "id": "rl-17",

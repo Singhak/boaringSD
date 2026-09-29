@@ -534,26 +534,7 @@
           "db": "The token DB is busy because auth is busy; its queries are healthy.",
           "gw": "The gateway passes through the same 30k req/s as last week."
         }
-      },
-      "variants": [
-        {
-          "id": "var-auth-redis",
-          "constraint": "High-security banking platform strictly requires instantaneous session termination across all devices upon password reset.",
-          "correctChoiceId": "cache-introspect",
-          "resultOverrides": {
-            "auth-02-redis-session": {
-              "approach": "optimal",
-              "resultTitle": "Centralized session store guarantees immediate revocation",
-              "resultBody": "Storing active session tokens in Redis enables instant invalidation across all user devices when compromised."
-            },
-            "auth-02-pure-jwt": {
-              "approach": "anti_pattern",
-              "resultTitle": "Stateless JWTs remained valid after user password reset",
-              "resultBody": "Because stateless tokens carry their own validation, compromised JWTs continued working until their 1-hour expiration."
-            }
-          }
-        }
-      ]
+      }
     },
     {
       "id": "auth-03",
@@ -3144,7 +3125,64 @@
         "Tokens should contain identity claims (sub, iss, exp), not thousands of fine-grained permissions."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-auth-09-offline-controllers",
+          "constraint": "Tokens only cross our own NGINX tier, never a CDN or browser. The factory controllers downstream authorize offline, so roles must travel inside the token.",
+          "correctChoiceId": "auth-09-raise-proxy-buffers",
+          "resultOverrides": {
+            "auth-09-raise-proxy-buffers": {
+              "approach": "optimal",
+              "resultTitle": "Headers fit, roles stay in the token",
+              "resultBody": "With 64k header buffers, the 12 KB tokens pass NGINX and the offline controllers keep every role claim. NGINX allocates large buffers only for big headers, so memory rises modestly: about $75 a month across the proxies.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 48,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 30,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 0,
+                  "unit": "errors",
+                  "tone": "good"
+                }
+              ]
+            },
+            "auth-09-trim-claims": {
+              "approach": "anti_pattern",
+              "resultTitle": "Offline controllers can't fetch roles",
+              "resultBody": "Lean tokens pass the proxies, but the factory controllers have no network path to a role service. Every request arrives with only sub and tenant, and the controllers deny it: the 431s become 403s.",
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "api",
+                    "tone": "bad",
+                    "cpu": 35,
+                    "sub": "no roles in token: 403"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Where are these tokens read, and can those readers look anything up?",
+            "The 4 KB limit belongs to CDNs and browsers, and neither is in this path.",
+            "When every hop is yours, the header limit is a setting, not a law."
+          ]
+        }
+      ]
     },
     {
       "id": "auth-10",
@@ -3338,7 +3376,63 @@
         "Never skip signature verification in production."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-auth-10-rsa-meters",
+          "constraint": "2M smart meters verify these tokens with firmware that supports only RSA, and a firmware rollout takes 18 months. Finance has approved $600 a month for gateway capacity.",
+          "correctChoiceId": "auth-10-scale-gateway",
+          "resultOverrides": {
+            "auth-10-scale-gateway": {
+              "approach": "optimal",
+              "resultTitle": "Brute force is the honest answer",
+              "resultBody": "Sixty high-CPU instances spread the RSA-4096 verification until CPU sits near 55%, and the meters keep working. It costs $600 a month for 18 months; plan the move to Ed25519 alongside the next firmware.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 55,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 40,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 0,
+                  "unit": "errors",
+                  "tone": "good"
+                }
+              ]
+            },
+            "auth-10-migrate-eddsa": {
+              "approach": "anti_pattern",
+              "resultTitle": "Meters can't verify the new signatures",
+              "resultBody": "Gateway CPU drops, but Ed25519-signed tokens fail on 2M meters whose firmware knows only RSA. Every meter rejects its token and stops reporting until an 18-month firmware rollout lands.",
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "clients",
+                    "tone": "bad",
+                    "sub": "meters reject Ed25519 tokens"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Who else has to verify these signatures besides the gateway?",
+            "The algorithm is fixed for 18 months by devices you can't update.",
+            "If the math per request can't shrink, the capacity must grow."
+          ]
+        }
+      ]
     },
     {
       "id": "auth-11",
@@ -3552,7 +3646,64 @@
         "The 'Token Exchange / Gateway Translation' pattern translates opaque tokens into signed internal JWTs."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-auth-11-no-revocation",
+          "constraint": "Half of all calls reach services straight from partner VPCs, bypassing the gateway. The IdP has no revocation: tokens only die at their 2-hour expiry.",
+          "correctChoiceId": "auth-11-cache-introspect",
+          "resultOverrides": {
+            "auth-11-cache-introspect": {
+              "approach": "optimal",
+              "resultTitle": "Cached answers can't go stale here",
+              "resultBody": "Each service introspects a token once and caches the answer until the token expires. With no revocation, a cached 'active' can't become wrong, so the 45 ms hop drops out of about 99% of calls, gateway or not.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 40,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 30,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 0,
+                  "unit": "errors",
+                  "tone": "good"
+                }
+              ]
+            },
+            "auth-11-gateway-translation": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "Half the traffic skips the gateway",
+              "resultBody": "Internal JWTs fix calls that enter through the gateway, but partner calls from their VPCs never touch it. Those services still introspect every request, so half the traffic keeps its 45 ms hop and the IdP stays hot.",
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "idp",
+                    "tone": "warn",
+                    "cpu": 60,
+                    "sub": "partner calls still introspect"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Which requests never pass through the gateway?",
+            "Without revocation, can a token's validity change before it expires?",
+            "An answer that can't change is safe to remember until it expires."
+          ]
+        }
+      ]
     }
   ]
 }

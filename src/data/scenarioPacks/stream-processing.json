@@ -679,26 +679,7 @@
         "Raise the ceiling, not the headcount."
       ],
       "nextId": null,
-      "reviewed": true,
-      "variants": [
-        {
-          "id": "var-strm-stateless",
-          "constraint": "Events require only stateless JSON field scrubbing before writing to S3 data lake; no windowing or state is needed.",
-          "correctChoiceId": "own-group",
-          "resultOverrides": {
-            "strm-02-lambda": {
-              "approach": "optimal",
-              "resultTitle": "Stateless worker functions scale simply and cost-effectively",
-              "resultBody": "Without state or aggregation windows, lightweight stateless consumers process records cheaply without state backend maintenance."
-            },
-            "strm-02-flink": {
-              "approach": "anti_pattern",
-              "resultTitle": "Stateful Flink cluster introduced complex checkpointing overhead",
-              "resultBody": "Running a stateful streaming cluster for pure stateless mapping wasted resources on RocksDB checkpoints and state management."
-            }
-          }
-        }
-      ]
+      "reviewed": true
     },
     {
       "id": "strm-03",
@@ -1194,7 +1175,64 @@
         "Use the timestamp in the event, plus a lateness bound."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-strm-04-fresh-clicks-only",
+          "constraint": "Advertisers pay only for clicks that reach us within 10 seconds; offline taps can't be verified and are unbillable. Billing is per minute of arrival.",
+          "correctChoiceId": "drop-late",
+          "resultOverrides": {
+            "drop-late": {
+              "approach": "optimal",
+              "resultTitle": "Only billable clicks get counted",
+              "resultBody": "Clicks older than 10 s are unbillable by contract, so discarding them removes the subway bursts from 09:00. What remains arrived within 10 s, so arrival-minute counts match the invoice. The raw log still keeps dropped clicks for analytics.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 58,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 500,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 0,
+                  "unit": "errors",
+                  "tone": "good"
+                }
+              ]
+            },
+            "event-time": {
+              "approach": "anti_pattern",
+              "resultTitle": "Billing clicks the contract excludes",
+              "resultBody": "Event-time windows put every offline tap back in its minute, but those taps are unbillable. Invoices now include the subway bursts the contract excludes, and the 2-minute watermark delays every bill for nothing.",
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "db",
+                    "tone": "bad",
+                    "cpu": 40,
+                    "sub": "invoices include unbillable taps"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Which clicks does the contract actually pay for?",
+            "A click that arrives late is not just misplaced here; it is unbillable.",
+            "If only fresh clicks count, arrival time is close enough to click time."
+          ]
+        }
+      ]
     },
     {
       "id": "strm-05",
@@ -2975,7 +3013,54 @@
         "Late data arriving after the watermark can be emitted to a side-output rather than silently dropped."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-strm-07-nightly-invoices",
+          "constraint": "The windows feed a nightly invoice run, not a dashboard; nobody reads them for hours. 99.9% of delayed mobile events arrive within 90 minutes.",
+          "correctChoiceId": "strm-07-extend-watermark",
+          "resultOverrides": {
+            "strm-07-extend-watermark": {
+              "approach": "optimal",
+              "resultTitle": "Late events land in their windows",
+              "resultBody": "With 2 hours of lateness allowed, 99.9% of delayed events land in their window before it closes, so invoices are complete with no reconciliation job. The cost: 2 hours of extra window state, and results emit later, which the nightly run never notices.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 60,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 70,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 0,
+                  "unit": "errors",
+                  "tone": "good"
+                }
+              ]
+            },
+            "strm-07-side-output": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "A reconciliation job nobody needed",
+              "resultBody": "Side outputs catch the 12% of late events, but each must be merged back into windows already emitted. That means a second job and invoice corrections, when waiting 2 hours would have fit the nightly run."
+            }
+          },
+          "hints": [
+            "Who reads these windows, and how soon?",
+            "The results are not needed for hours, and nearly all late events arrive within 90 minutes.",
+            "When nobody reads a result for hours, a window can simply stay open longer."
+          ]
+        }
+      ]
     },
     {
       "id": "strm-08",
@@ -3559,7 +3644,47 @@
         "Ensure transaction.timeout.ms is safely higher than the checkpoint timeout plus buffer."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-strm-10-capped-broker",
+          "constraint": "The managed Kafka caps transaction.max.timeout.ms at 15 minutes, and compaction pushes checkpoints to 25. The warehouse upserts every row by a unique txn_id, so duplicates collapse.",
+          "correctChoiceId": "strm-10-at-least-once",
+          "resultOverrides": {
+            "strm-10-at-least-once": {
+              "approach": "optimal",
+              "resultTitle": "Idempotent upserts make repeats harmless",
+              "resultBody": "Without two-phase commit nothing waits on a 15-minute transaction, so aborts stop. Replays after a failure rewrite rows the warehouse already has, and the txn_id upsert collapses them: effectively-once end to end, as long as every write keeps that key."
+            },
+            "strm-10-align-timeouts": {
+              "approach": "anti_pattern",
+              "resultTitle": "The broker refuses the longer timeout",
+              "resultBody": "Flink asks for a 30-minute transaction timeout, but the managed broker caps it at 15, so producers fail to start. With 25-minute checkpoints, transactions keep aborting and the sink restarts in a loop.",
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "kafka",
+                    "tone": "bad",
+                    "cpu": 60,
+                    "sub": "timeout capped at 15 min"
+                  },
+                  {
+                    "id": "flink",
+                    "tone": "bad",
+                    "cpu": 80,
+                    "sub": "sink restart loop"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Can the broker's transaction timeout actually be raised here?",
+            "Look at what the warehouse does when it sees the same row twice.",
+            "When the sink dedupes by key, the pipeline itself no longer needs transactions."
+          ]
+        }
+      ]
     },
     {
       "id": "strm-11",

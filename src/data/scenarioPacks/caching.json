@@ -1289,26 +1289,7 @@
         "The hottest reads could be answered before they ever leave the app process."
       ],
       "nextId": null,
-      "reviewed": true,
-      "variants": [
-        {
-          "id": "var-cache-low-hit",
-          "constraint": "98% of queries are unique long-tail ad-hoc filter searches with under 2% cache hit probability.",
-          "correctChoiceId": "reshard",
-          "resultOverrides": {
-            "c2-replicas": {
-              "approach": "optimal",
-              "resultTitle": "Read replicas scale ad-hoc query capacity",
-              "resultBody": "With under 2% repeat hits, caching thrashes memory. Read replicas directly expand throughput for diverse SQL filters."
-            },
-            "c2-cache": {
-              "approach": "anti_pattern",
-              "resultTitle": "Cache misses thrash Redis memory",
-              "resultBody": "Unique queries constantly miss and evict, burning Redis CPU and network hops while 98% of queries still hit the DB."
-            }
-          }
-        }
-      ]
+      "reviewed": true
     },
     {
       "id": "cache-03",
@@ -2274,7 +2255,77 @@
         "The allowed staleness means the data can live closer to the readers."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-cache-06-pilot-budget",
+          "constraint": "Frankfurt is a 6-week pilot with no infrastructure budget, the target p95 is under 250 ms, and each request's four GETs don't depend on each other.",
+          "correctChoiceId": "pipeline",
+          "resultOverrides": {
+            "pipeline": {
+              "approach": "optimal",
+              "resultTitle": "One Atlantic round trip instead of four",
+              "resultBody": "The four independent GETs go out in one pipeline, so each request pays the 90 ms crossing once. p95 falls from 520 ms to 210 ms, under the 250 ms target, for no new spend. Cost: EU reads still sit 90 ms away.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 34,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 210,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 5,
+                  "unit": "errors",
+                  "tone": "good"
+                }
+              ]
+            },
+            "regional-cache": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "Fastest option, unfunded for a pilot",
+              "resultBody": "p95 drops to 45 ms, but a second cluster costs $1,800 a month against a pilot budget of zero, and it starts cold. A code change that meets the 250 ms target was free.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 30,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 45,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 0,
+                  "unit": "errors",
+                  "tone": "good"
+                }
+              ]
+            }
+          },
+          "hints": [
+            "Count how many times each request crosses the Atlantic.",
+            "The four lookups don't wait on each other's answers.",
+            "Send independent commands together instead of waiting for each reply."
+          ]
+        }
+      ]
     },
     {
       "id": "cache-07",
@@ -4682,7 +4733,91 @@
         "Data that must not be lost should not compete with a cache for memory."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-cache-16-rebuildable-counters",
+          "constraint": "The analytics counters are rebuilt from Kafka every night, so evicting some is harmless, and Redis spend is frozen at this single 8 GB node.",
+          "correctChoiceId": "allkeys-lru",
+          "resultOverrides": {
+            "allkeys-lru": {
+              "approach": "optimal",
+              "resultTitle": "Cold counters make room for match data",
+              "resultBody": "Every key is now an eviction candidate, so rarely touched counters give way to hot match data. Hit rate recovers to 90% and Postgres drops to 40%. Cost: evicted counters are missing until the nightly Kafka rebuild.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 40,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 110,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 0,
+                  "unit": "errors",
+                  "tone": "good"
+                },
+                {
+                  "key": "hit",
+                  "label": "Cache hit rate",
+                  "value": 90,
+                  "unit": "%",
+                  "tone": "good"
+                }
+              ]
+            },
+            "separate-instance": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "A second node the budget can't fund",
+              "resultBody": "The split works technically, but it adds $400 a month to a frozen Redis budget, spent protecting counters that Kafka rebuilds every night anyway.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 26,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 50,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 0,
+                  "unit": "errors",
+                  "tone": "good"
+                },
+                {
+                  "key": "hit",
+                  "label": "Cache hit rate",
+                  "value": 95,
+                  "unit": "%",
+                  "tone": "good"
+                }
+              ]
+            }
+          },
+          "hints": [
+            "Check which keys volatile-lru is allowed to evict.",
+            "The counters can be rebuilt, so they don't need protecting from eviction.",
+            "Widen the set of keys the eviction policy may choose from."
+          ]
+        }
+      ]
     },
     {
       "id": "cache-17",
@@ -5384,7 +5519,105 @@
         "A key should change only when the meaning or shape of its value changes."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-cache-19-format-churn",
+          "constraint": "Almost every release changes the cached payload format, so old entries can't be read by the new build, and a deploy may take up to an hour.",
+          "correctChoiceId": "slow-rollout",
+          "resultOverrides": {
+            "slow-rollout": {
+              "approach": "optimal",
+              "resultTitle": "The new cache warms as pods roll",
+              "resultBody": "Pods move to the new build over 40 minutes, so only a slice of traffic misses at a time, and each new-format key is filled once for all of them. Postgres peaks at 50%, hit rate stays near 90%. Cost: slower releases.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 50,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 150,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 5,
+                  "unit": "errors",
+                  "tone": "good"
+                },
+                {
+                  "key": "hit",
+                  "label": "Cache hit rate",
+                  "value": 90,
+                  "unit": "%",
+                  "tone": "good"
+                }
+              ]
+            },
+            "schema-version": {
+              "approach": "anti_pattern",
+              "resultTitle": "The schema version bumps every release",
+              "resultBody": "Because nearly every release changes the payload, the schema version changes on nearly every deploy too. Each release still starts at a 0% hit rate, and Postgres hits 98% for four minutes, 8 times a day.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 98,
+                  "unit": "%",
+                  "tone": "bad"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 3000,
+                  "unit": "ms",
+                  "tone": "bad"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 1200,
+                  "unit": "errors",
+                  "tone": "bad"
+                },
+                {
+                  "key": "hit",
+                  "label": "Cache hit rate",
+                  "value": 0,
+                  "unit": "%",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "cache",
+                    "tone": "bad",
+                    "sub": "new schema, empty"
+                  },
+                  {
+                    "id": "db",
+                    "tone": "bad",
+                    "cpu": 98
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Check whether a new build can read the entries the old build wrote.",
+            "If every release changes the format, any key versioning resets the cache.",
+            "Limit how much traffic meets the empty new keys at the same moment."
+          ]
+        }
+      ]
     },
     {
       "id": "cache-20",

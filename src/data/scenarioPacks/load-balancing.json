@@ -551,26 +551,7 @@
         "Healthy copies sit idle.",
         "Put a balancer in front."
       ],
-      "nextId": null,
-      "variants": [
-        {
-          "id": "var-lb-sticky",
-          "constraint": "All clients maintain stateful WebSockets where reconnecting destroys active multiplayer game sessions.",
-          "correctChoiceId": "manually-update-dns",
-          "resultOverrides": {
-            "lb-02-ip-hash": {
-              "approach": "optimal",
-              "resultTitle": "Consistent hashing preserves active game sessions",
-              "resultBody": "Sticky routing keeps clients pinned to their existing connection nodes, preventing disconnections."
-            },
-            "lb-02-round-robin": {
-              "approach": "anti_pattern",
-              "resultTitle": "Round-robin severed active game state",
-              "resultBody": "Distributing stateful sockets blindly across nodes forced session handoffs and dropped live players."
-            }
-          }
-        }
-      ]
+      "nextId": null
     },
     {
       "id": "lb-03",
@@ -1096,7 +1077,91 @@
         "Healthy copies sit idle.",
         "Put a balancer in front."
       ],
-      "nextId": null
+      "nextId": null,
+      "variants": [
+        {
+          "id": "var-lb-04-chunk-affinity",
+          "constraint": "Pods keep each device's partial upload chunks in memory for 10 minutes, so its requests must reach one pod; traffic comes from 40,000 devices, each with its own IP.",
+          "correctChoiceId": "bad-database-schema",
+          "resultOverrides": {
+            "bad-database-schema": {
+              "approach": "optimal",
+              "resultTitle": "Hashing spreads devices and keeps them home",
+              "resultBody": "With 40,000 distinct IPs, the hash splits devices within a few percent of evenly, and every chunk of an upload reaches the pod holding the rest. CPU evens out near 45%. Cost: a pod restart drops its in-flight uploads.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 45,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 200,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 0,
+                  "unit": "errors",
+                  "tone": "good"
+                }
+              ]
+            },
+            "load-balancer": {
+              "approach": "anti_pattern",
+              "resultTitle": "Balanced load, broken uploads",
+              "resultBody": "Least-requests evens CPU, but consecutive chunks of one upload now land on different pods. Pods reject chunks they have no session for, and about 30% of uploads fail with missing-chunk errors.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 40,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 300,
+                  "unit": "ms",
+                  "tone": "warn"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 400,
+                  "unit": "errors",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "s2",
+                    "tone": "bad",
+                    "sub": "missing chunks"
+                  },
+                  {
+                    "id": "s3",
+                    "tone": "bad",
+                    "sub": "missing chunks"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "The pods hold something a device needs on its next request.",
+            "Choosing a pod per request would scatter one upload across pods.",
+            "With 40,000 distinct sources, a deterministic mapping spreads evenly and keeps each device on one pod."
+          ]
+        }
+      ]
     },
     {
       "id": "lb-05",
@@ -2185,7 +2250,87 @@
         "Healthy copies sit idle.",
         "Put a balancer in front."
       ],
-      "nextId": null
+      "nextId": null,
+      "variants": [
+        {
+          "id": "var-lb-08-stateless-mixed-cost",
+          "constraint": "Sessions moved to Redis last sprint, so either node can serve any user; request cost ranges from 5 ms page views to 4-second report exports.",
+          "correctChoiceId": "change-database-schema",
+          "resultOverrides": {
+            "change-database-schema": {
+              "approach": "optimal",
+              "resultTitle": "Busy node stops getting new work",
+              "resultBody": "Least-connections sends each request to the node with fewer in flight, so a node stuck on 4-second exports gets fewer new ones. CPU evens out near 50% and p95 drops to 250 ms. Cost: nothing new; sessions already live in Redis.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 50,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 250,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 0,
+                  "unit": "errors",
+                  "tone": "good"
+                }
+              ]
+            },
+            "load-balancer": {
+              "approach": "anti_pattern",
+              "resultTitle": "Affinity pins exporters to one node",
+              "resultBody": "Nothing needs affinity any more, yet cookies now pin each heavy report user to one node. When a few exporters share a node it spikes to 95% while the other idles, so the alternating spikes continue.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 92,
+                  "unit": "%",
+                  "tone": "bad"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 2600,
+                  "unit": "ms",
+                  "tone": "bad"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 90,
+                  "unit": "errors",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "s1",
+                    "tone": "bad",
+                    "cpu": 95,
+                    "sub": "pinned exporters"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Look at how long different requests take, not how many arrive.",
+            "Either node can serve every user now.",
+            "Route on how busy each node is at the moment a request arrives."
+          ]
+        }
+      ]
     },
     {
       "id": "lb-09",
@@ -2454,7 +2599,93 @@
         "Healthy copies sit idle.",
         "Put a balancer in front."
       ],
-      "nextId": null
+      "nextId": null,
+      "variants": [
+        {
+          "id": "var-lb-09-no-rejects",
+          "constraint": "Every request is a paid ticket purchase that must not be rejected, the surge ends in two hours, and pod CPU limits can be raised in place on hosts with idle cores.",
+          "correctChoiceId": "increase-first-node-capa",
+          "resultOverrides": {
+            "increase-first-node-capa": {
+              "approach": "optimal",
+              "resultTitle": "Survivors get headroom without leaving the pool",
+              "resultBody": "Raising each survivor's CPU limit in place doubles its capacity with no restart. Each now carries 1.5x its share at about 68% CPU, and no purchase is refused. Cost: $300 a month for the surge window, and it must be reverted afterwards.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 68,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 240,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 0,
+                  "unit": "errors",
+                  "tone": "good"
+                }
+              ]
+            },
+            "load-balancer": {
+              "approach": "anti_pattern",
+              "resultTitle": "Fleet survives by refusing buyers",
+              "resultBody": "Shedding keeps the survivors alive, but it does so by returning 503 to about a third of checkout attempts. Those are paid purchases the business said must never be rejected, and support queues fill within minutes.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 75,
+                  "unit": "%",
+                  "tone": "warn"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 400,
+                  "unit": "ms",
+                  "tone": "warn"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 850,
+                  "unit": "errors",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "s2",
+                    "tone": "warn",
+                    "cpu": 80,
+                    "sub": "503 to buyers"
+                  },
+                  {
+                    "id": "s3",
+                    "tone": "warn",
+                    "cpu": 80,
+                    "sub": "503 to buyers"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Here, every rejected request is a lost sale.",
+            "The survivors need more headroom for two hours, and their hosts have spare cores.",
+            "Capacity can grow in place without taking a pod out of rotation."
+          ]
+        }
+      ]
     },
     {
       "id": "lb-10",

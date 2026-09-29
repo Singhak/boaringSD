@@ -592,21 +592,49 @@
       "nextId": null,
       "variants": [
         {
-          "id": "var-obs-tail",
-          "constraint": "Tracing storage costs exceed $15,000/month because 99.9% of traces represent fast, uninteresting 200 OK requests.",
+          "id": "var-obs-02-per-tenant-slo",
+          "constraint": "Each of the 40 hosts serves one enterprise tenant with its own contractual p99 SLO of 300 ms, and the page must fire when any single tenant breaches.",
           "correctChoiceId": "max-p99",
           "resultOverrides": {
-            "obs-02-tail-sample": {
+            "max-p99": {
               "approach": "optimal",
-              "resultTitle": "Tail-based sampling keeps errors and slow spans while cutting 90% of cost",
-              "resultBody": "Sampling traces at the tail buffers traces in memory and saves only errors or p99 outliers, slashing storage bills."
+              "resultTitle": "The worst tenant sets the page",
+              "resultBody": "The number now reads 2.1 s, the p99 of the worst bad-disk host, so its tenant's breach pages at once. It overstates the fleet's overall tail, which is fine: the contract is judged per tenant, not per fleet.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 64,
+                  "unit": "%",
+                  "tone": "warn"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 2100,
+                  "unit": "ms",
+                  "tone": "warn"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 90,
+                  "unit": "errors",
+                  "tone": "warn"
+                }
+              ]
             },
-            "obs-02-sample-all": {
-              "approach": "anti_pattern",
-              "resultTitle": "100% trace sampling exhausted logging storage budgets",
-              "resultBody": "Ingesting billions of healthy 200 OK traces created massive network egress and disk retention costs with minimal diagnostic value."
+            "merge-hist": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "Accurate fleet tail, invisible tenants",
+              "resultBody": "The merged p99 of 1.4 s is right for the fleet, but it shows this breach only because three hosts carry 8% of traffic. A single tenant under 1% of traffic could miss its 300 ms SLO and never move it."
             }
-          }
+          },
+          "hints": [
+            "Who is the SLO written for: the fleet or each customer?",
+            "A fleet-wide distribution can hide one small customer's tail.",
+            "When the contract is per host, the alert needs each host's own percentile."
+          ]
         }
       ]
     },
@@ -3245,7 +3273,64 @@
         "Telemetry export must always remain asynchronous and never block foreground request handlers."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-obs-09-diskless-counters",
+          "constraint": "Collectors run on diskless nodes with no writable volume, and every metric is a cumulative counter or gauge re-sent every 10 s, so each new point supersedes the old ones.",
+          "correctChoiceId": "obs-09-drop-silently",
+          "resultOverrides": {
+            "obs-09-drop-silently": {
+              "approach": "optimal",
+              "resultTitle": "Newest points win, totals survive",
+              "resultBody": "When RAM fills during a blip, the queue drops the oldest points and keeps the newest. Cumulative counters carry their full totals in the next point, so dashboards lose resolution during the outage, not data, with memory capped and $0 spent.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 45,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 30,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 0,
+                  "unit": "errors",
+                  "tone": "good"
+                }
+              ]
+            },
+            "obs-09-file-storage-queue": {
+              "approach": "anti_pattern",
+              "resultTitle": "No disk to queue on",
+              "resultBody": "These nodes have no writable volume, so the file_storage queue lands on the container's tiny scratch space. It fills within a minute of the blip and the collector crashes, losing every in-flight point instead of just the old ones.",
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "collector",
+                    "tone": "bad",
+                    "cpu": 90,
+                    "sub": "scratch space full, restarting"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "What happens to a cumulative counter if you lose some of its older samples?",
+            "With no disk, the only question is which points to lose when memory fills.",
+            "Each new sample of a cumulative metric already contains everything the old ones said."
+          ]
+        }
+      ]
     },
     {
       "id": "obs-10",
@@ -3439,7 +3524,63 @@
         "Production systems should emit INFO, WARN, and ERROR by default."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-obs-10-vendor-debug-hunt",
+          "constraint": "A vendor needs every debug line searchable for a 48-hour race-condition hunt, then the release rolls back. The log cluster rents its nodes by the hour.",
+          "correctChoiceId": "obs-10-double-cluster",
+          "resultOverrides": {
+            "obs-10-double-cluster": {
+              "approach": "optimal",
+              "resultTitle": "Rented capacity for a 48-hour hunt",
+              "resultBody": "Doubling the nodes absorbs 250,000 lines/s with room on disk, and every debug line stays searchable for the vendor. At hourly rates, 48 hours costs about $30, not $450 a month, and the nodes go when the release rolls back.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 45,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 60,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 0,
+                  "unit": "errors",
+                  "tone": "good"
+                }
+              ]
+            },
+            "obs-10-filter-processor": {
+              "approach": "anti_pattern",
+              "resultTitle": "Filtered away the evidence",
+              "resultBody": "The filter drops level == debug at the collector, which is exactly the data the vendor needs to catch the race. The cluster recovers, but the 48-hour hunt now needs a second debug release.",
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "apps",
+                    "tone": "warn",
+                    "sub": "race still unfound, debug lines gone"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "How long will this flood last, and is anyone reading it?",
+            "The debug lines are the evidence the vendor needs.",
+            "Short-lived load on hourly-billed capacity is cheap to absorb."
+          ]
+        }
+      ]
     },
     {
       "id": "obs-11",

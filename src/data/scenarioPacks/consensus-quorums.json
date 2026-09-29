@@ -674,21 +674,86 @@
       "reviewed": true,
       "variants": [
         {
-          "id": "var-cq-local",
-          "constraint": "Datacenter WAN link to remote region has 200ms latency and high packet loss; writes cannot wait for cross-WAN consensus.",
+          "id": "var-cq-02-two-racks",
+          "constraint": "The site has only two racks and no third location for a node or witness. Surviving a clean split between racks matters most; losing node 1's rack may stop writes.",
           "correctChoiceId": "four-tiebreak",
           "resultOverrides": {
-            "cq-02-local": {
+            "four-tiebreak": {
               "approach": "optimal",
-              "resultTitle": "Local quorum ensures fast writes without WAN dependencies",
-              "resultBody": "Restricting consensus quorums to the local region keeps write latencies under 5ms, replicating asynchronously to remote sites."
+              "resultTitle": "Node 1's half keeps writing",
+              "resultBody": "With a fixed four-member list, both halves of a 2-2 split compute the same winner, the half holding node 1, so exactly one side keeps quorum; this is Corosync's auto_tie_breaker. Cost: losing node 1's rack still halts writes.",
+              "metricsAfter": [
+                {
+                  "key": "rps",
+                  "label": "Traffic",
+                  "value": 9000,
+                  "unit": "req/s",
+                  "tone": "neutral"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 22,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 1800,
+                  "unit": "ms",
+                  "tone": "warn"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 0,
+                  "unit": "errors",
+                  "tone": "good"
+                }
+              ]
             },
-            "cq-02-global": {
-              "approach": "anti_pattern",
-              "resultTitle": "Global quorum writes stalled on the 200ms WAN link",
-              "resultBody": "Requiring majority across remote regions pushed write latency to 200ms+ and caused client timeout cascades."
+            "odd-five": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "No third rack to spread across",
+              "resultBody": "With two racks the fifth node lands beside two others; a 3+2 layout survives the same split and the same rack losses as the tie-breaker, but costs another server and one more member in every commit.",
+              "metricsAfter": [
+                {
+                  "key": "rps",
+                  "label": "Traffic",
+                  "value": 9000,
+                  "unit": "req/s",
+                  "tone": "neutral"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 21,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 1900,
+                  "unit": "ms",
+                  "tone": "warn"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 0,
+                  "unit": "errors",
+                  "tone": "good"
+                }
+              ]
             }
-          }
+          },
+          "hints": [
+            "How many nodes form a majority of four, and where could a fifth even go?",
+            "With only two failure domains, some split will always be even.",
+            "An even split needs a rule both halves compute identically from the same fixed membership."
+          ]
         }
       ]
     },
@@ -2261,7 +2326,99 @@
         "Is the problem the protocol, or the hardware it runs on?"
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-cq-u01-reserved-vms",
+          "constraint": "A prepaid 3-year reservation locks these VM types, now set to unlimited burst; no faster disk exists in this region until next quarter, and 5-second failovers are acceptable.",
+          "correctChoiceId": "long-timeouts",
+          "resultOverrides": {
+            "long-timeouts": {
+              "approach": "optimal",
+              "resultTitle": "Timeouts sized for slow disks",
+              "resultBody": "With 500 ms heartbeats and a 5 s election timeout, a 180 ms fsync stall no longer looks like a dead leader: elections fall to about 2 an hour and API p99 to 1.2 s. Cost: a real leader crash takes 5 s to detect.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 70,
+                  "unit": "%",
+                  "tone": "warn"
+                },
+                {
+                  "key": "fsync",
+                  "label": "WAL fsync p99",
+                  "value": 180,
+                  "unit": "ms",
+                  "tone": "bad"
+                },
+                {
+                  "key": "elections",
+                  "label": "Leader changes",
+                  "value": 2,
+                  "unit": "per hour",
+                  "tone": "good"
+                },
+                {
+                  "key": "p99",
+                  "label": "API p99",
+                  "value": 1200,
+                  "unit": "ms",
+                  "tone": "warn"
+                }
+              ]
+            },
+            "bigger-nodes": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "Nothing faster to move to",
+              "resultBody": "The region has no faster disk class until next quarter, and leaving the prepaid VMs means paying twice; the migration is abandoned mid-window while leader changes continue at 40 an hour.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 82,
+                  "unit": "%",
+                  "tone": "bad"
+                },
+                {
+                  "key": "fsync",
+                  "label": "WAL fsync p99",
+                  "value": 180,
+                  "unit": "ms",
+                  "tone": "bad"
+                },
+                {
+                  "key": "elections",
+                  "label": "Leader changes",
+                  "value": 40,
+                  "unit": "per hour",
+                  "tone": "bad"
+                },
+                {
+                  "key": "p99",
+                  "label": "API p99",
+                  "value": 2400,
+                  "unit": "ms",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "e1",
+                    "sub": "no faster disk available"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "etcd wants fsync well under 10 ms, but this hardware can't change this quarter.",
+            "Each slow fsync delays a heartbeat, and followers start an election when heartbeats seem missing.",
+            "Match how long followers wait for a heartbeat to how late this hardware actually sends one."
+          ]
+        }
+      ]
     },
     {
       "id": "cq-bill-01",
@@ -3331,7 +3488,91 @@
         "Never place a required voting member on high-latency or unstable transit links."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-cq-10-rebuildable-cache",
+          "constraint": "The cluster only stores a routing cache that rebuilds from S3 in 90 seconds, so a node loss costs one rebuild. p95 must stay under 50 ms, and the budget covers one node.",
+          "correctChoiceId": "cq-10-single-node",
+          "resultOverrides": {
+            "cq-10-single-node": {
+              "approach": "optimal",
+              "resultTitle": "No quorum left to wait on",
+              "resultBody": "A standalone node acks writes locally at about 19 ms p95, well under 50 ms. If it dies, a replacement rebuilds the cache from S3 in 90 s. Cost: 90 s of degraded routing per failure, which this data can afford.",
+              "metricsAfter": [
+                {
+                  "key": "rps",
+                  "label": "Traffic",
+                  "value": 22000,
+                  "unit": "req/s",
+                  "tone": "neutral"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 38,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 19,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 0,
+                  "unit": "errors",
+                  "tone": "good"
+                }
+              ]
+            },
+            "cq-10-move-witness": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "A fast quorum for disposable data",
+              "resultBody": "Moving the witness fixes latency, but three voting nodes protecting a cache S3 can rebuild in 90 s cost three times the one-node budget and add a cross-zone round trip to every write.",
+              "metricsAfter": [
+                {
+                  "key": "rps",
+                  "label": "Traffic",
+                  "value": 22000,
+                  "unit": "req/s",
+                  "tone": "neutral"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 41,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 28,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 0,
+                  "unit": "errors",
+                  "tone": "good"
+                }
+              ]
+            }
+          },
+          "hints": [
+            "Ask what losing this cluster's data would actually cost.",
+            "Quorums buy durability and failover; this data rebuilds in 90 seconds.",
+            "If the data is disposable, count how many voters you really need."
+          ]
+        }
+      ]
     },
     {
       "id": "cq-11",

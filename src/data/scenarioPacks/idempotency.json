@@ -544,26 +544,7 @@
         "A dedupe marker stored somewhere else can disagree with the ledger after a crash.",
         "Make recording 'I processed this event' part of the same commit as the credit."
       ],
-      "nextId": null,
-      "variants": [
-        {
-          "id": "var-idemp-db",
-          "constraint": "Redis cluster went read-only, but PostgreSQL primary has ample transaction write capacity.",
-          "correctChoiceId": "redis-setnx",
-          "resultOverrides": {
-            "idemp2-db-unique": {
-              "approach": "optimal",
-              "resultTitle": "Database unique constraint enforces idempotency directly",
-              "resultBody": "Using a unique constraint on the idempotency_key column in Postgres ensures ACID deduplication without needing Redis."
-            },
-            "idemp2-redis": {
-              "approach": "anti_pattern",
-              "resultTitle": "Failed Redis writes blocked customer transactions",
-              "resultBody": "Attempting to acquire keys on the read-only Redis cluster failed, causing payment checkouts to abort unnecessarily."
-            }
-          }
-        }
-      ]
+      "nextId": null
     },
     {
       "id": "idemp-03",
@@ -1633,7 +1614,100 @@
         "The side effect happens outside Kafka, so Kafka can't dedupe it for you.",
         "Give each event an identity the consumer and the provider can both remember."
       ],
-      "nextId": null
+      "nextId": null,
+      "variants": [
+        {
+          "id": "var-idemp-06-dupes-worse",
+          "constraint": "Receipts are also shown in the app, so a missing email is harmless, but duplicate emails trip the provider's spam-complaint limit. The worker has no database, and the fix ships today.",
+          "correctChoiceId": "commit-before-send",
+          "resultOverrides": {
+            "commit-before-send": {
+              "approach": "optimal",
+              "resultTitle": "At-most-once, and that's fine here",
+              "resultBody": "Committing the offset first means a crash skips an email instead of repeating it: duplicates fall from 360 to 0 a minute, while about 90 a minute get no email and read the receipt in the app. Cost: no email is ever retried.",
+              "metricsAfter": [
+                {
+                  "key": "rps",
+                  "label": "Events",
+                  "value": 300,
+                  "unit": "/s",
+                  "tone": "neutral"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 24,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Duplicate emails",
+                  "value": 0,
+                  "unit": "/min",
+                  "tone": "good"
+                },
+                {
+                  "key": "missing",
+                  "label": "Missing receipts",
+                  "value": 90,
+                  "unit": "/min",
+                  "tone": "warn"
+                }
+              ]
+            },
+            "dedupe-table": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "Right design, no database today",
+              "resultBody": "The sent_receipts table needs a database this worker doesn't have; provisioning, migrations and access take a sprint, and meanwhile 360 duplicate receipts a minute push the account toward the provider's spam-complaint limit.",
+              "metricsAfter": [
+                {
+                  "key": "rps",
+                  "label": "Events",
+                  "value": 300,
+                  "unit": "/s",
+                  "tone": "neutral"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 25,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Duplicate emails",
+                  "value": 360,
+                  "unit": "/min",
+                  "tone": "bad"
+                },
+                {
+                  "key": "missing",
+                  "label": "Missing receipts",
+                  "value": 0,
+                  "unit": "/min",
+                  "tone": "good"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "mail",
+                    "tone": "bad",
+                    "sub": "spam complaints rising"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Here, one kind of failure is far worse than the other.",
+            "A crash between sending and committing the offset either repeats the email or skips it.",
+            "The order of those two steps decides which way a crash fails."
+          ]
+        }
+      ]
     },
     {
       "id": "idemp-07",
@@ -2805,7 +2879,100 @@
         "Idempotency covers the response a caller sees, not just the final state.",
         "The server needs to remember that this owner already cancelled this plan."
       ],
-      "nextId": null
+      "nextId": null,
+      "variants": [
+        {
+          "id": "var-idemp-10-vendor-api",
+          "constraint": "Subscriptions live in a vendor billing API the app calls directly. It can't be changed, keeps one ID per subscription for life, and returns 403 for other users' IDs.",
+          "correctChoiceId": "client-404-ok",
+          "resultOverrides": {
+            "client-404-ok": {
+              "approach": "optimal",
+              "resultTitle": "404 can only mean already cancelled",
+              "resultBody": "IDs never change and foreign IDs get 403, so a 404 on the user's own subscription can only mean it's already gone; the app shows 'Cancelled'. Tickets fall from 900 to about 5 a day. Cost: the app now depends on the vendor's semantics.",
+              "metricsAfter": [
+                {
+                  "key": "rps",
+                  "label": "Traffic",
+                  "value": 4200,
+                  "unit": "req/s",
+                  "tone": "neutral"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 27,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 310,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "False failures",
+                  "value": 5,
+                  "unit": "/day",
+                  "tone": "good"
+                }
+              ]
+            },
+            "tombstone": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "No server of yours to change",
+              "resultBody": "The vendor hard-deletes and won't add a cancelled status. Building a proxy just to keep tombstones puts a new service on the billing path for weeks, and 900 false-failure tickets a day continue meanwhile.",
+              "metricsAfter": [
+                {
+                  "key": "rps",
+                  "label": "Traffic",
+                  "value": 4200,
+                  "unit": "req/s",
+                  "tone": "neutral"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 27,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 310,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "False failures",
+                  "value": 900,
+                  "unit": "/day",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "api",
+                    "tone": "warn",
+                    "sub": "vendor API, can't change"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "The first DELETE worked; only the answer was lost, and the server is off limits.",
+            "List what a 404 could mean from this API, given how it answers other users' IDs.",
+            "If a status code can only mean one thing, the caller can safely interpret it."
+          ]
+        }
+      ]
     },
     {
       "id": "idemp-11",
@@ -4702,7 +4869,100 @@
         "Redis starts evicting when used memory reaches maxmemory, long before any TTL expires.",
         "Compare the size of the live key set with the memory of the node holding it."
       ],
-      "nextId": null
+      "nextId": null,
+      "variants": [
+        {
+          "id": "var-idemp-u01-weekly-presales",
+          "constraint": "Presales now run every week and key volume grows 20% a month. The freeze is over, and keys must survive a Redis failover or restart.",
+          "correctChoiceId": "keys-postgres",
+          "resultOverrides": {
+            "keys-postgres": {
+              "approach": "optimal",
+              "resultTitle": "Keys are durable and never evicted",
+              "resultBody": "Keys now live in a uniquely indexed table written in the same transaction as the order, so nothing is evicted and a restart loses nothing. Cost: about 2 ms per checkout for the insert, plus a nightly purge of rows older than 24 h.",
+              "metricsAfter": [
+                {
+                  "key": "rps",
+                  "label": "Purchases",
+                  "value": 1800,
+                  "unit": "req/s",
+                  "tone": "neutral"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 44,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Double charges",
+                  "value": 0,
+                  "unit": "/h",
+                  "tone": "good"
+                },
+                {
+                  "key": "mem",
+                  "label": "Redis memory",
+                  "value": 20,
+                  "unit": "%",
+                  "tone": "good"
+                }
+              ]
+            },
+            "upsize-redis": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "Fits today, evicts again in months",
+              "resultBody": "16 GB holds today's 11 GB, but at 20% growth a month the key set passes 16 GB in about two months, and a failover still drops the last writes Redis hadn't replicated, so some retries double-charge again.",
+              "metricsAfter": [
+                {
+                  "key": "rps",
+                  "label": "Purchases",
+                  "value": 1800,
+                  "unit": "req/s",
+                  "tone": "neutral"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 38,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Double charges",
+                  "value": 4,
+                  "unit": "/h",
+                  "tone": "warn"
+                },
+                {
+                  "key": "mem",
+                  "label": "Redis memory",
+                  "value": 69,
+                  "unit": "%",
+                  "tone": "warn"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "keys",
+                    "tone": "warn",
+                    "sub": "16 GB, key set +20%/month"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Tonight's evictions are a symptom; look at the growth trend and the durability rule.",
+            "A store that evicts under pressure or forgets on restart is a risky home for 'never charge twice'.",
+            "Keep the key somewhere durable that can reject a duplicate in the same commit as the order."
+          ]
+        }
+      ]
     },
     {
       "id": "idemp-casc-01",

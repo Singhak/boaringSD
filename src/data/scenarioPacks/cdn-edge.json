@@ -523,26 +523,7 @@
         "The edge can transform a response before caching it, keyed by width and format."
       ],
       "nextId": null,
-      "reviewed": true,
-      "variants": [
-        {
-          "id": "var-cdn-private",
-          "constraint": "Responses contain sensitive PII account statements governed by banking data sovereignty laws.",
-          "correctChoiceId": "lazy",
-          "resultOverrides": {
-            "cdn-origin-shield": {
-              "approach": "optimal",
-              "resultTitle": "Origin shield with private headers protects compliance",
-              "resultBody": "Origin shielding concentrates TLS termination while strictly preventing edge caching of private customer financial data."
-            },
-            "cdn-cache-all": {
-              "approach": "anti_pattern",
-              "resultTitle": "Edge caching violated banking data privacy",
-              "resultBody": "Caching personal bank statements at shared public edge PoPs caused account data leakage across users."
-            }
-          }
-        }
-      ]
+      "reviewed": true
     },
     {
       "id": "cdn-03",
@@ -3267,7 +3248,91 @@
         "Tell the edge how long the copy stays fresh, only for the paths that are shared."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-cdn-13-appliance-origin",
+          "constraint": "The static origin is a vendor appliance whose response headers can't be changed, and /api/* moved to its own CDN property last week, leaving only public assets here.",
+          "correctChoiceId": "override",
+          "resultOverrides": {
+            "override": {
+              "approach": "optimal",
+              "resultTitle": "The edge decides freshness itself",
+              "resultBody": "With a 10-minute edge TTL, each PoP revalidates an asset about once per 10 minutes instead of on every request. Hit ratio reaches 95%, origin CPU 15%. Cost: an asset changed in place can be stale for up to 10 minutes.",
+              "metricsAfter": [
+                {
+                  "key": "hit",
+                  "label": "Served without revalidation",
+                  "value": 95,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 15,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 40,
+                  "unit": "ms",
+                  "tone": "good"
+                }
+              ]
+            },
+            "headers": {
+              "approach": "anti_pattern",
+              "resultTitle": "The appliance ignores the header change",
+              "resultBody": "The vendor appliance has no setting for Cache-Control, so the change never reaches a response. The edge still revalidates all 22,000 requests/s, and origin stays at 82% CPU answering 304s.",
+              "metricsAfter": [
+                {
+                  "key": "hit",
+                  "label": "Served without revalidation",
+                  "value": 2,
+                  "unit": "%",
+                  "tone": "bad"
+                },
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 82,
+                  "unit": "%",
+                  "tone": "bad"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 310,
+                  "unit": "ms",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "origin",
+                    "tone": "bad",
+                    "cpu": 82,
+                    "sub": "headers unchanged"
+                  }
+                ]
+              }
+            },
+            "etag": {
+              "resultTitle": "Faster 304s, still 22,000 of them",
+              "resultBody": "Assuming the appliance even exposes its hashing, each 304 gets cheaper and origin drops to 64%, but every request still waits on a round trip to origin before the edge answers."
+            }
+          },
+          "hints": [
+            "Almost every origin reply is a 304, so the content isn't changing.",
+            "Origin can't say how long a copy stays fresh, but the edge can decide that itself.",
+            "Everything left on this CDN property is shared, public content."
+          ]
+        }
+      ]
     },
     {
       "id": "cdn-14",
@@ -3737,7 +3802,100 @@
         "If the fixed file had a new name, nothing would need purging."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-cdn-15-hardcoded-css",
+          "constraint": "A legacy CMS hardcodes /css/site.css into 4,000 stored pages, and browsers cache the file for only 60 seconds while the edge keeps it for a day.",
+          "correctChoiceId": "url-purge",
+          "resultOverrides": {
+            "url-purge": {
+              "approach": "optimal",
+              "resultTitle": "One URL purged, visitors fixed in a minute",
+              "resultBody": "The purge drops only site.css from the edge in seconds; browsers recheck within 60 s and fetch the fix. The other 2.1 million objects stay cached and origin barely notices. Cost: a purge call in every CSS release.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 14,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 80,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 0,
+                  "unit": "errors",
+                  "tone": "good"
+                },
+                {
+                  "key": "stale",
+                  "label": "Visitors on old CSS",
+                  "value": 0,
+                  "unit": "%",
+                  "tone": "good"
+                }
+              ]
+            },
+            "hashed-names": {
+              "approach": "anti_pattern",
+              "resultTitle": "New filename, 4,000 pages still link the old",
+              "resultBody": "The build emits site.3f9a1c.css, but the 4,000 CMS pages still reference /css/site.css. Visitors keep loading the cached old file with the typo until someone edits every stored page.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 12,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "p95 latency",
+                  "value": 70,
+                  "unit": "ms",
+                  "tone": "good"
+                },
+                {
+                  "key": "errors",
+                  "label": "Errors",
+                  "value": 0,
+                  "unit": "errors",
+                  "tone": "good"
+                },
+                {
+                  "key": "stale",
+                  "label": "Visitors on old CSS",
+                  "value": 100,
+                  "unit": "%",
+                  "tone": "bad"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "cdn",
+                    "tone": "warn",
+                    "sub": "old site.css served"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "Only one of 2.1 million objects actually changed.",
+            "The filename can't change without editing 4,000 stored pages.",
+            "Browsers recheck within a minute, so only the edge copy is really stale."
+          ]
+        }
+      ]
     },
     {
       "id": "cdn-16",
@@ -5507,7 +5665,86 @@
         "The real fix is already scheduled; you only have to bridge three days."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "variants": [
+        {
+          "id": "var-cdn-restart-01-fixed-catalog",
+          "constraint": "Patched libvips is at least two months away and rolling back reopens a CVE; the catalog is a fixed 60,000 photos in 4 widths, about 90 GB once rendered.",
+          "correctChoiceId": "prerender",
+          "resultOverrides": {
+            "prerender": {
+              "approach": "optimal",
+              "resultTitle": "Misses read files, not the leaky resizer",
+              "resultBody": "240,000 renders finish in about 6 hours, well before any VM reaches its 20-hour swap point. Misses now fetch finished files from object storage at 60 ms p95. Cost: about $2 a month of storage and a render step for new photos.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 10,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "mem",
+                  "label": "Resizer memory",
+                  "value": 20,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "p95",
+                  "label": "Miss p95",
+                  "value": 60,
+                  "unit": "ms",
+                  "tone": "good"
+                }
+              ]
+            },
+            "rolling-restart": {
+              "approach": "viable_with_tradeoffs",
+              "resultTitle": "Two months of restarts, leak still in path",
+              "resultBody": "Restarts every 12 hours hold p95 near 200 ms, but that is 120 drain cycles before the patch, each a chance to fail. Every miss still runs the leaking build, and one missed restart puts VMs back into swap.",
+              "metricsAfter": [
+                {
+                  "key": "cpu",
+                  "label": "CPU",
+                  "value": 40,
+                  "unit": "%",
+                  "tone": "good"
+                },
+                {
+                  "key": "mem",
+                  "label": "Resizer memory",
+                  "value": 70,
+                  "unit": "%",
+                  "tone": "warn"
+                },
+                {
+                  "key": "p95",
+                  "label": "Miss p95",
+                  "value": 250,
+                  "unit": "ms",
+                  "tone": "warn"
+                }
+              ],
+              "graphPatch": {
+                "nodes": [
+                  {
+                    "id": "resizer",
+                    "tone": "warn",
+                    "sub": "leaking, restarted 2x/day"
+                  }
+                ]
+              }
+            }
+          },
+          "hints": [
+            "The slowdown tracks process uptime, not traffic.",
+            "Two months of restarts leaves the leaky code in every miss path.",
+            "The set of outputs is small and fixed, so the work can be done once."
+          ]
+        }
+      ]
     },
     {
       "id": "cdn-bill-01",
