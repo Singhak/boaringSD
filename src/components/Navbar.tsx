@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   BarChart3,
+  BookOpen,
   CalendarClock,
   ChevronDown,
   Flame,
@@ -60,6 +61,7 @@ export default function Navbar() {
     { name: "Daily", href: "/daily", icon: CalendarClock, dot: dailyPending },
     { name: "Levels", href: "/campaign", icon: Layers },
     { name: "Progress", href: "/dashboard", icon: BarChart3 },
+    { name: "Blog", href: "/blog", icon: BookOpen },
   ];
   const dailyDot = (
     <span className="ml-1.5 inline-block w-1.5 h-1.5 rounded-full bg-amber-300 align-middle" aria-label="not played today" />
