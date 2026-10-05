@@ -13,3 +13,4 @@
 | 009 | Cache stampede, penetration, avalanche | topic list #5 | draft |
 | 010 | Protect the DB when the whole cache goes down | cross question of #009 | draft |
 | 011 | Distributed locks (SETNX, Redlock, fencing) | topic list #8 | draft |
+| 012 | Circuit breaker vs rate limiting | cross question of #010 | draft |
