@@ -32,12 +32,14 @@ post: 012-circuit-breaker-vs-rate-limiting
 
 ## 3. Side by side
 
-- **Trigger:** rate limiting counts requests over a window. A breaker watches failure rate or slow responses.
-- **Based on:** rate limiting uses a policy or quota. A breaker uses observed health.
-- **Applied by:** rate limiting is usually applied by the server or gateway. A breaker is applied by the caller.
-- **Protects:** rate limiting protects a service from too much traffic. A breaker protects the caller and a failing dependency.
-- **Typical response:** rate limiting returns `429`, queues or delays. A breaker returns a fast error or a fallback.
-- **Resets:** rate limiting resets when the window or tokens refill. A breaker resets after a cool-down plus successful probes.
+| | Rate limiting | Circuit breaker |
+|---|---|---|
+| Trigger | Request count over a window | Failure rate or slow responses |
+| Based on | Policy or quota | Observed health |
+| Applied by | Server or gateway | The caller |
+| Protects | A service from too much traffic | The caller and a failing dependency |
+| Typical response | `429`, queue or delay | Fast error or fallback |
+| Resets | When the window or tokens refill | After cool-down plus successful probes |
 
 ## 4. How they work together (the cache-down case)
 
