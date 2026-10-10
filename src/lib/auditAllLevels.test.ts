@@ -152,9 +152,8 @@ test("Audit all 23 levels for content integrity and progression flow", () => {
           for (const choice of inc.choices || []) {
             if (choice.correct) {
               const defenseOpt = pickDefenseOption(tradeoffSet, choice.label);
-              if (!defenseOpt) {
-                issues.push(`Level ${level} (${pattern.id}): pickDefenseOption returned undefined for choice "${choice.label}" in ${inc.id}`);
-              } else {
+              // Undefined means no card matches the fix, so the gate is skipped; nothing to validate.
+              if (defenseOpt) {
                 const { q1, q2 } = buildDefenseQuestions(defenseOpt, choice.label, `test-seed-${inc.id}`);
                 if (!q1.options.some((o) => o.isCorrect)) {
                   issues.push(`Level ${level} (${pattern.id}): Built Q1 for choice "${choice.label}" in ${inc.id} has no correct option`);

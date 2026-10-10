@@ -23,12 +23,12 @@ function words(text: string): Set<string> {
 
 /**
  * The tradeoff card that matches what the player deployed: the option sharing the
- * most words with the deployed label. Falls back to the recommended option.
+ * most words with the deployed label. Undefined when nothing matches, so the gate is
+ * skipped rather than quizzing the player on a fix they did not deploy.
  */
 export function pickDefenseOption(set: PatternTradeoffSet, deployedLabel: string): TradeoffCardOption | undefined {
-  const recommended = set.options.find((o) => o.id === set.recommendedOptionId) ?? set.options[0];
   const deployed = words(deployedLabel);
-  let best = recommended;
+  let best: TradeoffCardOption | undefined;
   let bestScore = 0;
   for (const option of set.options) {
     const optionWords = words(`${option.title} ${option.tagline}`);

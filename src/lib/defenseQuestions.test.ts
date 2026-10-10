@@ -18,7 +18,8 @@ test("defense Q1 names the choice the player deployed", () => {
 
 test("the defense picks the tradeoff card that matches the deploy", () => {
   assert.equal(pickDefenseOption(caching, "Provision read replicas for the hot table")?.id, "opt-read-replicas");
-  assert.equal(pickDefenseOption(caching, "Something unrelated")?.id, caching.recommendedOptionId);
+  // No matching card: skip the gate rather than quiz on a fix the player did not deploy.
+  assert.equal(pickDefenseOption(caching, "Something unrelated"), undefined);
 });
 
 test("defense options move between attempts", () => {

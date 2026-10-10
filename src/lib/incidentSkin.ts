@@ -62,7 +62,11 @@ export function scaleTrafficText(text: string, scale: number): string {
 }
 
 function scaleMetrics(metrics: IncidentMetric[] | undefined, scale: number): IncidentMetric[] | undefined {
-  return metrics?.map((m) => (m.key === "rps" ? { ...m, value: niceNumber(m.value * scale) } : m));
+  // Only per-second rates scale: the brief and logs state per-minute figures in prose that
+  // scaleTrafficText leaves alone, so scaling the gauge would contradict them.
+  return metrics?.map((m) =>
+    m.key === "rps" && !/\/(min|h|week)$/.test(m.unit ?? "") ? { ...m, value: niceNumber(m.value * scale) } : m
+  );
 }
 
 export function applySkin(incident: IncidentV2, rawSkin: IncidentSkin): IncidentV2 {
