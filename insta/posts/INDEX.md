@@ -14,3 +14,10 @@
 | 010 | Protect the DB when the whole cache goes down | cross question of #009 | draft |
 | 011 | Distributed locks (SETNX, Redlock, fencing) | topic list #8 | draft |
 | 012 | Circuit breaker vs rate limiting | cross question of #010 | draft |
+| 013 | Reverse proxy vs API gateway | new topic (architecture) | draft |
+| 014 | API gateway vs load balancer | cross question of #013 | draft |
+| 015 | Reverse proxy vs load balancer | cross question of #013 | draft |
+| 016 | API gateway vs service mesh | cross question of #013 | draft |
+| 017 | Forward proxy vs reverse proxy | cross question of #013 | draft |
+| 018 | Is the API gateway a single point of failure? | cross question of #013 | draft |
+| 019 | BFF vs API gateway | cross question of #013 | draft |
