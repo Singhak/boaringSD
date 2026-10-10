@@ -1139,7 +1139,26 @@
         "The primary can tell you exactly which position in its log contains the user's write."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "logs": {
+        "users": [
+          "PUT /profile 200, then GET /profile returns the old bio",
+          "480 'my edit vanished' reports/min, 6% of edit-then-refresh pairs"
+        ],
+        "app": [
+          "writes go to primary, all reads round-robin across 3 replicas",
+          "median gap between PUT and the next GET: 0.8 s"
+        ],
+        "db": [
+          "CPU 45%, 1,900 commits/s",
+          "rollup batch running, WAL 90 MB/s"
+        ],
+        "replica": [
+          "replay lag r1 0.3 s, r2 0.3 s, r3 4.1 s during rollup",
+          "CPU 58%, ~2,700 reads/s each",
+          "no per-session freshness check on reads"
+        ]
+      }
     },
     {
       "id": "rr-bill-01",
@@ -1927,7 +1946,26 @@
         "Transactions that don't touch the same rows can be applied at the same time."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "logs": {
+        "users": [
+          "balance page missing transfers made 20 min ago",
+          "'missing deposit' tickets: 140/h"
+        ],
+        "app": [
+          "balance reads go to the replica pool",
+          "staleness over the 5 s limit since 08:40"
+        ],
+        "db": [
+          "9,000 commits/s, CPU 60%, 16 cores busy",
+          "binlog written at 14 MB/s to 3 connected replicas"
+        ],
+        "r": [
+          "Seconds_Behind_Source 1,200 and rising",
+          "replica_parallel_workers=0: one SQL thread at 100%",
+          "other 15 cores idle, I/O wait 2%"
+        ]
+      }
     },
     {
       "id": "rr-06",
@@ -2233,7 +2271,26 @@
         "Most of the primary's work is per transaction, not per row."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "logs": {
+        "users": [
+          "60,000 readings/s from 1.2 M meters",
+          "payload 180 bytes each"
+        ],
+        "ingest": [
+          "INSERT INTO readings(...) once per reading, autocommit",
+          "pool 400 connections, insert round-trip 6 ms"
+        ],
+        "db": [
+          "60,000 commits/s, one WAL fsync per commit, CPU 95%",
+          "pg_stat_statements: INSERT readings = 99.4% of total time",
+          "SELECT from dashboards: 300/s"
+        ],
+        "dash": [
+          "300 queries/s, p95 40 ms, CPU 10%",
+          "reads are 0.5% of all statements"
+        ]
+      }
     },
     {
       "id": "rr-07",
@@ -7973,6 +8030,424 @@
         "Reads are the cheap part to shrink: estimate CPU after removing one reader."
       ],
       "nextId": null
+    },
+    {
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 50,
+      "id": "rr-new-02",
+      "incidentCode": "INC-003-23",
+      "level": 3,
+      "patternId": "read-replicas",
+      "title": "Primary NIC saturates feeding nine replicas",
+      "brief": "ShopGrid's Postgres primary streams WAL straight to 9 replicas. At 133 MB/s of WAL per stream, the 10 Gbps NIC sits at 96%, commits slowed from 4 ms to 85 ms, and replicas trail by 20 seconds.",
+      "constraint": "Every replica must stay within 5 seconds of the primary, and WAL volume grows about 25% a quarter.",
+      "question": "How should nine replicas follow one primary without nine WAL streams?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Writes",
+          "value": 3000,
+          "unit": "tx/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 62,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "Commit latency",
+          "value": 85,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "lag",
+          "label": "Replica lag",
+          "value": 20,
+          "unit": "s",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 2,
+          "unit": "%",
+          "tone": "warn"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Shoppers"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Shop API",
+            "tone": "warn",
+            "cpu": 55
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Primary",
+            "tone": "bad",
+            "cpu": 62,
+            "sub": "NIC 96%, 9 WAL streams"
+          },
+          {
+            "id": "r",
+            "kind": "replica",
+            "label": "9 replicas",
+            "tone": "warn",
+            "sub": "lag 20 s"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          },
+          {
+            "from": "db",
+            "to": "r"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "cascade",
+          "label": "Cascade: 3 relays follow the primary and the other 6 follow them",
+          "correct": true,
+          "approach": "optimal",
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Shoppers"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Shop API",
+                "tone": "good",
+                "cpu": 40
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Primary",
+                "tone": "good",
+                "cpu": 41,
+                "sub": "NIC 36%, 3 WAL streams"
+              },
+              {
+                "id": "r",
+                "kind": "replica",
+                "label": "9 replicas",
+                "tone": "good",
+                "sub": "lag 2 s, 2 hops"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              },
+              {
+                "from": "db",
+                "to": "r"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 41,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "Commit latency",
+              "value": 5,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "lag",
+              "label": "Replica lag",
+              "value": 2,
+              "unit": "s",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Primary ships WAL three times, not nine",
+          "resultBody": "The primary now sends about 400 MB/s (3.2 Gbps) to three relays, which each forward to two replicas. Commit latency falls back to 5 ms and lag to 2 seconds. Cost: replicas are two hops away, adding up to 1 s of lag, and a relay failure forces its two children to re-point.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "wal-compression",
+          "label": "Turn on wal_compression to shrink the WAL sent to each replica",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 70,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "Commit latency",
+              "value": 38,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "lag",
+              "label": "Replica lag",
+              "value": 8,
+              "unit": "s",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 1,
+              "unit": "%",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "A third smaller, still nine streams",
+          "resultBody": "WAL volume drops about 30%, so the NIC falls to 67% and lag to 8 seconds, still past the 5 second limit. Primary CPU rises 8 points for compression, and 25% quarterly growth brings the NIC back to the wall within two quarters.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "cpu": 70,
+                "sub": "NIC 67%, still 9 streams"
+              }
+            ]
+          }
+        },
+        {
+          "id": "bigger-nic",
+          "label": "Resize the primary to a 25 Gbps instance at +$1,900/month",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 62,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "Commit latency",
+              "value": 6,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "lag",
+              "label": "Replica lag",
+              "value": 25,
+              "unit": "s",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Six minutes of downtime",
+          "resultBody": "Resizing stops the primary for about 6 minutes during peak, so writes fail outright and all nine replicas fall further behind. Afterwards the NIC sits at 41%, but you pay $1,900/month and each future replica adds another full stream.",
+          "tradeoffs": {
+            "costMonthlyDelta": 1900
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "tone": "bad",
+                "sub": "stopped 6 min for resize"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Count the WAL streams leaving the primary, not the reads arriving at it.",
+        "Streaming bandwidth from the primary grows with each replica you attach.",
+        "A replica can serve as the upstream for other replicas."
+      ],
+      "nextId": null,
+      "format": "two-step",
+      "mitigation": {
+        "question": "The primary NIC is at 96% and commits take 85 ms. What relieves it right now?",
+        "choices": [
+          {
+            "id": "m-detach-analytics",
+            "label": "Detach the 3 analytics replicas from the primary tonight",
+            "correct": true,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 52,
+                "unit": "%",
+                "tone": "warn"
+              },
+              {
+                "key": "p95",
+                "label": "Commit latency",
+                "value": 9,
+                "unit": "ms",
+                "tone": "warn"
+              },
+              {
+                "key": "lag",
+                "label": "Replica lag",
+                "value": 4,
+                "unit": "s",
+                "tone": "warn"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 0,
+                "unit": "%",
+                "tone": "good"
+              }
+            ],
+            "resultTitle": "A third of the WAL gone",
+            "resultBody": "Six streams instead of nine take the NIC from 96% to 64%, commit latency to 9 ms and lag to 4 seconds. Analytics dashboards go dark until the replicas re-attach, and the next traffic peak still needs a real fix."
+          },
+          {
+            "id": "m-sync-off",
+            "label": "Set synchronous_commit=off on the primary to hide commit latency",
+            "correct": false,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 62,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "Commit latency",
+                "value": 6,
+                "unit": "ms",
+                "tone": "warn"
+              },
+              {
+                "key": "lag",
+                "label": "Replica lag",
+                "value": 24,
+                "unit": "s",
+                "tone": "bad"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 2,
+                "unit": "%",
+                "tone": "warn"
+              }
+            ],
+            "resultTitle": "Fast acks, same saturated NIC",
+            "resultBody": "Commits return in 6 ms because they no longer wait for the WAL flush, but the NIC is still at 96% and lag grows to 24 seconds. A crash now loses up to 600 ms of acknowledged orders."
+          },
+          {
+            "id": "m-wal-keep",
+            "label": "Raise wal_keep_size to 200 GB so slow replicas can catch up",
+            "correct": false,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 64,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "Commit latency",
+                "value": 90,
+                "unit": "ms",
+                "tone": "bad"
+              },
+              {
+                "key": "lag",
+                "label": "Replica lag",
+                "value": 21,
+                "unit": "s",
+                "tone": "bad"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 3,
+                "unit": "%",
+                "tone": "bad"
+              }
+            ],
+            "resultTitle": "More disk, same bandwidth",
+            "resultBody": "Retained WAL stops replicas from being dropped, but catching up needs the same saturated NIC, so lag stays at 21 seconds. The primary also spends 200 GB of disk and commits still take 90 ms."
+          }
+        ]
+      }
     }
   ]
 }

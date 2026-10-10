@@ -596,7 +596,27 @@
         "A single row can only take one write at a time.",
         "Turn one hot key into many keys and add them up on read."
       ],
-      "reviewed": true
+      "reviewed": true,
+      "logs": {
+        "app": [
+          "POST /checkout increments counter:sku-991, routed to shard 5 by key hash",
+          "p95 1,800 ms, 2,400 errors/s: 'lock timeout on counters'",
+          "worker pool 400/400 waiting on shard 5"
+        ],
+        "sh5": [
+          "UPDATE counters SET sold=sold+1 WHERE key='sku-991' at 39.6k/s, one row",
+          "tuple lock queue: 410 sessions, avg wait 640 ms",
+          "CPU 96%, buffer hit 100%, disk IOPS 30"
+        ],
+        "sh6": [
+          "CPU 18%, 1,900 writes/s, no lock waits",
+          "checkpoint complete in 4 s"
+        ],
+        "sh7": [
+          "CPU 17%, 1,800 writes/s, no lock waits",
+          "replication lag under 1 s"
+        ]
+      }
     },
     {
       "id": "shard-03",
@@ -2004,7 +2024,27 @@
         "The data barely changes; how many of those reads need to reach the database?"
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "logs": {
+        "app": [
+          "GET /profile/u_pop about 180k/s; every call queries the shard directly",
+          "read timeouts 800/s, all for users stored on shard 14",
+          "no profile cache configured on API nodes"
+        ],
+        "s1": [
+          "SELECT ... FROM profiles WHERE user_id='u_pop' at 179k/s",
+          "top key is 84% of this shard's queries; 5.1k other users share it",
+          "CPU 95%, queue depth 600, buffer hit 100%"
+        ],
+        "s2": [
+          "CPU 30%, p95 6 ms",
+          "no slow queries"
+        ],
+        "s3": [
+          "shards 1-32 other than 14: CPU 26-31%",
+          "no timeouts, replication lag under 1 s"
+        ]
+      }
     },
     {
       "id": "shard-08",
@@ -5959,6 +5999,768 @@
         "Store a small mapping, partitioned by the field you do have, that points to the shard key."
       ],
       "nextId": null
+    },
+    {
+      "id": "shard-new-02",
+      "incidentCode": "INC-007-26",
+      "level": 7,
+      "patternId": "sharding",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 50,
+      "title": "Live reshard drags checkout down",
+      "brief": "PayLedger is copying 30 TB from 8 old Postgres shards to 8 new ones while serving checkout. The backfill runs at 300 MB/s, so source shards sit at 97% CPU and checkout p95 is 1.9 s.",
+      "constraint": "Checkout p95 must stay under 250 ms, and all 30 TB must reach the new shards within 72 hours, before the Friday sale.",
+      "question": "How fast should the backfill copy rows?",
+      "metricsBefore": [
+        {
+          "key": "cpu",
+          "label": "Source shard CPU",
+          "value": 97,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "Checkout p95",
+          "value": 1900,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "eta",
+          "label": "Migration ETA",
+          "value": 28,
+          "unit": "h",
+          "tone": "good"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Checkout API",
+            "tone": "warn",
+            "cpu": 40,
+            "sub": "p95 1.9 s"
+          },
+          {
+            "id": "src",
+            "kind": "db",
+            "label": "Source shards 1-8",
+            "tone": "bad",
+            "cpu": 97,
+            "sub": "serving live + copy"
+          },
+          {
+            "id": "dst",
+            "kind": "db",
+            "label": "New shards 9-16",
+            "tone": "neutral",
+            "cpu": 35,
+            "sub": "receiving copy"
+          },
+          {
+            "id": "copier",
+            "kind": "server",
+            "label": "Backfill job",
+            "tone": "warn",
+            "sub": "300 MB/s"
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "src"
+          },
+          {
+            "from": "copier",
+            "to": "src"
+          },
+          {
+            "from": "copier",
+            "to": "dst"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "throttle-guard",
+          "label": "Throttle the backfill to about 150 MB/s with a latency guard",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "Source shard CPU",
+              "value": 65,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "Checkout p95",
+              "value": 135,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "eta",
+              "label": "Migration ETA",
+              "value": 56,
+              "unit": "h",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Copy fits the window, checkout stays fast",
+          "resultBody": "At 150 MB/s the 30 TB copy takes about 56 hours, inside the 72-hour window, while source shards settle near 65% CPU and checkout p95 near 135 ms. Cost: the migration runs for two and a half days, and a guard must auto-pause the copy whenever p95 passes 200 ms.",
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Checkout API",
+                "tone": "good",
+                "cpu": 38,
+                "sub": "p95 135 ms"
+              },
+              {
+                "id": "src",
+                "kind": "db",
+                "label": "Source shards 1-8",
+                "tone": "good",
+                "cpu": 65,
+                "sub": "copy at 150 MB/s"
+              },
+              {
+                "id": "dst",
+                "kind": "db",
+                "label": "New shards 9-16",
+                "tone": "good",
+                "cpu": 30
+              },
+              {
+                "id": "copier",
+                "kind": "server",
+                "label": "Backfill job",
+                "tone": "good",
+                "sub": "150 MB/s, guarded"
+              }
+            ],
+            "edges": [
+              {
+                "from": "app",
+                "to": "src"
+              },
+              {
+                "from": "copier",
+                "to": "src"
+              },
+              {
+                "from": "copier",
+                "to": "dst"
+              }
+            ]
+          }
+        },
+        {
+          "id": "full-speed",
+          "label": "Run the backfill at 400 MB/s to finish in 21 hours",
+          "correct": false,
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "Source shard CPU",
+              "value": 99,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "Checkout p95",
+              "value": 2600,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "eta",
+              "label": "Migration ETA",
+              "value": 21,
+              "unit": "h",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Fast copy, broken checkout",
+          "resultBody": "The copy would finish in 21 hours, but source shards pin at 99% CPU and checkout p95 reaches 2.6 s with 6% cart errors, so the job has to be paused mid-sale prep anyway and the saved time is lost.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "src",
+                "cpu": 99,
+                "sub": "copy at 400 MB/s"
+              },
+              {
+                "id": "app",
+                "tone": "bad",
+                "sub": "6% cart errors"
+              }
+            ]
+          }
+        },
+        {
+          "id": "slow-cap",
+          "label": "Cap the backfill at 40 MB/s so live traffic never notices",
+          "correct": false,
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "Source shard CPU",
+              "value": 48,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "Checkout p95",
+              "value": 90,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "eta",
+              "label": "Migration ETA",
+              "value": 208,
+              "unit": "h",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Safe now, too late for Friday",
+          "resultBody": "Source CPU holds near 48% and p95 at 90 ms, but 30 TB at 40 MB/s takes 208 hours, about 9 days, so the sale arrives with the old 8 shards still carrying the entire peak.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "copier",
+                "tone": "bad",
+                "sub": "ETA 208 h"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "The copy competes with live reads and writes on the same source shards.",
+        "Too fast breaks checkout; too slow misses the 72-hour window. Both have a number.",
+        "Work out how many MB/s 30 TB needs in 72 hours, then check the source CPU there."
+      ],
+      "nextId": null,
+      "format": "knob",
+      "knob": {
+        "label": "Backfill rate",
+        "unit": "MB/s",
+        "min": 20,
+        "max": 400,
+        "step": 20,
+        "start": 300,
+        "target": [
+          120,
+          180
+        ],
+        "question": "Set the backfill rate so checkout stays under 250 ms and the copy finishes inside 72 hours.",
+        "curve": [
+          {
+            "at": 20,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 46
+              },
+              {
+                "key": "p95",
+                "value": 85
+              },
+              {
+                "key": "eta",
+                "value": 417
+              }
+            ]
+          },
+          {
+            "at": 40,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 48
+              },
+              {
+                "key": "p95",
+                "value": 90
+              },
+              {
+                "key": "eta",
+                "value": 208
+              }
+            ]
+          },
+          {
+            "at": 80,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 52
+              },
+              {
+                "key": "p95",
+                "value": 95
+              },
+              {
+                "key": "eta",
+                "value": 104
+              }
+            ]
+          },
+          {
+            "at": 100,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 56
+              },
+              {
+                "key": "p95",
+                "value": 100
+              },
+              {
+                "key": "eta",
+                "value": 83
+              }
+            ]
+          },
+          {
+            "at": 120,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 60
+              },
+              {
+                "key": "p95",
+                "value": 110
+              },
+              {
+                "key": "eta",
+                "value": 69
+              }
+            ]
+          },
+          {
+            "at": 180,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 70
+              },
+              {
+                "key": "p95",
+                "value": 160
+              },
+              {
+                "key": "eta",
+                "value": 46
+              }
+            ]
+          },
+          {
+            "at": 200,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 78
+              },
+              {
+                "key": "p95",
+                "value": 280
+              },
+              {
+                "key": "eta",
+                "value": 42
+              }
+            ]
+          },
+          {
+            "at": 240,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 88
+              },
+              {
+                "key": "p95",
+                "value": 700
+              },
+              {
+                "key": "eta",
+                "value": 35
+              }
+            ]
+          },
+          {
+            "at": 300,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 97
+              },
+              {
+                "key": "p95",
+                "value": 1900
+              },
+              {
+                "key": "eta",
+                "value": 28
+              }
+            ]
+          },
+          {
+            "at": 400,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 99
+              },
+              {
+                "key": "p95",
+                "value": 2600
+              },
+              {
+                "key": "eta",
+                "value": 21
+              }
+            ]
+          }
+        ],
+        "low": {
+          "title": "Copy misses the sale window",
+          "body": "Below 120 MB/s the 30 TB copy needs more than 72 hours (83 h at 100, 208 h at 40), so the old shards carry the sale peak, even though checkout p95 stays under 110 ms."
+        },
+        "high": {
+          "title": "Checkout slows to a crawl",
+          "body": "Above 180 MB/s the source shards pass 78% CPU and checkout p95 breaks 250 ms (280 ms at 200, 1.9 s at 300) because the copy competes with live reads and writes."
+        },
+        "good": {
+          "title": "Fast enough, gentle enough",
+          "body": "At 120-180 MB/s the copy takes 46-69 hours, source shards stay at 60-70% CPU and checkout p95 stays under 160 ms, with room to pause if it climbs."
+        }
+      }
+    },
+    {
+      "id": "shard-new-03",
+      "incidentCode": "INC-007-27",
+      "level": 7,
+      "patternId": "sharding",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P0",
+      "xp": 50,
+      "title": "Every request fails, all 16 shards healthy",
+      "brief": "TrailPay routes 24,000 req/s through a tenant-to-shard directory on one Postgres node. It died at 03:10: every request fails 'unknown shard' while all 16 data shards idle at 25% CPU.",
+      "constraint": "Tenants were placed by size and by hand, so a tenant's shard is not a hash of its tenant_id.",
+      "question": "How do you stop the directory being a single point of failure?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 24000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "errors",
+          "label": "Failed requests",
+          "value": 100,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "cpu",
+          "label": "Shard CPU",
+          "value": 25,
+          "unit": "%",
+          "tone": "good"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "API routers",
+            "tone": "bad",
+            "sub": "unknown shard"
+          },
+          {
+            "id": "dir",
+            "kind": "db",
+            "label": "Directory (1 node)",
+            "tone": "bad",
+            "sub": "zone lost 03:10"
+          },
+          {
+            "id": "shards",
+            "kind": "db",
+            "label": "Shards 1-16",
+            "tone": "neutral",
+            "cpu": 25
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "dir"
+          },
+          {
+            "from": "app",
+            "to": "shards"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "consensus-dir",
+          "label": "Run the directory as a 3-zone consensus cluster that routers watch",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 450
+          },
+          "metricsAfter": [
+            {
+              "key": "errors",
+              "label": "Failed requests",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "cpu",
+              "label": "Shard CPU",
+              "value": 25,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "A zone can fail, routing doesn't",
+          "resultBody": "Three replicas across three zones keep a quorum with one lost, and routers hold a versioned, watched copy, so a zone loss changes nothing for 24,000 req/s. Cost: about $450 a month for three small nodes, and each tenant move is a quorum write taking about 8 ms instead of 1 ms.",
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "API routers",
+                "tone": "good",
+                "sub": "watches versioned map"
+              },
+              {
+                "id": "dir",
+                "kind": "db",
+                "label": "Directory (1 node)",
+                "tone": "good",
+                "sub": "3 nodes, 3 zones"
+              },
+              {
+                "id": "shards",
+                "kind": "db",
+                "label": "Shards 1-16",
+                "tone": "good",
+                "cpu": 25
+              }
+            ],
+            "edges": [
+              {
+                "from": "app",
+                "to": "dir"
+              },
+              {
+                "from": "app",
+                "to": "shards"
+              }
+            ]
+          }
+        },
+        {
+          "id": "snapshot-dir",
+          "label": "Snapshot the directory hourly to object storage for fast restores",
+          "correct": false,
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 40
+          },
+          "metricsAfter": [
+            {
+              "key": "errors",
+              "label": "Failed requests",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "cpu",
+              "label": "Shard CPU",
+              "value": 25,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Restore still means a dark quarter hour",
+          "resultBody": "A restore from the last snapshot takes about 14 minutes and can lose up to 59 minutes of tenant moves, so the next zone failure still brings 14 minutes of 100% errors and some tenants routed to their old shards.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "dir",
+                "sub": "restore takes ~14 min"
+              }
+            ]
+          }
+        },
+        {
+          "id": "static-map",
+          "label": "Bake the tenant map into every API deploy as a static file",
+          "correct": false,
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "errors",
+              "label": "Failed requests",
+              "value": 3,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "cpu",
+              "label": "Shard CPU",
+              "value": 27,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "No directory, but every move is a deploy",
+          "resultBody": "The outage can't recur, but each tenant move now needs a deploy to 300 nodes, about 12 minutes, during which half the nodes route writes to the old shard, and a 9 MB map adds 5 s to every node's cold start.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "tone": "warn",
+                "sub": "12 min per tenant move"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "The shards are fine. What do the routers need that lives on one machine?",
+        "One node holds every tenant's location, so losing it loses routing for everyone.",
+        "Replicate the map across failure zones so no single loss removes it."
+      ],
+      "nextId": null,
+      "format": "two-step",
+      "mitigation": {
+        "question": "All requests are failing. What restores routing fastest?",
+        "choices": [
+          {
+            "id": "m-promote",
+            "label": "Promote the directory's cold standby by hand, an 8-minute runbook",
+            "correct": false,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "errors",
+                "label": "Failed requests",
+                "value": 100,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "cpu",
+                "label": "Shard CPU",
+                "value": 25,
+                "unit": "%",
+                "tone": "good"
+              }
+            ],
+            "resultTitle": "Eight minutes dark, three tenants lost",
+            "resultBody": "Routing returns after 8 minutes of 100% errors, but the standby was 40 seconds behind and missed the last 3 tenant moves, so those tenants write to their old shards until fixed by hand."
+          },
+          {
+            "id": "m-last-map",
+            "label": "Have routers serve their cached shard map until the directory returns",
+            "correct": true,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "errors",
+                "label": "Failed requests",
+                "value": 0.4,
+                "unit": "%",
+                "tone": "good"
+              },
+              {
+                "key": "cpu",
+                "label": "Shard CPU",
+                "value": 26,
+                "unit": "%",
+                "tone": "good"
+              }
+            ],
+            "resultTitle": "Routing back in 20 seconds",
+            "resultBody": "Routers still hold the map they fetched 6 minutes ago, so 24,000 req/s flow again within 20 seconds and failures fall from 100% to 0.4%. Cost: tenant moves and signups can't be routed until the directory returns, and a stale map is trusted meanwhile."
+          },
+          {
+            "id": "m-hash",
+            "label": "Route unknown tenants by hash(tenant_id) mod 16 as a stopgap",
+            "correct": false,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "errors",
+                "label": "Failed requests",
+                "value": 94,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "cpu",
+                "label": "Shard CPU",
+                "value": 41,
+                "unit": "%",
+                "tone": "warn"
+              }
+            ],
+            "resultTitle": "Requests succeed, data is wrong",
+            "resultBody": "Only about 1 in 16 tenants lives on its hash shard, so 94% of requests reach a shard that doesn't hold the tenant: reads come back empty and roughly 22,000 writes/s land on the wrong shards and need reconciling."
+          }
+        ]
+      }
     },
     {
       "id": "shard-upsize-01",

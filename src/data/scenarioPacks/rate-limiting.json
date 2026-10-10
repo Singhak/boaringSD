@@ -829,7 +829,26 @@
         "Limit the rate continuously, with an explicit cap on burst size."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "logs": {
+        "senders": [
+          "bulk sender: 600 sends at 12:00:59, 600 more at 12:01:00",
+          "plan quota 600/min, used 100% each minute"
+        ],
+        "api": [
+          "window key acct:5521:12:00 count 600, window ends 12:01:00",
+          "window key acct:5521:12:01 count 0, allow 600",
+          "1,200 requests in 2.0 s, 0 rejected"
+        ],
+        "q": [
+          "enqueued 1,200 messages in 2.0 s",
+          "queue depth peak 1,150"
+        ],
+        "carrier": [
+          "link rated 20 msg/s, received 600 msg/s for 2 s",
+          "40% dropped with status 'throttled'"
+        ]
+      }
     },
     {
       "id": "rl-04",
@@ -1375,7 +1394,26 @@
             "If every pod enforces a slice and the slices add up to the limit, no shared state is needed."
           ]
         }
-      ]
+      ],
+      "logs": {
+        "partner": [
+          "key pk_live_88 sends 2,400 req/s, contract is 100 req/s",
+          "no 429 received in the last hour"
+        ],
+        "lb": [
+          "round robin across 24 gateway pods",
+          "pk_live_88 spread evenly, about 100 req/s per pod"
+        ],
+        "g1": [
+          "pod-07 counter pk_live_88: 100 this second, allowed (limit 100)",
+          "pod-19 counter pk_live_88: 98 this second, allowed",
+          "counters are in-process; no shared store configured"
+        ],
+        "ledger": [
+          "2,400 req/s from pk_live_88",
+          "CPU 94%, p95 1.8 s"
+        ]
+      }
     },
     {
       "id": "rl-06",
@@ -5070,6 +5108,376 @@
         "sess": [
           "QPS 90k, CPU 97%",
           "slow: SELECT * FROM sessions WHERE token=$1 (2.1 s)"
+        ]
+      }
+    },
+    {
+      "id": "rl-new-02",
+      "incidentCode": "INC-009-23",
+      "level": 9,
+      "patternId": "rate-limiting",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 50,
+      "title": "Limiter Redis pins at 100% during a launch",
+      "brief": "A launch sends 220,000 req/s through EdgeAPI. Every request runs INCR on one global counter, so that Redis shard hits 100% CPU, limiter calls take 380 ms and checkout p95 climbs to 780 ms.",
+      "constraint": "The 150,000 req/s global cap protects the origin, and the limiter may add at most 5 ms per request.",
+      "question": "How do you enforce one global cap without one hot counter?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 220000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "Limiter Redis CPU",
+          "value": 100,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "Checkout p95",
+          "value": 780,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "origin",
+          "label": "Origin CPU",
+          "value": 55,
+          "unit": "%",
+          "tone": "good"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "clients",
+            "kind": "users",
+            "label": "Launch traffic"
+          },
+          {
+            "id": "gw",
+            "kind": "server",
+            "label": "Gateway pods x40",
+            "tone": "warn",
+            "cpu": 55,
+            "sub": "waiting on limiter"
+          },
+          {
+            "id": "lim",
+            "kind": "cache",
+            "label": "Limiter Redis",
+            "tone": "bad",
+            "cpu": 100,
+            "sub": "1 key, 220k INCR/s"
+          },
+          {
+            "id": "origin",
+            "kind": "server",
+            "label": "Origin",
+            "tone": "good",
+            "cpu": 55
+          }
+        ],
+        "edges": [
+          {
+            "from": "clients",
+            "to": "gw"
+          },
+          {
+            "from": "gw",
+            "to": "lim"
+          },
+          {
+            "from": "gw",
+            "to": "origin"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "ip-hash-counters",
+          "label": "Split the cap into 16 counters keyed by hash of client IP",
+          "correct": false,
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "Limiter Redis CPU",
+              "value": 91,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "Checkout p95",
+              "value": 410,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "origin",
+              "label": "Origin CPU",
+              "value": 48,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Heavy clients hit a sixteenth of the cap",
+          "resultBody": "A heavy client hashes to one counter, so its sixteenth of the cap, 9,375 req/s, throttles it even when total load is far below 150,000, and the busiest buckets still push one Redis shard to 91%.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "lim",
+                "cpu": 91,
+                "sub": "16 counters, 1 hot shard"
+              }
+            ]
+          }
+        },
+        {
+          "id": "lease-tokens",
+          "label": "Gateways lease token batches from Redis and spend them locally",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "Limiter Redis CPU",
+              "value": 3,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "Checkout p95",
+              "value": 70,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "origin",
+              "label": "Origin CPU",
+              "value": 62,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Redis sees 300 calls a second",
+          "resultBody": "Each of 40 gateways leases 500 tokens when its bucket runs low, so Redis sees about 300 lease calls/s instead of 220,000 INCRs and CPU falls to 3%. The cap holds within one lease per pod, about 20,000 tokens or 13%, and p95 returns to 70 ms. Cost: tokens leased by a dying pod are lost until the lease expires.",
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "clients",
+                "kind": "users",
+                "label": "Launch traffic"
+              },
+              {
+                "id": "gw",
+                "kind": "server",
+                "label": "Gateway pods x40",
+                "tone": "good",
+                "cpu": 50,
+                "sub": "local token buckets"
+              },
+              {
+                "id": "lim",
+                "kind": "cache",
+                "label": "Limiter Redis",
+                "tone": "good",
+                "cpu": 3,
+                "sub": "300 lease calls/s"
+              },
+              {
+                "id": "origin",
+                "kind": "server",
+                "label": "Origin",
+                "tone": "good",
+                "cpu": 62
+              }
+            ],
+            "edges": [
+              {
+                "from": "clients",
+                "to": "gw"
+              },
+              {
+                "from": "gw",
+                "to": "lim"
+              },
+              {
+                "from": "gw",
+                "to": "origin"
+              }
+            ]
+          }
+        },
+        {
+          "id": "cache-allow",
+          "label": "Cache each client's allow decision in the gateway for 1 second",
+          "correct": false,
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "Limiter Redis CPU",
+              "value": 40,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "Checkout p95",
+              "value": 1900,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "origin",
+              "label": "Origin CPU",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Redis calm, origin flattened",
+          "resultBody": "A client allowed once is trusted for a full second, so a 10,000 req/s client sends 10,000 requests before the next check and the origin sees bursts of 260,000 req/s; Redis drops to 40%, but the origin pins at 100% CPU.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "origin",
+                "tone": "bad",
+                "cpu": 100,
+                "sub": "bursts of 260k req/s"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "The limiter is the slow part, and it is slow because of one key.",
+        "Adding capacity doesn't help when all the traffic touches a single counter.",
+        "Make each gateway ask Redis rarely, for a batch, instead of once per request."
+      ],
+      "nextId": null,
+      "format": "two-step",
+      "mitigation": {
+        "question": "Every request waits on Redis. What helps in the next minute?",
+        "choices": [
+          {
+            "id": "m-local",
+            "label": "Switch gateways to local counters at the cap divided by pods",
+            "correct": true,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "Limiter Redis CPU",
+                "value": 2,
+                "unit": "%",
+                "tone": "good"
+              },
+              {
+                "key": "p95",
+                "label": "Checkout p95",
+                "value": 70,
+                "unit": "ms",
+                "tone": "good"
+              },
+              {
+                "key": "origin",
+                "label": "Origin CPU",
+                "value": 64,
+                "unit": "%",
+                "tone": "warn"
+              }
+            ],
+            "resultTitle": "Redis out of the hot path",
+            "resultBody": "Each of 40 pods counts locally against 3,750 req/s, so Redis load drops to 2% and p95 returns to 70 ms. Cost: uneven balancing lets the cap drift about 15% either way until a shared counter returns."
+          },
+          {
+            "id": "m-shards",
+            "label": "Add two Redis shards to the limiter cluster and rebalance slots",
+            "correct": false,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "Limiter Redis CPU",
+                "value": 100,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "Checkout p95",
+                "value": 900,
+                "unit": "ms",
+                "tone": "bad"
+              },
+              {
+                "key": "origin",
+                "label": "Origin CPU",
+                "value": 55,
+                "unit": "%",
+                "tone": "good"
+              }
+            ],
+            "resultTitle": "The hot key doesn't move",
+            "resultBody": "One key lives on exactly one shard, so adding shards relocates other keys but not this one; the 12-minute slot migration adds copy load, and the hot shard stays at 100% with p95 at 900 ms."
+          },
+          {
+            "id": "m-raise",
+            "label": "Raise the cap from 150,000 to 250,000 req/s to cut rejections",
+            "correct": false,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "Limiter Redis CPU",
+                "value": 100,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "Checkout p95",
+                "value": 1600,
+                "unit": "ms",
+                "tone": "bad"
+              },
+              {
+                "key": "origin",
+                "label": "Origin CPU",
+                "value": 98,
+                "unit": "%",
+                "tone": "bad"
+              }
+            ],
+            "resultTitle": "More traffic, same hot key",
+            "resultBody": "Every request still runs INCR on the same key, so Redis stays at 100%, and the origin now receives 220k req/s against about 160k of capacity: 5xx rises to 27% and p95 to 1.6 s."
+          }
         ]
       }
     },

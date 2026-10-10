@@ -630,7 +630,23 @@
             "Probe period times failure threshold is how long a dead pod stays in rotation."
           ]
         }
-      ]
+      ],
+      "logs": {
+        "lb": [
+          "kubelet and 3 load balancers each probe GET /ready on every pod every 2 s",
+          "400 pods x 2 probes/s = 800 probes/s across the fleet"
+        ],
+        "pods": [
+          "GET /ready runs SELECT count(*) FROM orders on each call",
+          "avg probe duration 85 ms, 800 calls/s",
+          "app requests wait on db pool, p95 340 ms"
+        ],
+        "db": [
+          "SELECT count(*) FROM orders: 800 calls/s, 68% of CPU time",
+          "each call scans the whole primary-key index, about 41 buffer hits per page batch",
+          "CPU 92%, no replication lag"
+        ]
+      }
     },
     {
       "id": "hc-03",
@@ -899,7 +915,22 @@
         "What does this pod need locally to serve a request successfully?",
         "Readiness should fail on local conditions that break this pod's request path."
       ],
-      "nextId": null
+      "nextId": null,
+      "logs": {
+        "lb": [
+          "targets 12/12 healthy: GET /health -> 200 for all",
+          "5xx rate 8% on pod-7, 0.1% on the other 11"
+        ],
+        "pods": [
+          "11 pods: scratch disk 38-62% used, uploads return 201",
+          "p95 800 ms, includes client retries after pod-7 failures"
+        ],
+        "bad": [
+          "GET /health -> 200 in 1 ms (static handler)",
+          "write /scratch/up-4f2: ENOSPC no space left on device",
+          "scratch volume 100% of 20 GB, 19.6 GB of temp files untouched since Tuesday"
+        ]
+      }
     },
     {
       "id": "hc-04",
@@ -1105,7 +1136,22 @@
         "Keep shared dependencies out of per-pod probes and degrade the one feature that needs them."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "logs": {
+        "lb": [
+          "0/60 targets healthy; returning 503 for /, /catalog and /search",
+          "30,000 req/s rejected with no target in the pool"
+        ],
+        "pods": [
+          "GET /ready calls vendor /ping with a 2 s timeout",
+          "readiness failed 3/3: all 60 pods NotReady within 4 s at 14:07:02",
+          "catalog and search handlers healthy, CPU 10%"
+        ],
+        "vendor": [
+          "/ping latency 8 s, error rate 100% for the last 40 s",
+          "status page: payments degraded, ETA unknown"
+        ]
+      }
     },
     {
       "id": "hc-05",
@@ -6037,6 +6083,395 @@
         "Cut what stays under the ceiling even during a zone loss."
       ],
       "nextId": null
+    },
+    {
+      "canonical": false,
+      "reviewed": true,
+      "nextId": null,
+      "id": "hc-new-02",
+      "incidentCode": "INC-015-18",
+      "level": 15,
+      "patternId": "health-checks",
+      "severity": "P1",
+      "xp": 50,
+      "title": "Every deploy drops 6% of requests",
+      "brief": "Cartwheel rolls out 40 API pods at 20,000 req/s. As each old pod gets SIGTERM it exits immediately, while the load balancer keeps sending it traffic for about 10 seconds: 502s hit 6% of requests.",
+      "constraint": "Deploys run 15 times a day, and the app finishes any in-flight request within 2 seconds.",
+      "question": "How does a terminating pod stop receiving traffic before it stops serving?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 20000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 55,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 380,
+          "unit": "ms",
+          "tone": "warn"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 6,
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Shoppers"
+          },
+          {
+            "id": "lb",
+            "kind": "lb",
+            "label": "Load balancer",
+            "tone": "warn",
+            "sub": "still lists terminated pods"
+          },
+          {
+            "id": "pods",
+            "kind": "server",
+            "label": "API pods x40 (rolling)",
+            "tone": "warn",
+            "cpu": 55,
+            "sub": "exit on SIGTERM at once"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres",
+            "tone": "neutral",
+            "cpu": 40
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "lb"
+          },
+          {
+            "from": "lb",
+            "to": "pods"
+          },
+          {
+            "from": "pods",
+            "to": "db"
+          }
+        ]
+      },
+      "mitigation": {
+        "question": "A rollout is 12 pods in and 502s are at 6%. What stops the bleeding right now?",
+        "choices": [
+          {
+            "id": "m-pause-rollout",
+            "label": "Pause the rollout and leave the remaining 28 pods on the old version",
+            "correct": true,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 52,
+                "unit": "%",
+                "tone": "warn"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 150,
+                "unit": "ms",
+                "tone": "good"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 0.2,
+                "unit": "%",
+                "tone": "warn"
+              }
+            ],
+            "resultTitle": "No more pods exiting, errors fade",
+            "resultBody": "Pausing stops new terminations, so 502s fall from 6% to 0.2% within one load balancer check cycle. Cost: 12 pods run the new version beside 28 on the old one, the two versions must be compatible, and the next deploy will hit the same bug."
+          },
+          {
+            "id": "m-scale-80",
+            "label": "Scale the Deployment to 80 pods so the rollout has spare capacity",
+            "correct": false,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 30,
+                "unit": "%",
+                "tone": "good"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 390,
+                "unit": "ms",
+                "tone": "warn"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 6,
+                "unit": "%",
+                "tone": "bad"
+              }
+            ],
+            "resultTitle": "More pods, more exits",
+            "resultBody": "502s are not capacity errors: every pod that gets SIGTERM still exits while the balancer lists it. The rollout now has 80 pods to cycle, so the 6% error rate lasts about twice as long.",
+            "graphPatch": {
+              "nodes": [
+                {
+                  "id": "pods",
+                  "label": "API pods x80 (rolling)",
+                  "sub": "twice the exits to survive"
+                }
+              ]
+            }
+          },
+          {
+            "id": "m-reregister",
+            "label": "Deregister and re-register every pod in the load balancer",
+            "correct": false,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 58,
+                "unit": "%",
+                "tone": "warn"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 2400,
+                "unit": "ms",
+                "tone": "bad"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 38,
+                "unit": "%",
+                "tone": "bad"
+              }
+            ],
+            "resultTitle": "The pool empties for 20 seconds",
+            "resultBody": "Re-registering drops all 40 targets while new health checks run, so for about 20 seconds 38% of requests find no healthy target. The rollout is still running, so the old pods keep exiting afterwards and the 6% errors return.",
+            "graphPatch": {
+              "nodes": [
+                {
+                  "id": "lb",
+                  "tone": "bad",
+                  "sub": "targets re-registering"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "lower-hc-interval",
+          "label": "Cut the load balancer health-check interval from 10 s to 2 s",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 56,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 300,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 3.5,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Window shrinks, drops remain",
+          "resultBody": "The balancer needs three failed checks to eject a dead pod, so the blind window falls from about 30 s to 6 s and errors from 6% to 3.5%. A pod that exits instantly still takes requests it cannot answer, and health traffic is now five times heavier.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "lb",
+                "sub": "6 s blind window per pod"
+              }
+            ]
+          }
+        },
+        {
+          "id": "grace-300",
+          "label": "Raise terminationGracePeriodSeconds from 30 s to 300 s",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 55,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 380,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 6,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "A longer grace period nobody uses",
+          "resultBody": "The grace period is only a deadline before SIGKILL. The app still exits milliseconds after SIGTERM, so pods vanish just as early and 6% of requests still get 502s. Any pod that hangs now blocks the rollout for 5 minutes.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "pods",
+                "sub": "still exits on SIGTERM"
+              }
+            ]
+          }
+        },
+        {
+          "id": "prestop-drain",
+          "label": "Add a 15 s preStop sleep, then drain and exit on SIGTERM",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 2,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "Each pod takes 15 s longer to terminate; deploys run longer but stop dropping requests."
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Shoppers"
+              },
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Load balancer",
+                "tone": "good",
+                "sub": "pod leaves pool before it stops"
+              },
+              {
+                "id": "pods",
+                "kind": "server",
+                "label": "API pods x40 (rolling)",
+                "tone": "good",
+                "cpu": 45,
+                "sub": "serves during preStop, then drains"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres",
+                "tone": "good",
+                "cpu": 38
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "lb"
+              },
+              {
+                "from": "lb",
+                "to": "pods"
+              },
+              {
+                "from": "pods",
+                "to": "db"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 45,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 90,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0.02,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Pods leave rotation, then stop",
+          "resultBody": "For 15 seconds the terminating pod keeps serving while its endpoint removal reaches the load balancer, then SIGTERM lets it finish in-flight requests in under 2 s and exit. Rollout 502s fall from 6% to 0.02%. Cost: every pod takes about 17 s longer to stop, so a 40-pod rollout runs minutes longer, and the grace period must exceed 17 s."
+        }
+      ],
+      "hints": [
+        "The errors happen only during rollouts, one pod at a time.",
+        "SIGTERM arrives the moment Kubernetes starts removing the pod, not after the balancer has finished updating.",
+        "The pod needs to keep serving for a few seconds after it is told to stop."
+      ],
+      "format": "two-step"
     }
   ]
 }

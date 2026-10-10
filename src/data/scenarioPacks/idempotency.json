@@ -562,7 +562,23 @@
         "A dedupe marker stored somewhere else can disagree with the ledger after a crash.",
         "Make recording 'I processed this event' part of the same commit as the credit."
       ],
-      "nextId": null
+      "nextId": null,
+      "logs": {
+        "prov": [
+          "payment.succeeded evt_9f2 delivery attempt 1: no response after 10.0 s, timed out",
+          "evt_9f2 delivery attempt 2 sent 12 s later, same event id; retries continue for 3 days"
+        ],
+        "api": [
+          "handler evt_9f2 took 12,030 ms, p95 11.8 s at peak",
+          "200 returned at 12.0 s, after the provider had closed the connection",
+          "evt_9f2: wallet credit executed by attempt 1 and again by attempt 2"
+        ],
+        "db": [
+          "INSERT wallet_credits (wallet 7731, 40.00) twice within 13 s",
+          "wallet_credits columns: id, wallet_id, amount, created_at; event_id appears only inside the payload JSON",
+          "1.1% of credits duplicated, about $38k/day"
+        ]
+      }
     },
     {
       "id": "idemp-03",
@@ -1366,7 +1382,26 @@
         "Reading and then writing leaves a window where two workers both proceed.",
         "Claim the key atomically first, then perform the side effect."
       ],
-      "nextId": null
+      "nextId": null,
+      "logs": {
+        "users": [
+          "POST /donate key=k_71a, client timeout 3 s",
+          "retry key=k_71a at 3.1 s and again at 6.2 s"
+        ],
+        "api": [
+          "worker-1 key=k_71a: store lookup miss, calling card network",
+          "worker-2 key=k_71a, 3.2 s later: store lookup miss, calling card network",
+          "both workers treated the key as new"
+        ],
+        "store": [
+          "key k_71a absent for 6.4 s, then written by worker-1 together with the response",
+          "keys are written only after the card call returns"
+        ],
+        "card": [
+          "auth ref=k_71a-w1 approved after 5.9 s",
+          "auth ref=k_71a-w2 approved after 7.8 s: two holds on card ending 4821"
+        ]
+      }
     },
     {
       "id": "idemp-06",
@@ -1725,7 +1760,22 @@
             "The order of those two steps decides which way a crash fails."
           ]
         }
-      ]
+      ],
+      "logs": {
+        "topic": [
+          "order.paid partition 7: committed offset 880,412, records up to 880,461 already read",
+          "consumer group rebalance at 14:02:11, 50 records redelivered"
+        ],
+        "w": [
+          "sent receipt for order 5521 (offset 880,420), then crashed before offset commit",
+          "after restart: re-read from 880,413, sent receipt for order 5521 again",
+          "300 events/s, no memory of which order IDs were already sent"
+        ],
+        "mail": [
+          "accepted 2 sends to cust_902 at 14:02:09 and 14:02:15, no dedupe key in either request",
+          "each send got its own provider message_id"
+        ]
+      }
     },
     {
       "id": "idemp-07",
@@ -6603,6 +6653,431 @@
         "Ask for rows after a known row, not row number N."
       ],
       "nextId": null
+    },
+    {
+      "canonical": false,
+      "reviewed": true,
+      "nextId": null,
+      "id": "idemp-new-02",
+      "incidentCode": "INC-014-18",
+      "level": 14,
+      "patternId": "idempotency",
+      "severity": "P1",
+      "xp": 50,
+      "title": "Offline wallet taps double-charge a day later",
+      "brief": "Payvia's app queues taps offline and resends them with their original idempotency key for up to 30 hours. Keys expire after 6 hours, so about 1,100 late retries a day are charged twice.",
+      "constraint": "The key store is one 32 GB Redis node holding about 500 bytes per key, and it must stay under 80% memory.",
+      "question": "How long should the server remember an idempotency key?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 250,
+          "unit": "payments/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 18,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "dupes",
+          "label": "Double charges",
+          "value": 1100,
+          "unit": "per day",
+          "tone": "bad"
+        },
+        {
+          "key": "mem",
+          "label": "Key store memory",
+          "value": 8,
+          "unit": "%",
+          "tone": "good"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "app",
+            "kind": "users",
+            "label": "Wallet app",
+            "tone": "warn",
+            "sub": "resends queued taps for up to 30 h"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Payments API",
+            "cpu": 18
+          },
+          {
+            "id": "keys",
+            "kind": "cache",
+            "label": "Idempotency store (Redis)",
+            "tone": "warn",
+            "cpu": 18,
+            "sub": "keys expire after 6 h"
+          },
+          {
+            "id": "psp",
+            "kind": "server",
+            "label": "Card processor",
+            "tone": "bad",
+            "sub": "charges each new key"
+          }
+        ],
+        "edges": [
+          {
+            "from": "app",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "keys"
+          },
+          {
+            "from": "api",
+            "to": "psp"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "retain-past-retry-cap",
+          "label": "Keep keys 36 to 54 hours, past the app's 30-hour retry cap",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 0,
+            "complexityScore": 1,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "Pure retention change; the price is roughly 8 GB more Redis memory."
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "app",
+                "kind": "users",
+                "label": "Wallet app",
+                "tone": "good",
+                "sub": "retries replay the stored result"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Payments API",
+                "cpu": 18,
+                "tone": "good"
+              },
+              {
+                "id": "keys",
+                "kind": "cache",
+                "label": "Idempotency store (Redis)",
+                "tone": "good",
+                "cpu": 18,
+                "sub": "keys kept 48 h, 68% memory"
+              },
+              {
+                "id": "psp",
+                "kind": "server",
+                "label": "Card processor",
+                "tone": "good",
+                "sub": "one charge per key"
+              }
+            ],
+            "edges": [
+              {
+                "from": "app",
+                "to": "api"
+              },
+              {
+                "from": "api",
+                "to": "keys"
+              },
+              {
+                "from": "api",
+                "to": "psp"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 18,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "dupes",
+              "label": "Double charges",
+              "value": 0,
+              "unit": "per day",
+              "tone": "good"
+            },
+            {
+              "key": "mem",
+              "label": "Key store memory",
+              "value": 68,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Late retries find their key",
+          "resultBody": "With a 48-hour retention every delayed retry still finds its key and gets the stored response, so double charges drop from 1,100 a day to 0. Redis now holds about 21.6 GB, 68% of memory, so there is room for traffic growth of roughly 15% before the 80% limit. Cost: more memory used for keys."
+        },
+        {
+          "id": "fuzzy-dedupe",
+          "label": "Reject a payment that matches amount, merchant and minute",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 22,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "dupes",
+              "label": "Double charges",
+              "value": 1000,
+              "unit": "per day",
+              "tone": "bad"
+            },
+            {
+              "key": "mem",
+              "label": "Key store memory",
+              "value": 6,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Window too narrow, match too broad",
+          "resultBody": "A one-minute fuzzy match cannot see retries that arrive hours later, so about 1,000 late double charges a day remain. It also rejects 5,200 legitimate repeat purchases a day, such as two coffees in a minute, and those customers file chargeback disputes.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "api",
+                "tone": "warn",
+                "sub": "5,200 valid payments rejected/day"
+              },
+              {
+                "id": "psp",
+                "sub": "late retries still charged"
+              }
+            ]
+          }
+        },
+        {
+          "id": "keys-forever",
+          "label": "Store every key in Postgres permanently, never expiring it",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 1900
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 55,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "dupes",
+              "label": "Double charges",
+              "value": 0,
+              "unit": "per day",
+              "tone": "good"
+            },
+            {
+              "key": "mem",
+              "label": "Key store memory",
+              "value": 8,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Correct today, a 4 TB table next year",
+          "resultBody": "Permanent keys stop every double charge, but at 21.6M keys a day the table adds about 7.9 billion rows and 3.9 TB a year. Key lookups rise from 1 ms to 12 ms as the index outgrows memory, and storage and replicas add $1,900 a month for keys nobody will ever retry.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "keys",
+                "kind": "db",
+                "label": "Postgres key table",
+                "tone": "warn",
+                "cpu": 55,
+                "sub": "+3.9 TB per year"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Every double charge is a retry that arrives after its key has already expired.",
+        "The app keeps retrying for 30 hours, but the server forgets the key after 6.",
+        "Remember keys at least as long as the longest retry, but Redis memory is finite."
+      ],
+      "format": "knob",
+      "knob": {
+        "label": "Key retention",
+        "unit": "hours",
+        "min": 6,
+        "max": 72,
+        "step": 6,
+        "start": 6,
+        "target": [
+          36,
+          54
+        ],
+        "question": "Set the retention so no delayed retry is charged twice and Redis stays under 80% memory.",
+        "curve": [
+          {
+            "at": 6,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 18
+              },
+              {
+                "key": "dupes",
+                "value": 1100
+              },
+              {
+                "key": "mem",
+                "value": 8
+              }
+            ]
+          },
+          {
+            "at": 12,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 18
+              },
+              {
+                "key": "dupes",
+                "value": 800
+              },
+              {
+                "key": "mem",
+                "value": 17
+              }
+            ]
+          },
+          {
+            "at": 24,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 18
+              },
+              {
+                "key": "dupes",
+                "value": 300
+              },
+              {
+                "key": "mem",
+                "value": 34
+              }
+            ]
+          },
+          {
+            "at": 36,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 18
+              },
+              {
+                "key": "dupes",
+                "value": 0
+              },
+              {
+                "key": "mem",
+                "value": 51
+              }
+            ]
+          },
+          {
+            "at": 54,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 20
+              },
+              {
+                "key": "dupes",
+                "value": 0
+              },
+              {
+                "key": "mem",
+                "value": 76
+              }
+            ]
+          },
+          {
+            "at": 60,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 24
+              },
+              {
+                "key": "dupes",
+                "value": 0
+              },
+              {
+                "key": "mem",
+                "value": 84
+              }
+            ]
+          },
+          {
+            "at": 72,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 35
+              },
+              {
+                "key": "dupes",
+                "value": 90
+              },
+              {
+                "key": "mem",
+                "value": 101
+              }
+            ]
+          }
+        ],
+        "low": {
+          "title": "Keys expire before the retries do",
+          "body": "Between 6 and 30 hours, a delayed retry arrives after its key is gone and is treated as a new payment, so between 150 and 1,100 customers a day are charged twice."
+        },
+        "high": {
+          "title": "Redis runs out of headroom",
+          "body": "Past 54 hours the key store climbs above 80% of its 32 GB; at 72 hours it hits 101% and starts evicting the oldest keys, so double charges come back."
+        },
+        "good": {
+          "title": "Every retry finds its key",
+          "body": "At 36 to 54 hours, keys outlive the 30-hour retry cap, so late retries replay the stored response, and Redis holds 16 to 24 GB, between 51% and 76% of memory."
+        }
+      }
     }
   ]
 }

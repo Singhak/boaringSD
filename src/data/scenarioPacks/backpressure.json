@@ -751,7 +751,27 @@
         "An unbounded backlog turns a fast failure into a slow, invisible one.",
         "HTTP status codes can carry a 'come back later' time."
       ],
-      "nextId": null
+      "nextId": null,
+      "logs": {
+        "users": [
+          "7,200 uploads/min arriving, median body 480 MB",
+          "every POST /upload answers 200 OK; median video appears 5 h 58 min later"
+        ],
+        "api": [
+          "POST /upload 200 in 140 ms, enqueue never fails",
+          "queue length at enqueue: 1,803,412 and rising",
+          "pool 30% busy, 7,200 accepted/min, 0 rejected"
+        ],
+        "q": [
+          "depth 1,800,000 jobs, oldest enqueued 6 h 0 min ago",
+          "enqueue 7,200/min, dequeue 5,000/min, net +2,200/min",
+          "max length: unset"
+        ],
+        "gpu": [
+          "transcoders 98% busy, steady 5,000 jobs/min",
+          "no idle workers; next GPU delivery is next quarter"
+        ]
+      }
     },
     {
       "id": "bp-03",
@@ -1386,7 +1406,22 @@
             "Kafka spreads a topic's partitions across the members of a consumer group."
           ]
         }
-      ]
+      ],
+      "logs": {
+        "topic": [
+          "orders topic, 20 partitions, group lag 0 (fetch outruns processing)",
+          "consumer fetching 20,000 rec/s, nothing throttling fetch"
+        ],
+        "c": [
+          "heap 6.2 GB of 8 GB, buffered records 11.4M and growing 19.5k/s",
+          "enrich throughput 500 rec/s; fetch 20,000 rec/s",
+          "java.lang.OutOfMemoryError: Java heap space, 12 min after last start"
+        ],
+        "partner": [
+          "usage 500 req/s of 500 req/s cap, shared across all consumers of this key",
+          "429 count 0; each call takes 2 ms"
+        ]
+      }
     },
     {
       "id": "bp-05",
@@ -1871,7 +1906,23 @@
         "30 workers each retrying on their own can't know the total rate.",
         "Match the send rate to the quota before you hit it."
       ],
-      "nextId": null
+      "nextId": null,
+      "logs": {
+        "q": [
+          "payout queue: 40,112 pending, enqueue 150/s",
+          "0 payouts completed in the last 9 min"
+        ],
+        "w": [
+          "30 workers: on HTTP 429, retry immediately, no sleep",
+          "Retry-After: 2 header present on every 429, not read",
+          "6,000 attempts/s total, CPU 91% in retry loop"
+        ],
+        "bank": [
+          "key pk_live_81 SUSPENDED for 15 min: sustained 30x over 200 req/s quota",
+          "accepted 0 requests in the last 5 min",
+          "quota is 200 req/s, will not be raised this month"
+        ]
+      }
     },
     {
       "id": "bp-07",
@@ -6346,6 +6397,322 @@
         "Idle by design does not mean useless."
       ],
       "reviewed": true
+    },
+    {
+      "canonical": false,
+      "reviewed": true,
+      "nextId": null,
+      "id": "bp-new-02",
+      "incidentCode": "INC-013-18",
+      "level": 13,
+      "patternId": "backpressure",
+      "severity": "P1",
+      "xp": 50,
+      "title": "Ingest API 504s while the workers sit idle",
+      "brief": "Trackr's ingest API takes 4,500 events/s. The 10,000-slot buffer behind it has been full for 20 minutes and 22% of posts get 504, yet the six enrichers idle at 22% CPU.",
+      "constraint": "Every event must be durably written to the audit log before the enricher moves on.",
+      "question": "Which stage is really capping the pipeline's throughput?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 4500,
+          "unit": "events/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 40,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 12000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 22,
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Ingest API",
+            "tone": "warn",
+            "cpu": 40,
+            "sub": "504s on 22% of posts"
+          },
+          {
+            "id": "q",
+            "kind": "queue",
+            "label": "Ingest buffer",
+            "tone": "bad",
+            "sub": "10,000 / 10,000 full"
+          },
+          {
+            "id": "w",
+            "kind": "worker",
+            "label": "Enrichers x6",
+            "tone": "warn",
+            "cpu": 22,
+            "sub": "threads waiting"
+          },
+          {
+            "id": "audit",
+            "kind": "db",
+            "label": "Audit log writer",
+            "tone": "warn",
+            "cpu": 30,
+            "sub": "one fsync per record"
+          }
+        ],
+        "edges": [
+          {
+            "from": "api",
+            "to": "q"
+          },
+          {
+            "from": "q",
+            "to": "w"
+          },
+          {
+            "from": "w",
+            "to": "audit"
+          }
+        ]
+      },
+      "logs": {
+        "api": [
+          "WARN POST /events 504 after 3,000 ms: buffer rejected offer()",
+          "accepted 3,510/s of 4,500/s offered, rejected 990/s",
+          "pool 40% busy, no GC pressure"
+        ],
+        "q": [
+          "depth 10,000/10,000 for the last 20 min",
+          "fill rate 4,500/s, drain rate 790/s",
+          "oldest entry waited 12.6 s before pickup"
+        ],
+        "w": [
+          "6 enrichers: 22% CPU, 0 retries, 0 errors",
+          "avg handle 7.6 ms, of which 7.4 ms inside audit.append()",
+          "threads WAITING on audit-writer monitor: 6/6"
+        ],
+        "audit": [
+          "append + fsync per record, batch size 1, one writer thread",
+          "fsync p50 1.2 ms, so about 790 records/s per writer thread",
+          "disk util 14%, CPU 30%, no errors"
+        ]
+      },
+      "choices": [
+        {
+          "id": "more-enrichers",
+          "label": "Add 12 more enricher workers to drain the buffer faster",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 540
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 38,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 12400,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 22,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "More threads, same single door",
+          "resultBody": "All 18 enrichers now queue on the one audit writer, so the drain rate stays at about 790 events/s and lock wait per call climbs from 7.4 ms to 22 ms. The buffer is still full, 22% of posts still get 504, and the extra workers add $540 a month.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "w",
+                "label": "Enrichers x18",
+                "sub": "18 threads blocked on audit"
+              },
+              {
+                "id": "audit",
+                "tone": "bad",
+                "sub": "still 790 records/s"
+              }
+            ]
+          }
+        },
+        {
+          "id": "group-commit-audit",
+          "label": "Group-commit audit records, one fsync per 500-record batch",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 5,
+            "complexityScore": 2,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "Batches amortize the fsync, at the price of up to 5 ms of added wait per event."
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Ingest API",
+                "tone": "good",
+                "cpu": 42,
+                "sub": "0 rejects"
+              },
+              {
+                "id": "q",
+                "kind": "queue",
+                "label": "Ingest buffer",
+                "tone": "good",
+                "sub": "~40 deep"
+              },
+              {
+                "id": "w",
+                "kind": "worker",
+                "label": "Enrichers x6",
+                "tone": "good",
+                "cpu": 30,
+                "sub": "no waiting"
+              },
+              {
+                "id": "audit",
+                "kind": "db",
+                "label": "Audit log writer",
+                "tone": "good",
+                "cpu": 36,
+                "sub": "500 records per fsync"
+              }
+            ],
+            "edges": [
+              {
+                "from": "api",
+                "to": "q"
+              },
+              {
+                "from": "q",
+                "to": "w"
+              },
+              {
+                "from": "w",
+                "to": "audit"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 42,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 140,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "The audit writer stops being the bottleneck",
+          "resultBody": "The writer collects up to 500 records or 5 ms, then issues one fsync, so a single thread now handles about 40,000 records/s. Enrichers still wait for their batch to be durable, so the audit guarantee holds. The buffer drains in about 3 minutes and 504s stop. Cost: up to 5 ms of added wait per event."
+        },
+        {
+          "id": "big-buffer",
+          "label": "Grow the ingest buffer from 10,000 slots to 1,000,000",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 120
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 40,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 9000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 4,
+              "unit": "%",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "A longer queue, the same cliff",
+          "resultBody": "The buffer now fills at 3,710 events/s net, so 504s pause for about 4.5 minutes and then return. Meanwhile the oldest event waits up to 21 minutes, and a restart loses a million buffered events. It adds $120 a month of memory for no extra throughput.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "q",
+                "sub": "1M slots, filling 3,710/s"
+              },
+              {
+                "id": "api",
+                "sub": "504s resume in ~4.5 min"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Add up how long an enricher spends on one event, and where that time goes.",
+        "Six enrichers at 7.6 ms each add up to about 790 events/s, the exact rate the buffer drains.",
+        "A full buffer is where backed-up work shows up, not where it starts. Look at what every worker has to pass through."
+      ],
+      "format": "culprit",
+      "culprit": {
+        "nodeId": "audit",
+        "explanation": "Almost all of each enricher's 7.6 ms is spent waiting inside audit.append(), because one writer thread fsyncs every record on its own and tops out near 790 records/s. That equals the buffer's drain rate, so the buffer, the idle workers and the API's 504s are all downstream effects of the slowest stage.",
+        "wrongNodeFeedback": {
+          "api": "The API is rejecting because the buffer is full, and it is nowhere near its own limit at 40% CPU.",
+          "q": "The buffer is full because it drains at 790/s while 4,500/s arrive. A full queue shows where work piles up, not what is slow.",
+          "w": "The enrichers are at 22% CPU, mostly parked waiting on a monitor. Their own work is under 0.3 ms per event."
+        }
+      }
     }
   ]
 }

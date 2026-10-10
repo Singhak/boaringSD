@@ -491,7 +491,18 @@
             "With no range scans, sort order buys nothing, and an exact answer from memory beats a probable one."
           ]
         }
-      ]
+      ],
+      "logs": {
+        "api": [
+          "GET /key p95 60 ms; about 85% of lookups end in 'not found'",
+          "40,000 lookups/s, timeout rate 0.45%"
+        ],
+        "db": [
+          "SSTables: L0 12 files, L1 28 files, filters: none configured",
+          "avg 31 SSTable reads per lookup that finds no key",
+          "block reads 1.2M/s, CPU 82%"
+        ]
+      }
     },
     {
       "id": "se-03",
@@ -1141,6 +1152,17 @@
             "resultBody": "The resize failed over twice for 90 seconds of errors, and a box twice the size still can't keep up: every call still scans 400M rows, so CPU settles at 88% and p95 barely moves."
           }
         ]
+      },
+      "logs": {
+        "api": [
+          "GET /orders?customer_id= p95 2,400 ms at 3,000 calls/s",
+          "timeouts 520/s on the order-history page"
+        ],
+        "db": [
+          "plan: Seq Scan on orders (400M rows), Filter: customer_id = $1",
+          "indexes on orders: orders_pkey (id) only",
+          "CPU 93%, average scan 2.3 s, cache hit ratio falling"
+        ]
       }
     },
     {
@@ -1430,7 +1452,18 @@
             "When the write amplification is fixed, look at the ceiling it keeps hitting."
           ]
         }
-      ]
+      ],
+      "logs": {
+        "ingest": [
+          "insert p95 25 ms, was 2 ms before the index change",
+          "20,000 events/s offered, about 18,900/s completed, backlog growing"
+        ],
+        "db": [
+          "events has 9 secondary indexes plus the primary key: each INSERT updates 10 B-trees",
+          "pg_stat_user_indexes: 7 of 9 secondary indexes with idx_scan = 0 over 30 days",
+          "queries seen: by (tenant_id, ts) and by event_id only"
+        ]
+      }
     },
     {
       "id": "se-06",
@@ -4656,6 +4689,350 @@
         "Change what makes up the partition key so one channel spreads over many partitions."
       ],
       "nextId": null
+    },
+    {
+      "canonical": false,
+      "reviewed": true,
+      "nextId": null,
+      "id": "se-new-02",
+      "incidentCode": "INC-018-11",
+      "level": 18,
+      "patternId": "storage-engines",
+      "severity": "P1",
+      "xp": 50,
+      "title": "Autovacuum runs all day and the table still bloats",
+      "brief": "Trackwise's orders table has 62% dead tuples, and customer_id lookups slowed from 12 ms to 900 ms at 6,000 req/s. Autovacuum has run for 5 hours and reports nothing removed.",
+      "constraint": "Orders can't be locked or taken offline, and the finance export must keep running on its replica.",
+      "question": "Which component is stopping vacuum from cleaning the table?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 6000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 78,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 900,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 3,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "dead",
+          "label": "Dead tuples in orders",
+          "value": 62,
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Orders API",
+            "tone": "warn",
+            "cpu": 35,
+            "sub": "p95 900 ms"
+          },
+          {
+            "id": "pri",
+            "kind": "db",
+            "label": "Postgres primary",
+            "tone": "bad",
+            "cpu": 78,
+            "sub": "orders table 62% dead tuples"
+          },
+          {
+            "id": "vac",
+            "kind": "worker",
+            "label": "Autovacuum",
+            "tone": "warn",
+            "cpu": 15,
+            "sub": "running 5 h, nothing removed"
+          },
+          {
+            "id": "rep",
+            "kind": "replica",
+            "label": "Analytics replica",
+            "tone": "warn",
+            "cpu": 30,
+            "sub": "long export running"
+          }
+        ],
+        "edges": [
+          {
+            "from": "api",
+            "to": "pri"
+          },
+          {
+            "from": "pri",
+            "to": "rep"
+          },
+          {
+            "from": "vac",
+            "to": "pri"
+          }
+        ]
+      },
+      "logs": {
+        "api": [
+          "GET /orders?customer_id= p95 900 ms, was 12 ms last week",
+          "slow query log: index scan on orders_customer_idx, 1.4 s",
+          "no deploys in 9 days, pool 120/200 busy"
+        ],
+        "pri": [
+          "orders heap 212 GB: 380M live tuples, 620M dead",
+          "autovacuum: 410M dead row versions cannot be removed yet",
+          "oldest xmin 6 h 14 min old, reported by replication slot analytics_1"
+        ],
+        "vac": [
+          "autovacuum orders: scanned 212 GB in 4 h 50 min, removed 0 row versions",
+          "removable cutoff has not advanced since 06:02",
+          "I/O 18%, 3 workers, no lock waits"
+        ],
+        "rep": [
+          "analytics-1: query active for 6 h 14 min (SELECT * FROM orders, finance export)",
+          "hot_standby_feedback = on: sends its oldest snapshot to the primary every 10 s",
+          "replay lag 0.4 s, CPU 30%"
+        ]
+      },
+      "choices": [
+        {
+          "id": "more-autovacuum",
+          "label": "Raise autovacuum workers from 3 to 12 and make it trigger sooner",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 82,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 840,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 3,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "dead",
+              "label": "Dead tuples in orders",
+              "value": 64,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "More cleaners, nothing they may clean",
+          "resultBody": "Twelve workers scan the same 212 GB faster, but they still cannot remove row versions newer than the 6-hour-old standby snapshot. Dead tuples keep growing to 64%, vacuum I/O rises from 18% to 55%, and p95 improves only from 900 ms to 840 ms.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "vac",
+                "tone": "bad",
+                "cpu": 40,
+                "sub": "12 workers, 0 rows removed"
+              }
+            ]
+          }
+        },
+        {
+          "id": "cancel-export",
+          "label": "Cancel the export and set hot_standby_feedback off on that replica",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": -880,
+            "complexityScore": 2,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "Releases the old snapshot so vacuum can reclaim space; long replica queries may now be cancelled by replay conflicts."
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Orders API",
+                "tone": "good",
+                "cpu": 30,
+                "sub": "p95 14 ms"
+              },
+              {
+                "id": "pri",
+                "kind": "db",
+                "label": "Postgres primary",
+                "tone": "good",
+                "cpu": 31,
+                "sub": "dead tuples falling"
+              },
+              {
+                "id": "vac",
+                "kind": "worker",
+                "label": "Autovacuum",
+                "tone": "good",
+                "cpu": 22,
+                "sub": "reclaiming 600M row versions"
+              },
+              {
+                "id": "rep",
+                "kind": "replica",
+                "label": "Analytics replica",
+                "tone": "good",
+                "cpu": 30,
+                "sub": "feedback off"
+              }
+            ],
+            "edges": [
+              {
+                "from": "api",
+                "to": "pri"
+              },
+              {
+                "from": "pri",
+                "to": "rep"
+              },
+              {
+                "from": "vac",
+                "to": "pri"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 31,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 14,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "dead",
+              "label": "Dead tuples in orders",
+              "value": 8,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "The cleanup horizon moves forward",
+          "resultBody": "Once the old snapshot is gone the primary's removable cutoff jumps ahead by 6 hours, and autovacuum reclaims about 600M dead row versions in 70 minutes. p95 falls from 900 ms to 14 ms and CPU to 31%. Cost: long queries on the replica can now be cancelled by replay conflicts, so the export needs a higher max_standby_streaming_delay or its own replica."
+        },
+        {
+          "id": "vacuum-full",
+          "label": "Run VACUUM FULL on the orders table during tonight's window",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 96,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 30000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "dead",
+              "label": "Dead tuples in orders",
+              "value": 62,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Three hours locked, bloat returns",
+          "resultBody": "VACUUM FULL takes an ACCESS EXCLUSIVE lock and rewrites 212 GB, so orders is unreadable and unwritable for about 3 hours. It also cannot drop row versions the 6-hour-old standby snapshot still needs, so the bloat starts rebuilding as soon as the lock is released.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "pri",
+                "cpu": 96,
+                "sub": "ACCESS EXCLUSIVE lock on orders"
+              },
+              {
+                "id": "api",
+                "tone": "bad",
+                "sub": "every orders query blocked"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Vacuum is running and busy, so the question is why it can't remove anything.",
+        "Dead row versions are kept while any transaction anywhere might still need to see them.",
+        "Find the oldest open snapshot in the whole system, including on replicas."
+      ],
+      "format": "culprit",
+      "culprit": {
+        "nodeId": "rep",
+        "explanation": "The analytics replica's 6-hour export pins an old snapshot, and hot_standby_feedback passes that snapshot's age to the primary. Autovacuum can only remove row versions older than the oldest snapshot anywhere, so it scans 212 GB and reclaims nothing while dead tuples and index scans grow.",
+        "wrongNodeFeedback": {
+          "api": "The API is only slow because the index scans on the primary wade through dead tuples. It has no effect on vacuum.",
+          "pri": "The primary is the loudest node, but its log says the cutoff is held by a standby slot, so the cause sits elsewhere.",
+          "vac": "Autovacuum is healthy: 18% I/O, no lock waits, finishing its scans. It reports 0 removable row versions because of the oldest snapshot, not because it is slow."
+        }
+      }
     }
   ]
 }

@@ -755,7 +755,19 @@
             "An even split needs a rule both halves compute identically from the same fixed membership."
           ]
         }
-      ]
+      ],
+      "logs": {
+        "r1": [
+          "nodes 1 and 2 reachable; nodes 3 and 4 unreachable since 09:12:40",
+          "election round 31: 2 votes of 4, majority needs 3",
+          "write rejected: no quorum"
+        ],
+        "r2": [
+          "nodes 3 and 4 reachable; nodes 1 and 2 unreachable since 09:12:40",
+          "election round 31: 2 votes of 4, majority needs 3",
+          "split lasted 5 min 02 s, 900 write errors returned"
+        ]
+      }
     },
     {
       "id": "cq-03",
@@ -1804,7 +1816,24 @@
         "Stagger who wakes up first."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "logs": {
+        "c1": [
+          "term 12: election timeout fired at +2,000 ms, became candidate, voted for self",
+          "node B also candidate in term 12: split vote, no majority",
+          "election timeout is fixed at 2,000 ms on all three nodes"
+        ],
+        "c2": [
+          "term 12: election timeout fired at +2,000 ms, became candidate, voted for self",
+          "denied vote to node A: already voted in term 12",
+          "restarted election at +4,000 ms, term 13"
+        ],
+        "c3": [
+          "term 12: election timeout fired at +2,001 ms, became candidate, voted for self",
+          "terms 12 to 31 in 40 s, no leader elected",
+          "election timeout is fixed at 2,000 ms"
+        ]
+      }
     },
     {
       "id": "cq-06",
@@ -2023,7 +2052,26 @@
         "Make the ack depend on the same majority."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "logs": {
+        "users": [
+          "1,200 POST /orders returned 201, then GET /orders/<id> returned 404 after failover",
+          "all affected orders were written between 03:11:18 and 03:11:20"
+        ],
+        "old": [
+          "orders appended to local log at idx 41,880 to 43,079, fsync ok, 201 returned to client",
+          "followers received entries only up to idx 41,879 (replication runs after the ack)",
+          "process crashed at 03:11:20"
+        ],
+        "new": [
+          "elected in term 9 at 03:11:25, last log idx 41,879",
+          "idx 41,880 to 43,079 unknown to this node, never replicated"
+        ],
+        "f2": [
+          "last log idx 41,879, matches the new leader",
+          "no entries beyond 41,879 ever received from the old leader"
+        ]
+      }
     },
     {
       "id": "cq-upsize-01",
@@ -4305,6 +4353,414 @@
         "Non-voting nodes never count toward quorum."
       ],
       "nextId": null
+    },
+    {
+      "canonical": false,
+      "reviewed": true,
+      "nextId": null,
+      "id": "cq-new-01",
+      "incidentCode": "INC-017-12",
+      "level": 17,
+      "patternId": "consensus-quorums",
+      "severity": "P1",
+      "xp": 50,
+      "title": "Acknowledged settings read back stale",
+      "brief": "Fleetcast keeps device settings on 5 replicas. Reads use R=2 at 15,000 ops/s and writes ack after W=2, so 30% of read-backs right after a write return the previous value.",
+      "constraint": "Reads must stay at R=2, and writes must keep working when any one replica is down.",
+      "question": "Choose the write quorum W so every read-after-write sees the new value.",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 15000,
+          "unit": "ops/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 52,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "stale",
+          "label": "Stale read-backs",
+          "value": 30,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "wfail",
+          "label": "Writes failing, 1 replica down",
+          "value": 0,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "wp99",
+          "label": "Write p99",
+          "value": 6,
+          "unit": "ms",
+          "tone": "good"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "clients",
+            "kind": "users",
+            "label": "Devices"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Settings API",
+            "tone": "warn",
+            "cpu": 40,
+            "sub": "W=2 acks, R=2 reads"
+          },
+          {
+            "id": "reps",
+            "kind": "db",
+            "label": "Replicas x5",
+            "tone": "warn",
+            "cpu": 52,
+            "sub": "read-backs miss new value"
+          }
+        ],
+        "edges": [
+          {
+            "from": "clients",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "reps"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "no-repair",
+          "label": "Ack writes at W=3 and run read repair on each read",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 58,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "stale",
+              "label": "Stale read-backs",
+              "value": 10,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "wfail",
+              "label": "Writes failing, 1 replica down",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "wp99",
+              "label": "Write p99",
+              "value": 9,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Overlap still not guaranteed",
+          "resultBody": "With N=5, R=2 and W=3 the sets only add up to 5, which is not more than N, so a read can land on the two replicas that missed the write: 10% of immediate read-backs are still stale. Read repair heals the replicas after the stale value has already been returned.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "reps",
+                "sub": "R+W = 5, not greater than N"
+              }
+            ]
+          }
+        },
+        {
+          "id": "w4-r2",
+          "label": "Ack writes at W=4 of 5 replicas and keep R=2 reads",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": 7,
+            "complexityScore": 1,
+            "consistencyGuarantee": "strong",
+            "tradeoffSummary": "R+W = 6 exceeds N = 5, so reads always overlap the last write, at a higher write p99."
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "clients",
+                "kind": "users",
+                "label": "Devices"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Settings API",
+                "tone": "good",
+                "cpu": 42,
+                "sub": "W=4 acks, R=2 reads"
+              },
+              {
+                "id": "reps",
+                "kind": "db",
+                "label": "Replicas x5",
+                "tone": "good",
+                "cpu": 56,
+                "sub": "any 2 replicas hold the newest value"
+              }
+            ],
+            "edges": [
+              {
+                "from": "clients",
+                "to": "api"
+              },
+              {
+                "from": "api",
+                "to": "reps"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 56,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "stale",
+              "label": "Stale read-backs",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "wfail",
+              "label": "Writes failing, 1 replica down",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "wp99",
+              "label": "Write p99",
+              "value": 13,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Every read set overlaps the write set",
+          "resultBody": "With W=4 only one replica can miss a write, so any two replicas a read asks include at least one that has it, and stale read-backs fall from 30% to 0. Writes still succeed with one replica down because four remain. Cost: write p99 rises from 6 ms to 13 ms, and a second replica failure blocks writes."
+        },
+        {
+          "id": "r4-w2",
+          "label": "Keep W=2 and raise reads to R=4 on every request",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 600
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 66,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "stale",
+              "label": "Stale read-backs",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "wfail",
+              "label": "Writes failing, 1 replica down",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "wp99",
+              "label": "Write p99",
+              "value": 6,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Fresh reads, a heavy read path",
+          "resultBody": "R=4 plus W=2 gives R+W=6, so read-backs are no longer stale, but 15,000 reads/s now fan out to four replicas each. CPU rises from 52% to 66%, read p99 goes from 5 ms to 14 ms, and reads fail once two replicas are down. It breaks the rule that reads stay at R=2 and adds $600 a month.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "reps",
+                "cpu": 66,
+                "sub": "each read hits 4 replicas"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "A read is only guaranteed to see a write when the replicas it asks must include one that acknowledged it.",
+        "With N=5 and R=2, W has to be large enough that R plus W is more than N.",
+        "Too small a W leaves gaps; W=5 needs every replica up, which breaks the one-replica-down rule."
+      ],
+      "format": "knob",
+      "knob": {
+        "label": "Write quorum W",
+        "unit": "acks of 5",
+        "min": 1,
+        "max": 5,
+        "step": 1,
+        "start": 2,
+        "target": [
+          4,
+          4
+        ],
+        "question": "Set W so every read-after-write is fresh, but writes survive one replica being down.",
+        "curve": [
+          {
+            "at": 1,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 50
+              },
+              {
+                "key": "stale",
+                "value": 60
+              },
+              {
+                "key": "wfail",
+                "value": 0
+              },
+              {
+                "key": "wp99",
+                "value": 4
+              }
+            ]
+          },
+          {
+            "at": 2,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 52
+              },
+              {
+                "key": "stale",
+                "value": 30
+              },
+              {
+                "key": "wfail",
+                "value": 0
+              },
+              {
+                "key": "wp99",
+                "value": 6
+              }
+            ]
+          },
+          {
+            "at": 3,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 54
+              },
+              {
+                "key": "stale",
+                "value": 10
+              },
+              {
+                "key": "wfail",
+                "value": 0
+              },
+              {
+                "key": "wp99",
+                "value": 9
+              }
+            ]
+          },
+          {
+            "at": 4,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 56
+              },
+              {
+                "key": "stale",
+                "value": 0
+              },
+              {
+                "key": "wfail",
+                "value": 0
+              },
+              {
+                "key": "wp99",
+                "value": 13
+              }
+            ]
+          },
+          {
+            "at": 5,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 58
+              },
+              {
+                "key": "stale",
+                "value": 0
+              },
+              {
+                "key": "wfail",
+                "value": 100
+              },
+              {
+                "key": "wp99",
+                "value": 31
+              }
+            ]
+          }
+        ],
+        "low": {
+          "title": "Read and write sets can miss",
+          "body": "At W=1 to 3 with R=2, R+W is at most 5, so a read can ask two replicas that both missed the write: 60%, 30% and 10% of read-backs come back stale."
+        },
+        "high": {
+          "title": "One slow replica blocks every write",
+          "body": "At W=5 every replica must ack, so one replica down fails 100% of writes, and write p99 rises from 13 ms to 31 ms even when all five are healthy."
+        },
+        "good": {
+          "title": "Quorums always overlap",
+          "body": "At W=4 with R=2, R+W is 6, more than N=5, so every read includes an acknowledging replica; writes still succeed with one replica down, at 13 ms p99."
+        }
+      }
     }
   ]
 }

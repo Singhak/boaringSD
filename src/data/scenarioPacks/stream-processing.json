@@ -546,6 +546,27 @@
           }
         ]
       },
+      "logs": {
+        "api": [
+          "order events 24k/s keyed by order_id",
+          "produce p95 12 ms, no errors"
+        ],
+        "log": [
+          "topic orders: 12 partitions, lag 9.0M and growing 3k/s",
+          "consumer group fraud-orders: 40 members, 12 with partitions, 28 with none"
+        ],
+        "busy": [
+          "each member owns 1 partition, CPU 92%",
+          "poll of 500 records took 5.1 s to process"
+        ],
+        "idle": [
+          "joined group, assignment: []",
+          "CPU 2%, 0 records/s"
+        ],
+        "db": [
+          "orders DB CPU 50%, writes within SLO"
+        ]
+      },
       "choices": [
         {
           "id": "more-partitions",
@@ -1336,6 +1357,22 @@
             "from": "cons",
             "to": "db"
           }
+        ]
+      },
+      "logs": {
+        "log": [
+          "partition 3: last committed offset 4,810,000, log end 4,812,000",
+          "after restart, consumer resumed at offset 4,810,000"
+        ],
+        "cons": [
+          "OOMKilled exit 137 at 14:02:11, restarted 14:02:19",
+          "handler order: INSERT credit, then commitSync()",
+          "re-processing 2,000 events from offset 4,810,000"
+        ],
+        "db": [
+          "INSERT credit event_id=evt-77a1 succeeded twice",
+          "2,000 credits written again after 14:02, no unique key on event_id",
+          "ledger CPU 70%"
         ]
       },
       "choices": [
@@ -4402,6 +4439,394 @@
       ],
       "nextId": null,
       "format": "budget-cut"
+    },
+    {
+      "id": "strm-new-01",
+      "incidentCode": "INC-021-21",
+      "level": 21,
+      "patternId": "stream-processing",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 50,
+      "title": "Consumer group rebalances every minute",
+      "brief": "Each of 12 fraud-scoring pods occasionally freezes 6 s in a stop-the-world GC. With session.timeout.ms at 4 s the broker evicts them, causing 60 rebalances an hour and 1.8M messages of lag.",
+      "constraint": "A crashed pod's partitions must be reassigned within 30 seconds.",
+      "question": "What session.timeout.ms stops false evictions without slowing real failover?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 30000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "lag",
+          "label": "Consumer lag",
+          "value": 1800000,
+          "unit": "msgs",
+          "tone": "bad"
+        },
+        {
+          "key": "rebal",
+          "label": "Rebalances",
+          "value": 60,
+          "unit": "/hour",
+          "tone": "bad"
+        },
+        {
+          "key": "detect",
+          "label": "Dead-pod detection",
+          "value": 4,
+          "unit": "s",
+          "tone": "good"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "log",
+            "kind": "queue",
+            "label": "orders topic (12 partitions)",
+            "cpu": 55
+          },
+          {
+            "id": "cons",
+            "kind": "worker",
+            "label": "Fraud consumers (12 pods)",
+            "tone": "bad",
+            "cpu": 70,
+            "sub": "session.timeout.ms 4000"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Scores DB",
+            "cpu": 45
+          }
+        ],
+        "edges": [
+          {
+            "from": "log",
+            "to": "cons"
+          },
+          {
+            "from": "cons",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "tune-timeout",
+          "label": "Set session.timeout.ms above the 6 s pause, below 30 s",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "lag",
+              "label": "Consumer lag",
+              "value": 9000,
+              "unit": "msgs",
+              "tone": "good"
+            },
+            {
+              "key": "rebal",
+              "label": "Rebalances",
+              "value": 0,
+              "unit": "/hour",
+              "tone": "good"
+            },
+            {
+              "key": "detect",
+              "label": "Dead-pod detection",
+              "value": 20,
+              "unit": "s",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Pauses no longer evict pods",
+          "resultBody": "With a 20 s session timeout a 6 s GC pause no longer misses enough heartbeats to evict a pod, rebalances fall to 0 and lag drains to 9k. Cost: a truly crashed pod is noticed after up to 20 s, about 50k events of backlog.",
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "log",
+                "kind": "queue",
+                "label": "orders topic (12 partitions)",
+                "cpu": 55
+              },
+              {
+                "id": "cons",
+                "kind": "worker",
+                "label": "Fraud consumers (12 pods)",
+                "tone": "good",
+                "cpu": 60,
+                "sub": "session.timeout.ms 20000"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Scores DB",
+                "cpu": 45
+              }
+            ],
+            "edges": [
+              {
+                "from": "log",
+                "to": "cons"
+              },
+              {
+                "from": "cons",
+                "to": "db"
+              }
+            ]
+          }
+        },
+        {
+          "id": "static-assign",
+          "label": "Pin each pod to fixed partitions with manual assignment",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "lag",
+              "label": "Consumer lag",
+              "value": 230000,
+              "unit": "msgs",
+              "tone": "bad"
+            },
+            {
+              "key": "rebal",
+              "label": "Rebalances",
+              "value": 0,
+              "unit": "/hour",
+              "tone": "good"
+            },
+            {
+              "key": "detect",
+              "label": "Dead-pod detection",
+              "value": 90,
+              "unit": "s",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Nobody takes over a dead pod",
+          "resultBody": "Rebalances stop, but with static assignment a crashed pod's 3 partitions stay unowned until Kubernetes restarts it, about 90 s, so lag peaks at 230k after every crash.",
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cons",
+                "tone": "warn",
+                "sub": "static partitions, 90 s restart gap"
+              }
+            ]
+          }
+        },
+        {
+          "id": "small-batches",
+          "label": "Cut max.poll.records from 500 to 50 and keep a 4 s timeout",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "lag",
+              "label": "Consumer lag",
+              "value": 1500000,
+              "unit": "msgs",
+              "tone": "bad"
+            },
+            {
+              "key": "rebal",
+              "label": "Rebalances",
+              "value": 48,
+              "unit": "/hour",
+              "tone": "bad"
+            },
+            {
+              "key": "detect",
+              "label": "Dead-pod detection",
+              "value": 4,
+              "unit": "s",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "The pause is the whole JVM",
+          "resultBody": "Smaller batches shorten polls, but a stop-the-world pause freezes the heartbeat thread too, so pods are still evicted: rebalances only fall from 60 to 48 an hour and lag stays near 1.5M.",
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cons",
+                "sub": "50 records/poll, still evicted"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Healthy pods are being declared dead.",
+        "A stop-the-world pause also stops the heartbeat thread.",
+        "The timeout must beat the longest pause but stay inside the failover target."
+      ],
+      "nextId": null,
+      "format": "knob",
+      "knob": {
+        "label": "session.timeout.ms",
+        "unit": "s",
+        "min": 2,
+        "max": 120,
+        "step": 2,
+        "start": 4,
+        "target": [
+          10,
+          30
+        ],
+        "question": "Set the session timeout so GC pauses stop evicting pods but a real crash is still caught in 30 s.",
+        "curve": [
+          {
+            "at": 2,
+            "metrics": [
+              {
+                "key": "lag",
+                "value": 2400000
+              },
+              {
+                "key": "rebal",
+                "value": 85
+              },
+              {
+                "key": "detect",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "at": 4,
+            "metrics": [
+              {
+                "key": "lag",
+                "value": 1800000
+              },
+              {
+                "key": "rebal",
+                "value": 60
+              },
+              {
+                "key": "detect",
+                "value": 4
+              }
+            ]
+          },
+          {
+            "at": 8,
+            "metrics": [
+              {
+                "key": "lag",
+                "value": 300000
+              },
+              {
+                "key": "rebal",
+                "value": 6
+              },
+              {
+                "key": "detect",
+                "value": 8
+              }
+            ]
+          },
+          {
+            "at": 10,
+            "metrics": [
+              {
+                "key": "lag",
+                "value": 9000
+              },
+              {
+                "key": "rebal",
+                "value": 0
+              },
+              {
+                "key": "detect",
+                "value": 10
+              }
+            ]
+          },
+          {
+            "at": 30,
+            "metrics": [
+              {
+                "key": "lag",
+                "value": 8000
+              },
+              {
+                "key": "rebal",
+                "value": 0
+              },
+              {
+                "key": "detect",
+                "value": 30
+              }
+            ]
+          },
+          {
+            "at": 60,
+            "metrics": [
+              {
+                "key": "lag",
+                "value": 8000
+              },
+              {
+                "key": "rebal",
+                "value": 0
+              },
+              {
+                "key": "detect",
+                "value": 60
+              }
+            ]
+          },
+          {
+            "at": 120,
+            "metrics": [
+              {
+                "key": "lag",
+                "value": 8000
+              },
+              {
+                "key": "rebal",
+                "value": 0
+              },
+              {
+                "key": "detect",
+                "value": 120
+              }
+            ]
+          }
+        ],
+        "low": {
+          "title": "Healthy pods get evicted",
+          "body": "At 8 s or less a 6 s GC pause plus heartbeat jitter still evicts healthy pods: 6 to 85 rebalances an hour, each pausing all 12 pods and leaving up to 2.4M messages behind."
+        },
+        "high": {
+          "title": "Real crashes go unnoticed",
+          "body": "At 60 s a crashed pod's 3 partitions sit unowned for a full minute, about 150k events at 2.5k/s, double the 30-second failover target."
+        },
+        "good": {
+          "title": "Pauses tolerated, crashes caught",
+          "body": "At 10 to 30 s a 6 s pause never evicts a pod, rebalances drop to 0, and a crashed pod is detected within 30 s, at most 75k events of backlog."
+        }
+      }
     }
   ]
 }

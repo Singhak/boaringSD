@@ -769,7 +769,23 @@
         "Collapse the input to a few buckets before it reaches the cache key."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "logs": {
+        "users": [
+          "16,000 req/s for GET /, 3 real layouts (phone, tablet, desktop)",
+          "~9,000 distinct User-Agent strings per hour"
+        ],
+        "cdn": [
+          "cache key = host + path + User-Agent",
+          "variants stored for GET /: 9,000, hit ratio 11%",
+          "14,000 req/s forwarded to origin"
+        ],
+        "origin": [
+          "response header on /: Vary: User-Agent (new since release 5.2)",
+          "CPU 91%, rendering / 14,000 times/s",
+          "HTML is byte-identical within each device class"
+        ]
+      }
     },
     {
       "id": "cdn-04",
@@ -1274,7 +1290,23 @@
         "The cache key does not have to be the whole URL."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "logs": {
+        "users": [
+          "GET /pricing?utm_source=mail&utm_campaign=q3&uid=8c1f..., unique uid per click",
+          "2.4 M clicks in 2 h, peak 18,000 req/s"
+        ],
+        "cdn": [
+          "cache key = full URL including query string",
+          "hit ratio 3%, 17,460 req/s sent to origin",
+          "distinct ?lang= values: 6, distinct uid values: 2.4 M"
+        ],
+        "origin": [
+          "CPU 93%, rendering /pricing 17k times/s",
+          "output depends only on ?lang=, not on utm_* or uid",
+          "p95 1,800 ms"
+        ]
+      }
     },
     {
       "id": "cdn-06",
@@ -1542,7 +1574,22 @@
         "A layer between the PoPs and origin could collapse those misses first."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "logs": {
+        "users": [
+          "30,000 req/s for /trailers/q3.mp4 (40 MB)",
+          "most requests are range reads of the first 8 MB"
+        ],
+        "cdn": [
+          "24 h TTL, steady-state hit ratio 97%",
+          "trailer published 09:00:03: 2,200 cache-server MISSes in 60 s",
+          "every PoP fetches from origin on its own"
+        ],
+        "origin": [
+          "2,200 concurrent GETs for one object, ~12 Gbps out",
+          "CPU 94%, p95 6 s, 180 errors/s"
+        ]
+      }
     },
     {
       "id": "cdn-07",
@@ -7396,6 +7443,407 @@
         "Let the client talk to storage directly, with a short-lived permission from the API."
       ],
       "nextId": null
+    },
+    {
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 50,
+      "id": "cdn-new-02",
+      "incidentCode": "INC-005-24",
+      "level": 5,
+      "patternId": "cdn-edge",
+      "title": "Trail photos weigh 4 MB at the edge",
+      "brief": "TrailBook re-encodes 3 MB trail photos to WebP at quality 95 at the CDN edge. At 18,000 req/s pages still weigh 4 MB, phone LCP is 4.8 s and egress is 41 Gbps.",
+      "constraint": "LCP must stay under 2.5 s, and blurry-photo support tickets must stay under 20 a day.",
+      "question": "What WebP quality should the edge encode photos at?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 18000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "lcp",
+          "label": "Phone LCP",
+          "value": 4800,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "egress",
+          "label": "Egress",
+          "value": 41,
+          "unit": "Gbps",
+          "tone": "bad"
+        },
+        {
+          "key": "tickets",
+          "label": "Blurry-photo tickets",
+          "value": 1,
+          "unit": "/day",
+          "tone": "good"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Hikers on 4G"
+          },
+          {
+            "id": "cdn",
+            "kind": "cdn",
+            "label": "Edge image transform",
+            "tone": "warn",
+            "sub": "WebP quality 95"
+          },
+          {
+            "id": "origin",
+            "kind": "server",
+            "label": "Photo origin",
+            "tone": "good",
+            "cpu": 22,
+            "sub": "3 MB JPEG masters"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "cdn"
+          },
+          {
+            "from": "cdn",
+            "to": "origin"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "webp-75",
+          "label": "Re-encode photos to WebP at quality 75 at the edge",
+          "correct": true,
+          "approach": "optimal",
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Hikers on 4G"
+              },
+              {
+                "id": "cdn",
+                "kind": "cdn",
+                "label": "Edge image transform",
+                "tone": "good",
+                "sub": "WebP quality 75"
+              },
+              {
+                "id": "origin",
+                "kind": "server",
+                "label": "Photo origin",
+                "tone": "good",
+                "cpu": 22,
+                "sub": "3 MB JPEG masters"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "cdn"
+              },
+              {
+                "from": "cdn",
+                "to": "origin"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "lcp",
+              "label": "Phone LCP",
+              "value": 1800,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "egress",
+              "label": "Egress",
+              "value": 15,
+              "unit": "Gbps",
+              "tone": "good"
+            },
+            {
+              "key": "tickets",
+              "label": "Blurry-photo tickets",
+              "value": 5,
+              "unit": "/day",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Light pages, clean photos",
+          "resultBody": "At quality 75 photos land near 200 KB, so LCP falls from 4.8 s to 1.8 s and egress from 41 to 15 Gbps, saving about $4,000/month. Cost: a handful of detailed foliage shots show mild banding, around 5 tickets a day.",
+          "tradeoffs": {
+            "costMonthlyDelta": -4000
+          }
+        },
+        {
+          "id": "webp-40",
+          "label": "Re-encode at quality 40 to cut egress as far as it goes",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "lcp",
+              "label": "Phone LCP",
+              "value": 1150,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "egress",
+              "label": "Egress",
+              "value": 7,
+              "unit": "Gbps",
+              "tone": "good"
+            },
+            {
+              "key": "tickets",
+              "label": "Blurry-photo tickets",
+              "value": 290,
+              "unit": "/day",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Fast but smeared",
+          "resultBody": "Pages load in 1.15 s and egress drops to 7 Gbps, saving about $5,200/month, but skies band and trail signs blur. Tickets jump to 290 a day, 14 times the limit, and support spends more than the bandwidth saved.",
+          "tradeoffs": {
+            "costMonthlyDelta": -5200
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cdn",
+                "tone": "bad",
+                "sub": "q40: 290 tickets/day"
+              }
+            ]
+          }
+        },
+        {
+          "id": "second-cdn",
+          "label": "Keep quality 95 and add a second CDN for the 41 Gbps",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "lcp",
+              "label": "Phone LCP",
+              "value": 4700,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "egress",
+              "label": "Egress",
+              "value": 41,
+              "unit": "Gbps",
+              "tone": "bad"
+            },
+            {
+              "key": "tickets",
+              "label": "Blurry-photo tickets",
+              "value": 1,
+              "unit": "/day",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Same bytes, two bills",
+          "resultBody": "Splitting traffic across two CDNs spreads the 41 Gbps, but each phone still downloads 4 MB, so LCP only improves to 4.7 s. Multi-CDN contracts and steering add about $11,000/month.",
+          "tradeoffs": {
+            "costMonthlyDelta": 11000
+          },
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "cdn2",
+                "kind": "cdn",
+                "label": "Second CDN",
+                "tone": "warn",
+                "sub": "same 4 MB pages"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "users",
+                "to": "cdn2"
+              },
+              {
+                "from": "cdn2",
+                "to": "origin"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Quality 95 saves almost nothing against a 3 MB master.",
+        "Every point of quality you drop shrinks the file, but not forever.",
+        "Find the range where LCP is under 2.5 s and the ticket count is still under 20."
+      ],
+      "nextId": null,
+      "format": "knob",
+      "knob": {
+        "label": "WebP quality",
+        "unit": "q",
+        "min": 30,
+        "max": 95,
+        "step": 5,
+        "start": 95,
+        "target": [
+          70,
+          80
+        ],
+        "question": "Set the WebP quality so pages load fast without visibly degrading photos.",
+        "curve": [
+          {
+            "at": 30,
+            "metrics": [
+              {
+                "key": "lcp",
+                "value": 1100
+              },
+              {
+                "key": "egress",
+                "value": 6
+              },
+              {
+                "key": "tickets",
+                "value": 410
+              }
+            ]
+          },
+          {
+            "at": 50,
+            "metrics": [
+              {
+                "key": "lcp",
+                "value": 1250
+              },
+              {
+                "key": "egress",
+                "value": 8
+              },
+              {
+                "key": "tickets",
+                "value": 160
+              }
+            ]
+          },
+          {
+            "at": 60,
+            "metrics": [
+              {
+                "key": "lcp",
+                "value": 1400
+              },
+              {
+                "key": "egress",
+                "value": 10
+              },
+              {
+                "key": "tickets",
+                "value": 45
+              }
+            ]
+          },
+          {
+            "at": 70,
+            "metrics": [
+              {
+                "key": "lcp",
+                "value": 1700
+              },
+              {
+                "key": "egress",
+                "value": 13
+              },
+              {
+                "key": "tickets",
+                "value": 6
+              }
+            ]
+          },
+          {
+            "at": 80,
+            "metrics": [
+              {
+                "key": "lcp",
+                "value": 2000
+              },
+              {
+                "key": "egress",
+                "value": 17
+              },
+              {
+                "key": "tickets",
+                "value": 3
+              }
+            ]
+          },
+          {
+            "at": 90,
+            "metrics": [
+              {
+                "key": "lcp",
+                "value": 3400
+              },
+              {
+                "key": "egress",
+                "value": 28
+              },
+              {
+                "key": "tickets",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "at": 95,
+            "metrics": [
+              {
+                "key": "lcp",
+                "value": 4800
+              },
+              {
+                "key": "egress",
+                "value": 41
+              },
+              {
+                "key": "tickets",
+                "value": 1
+              }
+            ]
+          }
+        ],
+        "low": {
+          "title": "Fast but visibly degraded",
+          "body": "At q60 or below photos shrink to 8-10 Gbps and LCP is under 1.4 s, but banding and blur drive 45 to 410 tickets a day, well past the limit of 20."
+        },
+        "high": {
+          "title": "Pages still too heavy",
+          "body": "At q90 and above photos stay near 600 KB or more, so phone LCP is 3.4 s or worse and egress stays at 28-41 Gbps, over the 2.5 s limit."
+        },
+        "good": {
+          "title": "Light pages, photos intact",
+          "body": "At q70-80 photos land at 180-240 KB, LCP is 1.7-2.0 s, egress is 13-17 Gbps and fewer than 10 blurry-photo tickets arrive each day."
+        }
+      }
     }
   ]
 }

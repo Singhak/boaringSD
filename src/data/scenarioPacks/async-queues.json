@@ -627,7 +627,21 @@
         "Users only need an ack now.",
         "Enqueue and return."
       ],
-      "nextId": null
+      "nextId": null,
+      "logs": {
+        "users": [
+          "POST /signup at 2,000 req/s, p95 8,000 ms",
+          "client timeout at 10 s: 15 errors/s"
+        ],
+        "app": [
+          "signup handler calls smtp.send() inline, avg 4.8 s, worst 30 s",
+          "worker threads 94% busy, most parked on the mail relay"
+        ],
+        "pay": [
+          "mail relay returns 250 after ~5 s per message",
+          "greylisting delays 6% of sends by 25 s"
+        ]
+      }
     },
     {
       "id": "queue-03",
@@ -1372,7 +1386,21 @@
         "Users only need an ack now.",
         "Enqueue and return."
       ],
-      "nextId": null
+      "nextId": null,
+      "logs": {
+        "users": [
+          "checkout at 2,000 req/s during the flash sale, p95 8 s",
+          "15 errors/s, mostly 504 from the load balancer"
+        ],
+        "app": [
+          "thread pool 200/200 busy, CPU 94%",
+          "each checkout runs charge, email, order insert in sequence, ~7 s total"
+        ],
+        "pay": [
+          "payment vendor p95 5.6 s under sale load",
+          "vendor rate limit 1,200 calls/s, we send 2,000"
+        ]
+      }
     },
     {
       "id": "queue-06",
@@ -6749,6 +6777,339 @@
         "Estimate worker CPU during a 3x burst after halving the fleet."
       ],
       "nextId": null
+    },
+    {
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 50,
+      "id": "queue-new-01",
+      "incidentCode": "INC-006-25",
+      "level": 6,
+      "patternId": "async-queues",
+      "title": "Jobs wait 14 minutes while two workers idle",
+      "brief": "ReportKit queues PDF renders in RabbitMQ. After a 3,000-job import burst, the oldest job has waited 14 minutes while workers 2 and 3 sit at 4% CPU and the ready queue is empty.",
+      "constraint": "Each render takes about 6 seconds, and no job may run twice or be dropped.",
+      "question": "How do you stop one worker from sitting on the backlog?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Arrivals",
+          "value": 2,
+          "unit": "jobs/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "age",
+          "label": "Oldest job",
+          "value": 14,
+          "unit": "min",
+          "tone": "bad"
+        },
+        {
+          "key": "cpu",
+          "label": "Busiest worker CPU",
+          "value": 35,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "idle",
+          "label": "Idle workers",
+          "value": 2,
+          "unit": "of 3",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Report API",
+            "tone": "good",
+            "cpu": 15
+          },
+          {
+            "id": "queue",
+            "kind": "queue",
+            "label": "RabbitMQ",
+            "tone": "bad",
+            "sub": "ready 0, unacked 1,000"
+          },
+          {
+            "id": "w1",
+            "kind": "worker",
+            "label": "Worker 1",
+            "tone": "warn",
+            "cpu": 35
+          },
+          {
+            "id": "w2",
+            "kind": "worker",
+            "label": "Worker 2",
+            "tone": "neutral",
+            "cpu": 4
+          },
+          {
+            "id": "w3",
+            "kind": "worker",
+            "label": "Worker 3",
+            "tone": "neutral",
+            "cpu": 4
+          }
+        ],
+        "edges": [
+          {
+            "from": "api",
+            "to": "queue"
+          },
+          {
+            "from": "queue",
+            "to": "w1"
+          },
+          {
+            "from": "queue",
+            "to": "w2"
+          },
+          {
+            "from": "queue",
+            "to": "w3"
+          }
+        ]
+      },
+      "logs": {
+        "api": [
+          "publish rate 2 jobs/s, 3,000-job burst at 09:41 from the import",
+          "publisher confirms ok, no nacks"
+        ],
+        "queue": [
+          "ready 0, unacked 1,000, consumers 3",
+          "all 1,000 unacked messages sit on 1 of 3 consumer channels",
+          "oldest unacked message age 14 min"
+        ],
+        "w1": [
+          "consumer prefetch_count=1000, concurrency 4",
+          "running 4 renders (avg 6 s each), 996 buffered locally, none acked",
+          "CPU 35%, mostly waiting on the render service"
+        ],
+        "w2": [
+          "prefetch_count=4, queue empty since 09:47",
+          "CPU 4%, 0 renders in flight"
+        ],
+        "w3": [
+          "prefetch_count=4, queue empty since 09:47",
+          "CPU 4%, 0 renders in flight"
+        ]
+      },
+      "choices": [
+        {
+          "id": "prefetch-4",
+          "label": "Set worker prefetch to 4 and requeue w1's 996 buffered jobs",
+          "correct": true,
+          "approach": "optimal",
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Report API",
+                "tone": "good",
+                "cpu": 15
+              },
+              {
+                "id": "queue",
+                "kind": "queue",
+                "label": "RabbitMQ",
+                "tone": "good",
+                "sub": "ready 996, spread over 3"
+              },
+              {
+                "id": "w1",
+                "kind": "worker",
+                "label": "Worker 1",
+                "tone": "good",
+                "cpu": 38
+              },
+              {
+                "id": "w2",
+                "kind": "worker",
+                "label": "Worker 2",
+                "tone": "good",
+                "cpu": 36
+              },
+              {
+                "id": "w3",
+                "kind": "worker",
+                "label": "Worker 3",
+                "tone": "good",
+                "cpu": 36
+              }
+            ],
+            "edges": [
+              {
+                "from": "api",
+                "to": "queue"
+              },
+              {
+                "from": "queue",
+                "to": "w1"
+              },
+              {
+                "from": "queue",
+                "to": "w2"
+              },
+              {
+                "from": "queue",
+                "to": "w3"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "age",
+              "label": "Oldest job",
+              "value": 1,
+              "unit": "min",
+              "tone": "good"
+            },
+            {
+              "key": "cpu",
+              "label": "Busiest worker CPU",
+              "value": 38,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "idle",
+              "label": "Idle workers",
+              "value": 0,
+              "unit": "of 3",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Backlog shared by all three",
+          "resultBody": "w1 restarts with prefetch 4, its 996 buffered jobs return to the queue and all three workers pull from it. At about 2 jobs/s combined they drain in 8 minutes, then the oldest job waits under 1 minute. Cost: one extra broker round-trip per job, about 1 ms.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "bigger-w1",
+          "label": "Give w1 16 vCPUs so it works through its 1,000 jobs faster",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "age",
+              "label": "Oldest job",
+              "value": 15,
+              "unit": "min",
+              "tone": "bad"
+            },
+            {
+              "key": "cpu",
+              "label": "Busiest worker CPU",
+              "value": 9,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "idle",
+              "label": "Idle workers",
+              "value": 2,
+              "unit": "of 3",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "CPU was never the limit",
+          "resultBody": "w1 sat at 35% CPU waiting on the render service, so 16 vCPUs raise its idle capacity, not its throughput; concurrency stays at 4 and 6-second renders. Its 996 buffered jobs still need about 25 minutes, and the instance adds $290/month.",
+          "tradeoffs": {
+            "costMonthlyDelta": 290
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "w1",
+                "label": "Worker 1 (16 vCPU)",
+                "cpu": 9,
+                "sub": "still concurrency 4"
+              }
+            ]
+          }
+        },
+        {
+          "id": "more-workers",
+          "label": "Add six more workers so the backlog gets more consumers",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "age",
+              "label": "Oldest job",
+              "value": 15,
+              "unit": "min",
+              "tone": "bad"
+            },
+            {
+              "key": "cpu",
+              "label": "Busiest worker CPU",
+              "value": 35,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "idle",
+              "label": "Idle workers",
+              "value": 8,
+              "unit": "of 9",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Nothing left to fetch",
+          "resultBody": "The ready queue is empty, so six new workers sit at 0 jobs: the 996 messages are already delivered to w1 and invisible to everyone else. They add about $360/month and w1 keeps working through its buffer alone.",
+          "tradeoffs": {
+            "costMonthlyDelta": 360
+          },
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "extra",
+                "kind": "worker",
+                "label": "6 new workers",
+                "tone": "neutral",
+                "cpu": 0,
+                "sub": "ready queue empty"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "queue",
+                "to": "extra"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "The queue shows no ready messages, so the jobs are somewhere else.",
+        "Compare what the three workers say about prefetch.",
+        "A consumer can be handed far more messages than it can work on at once."
+      ],
+      "nextId": null,
+      "format": "culprit",
+      "culprit": {
+        "nodeId": "w1",
+        "explanation": "w1 is configured with prefetch 1000, so the broker handed it 1,000 jobs it can only work 4 at a time. The other two workers use prefetch 4, finished their share and now idle while w1 holds the rest.",
+        "wrongNodeFeedback": {
+          "api": "The API published the burst and got every confirm. Nothing it does explains where the jobs are stuck.",
+          "queue": "RabbitMQ shows ready 0 and unacked 1,000: it already delivered the jobs. Check which consumer holds them.",
+          "w2": "Worker 2 is idle because the queue has nothing ready for it. It drained its share in 6 minutes.",
+          "w3": "Worker 3 is idle for the same reason as worker 2. The slow side is the consumer with the huge prefetch."
+        }
+      }
     }
   ]
 }

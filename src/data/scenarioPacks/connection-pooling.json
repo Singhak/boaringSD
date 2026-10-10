@@ -707,7 +707,27 @@
         "The database limit is fixed; the per-pod pool size is a config value.",
         "Work backwards from max_connections to what each pod may hold at maximum scale."
       ],
-      "nextId": null
+      "nextId": null,
+      "logs": {
+        "users": [
+          "payroll clients get 'service unavailable' on logins and submits",
+          "p95 2.4 s"
+        ],
+        "lb": [
+          "50 healthy pods, 18,000 req/s",
+          "5xx 1,400/s"
+        ],
+        "app": [
+          "pool max 50 per pod; each pod opened 50 connections at startup",
+          "HPA scaled 20 -> 50 pods at 08:30",
+          "pq: sorry, too many clients already"
+        ],
+        "db": [
+          "connections 500/500, 'too many clients already' 1,400/s",
+          "pods requested 2,500 connections; 300 backends active, rest idle",
+          "CPU 88%, max_connections=500"
+        ]
+      }
     },
     {
       "id": "pool-03",
@@ -1229,7 +1249,25 @@
         "What is each connection doing during those 800 ms?",
         "Borrow the connection only for the part that talks to the database."
       ],
-      "nextId": null
+      "nextId": null,
+      "logs": {
+        "users": [
+          "order submits time out at 6 s, 19% of attempts",
+          "retries make it worse"
+        ],
+        "app": [
+          "pool 30/30 in use, all sessions 'idle in transaction'",
+          "POST /order: BEGIN; SELECT stock FOR UPDATE; shipping API 812 ms; COMMIT"
+        ],
+        "db": [
+          "30 sessions 'idle in transaction', average 840 ms",
+          "row lock on stock waits avg 410 ms, CPU 18%"
+        ],
+        "ship": [
+          "rate API p50 790 ms, p99 1.1 s",
+          "vendor SLA 'under 1.5 s'"
+        ]
+      }
     },
     {
       "id": "pool-05",
@@ -4796,6 +4834,347 @@
             ]
           }
         ]
+      }
+    },
+    {
+      "id": "pool-new-02",
+      "incidentCode": "INC-011-18",
+      "level": 11,
+      "patternId": "connection-pooling",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 50,
+      "title": "Pool is full, Postgres is almost idle",
+      "brief": "Checkout calls a coupon service and a catalog service that each hold a 40-connection pool to Postgres. Checkout times out 31% of the time, yet Postgres shows 14% CPU and 62 of 80 sessions idle.",
+      "constraint": "Coupon service deploys are allowed, but Postgres max_connections stays at 100.",
+      "question": "Which service is holding the connections, and what fixes it?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Checkout",
+          "value": 3200,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "DB CPU",
+          "value": 14,
+          "unit": "%",
+          "tone": "good"
+        },
+        {
+          "key": "pool",
+          "label": "Coupon pool in use",
+          "value": 100,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 28000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Checkout timeouts",
+          "value": 31,
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Shoppers"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Checkout API",
+            "tone": "bad",
+            "cpu": 12,
+            "sub": "coupon calls time out"
+          },
+          {
+            "id": "coupons",
+            "kind": "server",
+            "label": "Coupon service",
+            "tone": "warn",
+            "cpu": 9
+          },
+          {
+            "id": "catalog",
+            "kind": "server",
+            "label": "Catalog service",
+            "tone": "neutral",
+            "cpu": 13
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres",
+            "tone": "neutral",
+            "cpu": 14,
+            "sub": "62 of 80 sessions idle"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "coupons"
+          },
+          {
+            "from": "api",
+            "to": "catalog"
+          },
+          {
+            "from": "coupons",
+            "to": "db"
+          },
+          {
+            "from": "catalog",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "grow-coupon-pool",
+          "label": "Quadruple the coupon service's pool from 40 to 160 connections",
+          "correct": false,
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "pool",
+              "label": "Coupon pool in use",
+              "value": 25,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 90,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Checkout timeouts",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Fills up again by evening",
+          "resultBody": "A pool of 160 takes four times longer to fill, but every CouponNotFound still strands one connection, so it is full again in about 8 hours, and 160 idle sessions add 1.6 GB of Postgres memory and crowd max_connections.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "coupons",
+                "tone": "warn",
+                "sub": "160 conns, leaking 1 per error"
+              },
+              {
+                "id": "db",
+                "sub": "160 idle sessions"
+              }
+            ]
+          }
+        },
+        {
+          "id": "idle-timeout",
+          "label": "Set Postgres idle_session_timeout to 30 s to reap stuck sessions",
+          "correct": false,
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "pool",
+              "label": "Coupon pool in use",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 40,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Checkout timeouts",
+              "value": 31,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Pool hands out dead sockets",
+          "resultBody": "Postgres kills the 40 idle sessions, but the pool still counts them as checked out, so the pool stays at 40/40 and the next borrow reuses a closed socket: coupon calls fail instantly with 'connection reset' and timeouts stay at 31%.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "coupons",
+                "tone": "bad",
+                "sub": "connection reset on borrow"
+              }
+            ]
+          }
+        },
+        {
+          "id": "finally-release",
+          "label": "Always release in finally and turn on pool leak detection",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "pool",
+              "label": "Coupon pool in use",
+              "value": 8,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 90,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Checkout timeouts",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Every path returns its connection",
+          "resultBody": "Every path now returns the connection, including CouponNotFound, and leak detection logs any connection held past 10 s with its stack trace. The pool drains to 3 in use, coupon checkouts fall back to 25 ms and timeouts reach 0%. Cost: a small per-borrow tracking overhead and a deploy of the coupon service.",
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Shoppers"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Checkout API",
+                "tone": "good",
+                "cpu": 12,
+                "sub": "coupons answer in 25 ms"
+              },
+              {
+                "id": "coupons",
+                "kind": "server",
+                "label": "Coupon service",
+                "tone": "good",
+                "cpu": 9,
+                "sub": "pool 3/40 in use"
+              },
+              {
+                "id": "catalog",
+                "kind": "server",
+                "label": "Catalog service",
+                "tone": "good",
+                "cpu": 13
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres",
+                "tone": "good",
+                "cpu": 14,
+                "sub": "sessions released"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "api"
+              },
+              {
+                "from": "api",
+                "to": "coupons"
+              },
+              {
+                "from": "api",
+                "to": "catalog"
+              },
+              {
+                "from": "coupons",
+                "to": "db"
+              },
+              {
+                "from": "catalog",
+                "to": "db"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Postgres has spare capacity, so the connections must be stuck somewhere else.",
+        "Compare each service's borrow and release counts, not just its pool size.",
+        "One failure path doesn't hand the connection back."
+      ],
+      "nextId": null,
+      "format": "culprit",
+      "logs": {
+        "users": [
+          "checkout with a coupon spins 28 s, then 'try again'",
+          "browsing and checkout without a coupon feel normal"
+        ],
+        "api": [
+          "POST /checkout with coupon: 504 after 28,000 ms; without coupon: 200 in 90 ms",
+          "31% of checkouts carry a coupon, and every one of them times out",
+          "catalog calls p95 70 ms, 0 errors"
+        ],
+        "coupons": [
+          "pool 'pg-coupons' 40/40 checked out, wait queue 150, average wait 27.8 s",
+          "borrowed 3,912, released 3,872 since the 09:00 start; 40 never came back",
+          "each missing release follows a CouponNotFound stack trace inside lookup(), where the exception path skips close()"
+        ],
+        "catalog": [
+          "pool 'pg-catalog' 18/40 checked out, average hold 6 ms",
+          "no pool waits, p95 70 ms"
+        ],
+        "db": [
+          "80 sessions: 18 active, 62 idle; 40 idle since 09:41 from the coupon service",
+          "CPU 14%, no lock waits, no slow queries"
+        ]
+      },
+      "culprit": {
+        "nodeId": "coupons",
+        "explanation": "Postgres is nearly idle, so the shortage is on the client side. The coupon service's pool shows 40 of 40 connections checked out, and its borrow and release counts differ by exactly the 40 stuck ones, each following a CouponNotFound exception that skips the release.",
+        "wrongNodeFeedback": {
+          "users": "Shoppers only see the symptom; coupon checkouts hang while everything else is normal.",
+          "api": "Checkout API is waiting on the coupon service's pool. Its catalog calls are fast, so look at who holds the connections.",
+          "catalog": "Catalog uses 18 of 40 connections and releases each one in 6 ms. It is healthy.",
+          "db": "Postgres is at 14% CPU with no lock waits; most of its sessions are idle, not busy. The database isn't the limit."
+        }
       }
     },
     {

@@ -541,7 +541,34 @@
         "What if the session remembered where its last write landed in the WAL?"
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "logs": {
+        "users": [
+          "author 7712: save OK, refresh shows the previous draft",
+          "same author re-saved the old text 3.2 s after the first save"
+        ],
+        "app": [
+          "POST /draft 200 in 38 ms, commit LSN 0/5A21F40",
+          "GET /draft routed to replica B, no LSN check on read",
+          "18% of authors save twice within 5 s"
+        ],
+        "db": [
+          "CPU 82%, 900 commits/s, WAL flushed through 0/5A21F40",
+          "streaming to 3 async replicas"
+        ],
+        "r1": [
+          "replay LSN 0/5A21B10, lag 0.3 s",
+          "CPU 55%"
+        ],
+        "r2": [
+          "replay LSN 0/5A1E280, lag 1.2 s",
+          "CPU 57%"
+        ],
+        "r3": [
+          "replay LSN 0/5A0C900, lag 4.0 s, autovacuum running",
+          "CPU 58%"
+        ]
+      }
     },
     {
       "id": "cons-03",
@@ -2054,7 +2081,31 @@
         "What if the cache could tell an older value from a newer one?"
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "logs": {
+        "users": [
+          "member 3391 saves a new bio; page shows the old bio for about 60 s",
+          "3% of edits reported as reverted"
+        ],
+        "app": [
+          "UPDATE profile v18 committed, then DEL profile:3391",
+          "cache miss on profile:3391 read from replica, got v17",
+          "write path 31 ms, no errors"
+        ],
+        "cache": [
+          "SET profile:3391 EX 60 12 ms after the DEL, no version field",
+          "hit ratio 94%, CPU 30%"
+        ],
+        "db": [
+          "profile 3391 v18 committed at 10:02:11.340",
+          "CPU 80%"
+        ],
+        "r1": [
+          "replay lag 0.8 s",
+          "profile 3391 still v17 at 10:02:11.900",
+          "CPU 62%"
+        ]
+      }
     },
     {
       "id": "cons-09",
@@ -5243,6 +5294,303 @@
         "Make the nodes you read from always intersect the nodes you wrote to."
       ],
       "nextId": null
+    },
+    {
+      "id": "cons-new-02",
+      "incidentCode": "INC-008-23",
+      "level": 8,
+      "patternId": "consistency",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 50,
+      "title": "Newest edit loses to an older one",
+      "brief": "Notely saves 4,000 docs/s into a last-write-wins store using API-node timestamps. Node 7's clock runs 9 s fast, so its edits outrank real edits made up to 9 s later: 2.1% of saves vanish.",
+      "constraint": "Save p99 must stay under 60 ms, and the store holds three replicas in one region.",
+      "question": "How do you make a newer edit always beat an older one?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Saves",
+          "value": 4000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "lost",
+          "label": "Lost edits",
+          "value": 2.1,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "Save p95",
+          "value": 45,
+          "unit": "ms",
+          "tone": "good"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Editors"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "API nodes x12",
+            "tone": "warn",
+            "cpu": 40,
+            "sub": "node 7 clock +9 s"
+          },
+          {
+            "id": "store",
+            "kind": "db",
+            "label": "Document store",
+            "tone": "neutral",
+            "cpu": 35,
+            "sub": "last write wins"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "store"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "monitor-ntp",
+          "label": "Monitor NTP and page when any node drifts past 500 ms",
+          "correct": false,
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 20
+          },
+          "metricsAfter": [
+            {
+              "key": "lost",
+              "label": "Lost edits",
+              "value": 0.3,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "Save p95",
+              "value": 45,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Caught in 10 minutes, still reorderable",
+          "resultBody": "The next 9 s drift pages someone within 10 minutes, but last-write-wins still lets any clock difference, even 20 ms, reorder two close edits; ordinary skew keeps losing about 0.3% of saves.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "store",
+                "sub": "still ordered by clocks"
+              }
+            ]
+          }
+        },
+        {
+          "id": "cas-version",
+          "label": "Make each save conditional on the document's version number",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "lost",
+              "label": "Lost edits",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "Save p95",
+              "value": 47,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Stale writers get a conflict, not a win",
+          "resultBody": "A save now says 'update doc 91 only if version is 14', so a stale or concurrent writer receives a conflict instead of silently winning, and the editor merges or retries. Lost edits fall to 0%. Cost: about 2 ms per save (p95 47 ms) and a conflict path in the client.",
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Editors"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "API nodes x12",
+                "tone": "good",
+                "cpu": 41,
+                "sub": "conditional writes"
+              },
+              {
+                "id": "store",
+                "kind": "db",
+                "label": "Document store",
+                "tone": "good",
+                "cpu": 36,
+                "sub": "version checked"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "api"
+              },
+              {
+                "from": "api",
+                "to": "store"
+              }
+            ]
+          }
+        },
+        {
+          "id": "quorum-read",
+          "label": "Read at QUORUM so readers always see the newest timestamp",
+          "correct": false,
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "lost",
+              "label": "Lost edits",
+              "value": 2.1,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "Save p95",
+              "value": 52,
+              "unit": "ms",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Readers pick the wrong winner faster",
+          "resultBody": "A quorum read returns the highest timestamp among replicas, which is still node 7's future-stamped edit, so lost edits stay at 2.1% and read p95 grows from 12 ms to 40 ms.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "store",
+                "tone": "warn",
+                "sub": "quorum reads, same winner"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "The store keeps whichever write has the larger timestamp.",
+        "Whose clock produced that timestamp, and who checks it?",
+        "Stop trusting wall clocks to order edits; make the write itself check what it replaces."
+      ],
+      "nextId": null,
+      "format": "two-step",
+      "mitigation": {
+        "question": "Edits are vanishing right now. What stops new losses fastest?",
+        "choices": [
+          {
+            "id": "m-quorum",
+            "label": "Raise write consistency from ONE to QUORUM on every save",
+            "correct": false,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "lost",
+                "label": "Lost edits",
+                "value": 2,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "Save p95",
+                "value": 95,
+                "unit": "ms",
+                "tone": "warn"
+              }
+            ],
+            "resultTitle": "Slower saves, same losses",
+            "resultBody": "Quorum acks don't change which timestamp wins, so node 7's future-stamped edits still beat newer ones: lost edits stay at 2.0% while save p95 doubles from 45 ms to 95 ms."
+          },
+          {
+            "id": "m-restart",
+            "label": "Rolling-restart the storage nodes to resync their clocks",
+            "correct": false,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "lost",
+                "label": "Lost edits",
+                "value": 2.1,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "Save p95",
+                "value": 180,
+                "unit": "ms",
+                "tone": "bad"
+              }
+            ],
+            "resultTitle": "Restart fixes the wrong clocks",
+            "resultBody": "The storage nodes' clocks were never wrong, so nothing improves: the restart adds 4 minutes of hinted-handoff replay and 3% failed saves while nodes rejoin, and lost edits stay at 2.1%."
+          },
+          {
+            "id": "m-drain",
+            "label": "Pull API node 7 out of rotation and resync its clock",
+            "correct": true,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "lost",
+                "label": "Lost edits",
+                "value": 0.1,
+                "unit": "%",
+                "tone": "warn"
+              },
+              {
+                "key": "p95",
+                "label": "Save p95",
+                "value": 47,
+                "unit": "ms",
+                "tone": "good"
+              }
+            ],
+            "resultTitle": "Losses stop at the source",
+            "resultBody": "Node 7 carried one twelfth of saves, so lost edits fall from 2.1% to 0.1% (the rest is 50 ms of skew on other nodes) and the 11 remaining nodes absorb 9% more load. The root cause remains: any clock drift can reorder edits again."
+          }
+        ]
+      }
     },
     {
       "id": "cons-upsize-01",

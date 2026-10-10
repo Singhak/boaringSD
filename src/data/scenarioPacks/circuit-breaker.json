@@ -533,7 +533,30 @@
         "Pick one place allowed to retry, and fail fast everywhere else."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "logs": {
+        "users": [
+          "product pages: 81% show 'inventory unavailable' or time out at 8 s",
+          "page loads about 2k/s"
+        ],
+        "web": [
+          "GET cart/inventory attempt 1/3 failed 504, retrying",
+          "calls to cart 6k/s for 2k page loads/s (3 attempts each)"
+        ],
+        "cart": [
+          "calls to inventory client 18k/s (3 attempts each)",
+          "CPU 72%, 81% of downstream calls failing"
+        ],
+        "inv": [
+          "inbound 54k req/s, capacity about 6k req/s",
+          "client library also retries 3 times per call",
+          "CPU 99%, p95 8 s"
+        ],
+        "db": [
+          "CPU 80%, connections 600/600",
+          "queries queued behind inventory workers"
+        ]
+      }
     },
     {
       "id": "cb-03",
@@ -795,7 +818,22 @@
         "A breaker only trips on what it is told to count as a failure.",
         "Treat a call that blows the latency budget the same as an error."
       ],
-      "nextId": null
+      "nextId": null,
+      "logs": {
+        "users": [
+          "checkout completes for 78%; 22% give up or time out",
+          "p95 7.4 s on POST /checkout"
+        ],
+        "app": [
+          "busy request threads 188/200, all inside TaxClient.fetchRate",
+          "breaker 'tax' state CLOSED, failures 0 of last 100 calls",
+          "tax calls average 7,040 ms"
+        ],
+        "tax": [
+          "3,000 req/s received, every call returns 200",
+          "response time p50 6.9 s, vendor contract timeout 10 s"
+        ]
+      }
     },
     {
       "id": "cb-04",
@@ -1349,7 +1387,27 @@
         "A single breaker per service can only say 'all' or 'nothing'.",
         "Track failures per host and take just that host out of rotation."
       ],
-      "nextId": null
+      "nextId": null,
+      "logs": {
+        "users": [
+          "12.5% of profile loads show an error card",
+          "the other 87.5% load in 40 ms"
+        ],
+        "api": [
+          "client LB round robin across 8 profile pods",
+          "breaker 'profile': error rate 12.5%, threshold 50%, CLOSED",
+          "profile-6 receives 2,000 req/s, 100% return 500"
+        ],
+        "p1": [
+          "pods 1-5, 7-8: 200 OK, CPU 55%, p99 40 ms",
+          "readiness probes passing"
+        ],
+        "p6": [
+          "cache load failed: corrupt segment profile.cache.04",
+          "returning 500 to every request since 14:02, readiness still passing",
+          "CPU 91% retrying failed lookups"
+        ]
+      }
     },
     {
       "id": "cb-06",
@@ -4347,6 +4405,356 @@
           ]
         }
       ]
+    },
+    {
+      "id": "cb-new-02",
+      "incidentCode": "INC-010-18",
+      "level": 10,
+      "patternId": "circuit-breaker",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P0",
+      "xp": 50,
+      "title": "Backup vendor throttles us the second the breaker opens",
+      "brief": "MapLine's geocoder breaker opened when its primary vendor failed. The backup vendor allows 30 req/s but now gets 4,000, so it returns 429s and 61% of checkouts fail at the address step.",
+      "constraint": "Checkout can't go down; address accuracy only matters to the carrier when the label is printed.",
+      "question": "What should the fallback be so the next vendor outage doesn't fail checkout?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Geocode calls",
+          "value": 4000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "errors",
+          "label": "Checkout failures",
+          "value": 61,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 2800,
+          "unit": "ms",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Shoppers"
+          },
+          {
+            "id": "checkout",
+            "kind": "server",
+            "label": "Checkout",
+            "tone": "warn",
+            "cpu": 52,
+            "sub": "address step failing"
+          },
+          {
+            "id": "brk",
+            "kind": "server",
+            "label": "Geocoder breaker",
+            "tone": "warn",
+            "sub": "OPEN, using fallback"
+          },
+          {
+            "id": "v1",
+            "kind": "server",
+            "label": "Primary vendor",
+            "tone": "bad",
+            "sub": "down"
+          },
+          {
+            "id": "v2",
+            "kind": "server",
+            "label": "Backup vendor",
+            "tone": "warn",
+            "sub": "30 req/s quota, 429s"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "checkout"
+          },
+          {
+            "from": "checkout",
+            "to": "brk"
+          },
+          {
+            "from": "brk",
+            "to": "v1"
+          },
+          {
+            "from": "brk",
+            "to": "v2"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "buy-quota",
+          "label": "Buy a 5,000 req/s quota on the backup vendor as well",
+          "correct": false,
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 9000
+          },
+          "metricsAfter": [
+            {
+              "key": "errors",
+              "label": "Checkout failures",
+              "value": 61,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2800,
+              "unit": "ms",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Two weeks late, and still one vendor away",
+          "resultBody": "The bigger quota takes two weeks to provision and costs $9,000 a month; until then failures stay at 61%. Once live it covers 4,000 req/s, but checkout still depends on a vendor call for every address.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "v2",
+                "sub": "quota upgrade in 2 weeks"
+              }
+            ]
+          }
+        },
+        {
+          "id": "backup-breaker",
+          "label": "Wrap the backup vendor in its own breaker that returns an error",
+          "correct": false,
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "errors",
+              "label": "Checkout failures",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 90,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Faster failures, same failures",
+          "resultBody": "The second breaker opens within seconds, so the 429s become instant errors and p95 drops from 2.8 s to 90 ms, but all 4,000 req/s of geocoding still fail and checkout failures reach 100% at the address step.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "checkout",
+                "tone": "bad",
+                "sub": "100% address failures"
+              }
+            ]
+          }
+        },
+        {
+          "id": "local-centroids",
+          "label": "Fall back to a local postcode table that needs no vendor call",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "errors",
+              "label": "Checkout failures",
+              "value": 0.2,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 60,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Fallback that can't be throttled",
+          "resultBody": "A 40 MB table of about 950,000 postcode centroids sits in each pod's memory, so the fallback answers in 0.1 ms at 4,000 req/s with zero vendor calls and failures drop to 0.2%. Cost: accuracy falls from rooftop to roughly 300 m, so delivery estimates are rougher until the vendor recovers.",
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Shoppers"
+              },
+              {
+                "id": "checkout",
+                "kind": "server",
+                "label": "Checkout",
+                "tone": "good",
+                "cpu": 34,
+                "sub": "address step OK"
+              },
+              {
+                "id": "brk",
+                "kind": "server",
+                "label": "Geocoder breaker",
+                "tone": "good",
+                "sub": "OPEN, local fallback"
+              },
+              {
+                "id": "v1",
+                "kind": "server",
+                "label": "Primary vendor",
+                "tone": "bad",
+                "sub": "down"
+              },
+              {
+                "id": "v2",
+                "kind": "server",
+                "label": "Backup vendor",
+                "tone": "neutral",
+                "sub": "unused"
+              },
+              {
+                "id": "table",
+                "kind": "cache",
+                "label": "Postcode table (pod memory)",
+                "tone": "good",
+                "sub": "0.1 ms lookups"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "checkout"
+              },
+              {
+                "from": "checkout",
+                "to": "brk"
+              },
+              {
+                "from": "brk",
+                "to": "v1"
+              },
+              {
+                "from": "brk",
+                "to": "v2"
+              },
+              {
+                "from": "brk",
+                "to": "table"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "The backup vendor has a tiny quota compared with the traffic it now receives.",
+        "A fallback that calls another remote vendor inherits the same kind of limit.",
+        "Fall back to data that is already in the process, even if it is less precise."
+      ],
+      "nextId": null,
+      "format": "two-step",
+      "mitigation": {
+        "question": "61% of checkouts are failing at the address step. What recovers them fastest?",
+        "choices": [
+          {
+            "id": "m-optional",
+            "label": "Mark geocoding optional so checkout accepts the typed address",
+            "correct": true,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "errors",
+                "label": "Checkout failures",
+                "value": 2,
+                "unit": "%",
+                "tone": "warn"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 300,
+                "unit": "ms",
+                "tone": "good"
+              }
+            ],
+            "resultTitle": "Checkout flows again in a minute",
+            "resultBody": "Checkout proceeds with the unvalidated address, so failures fall from 61% to 2% within a minute. Cost: about 4% of addresses are malformed and get corrected or rejected at label-print time, adding manual work for support."
+          },
+          {
+            "id": "m-reset",
+            "label": "Reset the breaker by hand so the primary vendor is tried again",
+            "correct": false,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "errors",
+                "label": "Checkout failures",
+                "value": 94,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 5000,
+                "unit": "ms",
+                "tone": "bad"
+              }
+            ],
+            "resultTitle": "Threads drown in dead calls",
+            "resultBody": "The primary vendor is still down, so every call waits the full 5 s timeout; with the breaker forced closed all 4,000 req/s queue on dead calls, threads run out within 20 seconds and failures climb to 94%."
+          },
+          {
+            "id": "m-retry",
+            "label": "Retry rejected backup calls up to five times with backoff",
+            "correct": false,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "errors",
+                "label": "Checkout failures",
+                "value": 61,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 7500,
+                "unit": "ms",
+                "tone": "bad"
+              }
+            ],
+            "resultTitle": "Retries pile onto the quota",
+            "resultBody": "Five retries turn 4,000 req/s into up to 20,000 calls against a 30 req/s quota, so the vendor throttles harder; failures stay at 61% and p95 grows from 2.8 s to 7.5 s as backoff holds threads longer."
+          }
+        ]
+      }
     },
     {
       "id": "cb-restart-01",

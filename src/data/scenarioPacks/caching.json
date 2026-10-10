@@ -1570,7 +1570,26 @@
         "A cache key should contain only the inputs that change the response."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "logs": {
+        "users": [
+          "GET /u/maria-k?ref=7f3a9c21, every share link has its own ref",
+          "60,000 req/s across ~2.1 M distinct URLs per hour"
+        ],
+        "app": [
+          "cache key = sha1(request.url)",
+          "Redis GET misses 97%, falls through to Postgres",
+          "p95 620 ms"
+        ],
+        "cache": [
+          "hits 3%, misses 97%, 28 M keys, 41 GB used",
+          "same profile stored under ~1,900 different keys per hour"
+        ],
+        "db": [
+          "CPU 88%, 58,000 SELECT by profile id per second",
+          "buffer hit 99.8%, disk idle"
+        ]
+      }
     },
     {
       "id": "cache-04",
@@ -2053,7 +2072,25 @@
         "Control how quickly traffic reaches the cold cache."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "logs": {
+        "users": [
+          "40,000 req/s recipe views, 90% on the top 50k recipes",
+          "2,300 timeouts since the 21:02 cutover"
+        ],
+        "app": [
+          "cache endpoint switched to redis-new at 21:02",
+          "Postgres pool 400/400, 2,300 requests waiting"
+        ],
+        "cache": [
+          "redis-new: uptime 6 min, 9k keys, hit ratio 0%",
+          "used_memory 12 MB of 32 GB"
+        ],
+        "db": [
+          "CPU 99%, 38,000 SELECT/s, most for the same recipe ids",
+          "connection queue 2,300, p95 4,200 ms"
+        ]
+      }
     },
     {
       "id": "cache-06",
@@ -7414,6 +7451,330 @@
         "Compute memory percent after removing shards versus halving each node."
       ],
       "nextId": null
+    },
+    {
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 50,
+      "id": "cache-new-02",
+      "incidentCode": "INC-004-23",
+      "level": 4,
+      "patternId": "caching",
+      "title": "Hit ratio sinks over four nights",
+      "brief": "ShopSense's cache hit ratio fell from 95% to 41% over four nights; at 35,000 req/s Postgres is at 78% and p95 is 640 ms. Redis sits at its 32 GB limit, evicting 9,000 keys per second.",
+      "constraint": "Product keys keep their 15-minute TTL, and the nightly recommendation export must still finish by 06:00.",
+      "question": "What stops the hot product keys from being evicted?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 35000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "DB CPU",
+          "value": 78,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 640,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "hit",
+          "label": "Hit ratio",
+          "value": 41,
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Shoppers"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Shop API",
+            "tone": "warn",
+            "cpu": 60
+          },
+          {
+            "id": "cache",
+            "kind": "cache",
+            "label": "Redis",
+            "tone": "bad",
+            "cpu": 35,
+            "sub": "32 of 32 GB"
+          },
+          {
+            "id": "batch",
+            "kind": "server",
+            "label": "Nightly jobs",
+            "tone": "warn",
+            "cpu": 20
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres",
+            "tone": "warn",
+            "cpu": 78
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "cache"
+          },
+          {
+            "from": "cache",
+            "to": "db"
+          },
+          {
+            "from": "batch",
+            "to": "cache"
+          }
+        ]
+      },
+      "logs": {
+        "users": [
+          "35,000 req/s product views, normal evening curve",
+          "slow pages (>500 ms): 12%, no client errors"
+        ],
+        "app": [
+          "cache GET hit ratio 41% (95% four nights ago)",
+          "20,650 req/s fall through to Postgres",
+          "p95 640 ms, no deploys this week"
+        ],
+        "cache": [
+          "used_memory 32.0 GB of maxmemory 32 GB, policy allkeys-lru",
+          "evicted_keys 9,000/s, evicted product:* keys had 6-14 min TTL left",
+          "keyspace: product:* 3.1 M keys (TTL 900 s), exp:* 6.2 M keys (no TTL, oldest 4 d), exp:* = 71% of memory",
+          "exp:* writer: client name=reco-export-7, 400 SET/s"
+        ],
+        "batch": [
+          "reco-export nightly: ~1.5 M user vectors, 3.6 KB each, SET exp:u:{id}",
+          "SET issued without EX, no cleanup step in the job",
+          "last run finished 03:12, exit 0"
+        ],
+        "db": [
+          "CPU 78%, SELECT product by id 20,600/s",
+          "buffer hit 99%, no lock waits, no slow-query alerts"
+        ]
+      },
+      "choices": [
+        {
+          "id": "isolate-export",
+          "label": "Move the export's scratch keys to their own Redis with a TTL",
+          "correct": true,
+          "approach": "optimal",
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Shoppers"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Shop API",
+                "tone": "good",
+                "cpu": 35
+              },
+              {
+                "id": "cache",
+                "kind": "cache",
+                "label": "Redis",
+                "tone": "good",
+                "cpu": 30,
+                "sub": "product:* only, 9 GB"
+              },
+              {
+                "id": "batch",
+                "kind": "server",
+                "label": "Nightly jobs",
+                "tone": "good",
+                "cpu": 20,
+                "sub": "own Redis, 24 h TTL"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres",
+                "tone": "good",
+                "cpu": 22
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "cache"
+              },
+              {
+                "from": "cache",
+                "to": "db"
+              },
+              {
+                "from": "batch",
+                "to": "cache"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "DB CPU",
+              "value": 22,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 55,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "hit",
+              "label": "Hit ratio",
+              "value": 95,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Product keys stay resident",
+          "resultBody": "With the 22.7 GB of no-TTL export vectors gone from the main node, product keys fit again, evictions stop and the hit ratio returns to 95% within 15 minutes. Postgres drops to 22%. Cost: a small second Redis, about $140/month, to keep batch data off the serving path.",
+          "tradeoffs": {
+            "costMonthlyDelta": 140
+          }
+        },
+        {
+          "id": "double-memory",
+          "label": "Raise Redis maxmemory from 32 GB to 64 GB on the same node",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "DB CPU",
+              "value": 28,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 110,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "hit",
+              "label": "Hit ratio",
+              "value": 90,
+              "unit": "%",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Fine for six nights",
+          "resultBody": "The hit ratio recovers to 90% because the no-TTL export keys now fit alongside product keys, and the instance costs about $410/month more. The job adds about 5.5 GB a night and never deletes, so the node is full again in roughly six nights.",
+          "tradeoffs": {
+            "costMonthlyDelta": 410
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "cache",
+                "sub": "64 GB, full again in ~6 nights"
+              }
+            ]
+          }
+        },
+        {
+          "id": "volatile-lru",
+          "label": "Switch the eviction policy to volatile-lru so only TTL keys go",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "DB CPU",
+              "value": 91,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 980,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "hit",
+              "label": "Hit ratio",
+              "value": 22,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Evicts the wrong keys harder",
+          "resultBody": "Under volatile-lru only keys with a TTL are evictable, and every product key has one, while the 6.2 M export keys have none and stay forever. Redis now evicts only product keys, so the hit ratio falls from 41% to 22% and Postgres reaches 91%.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "db",
+                "cpu": 91,
+                "tone": "bad",
+                "sub": "only product keys evictable"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Redis is red, but it is following its eviction policy exactly.",
+        "Compare which key prefixes hold the memory with which ones the shoppers read.",
+        "Something that is not on the request path is writing keys that never expire."
+      ],
+      "nextId": null,
+      "format": "culprit",
+      "culprit": {
+        "nodeId": "batch",
+        "explanation": "Redis's key stats show exp:* keys with no TTL holding 71% of memory, and the writer is the nightly export client. Redis is only evicting product keys because the export fills it with permanent ones.",
+        "wrongNodeFeedback": {
+          "users": "Shopper traffic is flat at 35,000 req/s with a normal curve; the shoppers did not change anything.",
+          "app": "The API only reports the miss rate. It reads and writes product keys with the right TTL.",
+          "cache": "Redis is where the pain shows, but allkeys-lru is doing its job. Look at who wrote the keys filling it.",
+          "db": "Postgres load is the effect: 20,650 misses per second land on it. Follow the misses back to why they happen."
+        }
+      }
     }
   ]
 }

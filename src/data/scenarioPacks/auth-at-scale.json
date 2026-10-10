@@ -620,6 +620,25 @@
           }
         ]
       },
+      "logs": {
+        "users": [
+          "login at 09:04 succeeded at IdP, first API call returned 401",
+          "401 rate 21k/s since 09:00"
+        ],
+        "gw": [
+          "WARN jwt: unknown kid 'k-2026-10' (cached: 'k-2026-04') -> 401",
+          "jwks cache age 14 h of 24 h TTL",
+          "45k req/s, 21k rejected"
+        ],
+        "api": [
+          "receiving 24k/s from gateways",
+          "all requests carry a verified token header"
+        ],
+        "idp": [
+          "signing key rotated 09:00, new kid 'k-2026-10' published at /jwks",
+          "GET /jwks 3 requests/min, CPU 12%"
+        ]
+      },
       "choices": [
         {
           "id": "skip-verify",
@@ -837,6 +856,24 @@
             "from": "auth",
             "to": "db"
           }
+        ]
+      },
+      "logs": {
+        "users": [
+          "login burst 800/s at 09:00",
+          "API client timeout 5 s, retry storm"
+        ],
+        "lb": [
+          "upstream auth pool p95 4.2 s, 3.1k errors/min",
+          "login and API routes share one upstream pool"
+        ],
+        "auth": [
+          "bcrypt cost=14, about 1.0 s CPU per hash",
+          "CPU 99%, run queue 64",
+          "API handlers queued behind hash jobs"
+        ],
+        "db": [
+          "accounts reads 2k/s, CPU 20%"
         ]
       },
       "choices": [
@@ -4222,6 +4259,806 @@
       ],
       "nextId": null,
       "format": "budget-cut"
+    },
+    {
+      "id": "auth-new-01",
+      "incidentCode": "INC-023-21",
+      "level": 23,
+      "patternId": "auth-at-scale",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 50,
+      "title": "Users logged out in waves every minute",
+      "brief": "AcmeID has 600,000 concurrent sessions on 1-minute access tokens. Every client refreshes each minute: 10,000 refreshes/s against an IdP sized for 3,000/s, so refreshes fail with 429 and sessions drop.",
+      "constraint": "Compliance needs a revoked or fired user's access to end within 15 minutes.",
+      "question": "What access-token lifetime keeps the IdP alive and revocation inside 15 minutes?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 45000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "idp",
+          "label": "IdP refresh load",
+          "value": 10000,
+          "unit": "req/s",
+          "tone": "bad"
+        },
+        {
+          "key": "window",
+          "label": "Revocation window",
+          "value": 1,
+          "unit": "min",
+          "tone": "good"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 7000,
+          "unit": "errors",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Clients"
+          },
+          {
+            "id": "gw",
+            "kind": "lb",
+            "label": "Gateways",
+            "cpu": 40
+          },
+          {
+            "id": "idp",
+            "kind": "server",
+            "label": "Identity provider",
+            "tone": "bad",
+            "cpu": 100,
+            "sub": "10k refreshes/s, capacity 3k"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "API fleet",
+            "cpu": 30
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "gw"
+          },
+          {
+            "from": "gw",
+            "to": "api"
+          },
+          {
+            "from": "users",
+            "to": "idp"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "short-rotate",
+          "label": "Issue 5-15 minute access tokens with rotating refresh tokens",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "idp",
+              "label": "IdP refresh load",
+              "value": 1000,
+              "unit": "req/s",
+              "tone": "good"
+            },
+            {
+              "key": "window",
+              "label": "Revocation window",
+              "value": 10,
+              "unit": "min",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Refreshes fit the IdP",
+          "resultBody": "A 10-minute lifetime cuts refreshes to 1,000/s, a third of IdP capacity, and revocation takes effect within 10 minutes. Cost: a stolen access token stays usable for up to 10 minutes, and refresh-token rotation adds a store to maintain.",
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Clients"
+              },
+              {
+                "id": "gw",
+                "kind": "lb",
+                "label": "Gateways",
+                "cpu": 40
+              },
+              {
+                "id": "idp",
+                "kind": "server",
+                "label": "Identity provider",
+                "tone": "good",
+                "cpu": 33,
+                "sub": "1k refreshes/s of 3k"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "API fleet",
+                "cpu": 30
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "gw"
+              },
+              {
+                "from": "gw",
+                "to": "api"
+              },
+              {
+                "from": "users",
+                "to": "idp"
+              }
+            ]
+          }
+        },
+        {
+          "id": "double-idp",
+          "label": "Keep 1-minute tokens and double the identity provider fleet",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "tradeoffs": {
+            "costMonthlyDelta": 3200
+          },
+          "metricsAfter": [
+            {
+              "key": "idp",
+              "label": "IdP refresh load",
+              "value": 10000,
+              "unit": "req/s",
+              "tone": "bad"
+            },
+            {
+              "key": "window",
+              "label": "Revocation window",
+              "value": 1,
+              "unit": "min",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 4000,
+              "unit": "errors",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Still short of 10k a second",
+          "resultBody": "Doubling the fleet lifts capacity to 6,000 refreshes/s against 10,000 needed, so 40% of refreshes still fail, and the bill rises about $3,200 a month to burn CPU on re-signing tokens every minute.",
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "idp",
+                "tone": "warn",
+                "cpu": 100,
+                "sub": "2x fleet, 6k/s capacity, still short"
+              }
+            ]
+          }
+        },
+        {
+          "id": "long-tokens",
+          "label": "Issue 8-hour tokens and sweep a revocation list nightly",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "idp",
+              "label": "IdP refresh load",
+              "value": 21,
+              "unit": "req/s",
+              "tone": "good"
+            },
+            {
+              "key": "window",
+              "label": "Revocation window",
+              "value": 480,
+              "unit": "min",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Fired staff keep access for hours",
+          "resultBody": "Refreshes drop to 21/s, but a revoked user's token works for up to 8 hours and the nightly sweep leaves a gap of up to 24, so every revocation breaks the 15-minute rule.",
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gw",
+                "tone": "warn",
+                "sub": "8 h tokens, revocation gap up to 24 h"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Refresh load is sessions divided by token lifetime.",
+        "Revocation can only take effect when the access token expires.",
+        "Pick a lifetime where load fits the IdP and the revocation window fits compliance."
+      ],
+      "nextId": null,
+      "format": "knob",
+      "knob": {
+        "label": "Access-token lifetime",
+        "unit": "min",
+        "min": 1,
+        "max": 60,
+        "step": 1,
+        "start": 1,
+        "target": [
+          5,
+          15
+        ],
+        "question": "Set the lifetime so refreshes fit the IdP and revocation stays inside 15 minutes.",
+        "curve": [
+          {
+            "at": 1,
+            "metrics": [
+              {
+                "key": "idp",
+                "value": 10000
+              },
+              {
+                "key": "window",
+                "value": 1
+              },
+              {
+                "key": "errors",
+                "value": 7000
+              }
+            ]
+          },
+          {
+            "at": 2,
+            "metrics": [
+              {
+                "key": "idp",
+                "value": 5000
+              },
+              {
+                "key": "window",
+                "value": 2
+              },
+              {
+                "key": "errors",
+                "value": 2000
+              }
+            ]
+          },
+          {
+            "at": 3,
+            "metrics": [
+              {
+                "key": "idp",
+                "value": 3333
+              },
+              {
+                "key": "window",
+                "value": 3
+              },
+              {
+                "key": "errors",
+                "value": 333
+              }
+            ]
+          },
+          {
+            "at": 5,
+            "metrics": [
+              {
+                "key": "idp",
+                "value": 2000
+              },
+              {
+                "key": "window",
+                "value": 5
+              },
+              {
+                "key": "errors",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "at": 15,
+            "metrics": [
+              {
+                "key": "idp",
+                "value": 667
+              },
+              {
+                "key": "window",
+                "value": 15
+              },
+              {
+                "key": "errors",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "at": 30,
+            "metrics": [
+              {
+                "key": "idp",
+                "value": 333
+              },
+              {
+                "key": "window",
+                "value": 30
+              },
+              {
+                "key": "errors",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "at": 60,
+            "metrics": [
+              {
+                "key": "idp",
+                "value": 167
+              },
+              {
+                "key": "window",
+                "value": 60
+              },
+              {
+                "key": "errors",
+                "value": 0
+              }
+            ]
+          }
+        ],
+        "low": {
+          "title": "IdP drowns in refreshes",
+          "body": "At 3 minutes or less 600,000 sessions refresh 3,300 to 10,000 times a second against a 3,000/s IdP, so refreshes return 429 and sessions drop."
+        },
+        "high": {
+          "title": "Revocation takes too long",
+          "body": "At 30 minutes a fired user's access token stays valid for up to 30 minutes, twice the 15-minute compliance limit, even though the IdP sits near idle."
+        },
+        "good": {
+          "title": "Load fits, revocation fits",
+          "body": "At 5 to 15 minutes refreshes run at 667 to 2,000 per second, under the 3,000/s capacity, and revoked access ends within 15 minutes."
+        }
+      }
+    },
+    {
+      "id": "auth-new-02",
+      "incidentCode": "INC-023-22",
+      "level": 23,
+      "patternId": "auth-at-scale",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P0",
+      "xp": 150,
+      "title": "Signing key pasted in a public repo",
+      "brief": "A contractor pushed the IdP's RS256 private key (kid k-07) to a public repo 20 minutes ago. Gateways still trust it, and forged admin tokens reach the API about 1,900 times a minute.",
+      "constraint": "400,000 real users hold live tokens signed with k-07, and the login pool handles 800 logins/s.",
+      "question": "Gateways now reject k-07 and 400,000 users get 401. How do you get them back safely?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 50000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 0,
+          "unit": "errors",
+          "tone": "good"
+        },
+        {
+          "key": "forged",
+          "label": "Forged tokens accepted",
+          "value": 1900,
+          "unit": "/min",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 40,
+          "unit": "ms",
+          "tone": "good"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Users and attackers"
+          },
+          {
+            "id": "gw",
+            "kind": "lb",
+            "label": "Gateways",
+            "tone": "bad",
+            "cpu": 45,
+            "sub": "trust kid k-07"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "API fleet",
+            "tone": "warn",
+            "cpu": 50,
+            "sub": "admin calls from unknown IPs"
+          },
+          {
+            "id": "idp",
+            "kind": "server",
+            "label": "Identity provider",
+            "tone": "warn",
+            "cpu": 15,
+            "sub": "signs with k-07"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "gw"
+          },
+          {
+            "from": "gw",
+            "to": "api"
+          },
+          {
+            "from": "gw",
+            "to": "idp"
+          }
+        ]
+      },
+      "logs": {
+        "users": [
+          "admin API calls from 14 new IPs using kid k-07",
+          "support: 'my session works normally'"
+        ],
+        "gw": [
+          "jwt verified kid=k-07 sub=admin-0 iat=2026-10-09",
+          "1,900 admin-scope tokens/min from IPs never seen before"
+        ],
+        "api": [
+          "POST /admin/users/export 412 times in 10 min from 14 IPs",
+          "authz ok: scope admin, issuer idp"
+        ],
+        "idp": [
+          "active signing key k-07 created 2026-04-01",
+          "audit: no admin logins match these tokens, no password events"
+        ]
+      },
+      "choices": [
+        {
+          "id": "refresh-swap",
+          "label": "Let clients swap refresh tokens for new-key access tokens",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            },
+            {
+              "key": "forged",
+              "label": "Forged tokens accepted",
+              "value": 0,
+              "unit": "/min",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 60,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Sessions recover without passwords",
+          "resultBody": "Clients present refresh tokens, which are opaque and were never signed with k-07, and receive access tokens signed by the new key; 400,000 sessions recover in about 4 minutes at 1,700 refreshes/s. Cost: any refresh token that leaked too must be revoked separately.",
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Users and attackers"
+              },
+              {
+                "id": "gw",
+                "kind": "lb",
+                "label": "Gateways",
+                "tone": "good",
+                "cpu": 45,
+                "sub": "trusts kid k-08 only"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "API fleet",
+                "tone": "good",
+                "cpu": 50,
+                "sub": "admin calls normal"
+              },
+              {
+                "id": "idp",
+                "kind": "server",
+                "label": "Identity provider",
+                "tone": "good",
+                "cpu": 15,
+                "sub": "signs with k-08"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "gw"
+              },
+              {
+                "from": "gw",
+                "to": "api"
+              },
+              {
+                "from": "gw",
+                "to": "idp"
+              }
+            ]
+          }
+        },
+        {
+          "id": "iat-grace",
+          "label": "Re-accept k-07 only for tokens whose iat predates the leak",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            },
+            {
+              "key": "forged",
+              "label": "Forged tokens accepted",
+              "value": 1900,
+              "unit": "/min",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 40,
+              "unit": "ms",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Attackers backdate iat",
+          "resultBody": "The iat claim is written by whoever signs the token, and the attacker holds the key, so a forged token with yesterday's iat passes the check and forgeries resume at 1,900 a minute.",
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "gw",
+                "tone": "bad",
+                "sub": "k-07 re-trusted by iat claim"
+              }
+            ]
+          }
+        },
+        {
+          "id": "relogin-all",
+          "label": "Force every user through password plus MFA login again",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 30000,
+              "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "forged",
+              "label": "Forged tokens accepted",
+              "value": 0,
+              "unit": "/min",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 4000,
+              "unit": "ms",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Login pool melts",
+          "resultBody": "400,000 logins against a pool that handles 800/s take at least 8 minutes, bcrypt CPU pins at 99%, and every user gets an MFA prompt at once; p95 reaches 4 s and support is flooded.",
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "idp",
+                "tone": "bad",
+                "cpu": 99,
+                "sub": "400k logins queued"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "The forged tokens need the key, not a password.",
+        "Anything inside a token can be written by whoever holds the signing key.",
+        "A credential that was never signed with the leaked key can be exchanged for a fresh one."
+      ],
+      "nextId": null,
+      "format": "two-step",
+      "mitigation": {
+        "question": "Forged admin tokens are being accepted right now. What is the first move?",
+        "choices": [
+          {
+            "id": "m-rotate",
+            "label": "Publish a new key and remove k-07 from the JWKS",
+            "correct": true,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 18000,
+                "unit": "errors",
+                "tone": "warn"
+              },
+              {
+                "key": "forged",
+                "label": "Forged tokens accepted",
+                "value": 0,
+                "unit": "/min",
+                "tone": "good"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 45,
+                "unit": "ms",
+                "tone": "good"
+              }
+            ],
+            "resultTitle": "Forgeries stop at the gateway",
+            "resultBody": "Within one JWKS refresh of about 60 s every token signed with k-07 fails verification, so forged tokens drop from 1,900 a minute to 0. Cost: all 400,000 genuine tokens signed with k-07 fail too, and users see 401 until they get new ones."
+          },
+          {
+            "id": "m-ttl",
+            "label": "Cut access-token lifetime from 15 minutes to 5 minutes",
+            "correct": false,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 0,
+                "unit": "errors",
+                "tone": "good"
+              },
+              {
+                "key": "forged",
+                "label": "Forged tokens accepted",
+                "value": 1900,
+                "unit": "/min",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 40,
+                "unit": "ms",
+                "tone": "good"
+              }
+            ],
+            "resultTitle": "The attacker writes the expiry",
+            "resultBody": "Forged tokens carry whatever exp the attacker signs, so a shorter default lifetime in the IdP changes nothing and they keep verifying at 1,900 a minute."
+          },
+          {
+            "id": "m-pw",
+            "label": "Force a password reset for all 2,000 admin accounts",
+            "correct": false,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 0,
+                "unit": "errors",
+                "tone": "good"
+              },
+              {
+                "key": "forged",
+                "label": "Forged tokens accepted",
+                "value": 1900,
+                "unit": "/min",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 40,
+                "unit": "ms",
+                "tone": "good"
+              }
+            ],
+            "resultTitle": "Passwords were never the way in",
+            "resultBody": "Forging a token needs the signing key, not a password, so the reset floods support with 600 tickets while forged tokens still verify at 1,900 a minute."
+          }
+        ]
+      }
     }
   ]
 }

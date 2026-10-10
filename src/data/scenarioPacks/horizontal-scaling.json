@@ -828,7 +828,22 @@
         "Identical copies of a stateless process can run side by side, even on one machine."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "logs": {
+        "users": [
+          "POST /geocode at 15,000 req/s, up from 500 last week",
+          "client timeouts at 2 s deadline: 9% of calls"
+        ],
+        "proc": [
+          "node pid 1 on :8080, event-loop lag p99 2,400 ms",
+          "top -H: one thread at 100%, pinned to core 0",
+          "cluster workers=1, UV_THREADPOOL_SIZE=4 (threadpool idle)"
+        ],
+        "idle": [
+          "cores 1-15: 0-1% utilisation",
+          "16 vCPU / 64 GB VM, no other process scheduled here"
+        ]
+      }
     },
     {
       "id": "hs-04",
@@ -1305,7 +1320,25 @@
         "One entry target is the bug.",
         "Distribute requests."
       ],
-      "nextId": null
+      "nextId": null,
+      "logs": {
+        "users": [
+          "20,000 req/s to api.example.com",
+          "DNS answer: one A record, 10.0.1.11"
+        ],
+        "s1": [
+          "CPU 98%, accept queue full, 120 resets/s",
+          "serving 100% of requests, p95 3,600 ms"
+        ],
+        "s2": [
+          "CPU 2%, health check passing",
+          "0 requests in the last 10 min"
+        ],
+        "s3": [
+          "CPU 2%, health check passing",
+          "0 requests in the last 10 min"
+        ]
+      }
     },
     {
       "id": "hs-06",
@@ -6781,6 +6814,375 @@
         "Check what the fleet must still absorb after losing one server."
       ],
       "nextId": null
+    },
+    {
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 50,
+      "id": "hs-new-01",
+      "incidentCode": "INC-022",
+      "level": 1,
+      "patternId": "horizontal-scaling",
+      "title": "On-sale spike outruns the autoscaler",
+      "brief": "TixDrop's Friday 10:00 on-sale takes traffic from 1,500 to 30,000 req/s in 30 seconds. Six pods hit 99% CPU, and the autoscaler's 24 new pods wait 3 minutes for nodes to boot.",
+      "constraint": "Every Friday on-sale starts at exactly 10:00, and idle capacity is billed the other 167 hours of the week.",
+      "question": "How do you keep the fleet ahead of the known spike?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 30000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 99,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 8000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 22,
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Fans"
+          },
+          {
+            "id": "app",
+            "kind": "server",
+            "label": "Ticket API",
+            "tone": "bad",
+            "cpu": 99,
+            "sub": "6 pods, 24 pending"
+          },
+          {
+            "id": "scaler",
+            "kind": "server",
+            "label": "Autoscaler",
+            "tone": "warn",
+            "sub": "nodes booting, ~3 min"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Postgres",
+            "tone": "good",
+            "cpu": 30
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "app"
+          },
+          {
+            "from": "app",
+            "to": "db"
+          },
+          {
+            "from": "scaler",
+            "to": "app"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "prescale",
+          "label": "Scheduled scale-up to 30 pods before each on-sale",
+          "correct": true,
+          "approach": "optimal",
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Fans"
+              },
+              {
+                "id": "app",
+                "kind": "server",
+                "label": "Ticket API",
+                "tone": "good",
+                "cpu": 42,
+                "sub": "30 pods warm"
+              },
+              {
+                "id": "scaler",
+                "kind": "server",
+                "label": "Autoscaler",
+                "tone": "good",
+                "sub": "schedule 09:50"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Postgres",
+                "tone": "good",
+                "cpu": 38
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "app"
+              },
+              {
+                "from": "app",
+                "to": "db"
+              },
+              {
+                "from": "scaler",
+                "to": "app"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 42,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 120,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Capacity waiting at 10:00",
+          "resultBody": "30 warm pods are up by 09:50, so the 30,000 req/s arrive at 42% CPU and p95 holds at 120 ms with no queue. Cost: about 24 extra pods for 45 minutes a week, roughly $30/month, and someone must move the schedule when on-sale times change.",
+          "tradeoffs": {
+            "costMonthlyDelta": 30
+          }
+        },
+        {
+          "id": "fast-sync",
+          "label": "Shorten the autoscaler sync period from 15 s to 2 s",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 97,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 6500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 18,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Fast decisions, slow nodes",
+          "resultBody": "The autoscaler now asks for 24 pods within 2 seconds of the spike, but the cluster has no spare nodes and each new node needs 3 minutes to boot. Fans still see 6,500 ms p95 and 18% errors for those 3 minutes.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "scaler",
+                "sub": "24 pods pending 3 min"
+              }
+            ]
+          }
+        },
+        {
+          "id": "low-target",
+          "label": "Lower the autoscaler CPU target from 70% to 30% all week",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 96,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 5200,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 14,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Bigger idle fleet, same cliff",
+          "resultBody": "The always-on fleet grows from 6 to 14 pods, adding about $1,900/month, but 14 pods still serve only 21,000 req/s. The jump to 30,000 outruns node boot time again and errors hit 14%.",
+          "tradeoffs": {
+            "costMonthlyDelta": 1900
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "app",
+                "label": "Ticket API (14 pods)",
+                "cpu": 96,
+                "sub": "needs 24, nodes booting"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "The spike arrives at the same minute every week.",
+        "New pods are not the slow part; the nodes under them take about 3 minutes to boot.",
+        "A reactive autoscaler cannot beat a boot delay you can predict in advance."
+      ],
+      "nextId": null,
+      "format": "two-step",
+      "mitigation": {
+        "question": "Six pods are at 99% and new nodes need 3 minutes. What protects checkout right now?",
+        "choices": [
+          {
+            "id": "m-waiting-room",
+            "label": "Admit only 6,000 requests per second through a waiting room",
+            "correct": true,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 68,
+                "unit": "%",
+                "tone": "warn"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 700,
+                "unit": "ms",
+                "tone": "warn"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 3,
+                "unit": "%",
+                "tone": "warn"
+              }
+            ],
+            "resultTitle": "Queue in front, API alive",
+            "resultBody": "Admission is capped at 6,000 req/s, so the six pods fall from 99% to 68% CPU and p95 to 700 ms. The other 24,000 req/s wait in line, and fans see a countdown until the new pods arrive."
+          },
+          {
+            "id": "m-raise-target",
+            "label": "Raise the autoscaler CPU target from 70% to 90% for the sale",
+            "correct": false,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 99,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 9500,
+                "unit": "ms",
+                "tone": "bad"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 27,
+                "unit": "%",
+                "tone": "bad"
+              }
+            ],
+            "resultTitle": "Later scaling, same load",
+            "resultBody": "With a 90% target the autoscaler sees 99% CPU as only slightly over, so it requests fewer pods and waits longer. The six pods stay saturated and errors climb from 22% to 27%."
+          },
+          {
+            "id": "m-restart-pods",
+            "label": "Restart the 6 pods to flush their 4,000-deep request queues",
+            "correct": false,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 100,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 12000,
+                "unit": "ms",
+                "tone": "bad"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 61,
+                "unit": "%",
+                "tone": "bad"
+              }
+            ],
+            "resultTitle": "Capacity dropped to zero",
+            "resultBody": "While the pods restart, nothing serves traffic, and each comes back cold with an empty JIT cache and 30,000 req/s waiting. Errors hit 61% for about 40 seconds before the fleet recovers to where it started."
+          }
+        ]
+      }
     }
   ]
 }

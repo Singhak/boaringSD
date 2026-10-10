@@ -1552,7 +1552,23 @@
         "Give each item a single place to decide."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "logs": {
+        "users": [
+          "block A12-A52: 40 seats left when the link dropped at 14:21:03",
+          "after heal: 38 seats sold in both US and EU, 38 refunds queued"
+        ],
+        "us": [
+          "link to EU down 14:21:03 to 14:24:05, local writes still accepted",
+          "sold 38 of the last 40 seats with no cross-region check",
+          "CPU 81%, no errors returned to buyers"
+        ],
+        "eu": [
+          "link to US down 14:21:03 to 14:24:05, local writes still accepted",
+          "sold the same 38 seats locally, no cross-region check",
+          "CPU 78%, no errors returned to buyers"
+        ]
+      }
     },
     {
       "id": "cap-05",
@@ -2077,7 +2093,23 @@
         "Choose a merge that never loses an add."
       ],
       "nextId": null,
-      "reviewed": true
+      "reviewed": true,
+      "logs": {
+        "users": [
+          "220 tickets: 'item missing from my cart' after 10:03",
+          "every affected cart was edited from two regions during the split"
+        ],
+        "us": [
+          "partition 10:02:11 to 10:03:11, both sides kept accepting cart writes",
+          "merge of cart c-8812: us version [A, B] at 10:02:40, eu version [A, C] at 10:02:52",
+          "resolution: newest timestamp wins, kept eu version, B discarded"
+        ],
+        "eu": [
+          "cart c-8812: add C accepted at 10:02:52",
+          "heal: eu copy newer by 12 s, overwrote the us copy",
+          "no record that the us copy held an item the eu copy lacked"
+        ]
+      }
     },
     {
       "id": "cap-restart-01",
@@ -4239,6 +4271,462 @@
         "Cut the DC whose CPU shows it is mostly idle."
       ],
       "nextId": null
+    },
+    {
+      "canonical": false,
+      "reviewed": true,
+      "nextId": null,
+      "id": "cap-new-01",
+      "incidentCode": "INC-016-12",
+      "level": 16,
+      "patternId": "cap-pacelc",
+      "severity": "P1",
+      "xp": 50,
+      "title": "Singapore follower refuses to serve prices",
+      "brief": "ShopSphere's Singapore follower answers price reads only while its replication lag is under 1 s, otherwise it forwards to the US leader. 38% of 60,000 reads/s cross the ocean and p95 sits at 235 ms.",
+      "constraint": "A price shown to a shopper may be at most 10 seconds old.",
+      "question": "Set the follower's lag bound so most reads stay local without breaking the price rule.",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 60000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 36,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 235,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "fwd",
+          "label": "Reads sent to US",
+          "value": 38,
+          "unit": "%",
+          "tone": "warn"
+        },
+        {
+          "key": "stale",
+          "label": "Prices older than 10 s",
+          "value": 0,
+          "unit": "%",
+          "tone": "good"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "APAC shoppers"
+          },
+          {
+            "id": "sg",
+            "kind": "replica",
+            "label": "SG follower",
+            "tone": "warn",
+            "cpu": 30,
+            "sub": "serves only if lag < 1 s"
+          },
+          {
+            "id": "leader",
+            "kind": "db",
+            "label": "US leader",
+            "tone": "warn",
+            "cpu": 36,
+            "sub": "38% of SG reads forwarded"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "sg"
+          },
+          {
+            "from": "sg",
+            "to": "leader"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "bounded-lag",
+          "label": "Serve follower reads while lag stays under a 5 to 10 s bound",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0,
+            "latencyP99DeltaMs": -180,
+            "complexityScore": 2,
+            "consistencyGuarantee": "eventual",
+            "tradeoffSummary": "A bounded-staleness read: fast and local, with a hard cap on how old the data can be."
+          },
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "APAC shoppers"
+              },
+              {
+                "id": "sg",
+                "kind": "replica",
+                "label": "SG follower",
+                "tone": "good",
+                "cpu": 30,
+                "sub": "lag bound 8 s"
+              },
+              {
+                "id": "leader",
+                "kind": "db",
+                "label": "US leader",
+                "tone": "good",
+                "cpu": 22,
+                "sub": "2.5% of SG reads forwarded"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "sg"
+              },
+              {
+                "from": "sg",
+                "to": "leader"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 22,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 52,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "fwd",
+              "label": "Reads sent to US",
+              "value": 2.5,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "stale",
+              "label": "Prices older than 10 s",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Local reads with a hard freshness cap",
+          "resultBody": "With an 8 s bound the follower serves 97.5% of reads itself at about 50 ms and forwards only the reads that arrive during a lag spike, so the leader drops from 36% to 22% CPU and p95 from 235 ms to 52 ms. Cost: a price can be up to 8 s old, and during a long replication stall every SG read pays the 180 ms trip."
+        },
+        {
+          "id": "always-leader",
+          "label": "Always forward price reads to the US leader to keep them fresh",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 62,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 240,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "fwd",
+              "label": "Reads sent to US",
+              "value": 100,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "stale",
+              "label": "Prices older than 10 s",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Fresh prices, an ocean on every read",
+          "resultBody": "Every one of the 60,000 reads/s now crosses to the US, adding about 180 ms of round trip, so p95 stays near 240 ms and the leader's CPU climbs from 36% to 62%. Prices are always current, but the follower in Singapore sits idle and an undersea cable fault would take reads down.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "sg",
+                "sub": "idle, forwards everything"
+              },
+              {
+                "id": "leader",
+                "tone": "bad",
+                "cpu": 62,
+                "sub": "all APAC reads"
+              }
+            ]
+          }
+        },
+        {
+          "id": "serve-anything",
+          "label": "Serve every follower read locally, whatever the replication lag",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 20,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 45,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "fwd",
+              "label": "Reads sent to US",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "stale",
+              "label": "Prices older than 10 s",
+              "value": 0.9,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Fast, but prices go stale",
+          "resultBody": "Reads are local and p95 falls to 45 ms, but a weekly vacuum stall on the leader pushes follower lag to 40 s for 6 minutes. During those stalls about 0.9% of reads, roughly 540 a second, show prices older than the 10 s limit, and the first checkout mismatch becomes a support ticket.",
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "sg",
+                "tone": "bad",
+                "sub": "serving prices up to 40 s old"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "There is no partition today: this is the latency half of PACELC, not the availability half.",
+        "A bound that is too tight sends most reads across the ocean; one that is too loose breaks the 10-second price rule.",
+        "Pick a lag bound close to the staleness the business accepts, but not above it."
+      ],
+      "format": "knob",
+      "knob": {
+        "label": "Follower lag bound",
+        "unit": "s",
+        "min": 0,
+        "max": 60,
+        "step": 1,
+        "start": 1,
+        "target": [
+          5,
+          10
+        ],
+        "question": "Set the lag bound so most reads stay local and no price is older than 10 s.",
+        "curve": [
+          {
+            "at": 0,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 62
+              },
+              {
+                "key": "p95",
+                "value": 240
+              },
+              {
+                "key": "fwd",
+                "value": 100
+              },
+              {
+                "key": "stale",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "at": 1,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 36
+              },
+              {
+                "key": "p95",
+                "value": 235
+              },
+              {
+                "key": "fwd",
+                "value": 38
+              },
+              {
+                "key": "stale",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "at": 2,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 28
+              },
+              {
+                "key": "p95",
+                "value": 225
+              },
+              {
+                "key": "fwd",
+                "value": 18
+              },
+              {
+                "key": "stale",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "at": 5,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 22
+              },
+              {
+                "key": "p95",
+                "value": 55
+              },
+              {
+                "key": "fwd",
+                "value": 4
+              },
+              {
+                "key": "stale",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "at": 10,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 21
+              },
+              {
+                "key": "p95",
+                "value": 48
+              },
+              {
+                "key": "fwd",
+                "value": 1
+              },
+              {
+                "key": "stale",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "at": 20,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 20
+              },
+              {
+                "key": "p95",
+                "value": 46
+              },
+              {
+                "key": "fwd",
+                "value": 0.4
+              },
+              {
+                "key": "stale",
+                "value": 0.6
+              }
+            ]
+          },
+          {
+            "at": 60,
+            "metrics": [
+              {
+                "key": "cpu",
+                "value": 20
+              },
+              {
+                "key": "p95",
+                "value": 45
+              },
+              {
+                "key": "fwd",
+                "value": 0.1
+              },
+              {
+                "key": "stale",
+                "value": 0.9
+              }
+            ]
+          }
+        ],
+        "low": {
+          "title": "Too tight, reads cross the ocean",
+          "body": "Below 5 s the follower rejects normal replication lag, so between 4% and 100% of reads go to the US leader at up to 240 ms and the leader runs at 22% to 62% CPU."
+        },
+        "high": {
+          "title": "Too loose, prices break the rule",
+          "body": "Above 10 s the follower keeps serving through lag spikes, so 0.6% to 0.9% of reads, hundreds a second, show prices older than the 10-second limit."
+        },
+        "good": {
+          "title": "Local reads, bounded staleness",
+          "body": "At 5 to 10 s the follower serves 96% to 99% of reads locally at about 50 ms, forwards only during lag spikes, and no shopper sees a price older than 10 s."
+        }
+      }
     }
   ]
 }

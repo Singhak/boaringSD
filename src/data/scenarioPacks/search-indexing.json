@@ -364,6 +364,25 @@
           }
         ]
       },
+      "logs": {
+        "users": [
+          "query 'run shoe' -> 0 hits",
+          "query 'Running Shoes' -> 0 hits"
+        ],
+        "api": [
+          "zero-result rate 18% of 6.5k req/s",
+          "query terms sent to index exactly as typed"
+        ],
+        "idx": [
+          "indexed terms: 'Running', 'running', 'shoes' (no lowercase, no stemming)",
+          "lookup 'run' -> 0 postings; 'Running Shoes' -> 0 postings",
+          "CPU 42%, p95 85 ms"
+        ],
+        "db": [
+          "catalog reads 800/s, normal",
+          "product 4412 name='Running Shoes' (capital R)"
+        ]
+      },
       "choices": [
         {
           "id": "same-analyzer",
@@ -826,6 +845,24 @@
             "from": "api",
             "to": "cold"
           }
+        ]
+      },
+      "logs": {
+        "users": [
+          "queries 9k/s, about 40% contain the term 'error'"
+        ],
+        "api": [
+          "router maps term -> shard by first letter",
+          "'error AND timeout' shipped 300 MB of postings between shards",
+          "p95 2.6 s"
+        ],
+        "hot": [
+          "postings list for 'error' 1.1B docs",
+          "CPU 97%, 8.4k of 9k queries/s land here"
+        ],
+        "cold": [
+          "CPU 22%, 400 queries/s",
+          "terms p-r: small postings lists"
         ]
       },
       "choices": [
@@ -1394,6 +1431,23 @@
             "from": "api",
             "to": "idx"
           }
+        ]
+      },
+      "logs": {
+        "users": [
+          "buyer opened listing 88123 at $40, checkout shows $65"
+        ],
+        "api": [
+          "index call timeout after 2 s: listing 88123 price=65",
+          "retries exhausted (3), returned 200 to seller because DB commit succeeded"
+        ],
+        "db": [
+          "COMMIT listing 88123 price 40 -> 65, version 8",
+          "writes 12k/s, CPU 58%"
+        ],
+        "idx": [
+          "listing 88123 price=40.00 (doc version 7, DB version 8)",
+          "stale docs 360k, about 0.4% of 90M"
         ]
       },
       "choices": [
@@ -4407,6 +4461,466 @@
         "Turn a location into a value that nearby points share."
       ],
       "nextId": null
+    },
+    {
+      "id": "srch-new-01",
+      "incidentCode": "INC-020-21",
+      "level": 20,
+      "patternId": "search-indexing",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 150,
+      "title": "Search times out after the description reindex",
+      "brief": "A deploy 3 hours ago reindexed ShopCo's 12M products with 1-20 character n-grams on the description. The index grew from 40 GB to 260 GB, data nodes sit at 96% heap with 8 s GC pauses, and queries time out.",
+      "constraint": "The 40 GB v1 index is still online, 14 hours behind on catalog edits; shoppers still need partial-word matching on titles.",
+      "question": "How do you keep partial-word search without a 6x larger index?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 8000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 91,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "p95 latency",
+          "value": 4000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 2600,
+          "unit": "errors",
+          "tone": "bad"
+        },
+        {
+          "key": "heap",
+          "label": "JVM heap",
+          "value": 96,
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Shoppers"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Search API",
+            "cpu": 55
+          },
+          {
+            "id": "alias",
+            "kind": "lb",
+            "label": "Read alias",
+            "sub": "-> products-v2"
+          },
+          {
+            "id": "v2",
+            "kind": "replica",
+            "label": "products-v2 (n-grams)",
+            "tone": "bad",
+            "cpu": 91,
+            "sub": "260 GB, heap 96%"
+          },
+          {
+            "id": "v1",
+            "kind": "replica",
+            "label": "products-v1",
+            "cpu": 3,
+            "sub": "40 GB, idle, 14 h behind"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "alias"
+          },
+          {
+            "from": "alias",
+            "to": "v2"
+          },
+          {
+            "from": "alias",
+            "to": "v1"
+          }
+        ]
+      },
+      "logs": {
+        "users": [
+          "search 'run' timed out after 5 s",
+          "client error rate 33%"
+        ],
+        "api": [
+          "upstream p95 4.0 s, 2.6k timeouts/min",
+          "read alias products-read -> products-v2"
+        ],
+        "alias": [
+          "alias products-read: [products-v2]",
+          "products-v1 kept after cutover, not in alias"
+        ],
+        "v2": [
+          "GC old gen pause 8.1 s, heap 96%",
+          "analyzer description_ngram min_gram=1 max_gram=20",
+          "index size 260 GB (v1: 40 GB), 12M docs"
+        ],
+        "v1": [
+          "healthy, 0 queries/s",
+          "last write 14 h ago"
+        ]
+      },
+      "choices": [
+        {
+          "id": "edge-title",
+          "label": "Edge n-grams (2-8 chars) on title; standard analyzer on description",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 52,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 110,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "errors",
+              "tone": "good"
+            },
+            {
+              "key": "heap",
+              "label": "JVM heap",
+              "value": 62,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Index back to 55 GB",
+          "resultBody": "Edge n-grams of 2 to 8 characters on the title only keep the index at 55 GB, heap at 62% and p95 at 110 ms. Cost: substring search inside descriptions is gone, and the rebuild takes about 40 minutes.",
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Shoppers"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Search API",
+                "cpu": 55
+              },
+              {
+                "id": "alias",
+                "kind": "lb",
+                "label": "Read alias",
+                "sub": "-> products-v2"
+              },
+              {
+                "id": "v2",
+                "kind": "replica",
+                "label": "products-v2 (n-grams)",
+                "tone": "good",
+                "cpu": 52,
+                "sub": "55 GB, heap 62%"
+              },
+              {
+                "id": "v1",
+                "kind": "replica",
+                "label": "products-v1",
+                "cpu": 3,
+                "sub": "40 GB, idle, 14 h behind"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "api"
+              },
+              {
+                "from": "api",
+                "to": "alias"
+              },
+              {
+                "from": "alias",
+                "to": "v2"
+              },
+              {
+                "from": "alias",
+                "to": "v1"
+              }
+            ]
+          }
+        },
+        {
+          "id": "shards-20",
+          "label": "Raise the shard count from 5 to 20 and rebalance them across nodes",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 4600,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 3100,
+              "unit": "errors",
+              "tone": "bad"
+            },
+            {
+              "key": "heap",
+              "label": "JVM heap",
+              "value": 98,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "More shards, same bloat",
+          "resultBody": "Twenty shards each hold 13 GB of the same n-gram postings plus per-shard overhead, so cluster heap rises to 98% and queries fan out 4x wider; p95 reaches 4.6 s.",
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "v2",
+                "cpu": 94,
+                "sub": "20 shards, heap 98%"
+              }
+            ]
+          }
+        },
+        {
+          "id": "add-nodes",
+          "label": "Add six data nodes so the 260 GB index fits in cluster heap",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "tradeoffs": {
+            "costMonthlyDelta": 4680
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 60,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 420,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 20,
+              "unit": "errors",
+              "tone": "warn"
+            },
+            {
+              "key": "heap",
+              "label": "JVM heap",
+              "value": 74,
+              "unit": "%",
+              "tone": "warn"
+            }
+          ],
+          "resultTitle": "Bigger bill, same bloat",
+          "resultBody": "Six extra nodes at about $780 a month each spread the 260 GB and bring heap down to 74%, but the index stays 6x larger than needed and a reindex now takes 5 hours.",
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "v2",
+                "tone": "warn",
+                "cpu": 60,
+                "sub": "9 nodes, 260 GB, heap 74%"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "The index grew 6x after one analyzer change.",
+        "N-grams multiply the number of terms stored for every field they touch.",
+        "Only titles need partial-word matching; limit the n-gram analyzer to that field."
+      ],
+      "nextId": null,
+      "format": "two-step",
+      "mitigation": {
+        "question": "Search is timing out at p95 4 s. What buys time right now?",
+        "choices": [
+          {
+            "id": "m-alias",
+            "label": "Swap the read alias back to the 40 GB v1 index",
+            "correct": true,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 48,
+                "unit": "%",
+                "tone": "warn"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 180,
+                "unit": "ms",
+                "tone": "warn"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 40,
+                "unit": "errors",
+                "tone": "warn"
+              },
+              {
+                "key": "heap",
+                "label": "JVM heap",
+                "value": 58,
+                "unit": "%",
+                "tone": "warn"
+              }
+            ],
+            "resultTitle": "Queries land on a healthy index",
+            "resultBody": "v1 answers in 180 ms p95 and the v2 nodes leave the read path, so heap drops to 58% within minutes. Cost: shoppers see catalog data 14 hours old until the 3 hours of edits are replayed."
+          },
+          {
+            "id": "m-restart",
+            "label": "Restart the data nodes one at a time to clear heap",
+            "correct": false,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 96,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 5100,
+                "unit": "ms",
+                "tone": "bad"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 3800,
+                "unit": "errors",
+                "tone": "bad"
+              },
+              {
+                "key": "heap",
+                "label": "JVM heap",
+                "value": 95,
+                "unit": "%",
+                "tone": "bad"
+              }
+            ],
+            "resultTitle": "Heap refills in six minutes",
+            "resultBody": "Each restart spent 4 minutes on shard recovery, and as shards reloaded the 260 GB of n-gram postings pushed heap back to 95% within 6 minutes while redundancy was down; p95 reached 5.1 s."
+          },
+          {
+            "id": "m-heap",
+            "label": "Raise data-node JVM heap from 31 GB to 48 GB",
+            "correct": false,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 90,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 3900,
+                "unit": "ms",
+                "tone": "bad"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 2500,
+                "unit": "errors",
+                "tone": "bad"
+              },
+              {
+                "key": "heap",
+                "label": "JVM heap",
+                "value": 93,
+                "unit": "%",
+                "tone": "bad"
+              }
+            ],
+            "resultTitle": "Past 32 GB the heap gets fatter",
+            "resultBody": "Above about 32 GB the JVM loses compressed object pointers, so 17 GB more buys little usable heap, and on these 64 GB nodes the page cache shrinks from 33 GB to 16 GB; GC pauses stay near 6 s and p95 at 3.9 s."
+          }
+        ]
+      }
     }
   ]
 }

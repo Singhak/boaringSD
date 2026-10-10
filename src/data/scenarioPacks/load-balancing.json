@@ -1184,7 +1184,26 @@
             "With 40,000 distinct sources, a deterministic mapping spreads evenly and keeps each device on one pod."
           ]
         }
-      ]
+      ],
+      "logs": {
+        "users": [
+          "12,000 req/s over HTTP/2, ~1,240 long-lived connections",
+          "balancer spreads new connections round-robin: 412 / 410 / 415"
+        ],
+        "s1": [
+          "serving 68% of requests: 8,160 req/s, CPU 90%",
+          "connections 412, but several carry 30+ req/s each",
+          "p95 2,800 ms, 100 errors/s"
+        ],
+        "s2": [
+          "serving 20% of requests: 2,400 req/s, CPU 31%",
+          "connections 410, p95 90 ms"
+        ],
+        "s3": [
+          "serving 12% of requests: 1,440 req/s, CPU 22%",
+          "connections 415, p95 85 ms"
+        ]
+      }
     },
     {
       "id": "lb-05",
@@ -1444,7 +1463,25 @@
         "Healthy copies sit idle.",
         "Put a balancer in front."
       ],
-      "nextId": null
+      "nextId": null,
+      "logs": {
+        "users": [
+          "12,000 req/s, p95 2,800 ms",
+          "errors 100/s, mostly upstream timeouts"
+        ],
+        "s1": [
+          "uptime 41 d, receiving 85% of requests",
+          "CPU 90%, request queue 220 deep"
+        ],
+        "s2": [
+          "restarted 4 min ago, /health 200 since 3 min 50 s",
+          "receiving 8% of requests, CPU 15%"
+        ],
+        "s3": [
+          "uptime 41 d, healthy, CPU 14%",
+          "receiving 7% of requests"
+        ]
+      }
     },
     {
       "id": "lb-06",
@@ -7357,6 +7394,377 @@
         "Compute the CPU per backend after a 1.5x peak and one failure."
       ],
       "nextId": null
+    },
+    {
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 50,
+      "id": "lb-new-01",
+      "incidentCode": "INC-002-22",
+      "level": 2,
+      "patternId": "load-balancing",
+      "title": "New pods sit empty while old ones melt",
+      "brief": "PingRoom's 3 websocket gateway pods hold 18,000 chats each. After autoscaling to 6 pods, the 3 new ones hold 0 sockets while the old ones run at 94% CPU and message p95 is 1,900 ms.",
+      "constraint": "The balancer already uses least-connections, but sockets live for days, and a mass reconnect of 54,000 clients costs about 40 seconds of TLS handshakes.",
+      "question": "How do you keep the fleet balanced as it scales?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Open sockets",
+          "value": 54000,
+          "unit": "sockets",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 94,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "Message latency",
+          "value": 1900,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "errors",
+          "label": "Errors",
+          "value": 3,
+          "unit": "%",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Chat clients"
+          },
+          {
+            "id": "lb",
+            "kind": "lb",
+            "label": "Balancer",
+            "tone": "warn",
+            "sub": "least-connections"
+          },
+          {
+            "id": "old",
+            "kind": "server",
+            "label": "Old gateway pods x3",
+            "tone": "bad",
+            "cpu": 94,
+            "sub": "18,000 sockets each"
+          },
+          {
+            "id": "new",
+            "kind": "server",
+            "label": "New gateway pods x3",
+            "tone": "neutral",
+            "cpu": 6,
+            "sub": "0 sockets"
+          }
+        ],
+        "edges": [
+          {
+            "from": "users",
+            "to": "lb"
+          },
+          {
+            "from": "lb",
+            "to": "old"
+          },
+          {
+            "from": "lb",
+            "to": "new"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "max-age",
+          "label": "Cap socket age at 10 minutes with jittered server closes",
+          "correct": true,
+          "approach": "optimal",
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Chat clients"
+              },
+              {
+                "id": "lb",
+                "kind": "lb",
+                "label": "Balancer",
+                "tone": "good",
+                "sub": "least-connections"
+              },
+              {
+                "id": "old",
+                "kind": "server",
+                "label": "Old gateway pods x3",
+                "tone": "good",
+                "cpu": 47,
+                "sub": "9,000 sockets each"
+              },
+              {
+                "id": "new",
+                "kind": "server",
+                "label": "New gateway pods x3",
+                "tone": "good",
+                "cpu": 47,
+                "sub": "9,000 sockets each"
+              }
+            ],
+            "edges": [
+              {
+                "from": "users",
+                "to": "lb"
+              },
+              {
+                "from": "lb",
+                "to": "old"
+              },
+              {
+                "from": "lb",
+                "to": "new"
+              }
+            ]
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 47,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "Message latency",
+              "value": 140,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 0,
+              "unit": "%",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Sockets drift to the emptiest pods",
+          "resultBody": "Each socket is closed with ±2 minutes of jitter after about 10 minutes and reconnects to the least-loaded pod, so within 20 minutes all 6 pods hold roughly 9,000 sockets at 47% CPU. Cost: about 90 new handshakes per second, and clients must resume from a message cursor.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          }
+        },
+        {
+          "id": "scale-on-sockets",
+          "label": "Autoscale pods on open sockets with a 5,000-per-pod target",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 94,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "Message latency",
+              "value": 1900,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 3,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "More empty pods",
+          "resultBody": "The autoscaler grows the fleet to 11 pods, but existing sockets never move, so the 8 new pods stay empty and the old three keep 18,000 each at 94% CPU. The extra pods add about $690/month for nothing.",
+          "tradeoffs": {
+            "costMonthlyDelta": 690
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "new",
+                "label": "New gateway pods x8",
+                "sub": "0 sockets, $690/mo"
+              }
+            ]
+          }
+        },
+        {
+          "id": "sticky-cookie",
+          "label": "Enable cookie stickiness so each user returns to its pod",
+          "correct": false,
+          "approach": "anti_pattern",
+          "retry": true,
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 96,
+              "unit": "%",
+              "tone": "bad"
+            },
+            {
+              "key": "p95",
+              "label": "Message latency",
+              "value": 2100,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "errors",
+              "label": "Errors",
+              "value": 4,
+              "unit": "%",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Imbalance made permanent",
+          "resultBody": "Returning users are pinned to the pod that held them last, which is one of the three old pods. The old pods keep 18,000 sockets and rise to 96% CPU while the new pods stay near 0.",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "old",
+                "cpu": 96,
+                "sub": "cookie pins users here"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Least-connections only decides where a socket lands when it connects.",
+        "A socket that lives for days is never re-decided, so the old pods keep it.",
+        "Make sockets reconnect on a schedule, so every reconnect is a fresh balancing decision."
+      ],
+      "nextId": null,
+      "format": "two-step",
+      "mitigation": {
+        "question": "The old pods are at 94% CPU and only reconnects can move load. What sheds it now?",
+        "choices": [
+          {
+            "id": "m-jitter-close",
+            "label": "Close 40% of old sockets with jittered reconnect delays",
+            "correct": true,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 57,
+                "unit": "%",
+                "tone": "warn"
+              },
+              {
+                "key": "p95",
+                "label": "Message latency",
+                "value": 520,
+                "unit": "ms",
+                "tone": "warn"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 1,
+                "unit": "%",
+                "tone": "warn"
+              }
+            ],
+            "resultTitle": "Load moved in a minute",
+            "resultBody": "21,600 sockets reconnect over 60 seconds with random delays and land on the three empty pods, leaving 10,800 on each old pod and 7,200 on each new one. Old pods fall from 94% to 57% CPU, but nothing stops them filling up again next scale-out."
+          },
+          {
+            "id": "m-restart-old",
+            "label": "Restart all 3 old pods together to reset their sockets",
+            "correct": false,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 100,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "Message latency",
+                "value": 6000,
+                "unit": "ms",
+                "tone": "bad"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 35,
+                "unit": "%",
+                "tone": "bad"
+              }
+            ],
+            "resultTitle": "Reconnect storm",
+            "resultBody": "All 54,000 clients reconnect within seconds. TLS handshakes and auth lookups saturate every pod for about 90 seconds, with 35% errors, before the sockets spread out."
+          },
+          {
+            "id": "m-add-pods",
+            "label": "Add six more pods to the gateway deployment right now",
+            "correct": false,
+            "tradeoffs": {
+              "costMonthlyDelta": 420
+            },
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 94,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "Message latency",
+                "value": 1900,
+                "unit": "ms",
+                "tone": "bad"
+              },
+              {
+                "key": "errors",
+                "label": "Errors",
+                "value": 3,
+                "unit": "%",
+                "tone": "bad"
+              }
+            ],
+            "resultTitle": "Empty pods cannot take sockets",
+            "resultBody": "The nine pods that are not old start with 0 sockets, and no client reconnects, so the old pods still hold 18,000 each at 94% CPU. The extra pods cost about $420/month and change nothing."
+          }
+        ]
+      }
     }
   ]
 }

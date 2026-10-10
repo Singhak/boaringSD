@@ -486,6 +486,28 @@
           }
         ]
       },
+      "logs": {
+        "users": [
+          "support: 'search takes over a second', 31 tickets today",
+          "client-side search p99 about 1.4 s"
+        ],
+        "lb": [
+          "dashboard p99 = mean of 40 per-host p99 = 181 ms",
+          "hosts 17, 22, 31 receive 8% of traffic"
+        ],
+        "fast": [
+          "37 hosts: local p99 about 90 ms each",
+          "CPU 55%"
+        ],
+        "slow": [
+          "3 hosts: local p99 about 1.3 s each",
+          "iowait 38%, disk await 90 ms"
+        ],
+        "idx": [
+          "index reads healthy, CPU 48%",
+          "no slow queries logged above 300 ms"
+        ]
+      },
       "choices": [
         {
           "id": "merge-hist",
@@ -1025,6 +1047,27 @@
             "from": "q",
             "to": "store"
           }
+        ]
+      },
+      "logs": {
+        "users": [
+          "payments 4k/s, 2 time out per second after 6.0 s",
+          "support asks for the trace of order 77120"
+        ],
+        "gw": [
+          "trace sampling: 1% decided at request start, before the outcome is known",
+          "trace_id=ab12f7 sampled=false"
+        ],
+        "pay": [
+          "card processor timeout after 6.0 s, trace_id=ab12f7",
+          "about 172k timeouts a day, 0.05% of volume"
+        ],
+        "q": [
+          "span pipeline 1.6k spans/s, queue depth 0"
+        ],
+        "store": [
+          "trace store 35% full, retention 7 d",
+          "query status=timeout -> 1,700 traces for yesterday"
         ]
       },
       "choices": [
@@ -4260,6 +4303,447 @@
       ],
       "nextId": null,
       "format": "budget-cut"
+    },
+    {
+      "id": "obs-new-01",
+      "incidentCode": "INC-022-21",
+      "level": 22,
+      "patternId": "observability",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P1",
+      "xp": 150,
+      "title": "Prometheus restarts every four minutes",
+      "brief": "A release added a user_id label to http_requests_total. Active series jumped from 1.2M to 38M, Prometheus is OOM-killed every 4 minutes, and on-call dashboards and alerts are blind.",
+      "constraint": "Per-user debugging must stay possible, and Prometheus keeps its current 64 GB of memory.",
+      "question": "How do you keep per-user visibility without the series explosion?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 15000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "cpu",
+          "label": "CPU",
+          "value": 94,
+          "unit": "%",
+          "tone": "bad"
+        },
+        {
+          "key": "p95",
+          "label": "Dashboard query p95",
+          "value": 12000,
+          "unit": "ms",
+          "tone": "bad"
+        },
+        {
+          "key": "series",
+          "label": "Active series",
+          "value": 38,
+          "unit": "M",
+          "tone": "bad"
+        },
+        {
+          "key": "oom",
+          "label": "OOM restarts",
+          "value": 15,
+          "unit": "/hour",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "users",
+            "kind": "users",
+            "label": "Operators"
+          },
+          {
+            "id": "prom",
+            "kind": "db",
+            "label": "Prometheus",
+            "tone": "bad",
+            "cpu": 94,
+            "sub": "38M series, OOM every 4 min"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "API fleet",
+            "tone": "warn",
+            "cpu": 55,
+            "sub": "http_requests_total{user_id}"
+          },
+          {
+            "id": "alert",
+            "kind": "server",
+            "label": "Alertmanager",
+            "tone": "warn",
+            "cpu": 5,
+            "sub": "no data from Prometheus"
+          }
+        ],
+        "edges": [
+          {
+            "from": "prom",
+            "to": "api"
+          },
+          {
+            "from": "prom",
+            "to": "alert"
+          },
+          {
+            "from": "users",
+            "to": "prom"
+          }
+        ]
+      },
+      "logs": {
+        "users": [
+          "dashboards: 'no data' on 14 of 20 panels",
+          "pager silent for 25 min while 5xx rose"
+        ],
+        "prom": [
+          "head series 38,100,000 (1,200,000 yesterday)",
+          "OOMKilled at 64 GB, restart count 15 in 1 h",
+          "WAL replay 3m40s before the next kill"
+        ],
+        "api": [
+          "http_requests_total{route,status,user_id}: 5.1M distinct user_id values/h",
+          "new release 2026.10.7 deployed 55 min ago"
+        ],
+        "alert": [
+          "rule HighErrorRate: no data",
+          "evaluations failing: connection refused to prometheus"
+        ]
+      },
+      "choices": [
+        {
+          "id": "traces-logs",
+          "label": "Put user_id on traces and logs; keep metrics at route level",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 45,
+              "unit": "%",
+              "tone": "good"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 800,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "series",
+              "label": "Active series",
+              "value": 1.3,
+              "unit": "M",
+              "tone": "good"
+            },
+            {
+              "key": "oom",
+              "label": "OOM restarts",
+              "value": 0,
+              "unit": "/hour",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Per-user answers from traces",
+          "resultBody": "A trace search for one user_id returns their requests in under 2 s, while metrics hold at 1.3M series and about 9 GB of memory. Cost: trace storage grows with sampled volume, and per-user rates can no longer be graphed live.",
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "users",
+                "kind": "users",
+                "label": "Operators"
+              },
+              {
+                "id": "prom",
+                "kind": "db",
+                "label": "Prometheus",
+                "tone": "good",
+                "cpu": 45,
+                "sub": "1.3M series, 9 GB"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "API fleet",
+                "tone": "good",
+                "cpu": 55,
+                "sub": "user_id moved to trace attributes"
+              },
+              {
+                "id": "alert",
+                "kind": "server",
+                "label": "Alertmanager",
+                "tone": "good",
+                "cpu": 5,
+                "sub": "evaluating normally"
+              }
+            ],
+            "edges": [
+              {
+                "from": "prom",
+                "to": "api"
+              },
+              {
+                "from": "prom",
+                "to": "alert"
+              },
+              {
+                "from": "users",
+                "to": "prom"
+              }
+            ]
+          }
+        },
+        {
+          "id": "hash-buckets",
+          "label": "Hash user_id into 1,000 buckets and label metrics with the bucket",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 70,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 2500,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "series",
+              "label": "Active series",
+              "value": 9,
+              "unit": "M",
+              "tone": "warn"
+            },
+            {
+              "key": "oom",
+              "label": "OOM restarts",
+              "value": 0,
+              "unit": "/hour",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Bounded, but still blind",
+          "resultBody": "That adds about 200,000 series per metric, and each bucket mixes thousands of users, so one user's failures stay invisible and you still need logs to find them.",
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "prom",
+                "tone": "warn",
+                "sub": "9M series, per-bucket noise"
+              }
+            ]
+          }
+        },
+        {
+          "id": "shard-prom",
+          "label": "Shard Prometheus into 8 instances by user_id hash with federation",
+          "correct": false,
+          "approach": "viable_with_tradeoffs",
+          "tradeoffs": {
+            "costMonthlyDelta": 2400
+          },
+          "metricsAfter": [
+            {
+              "key": "cpu",
+              "label": "CPU",
+              "value": 65,
+              "unit": "%",
+              "tone": "warn"
+            },
+            {
+              "key": "p95",
+              "label": "p95 latency",
+              "value": 6000,
+              "unit": "ms",
+              "tone": "bad"
+            },
+            {
+              "key": "series",
+              "label": "Active series",
+              "value": 38,
+              "unit": "M",
+              "tone": "bad"
+            },
+            {
+              "key": "oom",
+              "label": "OOM restarts",
+              "value": 0,
+              "unit": "/hour",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Eight servers, same waste",
+          "resultBody": "Each shard holds 4.8M series so nothing OOMs, but every global dashboard fans out to 8 servers and the bill rises about $2,400 a month to store per-user series nobody queries.",
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "prom",
+                "tone": "warn",
+                "sub": "8 shards, 4.8M series each"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "Series count is the product of every label's distinct values.",
+        "user_id has millions of values; route and status have dozens.",
+        "Metrics answer 'how many'; traces and logs answer 'which request'."
+      ],
+      "nextId": null,
+      "format": "two-step",
+      "mitigation": {
+        "question": "Prometheus restarts every 4 minutes and alerts are blind. What do you do first?",
+        "choices": [
+          {
+            "id": "m-rollback",
+            "label": "Roll back the release that added user_id to the metric",
+            "correct": true,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 40,
+                "unit": "%",
+                "tone": "good"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 900,
+                "unit": "ms",
+                "tone": "warn"
+              },
+              {
+                "key": "series",
+                "label": "Active series",
+                "value": 1.3,
+                "unit": "M",
+                "tone": "good"
+              },
+              {
+                "key": "oom",
+                "label": "OOM restarts",
+                "value": 0,
+                "unit": "/hour",
+                "tone": "good"
+              }
+            ],
+            "resultTitle": "Series growth stops",
+            "resultBody": "New user_id series stop being created within one scrape interval, and after one restart the head holds 1.3M series and OOM restarts stop. Cost: the release's other changes revert too, and about 25 minutes of metrics are missing."
+          },
+          {
+            "id": "m-memory",
+            "label": "Move Prometheus from 64 GB to a 128 GB memory instance",
+            "correct": false,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 92,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 9000,
+                "unit": "ms",
+                "tone": "bad"
+              },
+              {
+                "key": "series",
+                "label": "Active series",
+                "value": 46,
+                "unit": "M",
+                "tone": "bad"
+              },
+              {
+                "key": "oom",
+                "label": "OOM restarts",
+                "value": 4,
+                "unit": "/hour",
+                "tone": "bad"
+              }
+            ],
+            "resultTitle": "Ten more minutes, same crash",
+            "resultBody": "At roughly 3 KB per active series 38M series need about 115 GB for the head alone, and series keep growing at 5M an hour, so the bigger instance is killed again after about 25 minutes."
+          },
+          {
+            "id": "m-retention",
+            "label": "Cut retention from 15 days to 2 days to free memory",
+            "correct": false,
+            "tradeoffs": {
+              "costMonthlyDelta": 0
+            },
+            "metricsAfter": [
+              {
+                "key": "cpu",
+                "label": "CPU",
+                "value": 94,
+                "unit": "%",
+                "tone": "bad"
+              },
+              {
+                "key": "p95",
+                "label": "p95 latency",
+                "value": 12000,
+                "unit": "ms",
+                "tone": "bad"
+              },
+              {
+                "key": "series",
+                "label": "Active series",
+                "value": 38,
+                "unit": "M",
+                "tone": "bad"
+              },
+              {
+                "key": "oom",
+                "label": "OOM restarts",
+                "value": 15,
+                "unit": "/hour",
+                "tone": "bad"
+              }
+            ],
+            "resultTitle": "Retention is a disk setting",
+            "resultBody": "Retention only deletes old blocks on disk; the 38M series live in the in-memory head, so memory does not drop and Prometheus is still OOM-killed every 4 minutes, now with 13 days of history gone."
+          }
+        ]
+      }
     }
   ]
 }

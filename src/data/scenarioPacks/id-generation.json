@@ -442,6 +442,21 @@
           }
         ]
       },
+      "logs": {
+        "api": [
+          "INSERT ledger_tx 30k/s, p95 45 ms",
+          "sample PKs in arrival order: 9f3c..., 1b07..., e44a..., 52d1... (no ordering)"
+        ],
+        "db": [
+          "buffer pool hit 71% (was 99%)",
+          "page splits 11k/s on ledger_tx PRIMARY, leaf pages ~55% full",
+          "dirty page flush 480 MB/s, CPU 88%"
+        ],
+        "rep": [
+          "replica apply lag 6 s",
+          "buffer pool hit 74%, applying scattered page writes"
+        ]
+      },
       "choices": [
         {
           "id": "uuid-v7",
@@ -1192,6 +1207,21 @@
             "from": "api",
             "to": "tix"
           }
+        ]
+      },
+      "logs": {
+        "users": [
+          "signup requests 18k/s, 850 failed in the last minute",
+          "client retry with 1 s backoff"
+        ],
+        "api": [
+          "next_id() round trip 118 ms avg",
+          "1 ticket call per signup, no local ID buffer"
+        ],
+        "tix": [
+          "REPLACE INTO tickets64 (stub) 18k/s, CPU 94%",
+          "autoinc lock waits 14 ms avg on a 1-row table",
+          "binlog fsync on every commit"
         ]
       },
       "choices": [
@@ -3950,7 +3980,7 @@
             {
               "key": "p95",
               "label": "ID call p95",
-              "value": 1.0,
+              "value": 1,
               "unit": "ms",
               "tone": "good"
             },
@@ -3980,6 +4010,399 @@
       ],
       "nextId": null,
       "format": "budget-cut"
+    },
+    {
+      "id": "idg-new-01",
+      "incidentCode": "INC-019-21",
+      "level": 19,
+      "patternId": "id-generation",
+      "canonical": false,
+      "reviewed": true,
+      "severity": "P2",
+      "xp": 50,
+      "title": "Order IDs open the wrong order in the browser",
+      "brief": "AdminWeb reads order IDs as JavaScript numbers, so 63-bit Snowflake IDs lose their low bits and 1 in 1,800 orders opens the wrong record. A 53-bit layout leaves 12 bits after the 41-bit timestamp.",
+      "constraint": "Partners parse IDs as JSON numbers, so string IDs are out; all 20 pods may burst to 40 IDs per millisecond.",
+      "question": "How many of the 12 spare bits go to the per-millisecond sequence?",
+      "metricsBefore": [
+        {
+          "key": "rps",
+          "label": "Traffic",
+          "value": 22000,
+          "unit": "req/s",
+          "tone": "neutral"
+        },
+        {
+          "key": "mint",
+          "label": "ID mint p95",
+          "value": 0.2,
+          "unit": "ms",
+          "tone": "good"
+        },
+        {
+          "key": "refused",
+          "label": "Pods refused a worker ID",
+          "value": 16,
+          "unit": "pods",
+          "tone": "bad"
+        }
+      ],
+      "graphBefore": {
+        "nodes": [
+          {
+            "id": "web",
+            "kind": "users",
+            "label": "Admin web"
+          },
+          {
+            "id": "api",
+            "kind": "server",
+            "label": "Order API",
+            "cpu": 30
+          },
+          {
+            "id": "gen",
+            "kind": "server",
+            "label": "ID generators (20 pods)",
+            "tone": "bad",
+            "cpu": 35,
+            "sub": "draft: 2 worker + 10 sequence bits"
+          },
+          {
+            "id": "db",
+            "kind": "db",
+            "label": "Orders DB",
+            "cpu": 30
+          }
+        ],
+        "edges": [
+          {
+            "from": "web",
+            "to": "api"
+          },
+          {
+            "from": "api",
+            "to": "gen"
+          },
+          {
+            "from": "api",
+            "to": "db"
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "fit-53",
+          "label": "Fit IDs in 53 bits: 41 timestamp, 6 worker, 6 sequence",
+          "correct": true,
+          "approach": "optimal",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "rps",
+              "label": "Traffic",
+              "value": 22000,
+              "unit": "req/s",
+              "tone": "neutral"
+            },
+            {
+              "key": "mint",
+              "label": "ID mint p95",
+              "value": 0.2,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "refused",
+              "label": "Pods refused a worker ID",
+              "value": 0,
+              "unit": "pods",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "IDs survive the browser",
+          "resultBody": "Six worker bits allow 64 pods and six sequence bits give each pod 64 IDs per ms, so 20 pods and 40-ID bursts fit and every ID parses exactly. Cost: a pod tops out at 64k IDs/s, and 41 timestamp bits last about 70 years from a custom epoch.",
+          "graphAfter": {
+            "nodes": [
+              {
+                "id": "web",
+                "kind": "users",
+                "label": "Admin web"
+              },
+              {
+                "id": "api",
+                "kind": "server",
+                "label": "Order API",
+                "cpu": 30
+              },
+              {
+                "id": "gen",
+                "kind": "server",
+                "label": "ID generators (20 pods)",
+                "tone": "good",
+                "cpu": 35,
+                "sub": "6 worker + 6 sequence bits"
+              },
+              {
+                "id": "db",
+                "kind": "db",
+                "label": "Orders DB",
+                "cpu": 30
+              }
+            ],
+            "edges": [
+              {
+                "from": "web",
+                "to": "api"
+              },
+              {
+                "from": "api",
+                "to": "gen"
+              },
+              {
+                "from": "api",
+                "to": "db"
+              }
+            ]
+          }
+        },
+        {
+          "id": "string-ids",
+          "label": "Serialize IDs as strings in the admin API response only",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 0
+          },
+          "metricsAfter": [
+            {
+              "key": "rps",
+              "label": "Traffic",
+              "value": 22000,
+              "unit": "req/s",
+              "tone": "neutral"
+            },
+            {
+              "key": "mint",
+              "label": "ID mint p95",
+              "value": 0.2,
+              "unit": "ms",
+              "tone": "good"
+            },
+            {
+              "key": "refused",
+              "label": "Pods refused a worker ID",
+              "value": 16,
+              "unit": "pods",
+              "tone": "bad"
+            }
+          ],
+          "resultTitle": "Partner feeds still lose digits",
+          "resultBody": "The admin UI is fixed, but partner CSV exports and webhooks still carry 63-bit numbers that their tools parse as doubles, so about 1 in 1,800 partner lookups keeps hitting the wrong order.",
+          "retry": true,
+          "graphPatch": {
+            "nodes": [
+              {
+                "id": "web",
+                "tone": "warn",
+                "sub": "strings OK, partners still numeric"
+              }
+            ]
+          }
+        },
+        {
+          "id": "redis-incr",
+          "label": "Use one Redis INCR counter as the whole 53-bit ID",
+          "correct": false,
+          "approach": "anti_pattern",
+          "tradeoffs": {
+            "costMonthlyDelta": 120
+          },
+          "metricsAfter": [
+            {
+              "key": "rps",
+              "label": "Traffic",
+              "value": 22000,
+              "unit": "req/s",
+              "tone": "neutral"
+            },
+            {
+              "key": "mint",
+              "label": "ID mint p95",
+              "value": 0.5,
+              "unit": "ms",
+              "tone": "warn"
+            },
+            {
+              "key": "refused",
+              "label": "Pods refused a worker ID",
+              "value": 0,
+              "unit": "pods",
+              "tone": "good"
+            }
+          ],
+          "resultTitle": "Failover re-issues IDs",
+          "resultBody": "IDs stay numeric and small, but with asynchronous replication a failover can rewind the counter 1-2 seconds and re-issue about 40,000 IDs, and every create now pays a 0.5 ms Redis round trip.",
+          "retry": true,
+          "graphPatch": {
+            "addNodes": [
+              {
+                "id": "redis",
+                "kind": "cache",
+                "label": "Redis INCR",
+                "tone": "warn",
+                "sub": "async replica, ID rewind on failover"
+              }
+            ],
+            "addEdges": [
+              {
+                "from": "api",
+                "to": "redis"
+              }
+            ]
+          }
+        }
+      ],
+      "hints": [
+        "A browser number is a 64-bit float: only 53 bits are exact.",
+        "The timestamp keeps 41 bits; worker ID and sequence share what is left.",
+        "Count pods needing worker IDs, then count IDs one pod mints in a millisecond; both must fit."
+      ],
+      "nextId": null,
+      "format": "knob",
+      "knob": {
+        "label": "Sequence bits",
+        "unit": "bits",
+        "min": 0,
+        "max": 12,
+        "step": 1,
+        "start": 10,
+        "target": [
+          6,
+          7
+        ],
+        "question": "Set how many of the 12 spare bits go to the sequence; the rest identify the worker.",
+        "curve": [
+          {
+            "at": 0,
+            "metrics": [
+              {
+                "key": "mint",
+                "value": 39
+              },
+              {
+                "key": "refused",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "at": 4,
+            "metrics": [
+              {
+                "key": "mint",
+                "value": 2
+              },
+              {
+                "key": "refused",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "at": 5,
+            "metrics": [
+              {
+                "key": "mint",
+                "value": 1
+              },
+              {
+                "key": "refused",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "at": 6,
+            "metrics": [
+              {
+                "key": "mint",
+                "value": 0.2
+              },
+              {
+                "key": "refused",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "at": 7,
+            "metrics": [
+              {
+                "key": "mint",
+                "value": 0.2
+              },
+              {
+                "key": "refused",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "at": 8,
+            "metrics": [
+              {
+                "key": "mint",
+                "value": 0.2
+              },
+              {
+                "key": "refused",
+                "value": 4
+              }
+            ]
+          },
+          {
+            "at": 10,
+            "metrics": [
+              {
+                "key": "mint",
+                "value": 0.2
+              },
+              {
+                "key": "refused",
+                "value": 16
+              }
+            ]
+          },
+          {
+            "at": 12,
+            "metrics": [
+              {
+                "key": "mint",
+                "value": 0.2
+              },
+              {
+                "key": "refused",
+                "value": 19
+              }
+            ]
+          }
+        ],
+        "low": {
+          "title": "Bursts wait for the next millisecond",
+          "body": "At 5 sequence bits or fewer a pod mints at most 32 IDs per ms, so a 40-ID burst stalls, and at 0 bits the last ID waits 39 ms for the clock to tick."
+        },
+        "high": {
+          "title": "Pods cannot get a worker ID",
+          "body": "At 8 sequence bits or more only 16 or fewer worker IDs exist, so at least 4 of the 20 pods are refused at startup and, at 12 bits, 19 of them cannot start."
+        },
+        "good": {
+          "title": "Both limits fit in 12 bits",
+          "body": "At 6 or 7 sequence bits there are 32 to 64 worker IDs for 20 pods and 64 to 128 IDs per ms per pod, so bursts of 40 never wait and no pod is refused."
+        }
+      }
     }
   ]
 }
